@@ -3,7 +3,8 @@
 配信内容（仕様書07節）:
 1. 今週の確定売上（初期費用）／ 今週獲得MRR（月額ストック）
 2. 月次・クオーター目標に対する進捗率（%）
-3. 営業パフォーマンス分析（全社平均受注接触回数との比較、勝ちパターン）
+3. 営業パフォーマンス分析（全社平均受注接触回数との比較、勝ちパターン、
+   メンバー別パフォーマンススコア）
 4. クオーター着地予測（3段階: 🚀Max／🎯Expected／🛡Min）
 5. コンディション🔴停滞リスク案件の一覧
 
@@ -39,6 +40,12 @@ from src.analytics.forecast import (
     QuarterForecast,
     forecast_quarter,
 )
+from src.analytics.member_performance import (
+    MemberActionRecord,
+    MemberPerformance,
+    MemberProjectRecord,
+    compute_member_performance,
+)
 from src.analytics.win_pattern import ProposalRecord, WinPattern, analyze_win_patterns
 from src.analytics.win_rate import ProjectOutcome, average_won_contact_count
 
@@ -57,6 +64,7 @@ class WeeklyProjectRecord:
     contract_date: date | None = None
     total_contact_count: int = 0
     last_action_date: date | None = None
+    next_action_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +111,7 @@ class WeeklyReportData:
     quarterly_progress: RevenueProgress
     average_won_contact_count: float | None
     win_patterns: tuple[WinPattern, ...]
+    member_performances: tuple[MemberPerformance, ...]
     quarter_forecast: QuarterForecast
     stagnation_risk_projects: tuple[StagnationRiskProject, ...]
 
@@ -158,6 +167,7 @@ def build_weekly_report_data(
     proposal_records: Sequence[ProposalRecord],
     monthly_target: RevenueTarget,
     quarter_target: RevenueTarget,
+    member_actions: Sequence[MemberActionRecord] = (),
     confidence_win_rates: Mapping[str, float] | None = None,
     condition_thresholds: ConditionThresholds | None = None,
     min_win_pattern_sample_size: int = 3,
@@ -173,11 +183,20 @@ def build_weekly_report_data(
       契約日を持つ契約済みレコードを検知した場合はloggingで警告する（防御的チェックであり、
       検知しても除外はしない。除外が必要な場合は呼び出し側で絞り込むこと）。
       今週・当月・当クオーターの確定売上／MRR集計、クオーター着地予測、
-      コンディション判定（🔴停滞リスク抽出）にはこのリストを用いる。
+      コンディション判定（🔴停滞リスク抽出）、メンバー別パフォーマンス（クオリティ・
+      スピード）にはこのリストを用いる。
     - historical_outcomes: 全社平均受注接触回数（`average_won_contact_count`）算出用の
       過去の決着済み案件データ（受注/失注が確定したもの）。active_projectsとは
       別集計軸（案件管理DB全件ではなく決着済みのみ）のため引数を分けている。
     - proposal_records: 勝ちパターン分析（`analyze_win_patterns`）用の提案実績。
+    - member_actions: メンバー別パフォーマンス（`compute_member_performance`）の
+      ボリューム・スピード算出に使うアクション管理DBレコード。**呼び出し側は
+      週次範囲（week_start〜week_end）のアクションのみに絞り込んだ上で渡すこと**
+      （active_projectsのクオーター範囲チェックと異なり、こちらは同種の防御的チェックを
+      実装していないため、範囲外のレコードが混入してもloggingで検知されない）。省略時は
+      空のため、`member_deadline_compliance_rates`のフォールバックにより、次回アクション
+      期限判定対象の案件があるメンバーについてはスピードが確定した悪い実績（0%）ではなく
+      未確定（None）として扱われる（ボリュームは引き続き全メンバー0件）。
     """
     confirmed_projects = [p for p in active_projects if p.status == CONFIRMED_STATUS]
 
@@ -241,6 +260,19 @@ def build_weekly_report_data(
         == Condition.STAGNATION_RISK
     )
 
+    member_projects = [
+        MemberProjectRecord(
+            project_id=p.project_id,
+            member=p.assignee,
+            status=p.status,
+            next_action_date=p.next_action_date,
+        )
+        for p in active_projects
+    ]
+    member_performances = compute_member_performance(
+        member_projects, member_actions, as_of=judgement_as_of
+    )
+
     return WeeklyReportData(
         week_start=week_start,
         week_end=week_end,
@@ -250,6 +282,7 @@ def build_weekly_report_data(
         quarterly_progress=quarterly_progress,
         average_won_contact_count=average_contacts,
         win_patterns=win_patterns,
+        member_performances=member_performances,
         quarter_forecast=quarter_forecast,
         stagnation_risk_projects=stagnation_risk_projects,
     )
@@ -289,6 +322,34 @@ def _format_win_pattern_lines(patterns: Sequence[WinPattern]) -> str:
     return "\n".join(lines)
 
 
+def _format_member_performance_lines(performances: Sequence[MemberPerformance]) -> str:
+    """メンバー別パフォーマンススコアを整形する。
+
+    クオリティ・スピードがデータ不足でNoneの場合は「未確定」と表示し、"0%"と
+    混同しないようにする（`compute_member_performance`のdocstring参照）。
+    """
+    if not performances:
+        return "（メンバー別パフォーマンスデータはありません）"
+    lines = []
+    for perf in performances:
+        quality = (
+            f"{perf.quality_win_rate * 100:.1f}%" if perf.quality_win_rate is not None else "未確定"
+        )
+        speed = (
+            f"{perf.speed_compliance_rate * 100:.1f}%"
+            if perf.speed_compliance_rate is not None
+            else "未確定"
+        )
+        overall = f"{perf.overall_score:.2f}" if perf.overall_score is not None else "未確定"
+        lines.append(
+            f"・{perf.member}: 総合スコア {overall}"
+            f"（ボリューム: 接触{perf.volume_contact_count}回・相対スコア{perf.volume_score:.2f} / "
+            f"クオリティ（受注率）: {quality} / "
+            f"スピード（次回アクション期限遵守率）: {speed}）"
+        )
+    return "\n".join(lines)
+
+
 def _format_stagnation_risk_lines(projects: Sequence[StagnationRiskProject]) -> str:
     if not projects:
         return "（🔴停滞リスク案件はありません）"
@@ -323,6 +384,7 @@ def generate_weekly_report_text(data: WeeklyReportData, *, template_path: Path |
             quarterly_progress_lines=_format_progress_lines("クオーター目標", data.quarterly_progress),
             average_won_contact_count_line=average_contacts_text,
             win_pattern_lines=_format_win_pattern_lines(data.win_patterns),
+            member_performance_lines=_format_member_performance_lines(data.member_performances),
             max_initial_fee=f"{data.quarter_forecast.max.initial_fee:,.0f}",
             max_mrr=f"{data.quarter_forecast.max.mrr:,.0f}",
             expected_initial_fee=f"{data.quarter_forecast.expected.initial_fee:,.0f}",

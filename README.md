@@ -69,6 +69,11 @@ Phase 4（データ移行・総合テスト）→ Phase 5（本番移行）。
 ■ Phase 2 実装ノート: Notion Webhook実運用にはプロキシ層の追加実装が必要
 （[`docs/notion_webhook_proxy_note.md`](docs/notion_webhook_proxy_note.md) 参照）。
 
+■ Phase 3 実装ノート: メンバー別パフォーマンス評価（週報「営業パフォーマンス分析」）の
+「スピード」指標は、既存DBスキーマのみで算出できる簡易代替指標（次回アクション期限遵守率）
+で実装している。本来の一次返信時間等の実測にはNotion側への新規プロパティ追加が必要
+（[`docs/member_performance_note.md`](docs/member_performance_note.md) 参照）。
+
 ## 保留・要確認事項
 
 仕様書 `10_保留・要確認事項` に10件の未決定論点がある（Q-01〜Q-10）。

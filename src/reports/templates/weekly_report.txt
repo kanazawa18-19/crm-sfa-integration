@@ -12,6 +12,9 @@
 全社平均受注接触回数: {average_won_contact_count_line}
 勝ちパターン（商談回数 × サービス構成別の受注率）:
 {win_pattern_lines}
+メンバー別パフォーマンススコア（ボリューム×クオリティ×スピードの掛け算。データ不足時は未確定。
+ボリュームは評価対象メンバー内の相対値であり、絶対的な活動量目標との比較ではない）:
+{member_performance_lines}
 
 ■ クオーター着地予測
 🚀 Max（楽観）: 初期費用 {max_initial_fee}円 / MRR {max_mrr}円

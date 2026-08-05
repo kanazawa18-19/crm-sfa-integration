@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from src.analytics.member_performance import MemberActionRecord
 from src.analytics.win_pattern import ProposalRecord
 from src.analytics.win_rate import ProjectOutcome
 from src.reports.weekly_report import (
@@ -32,6 +33,7 @@ def _build(
     active_projects=(),
     historical_outcomes=(),
     proposal_records=(),
+    member_actions=(),
     monthly_target=NO_TARGET,
     quarter_target=NO_TARGET,
     as_of=None,
@@ -46,6 +48,7 @@ def _build(
         active_projects=list(active_projects),
         historical_outcomes=list(historical_outcomes),
         proposal_records=list(proposal_records),
+        member_actions=list(member_actions),
         monthly_target=monthly_target,
         quarter_target=quarter_target,
         as_of=as_of,
@@ -217,6 +220,91 @@ def test_win_patterns_is_empty_when_no_proposal_records() -> None:
     assert data.win_patterns == ()
 
 
+# --- メンバー別パフォーマンス ---
+
+
+def test_member_performances_is_empty_when_no_projects_or_actions() -> None:
+    data = _build(as_of=WEEK_END)
+
+    assert data.member_performances == ()
+
+
+def test_member_performances_overall_score_is_none_when_quality_undetermined() -> None:
+    """担当案件が全てアクティブ（決着済み0件）のメンバーは総合スコアが未確定。"""
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="提案中",
+        ),
+    ]
+
+    data = _build(active_projects=projects, as_of=WEEK_END)
+
+    assert len(data.member_performances) == 1
+    perf = data.member_performances[0]
+    assert perf.member == "佐藤"
+    assert perf.quality_win_rate is None
+    assert perf.overall_score is None
+
+
+def test_member_performances_reflects_win_rate_and_deadline_compliance() -> None:
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約済",
+            contract_date=date(2026, 8, 5),
+        ),
+        WeeklyProjectRecord(
+            project_id="P2",
+            client_name="株式会社B",
+            assignee="佐藤",
+            status="失注",
+        ),
+        WeeklyProjectRecord(
+            project_id="P3",
+            client_name="株式会社C",
+            assignee="佐藤",
+            status="商談中(B)",
+            next_action_date=date(2026, 8, 1),  # WEEK_END(8/7)より過去 -> 期限判定対象
+        ),
+    ]
+    actions = [
+        MemberActionRecord(project_id="P3", member="佐藤", action_type="テレアポ", action_date=date(2026, 8, 2)),
+    ]
+
+    data = _build(active_projects=projects, member_actions=actions, as_of=WEEK_END)
+
+    assert len(data.member_performances) == 1
+    perf = data.member_performances[0]
+    assert perf.member == "佐藤"
+    assert perf.quality_win_rate == 1 / 2  # 契約済1件 / 決着済み(契約済+失注)2件
+    assert perf.speed_compliance_rate == 1.0  # P3の期限超過後にフォロー実施済み
+    assert perf.volume_score == 1.0  # グループ内唯一のメンバーなので常に1.0
+    assert perf.overall_score == 0.5  # volume_score(1.0) * quality(0.5) * speed(1.0)
+
+
+def test_member_performances_is_absent_from_data_when_no_member_actions_passed() -> None:
+    """member_actionsを省略しても他セクションは通常通り動作すること。"""
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約済",
+            contract_date=date(2026, 8, 5),
+        ),
+    ]
+
+    data = _build(active_projects=projects, as_of=WEEK_END)
+
+    assert len(data.member_performances) == 1
+    assert data.member_performances[0].volume_contact_count == 0
+
+
 # --- クオーター着地予測 ---
 
 
@@ -323,10 +411,15 @@ def test_generate_weekly_report_text_renders_all_sections() -> None:
         ),
     ]
 
+    member_actions = [
+        MemberActionRecord(project_id="P1", member="佐藤", action_type="テレアポ", action_date=WEEK_END),
+    ]
+
     data = _build(
         active_projects=projects,
         historical_outcomes=outcomes,
         proposal_records=proposals,
+        member_actions=member_actions,
         monthly_target=RevenueTarget(initial_fee=1000000, mrr=100000),
         quarter_target=RevenueTarget(initial_fee=3000000, mrr=300000),
         as_of=WEEK_END,
@@ -344,6 +437,8 @@ def test_generate_weekly_report_text_renders_all_sections() -> None:
     assert "🎯 Expected" in text
     assert "🛡 Min" in text
     assert "株式会社B" in text
+    assert "佐藤: 総合スコア" in text
+    assert "鈴木: 総合スコア" in text
 
 
 def test_generate_weekly_report_text_splits_initial_fee_and_mrr_progress_into_separate_lines() -> None:
@@ -383,6 +478,7 @@ def test_generate_weekly_report_text_renders_placeholder_when_all_sections_are_e
 
     assert "未確定（受注実績なし）" in text
     assert "サンプル数が十分な勝ちパターンはありません" in text
+    assert "メンバー別パフォーマンスデータはありません" in text
     assert "🔴停滞リスク案件はありません" in text
     assert "目標未設定" in text
 
