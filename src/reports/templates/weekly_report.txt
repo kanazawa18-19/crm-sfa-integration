@@ -1,0 +1,22 @@
+📊 チーム週報 {week_start} 〜 {week_end}
+
+■ 今週の確定売上（初期費用）／ 今週獲得MRR（月額ストック）
+確定売上（初期費用）: {weekly_confirmed_initial_fee}円
+獲得MRR（月額ストック）: {weekly_confirmed_mrr}円
+
+■ 月次・クオーター目標に対する進捗率
+{monthly_progress_lines}
+{quarterly_progress_lines}
+
+■ 営業パフォーマンス分析
+全社平均受注接触回数: {average_won_contact_count_line}
+勝ちパターン（商談回数 × サービス構成別の受注率）:
+{win_pattern_lines}
+
+■ クオーター着地予測
+🚀 Max（楽観）: 初期費用 {max_initial_fee}円 / MRR {max_mrr}円
+🎯 Expected（見込み）: 初期費用 {expected_initial_fee}円 / MRR {expected_mrr}円
+🛡 Min（悲観）: 初期費用 {min_initial_fee}円 / MRR {min_mrr}円
+
+■ 🔴 停滞リスク案件
+{stagnation_risk_lines}

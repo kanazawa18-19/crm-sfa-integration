@@ -1,0 +1,13 @@
+📅 チーム日報 {report_date}
+
+■ メンバー別アクション件数サマリー（テレアポ／訪問商談／オンライン商談／メール）
+{member_summary_lines}
+
+■ 本日の新規獲得案件（取引先・提案サービス・想定金額・担当者）
+{new_project_lines}
+
+■ ステータス変更のあった案件（変更前 → 変更後・確度）
+{status_change_lines}
+
+■ 翌営業日（{next_business_day}）の次回アクション予定
+{upcoming_action_lines}
