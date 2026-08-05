@@ -17,6 +17,10 @@ CHAIN_SCHEMA = DatabaseSchema(
     id_prefix="HC-",
     kintone_key="本部名",
     zoho_key="チェーン",
+    # Zoho標準モジュールに「チェーン」に相当するものが無いため、カスタムモジュールの
+    # プレースホルダを割り当てる（実際のカスタムモジュールAPI名が確定次第、置き換えること）。
+    zoho_api_module="CustomModule1",
+    spreadsheet_sheet_name="チェーン",
     properties=(
         PropertyDefinition(
             name="チェーンID",

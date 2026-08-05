@@ -145,9 +145,18 @@ class DatabaseSchema:
     # Notion側に保持する外部ID値そのものではない点に注意（後者は各DBの
     # `kintone_ID`/`kintone_Act_ID` 等のPropertyDefinitionが担う）。
     kintone_key: str
-    # 移行元Zohoモジュール名（例:「案件」）。kintone_key同様、Notion側の値ではなく
-    # 移行元システムの参照名。
+    # 移行元Zohoモジュール名の日本語ラベル（例:「案件」）。あくまで移行元システムの参照名の
+    # 表示用ラベルであり、実際のZoho CRM APIの module 値（英語API名）とは別物。
+    # Webhookペイロードのmodule値の逆引きには zoho_api_module を使うこと。
     zoho_key: str
+    # 実際のZoho CRM APIモジュール名（例: "Deals"）。標準モジュールに対応が無いDBは
+    # カスタムモジュール名のプレースホルダ（"CustomModule1" 等）を割り当てている。
+    # zoho_webhook.py の module ↔ db_key 逆引きに使用する。
+    zoho_api_module: str
+    # 対応するGoogleスプレッドシートのタブ名（例:「案件管理」）。spreadsheet_webhook.py の
+    # sheet ↔ db_key 逆引きに使用する。display_nameから機械的に導出すると表示名変更で
+    # 壊れるため、明示的なフィールドとして保持する。
+    spreadsheet_sheet_name: str
     properties: tuple[PropertyDefinition, ...]
 
     def __post_init__(self) -> None:

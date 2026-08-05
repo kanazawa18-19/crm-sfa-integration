@@ -47,6 +47,8 @@ def test_database_schema_requires_exactly_one_title_property() -> None:
             id_prefix="DMY-",
             kintone_key="dummy",
             zoho_key="dummy",
+            zoho_api_module="Dummy",
+            spreadsheet_sheet_name="ダミー",
             properties=(),
         )
 
@@ -59,6 +61,8 @@ def test_database_schema_rejects_multiple_title_properties() -> None:
             id_prefix="DMY-",
             kintone_key="dummy",
             zoho_key="dummy",
+            zoho_api_module="Dummy",
+            spreadsheet_sheet_name="ダミー",
             properties=(_title_property("ID1"), _title_property("ID2")),
         )
 
@@ -71,6 +75,8 @@ def test_database_schema_rejects_duplicate_property_names() -> None:
             id_prefix="DMY-",
             kintone_key="dummy",
             zoho_key="dummy",
+            zoho_api_module="Dummy",
+            spreadsheet_sheet_name="ダミー",
             properties=(
                 _title_property("ID"),
                 PropertyDefinition(
@@ -96,6 +102,8 @@ def test_database_schema_valid_definition_succeeds() -> None:
         id_prefix="DMY-",
         kintone_key="dummy",
         zoho_key="dummy",
+        zoho_api_module="Dummy",
+        spreadsheet_sheet_name="ダミー",
         properties=(_title_property("ID"),),
     )
     assert schema.title_property.name == "ID"
@@ -109,6 +117,8 @@ def test_database_schema_get_property_unknown_raises_keyerror() -> None:
         id_prefix="DMY-",
         kintone_key="dummy",
         zoho_key="dummy",
+        zoho_api_module="Dummy",
+        spreadsheet_sheet_name="ダミー",
         properties=(_title_property("ID"),),
     )
     with pytest.raises(KeyError):

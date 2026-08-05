@@ -17,6 +17,10 @@ ACTION_SCHEMA = DatabaseSchema(
     id_prefix="SA-AC-",
     kintone_key="アクション管理 レコード番号",
     zoho_key="アクション",
+    # Zoho標準モジュール（Tasks/Calls/Events等）はアクション管理DBの粒度と一致しないため、
+    # カスタムモジュールのプレースホルダを割り当てる（確定次第、置き換えること）。
+    zoho_api_module="CustomModule2",
+    spreadsheet_sheet_name="アクション管理",
     properties=(
         PropertyDefinition(
             name="営業部アクションID",

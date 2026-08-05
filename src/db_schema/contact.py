@@ -17,6 +17,8 @@ CONTACT_SCHEMA = DatabaseSchema(
     id_prefix="CNT-",
     kintone_key="担当者名1〜3（分割）",
     zoho_key="連絡先（リード）",
+    zoho_api_module="Contacts",
+    spreadsheet_sheet_name="連絡先",
     properties=(
         PropertyDefinition(
             name="連絡先ID",

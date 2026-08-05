@@ -17,6 +17,8 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
     id_prefix="CLI-",
     kintone_key="取引先マスタ レコード番号",
     zoho_key="取引先",
+    zoho_api_module="Accounts",
+    spreadsheet_sheet_name="取引先マスター",
     properties=(
         PropertyDefinition(
             name="取引先ID",

@@ -22,6 +22,8 @@ PROJECT_SCHEMA = DatabaseSchema(
     id_prefix="MSA-PJ-",
     kintone_key="案件管理 レコード番号",
     zoho_key="案件",
+    zoho_api_module="Deals",
+    spreadsheet_sheet_name="案件管理",
     properties=(
         PropertyDefinition(
             name="案件ID",

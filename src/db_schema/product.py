@@ -17,6 +17,8 @@ PRODUCT_SCHEMA = DatabaseSchema(
     id_prefix="PRD-",
     kintone_key="サービス（ショット／ランニング）",
     zoho_key="サービス・商品",
+    zoho_api_module="Products",
+    spreadsheet_sheet_name="サービス・商品",
     properties=(
         PropertyDefinition(
             name="サービスID",
