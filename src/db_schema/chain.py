@@ -1,0 +1,100 @@
+"""② チェーンDB（HC-xxx）。03_プロパティ定義 該当行を反映。"""
+
+from __future__ import annotations
+
+from src.db_schema.base import (
+    DatabaseSchema,
+    PropertyDefinition,
+    PropertyType,
+    RequirementLevel,
+    SyncScope,
+    common_internal_properties,
+)
+
+CHAIN_SCHEMA = DatabaseSchema(
+    key="chain",
+    display_name="チェーンDB",
+    id_prefix="HC-",
+    kintone_key="本部名",
+    zoho_key="チェーン",
+    properties=(
+        PropertyDefinition(
+            name="チェーンID",
+            property_type=PropertyType.TITLE,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="HC-xxx",
+        ),
+        PropertyDefinition(
+            name="チェーン名",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="ブランド名",
+        ),
+        PropertyDefinition(
+            name="グループ名",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="ブランド名",
+        ),
+        PropertyDefinition(
+            name="運営会社",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="運営法人名",
+        ),
+        PropertyDefinition(
+            name="施設数",
+            property_type=PropertyType.NUMBER,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="多店舗展開規模。優先度判定に使用",
+        ),
+        PropertyDefinition(
+            name="本社",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="本社所在地",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="アプローチ状況",
+            property_type=PropertyType.SELECT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="未アプローチ / アプローチ中 / 導入済み",
+            options=("未アプローチ", "アプローチ中", "導入済み"),
+        ),
+        PropertyDefinition(
+            name="自動チェックイン",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="既存Notion運用を踏襲",
+        ),
+        PropertyDefinition(
+            name="URL",
+            property_type=PropertyType.URL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="既存Notion運用を踏襲",
+        ),
+        PropertyDefinition(
+            name="取引先マスター",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="傘下の取引先",
+            relation_target="client_master",
+        ),
+        *common_internal_properties(),
+    ),
+)

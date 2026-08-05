@@ -1,0 +1,167 @@
+"""④ 案件管理DB（MSA-PJ-xxx）。03_プロパティ定義 該当行を反映。
+
+■ 既存データのクレンジング方針（03_プロパティ定義末尾）に従い、
+「【Notion】取引先名（ルックアップで無い）」等のテキスト二重保持プロパティは
+新DBでは持たず、取引先マスターへのリレーション1本に一本化している。
+"""
+
+from __future__ import annotations
+
+from src.db_schema.base import (
+    DatabaseSchema,
+    PropertyDefinition,
+    PropertyType,
+    RequirementLevel,
+    SyncScope,
+    common_internal_properties,
+)
+
+PROJECT_SCHEMA = DatabaseSchema(
+    key="project",
+    display_name="案件管理DB",
+    id_prefix="MSA-PJ-",
+    kintone_key="案件管理 レコード番号",
+    zoho_key="案件",
+    properties=(
+        PropertyDefinition(
+            name="案件ID",
+            property_type=PropertyType.TITLE,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="MSA-PJ-xxx",
+        ),
+        PropertyDefinition(
+            name="案件名",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="取引先マスター",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="テキスト重複保持は廃止しリレーションに一本化",
+            relation_target="client_master",
+        ),
+        PropertyDefinition(
+            name="営業ステータス",
+            property_type=PropertyType.STATUS,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="初回接触 / 提案中 / 見積提出 / 商談中(B) / 商談中(C) / 契約済 / 失注 / 解約",
+            options=(
+                "初回接触",
+                "提案中",
+                "見積提出",
+                "商談中(B)",
+                "商談中(C)",
+                "契約済",
+                "失注",
+                "解約",
+            ),
+        ),
+        PropertyDefinition(
+            name="提案サービス",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="サービス・商品DBへ紐付け",
+            relation_target="product",
+        ),
+        PropertyDefinition(
+            name="初期費用（イニシャル）",
+            property_type=PropertyType.CURRENCY,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="スポット売上の計算元",
+        ),
+        PropertyDefinition(
+            name="月額費用（ランニング）",
+            property_type=PropertyType.CURRENCY,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="MRR計算の元",
+        ),
+        PropertyDefinition(
+            name="粗利",
+            property_type=PropertyType.CURRENCY,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="例外運用フラグは別プロパティで管理",
+        ),
+        PropertyDefinition(
+            name="確度",
+            property_type=PropertyType.SELECT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="S / A / B / C。着地予測の3段階シミュレーションに使用",
+            options=("S", "A", "B", "C"),
+        ),
+        PropertyDefinition(
+            name="契約日",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="売上計上月の判定基準",
+        ),
+        PropertyDefinition(
+            name="予想契約日",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="課金開始予定日。売上計上月の判定基準",
+        ),
+        PropertyDefinition(
+            name="総接触回数",
+            property_type=PropertyType.NUMBER,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="アクションDBから自動集計",
+        ),
+        PropertyDefinition(
+            name="最終アクション日",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="コンディション判定に使用",
+        ),
+        PropertyDefinition(
+            name="コンディション判定",
+            property_type=PropertyType.SELECT,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="順調 / 要フォロー / 停滞リスク",
+            options=("順調", "要フォロー", "停滞リスク"),
+        ),
+        PropertyDefinition(
+            name="担当メンバー",
+            property_type=PropertyType.USER,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="日報のメンバー別集計キー",
+        ),
+        PropertyDefinition(
+            name="次回アクション日",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="リマインド通知の対象",
+        ),
+        PropertyDefinition(
+            name="失注理由",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="失注分析用",
+        ),
+        PropertyDefinition(
+            name="失注ナレッジ",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="失注分析用",
+        ),
+        *common_internal_properties(),
+    ),
+)

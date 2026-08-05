@@ -1,0 +1,148 @@
+"""① 取引先マスターDB（CLI-xxx）。03_プロパティ定義 該当行を反映。"""
+
+from __future__ import annotations
+
+from src.db_schema.base import (
+    DatabaseSchema,
+    PropertyDefinition,
+    PropertyType,
+    RequirementLevel,
+    SyncScope,
+    common_internal_properties,
+)
+
+CLIENT_MASTER_SCHEMA = DatabaseSchema(
+    key="client_master",
+    display_name="取引先マスターDB",
+    id_prefix="CLI-",
+    kintone_key="取引先マスタ レコード番号",
+    zoho_key="取引先",
+    properties=(
+        PropertyDefinition(
+            name="取引先ID",
+            property_type=PropertyType.TITLE,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="CLI-xxx。全システム共通の主キー",
+        ),
+        PropertyDefinition(
+            name="取引先名",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="法人名・施設名",
+        ),
+        PropertyDefinition(
+            name="顧客種別",
+            property_type=PropertyType.SELECT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="ホテル・旅館 / 飲食 / ビューティー / 一般企業 等",
+            options=("ホテル・旅館", "飲食", "ビューティー", "一般企業", "その他"),
+        ),
+        PropertyDefinition(
+            name="営業ステータス",
+            property_type=PropertyType.STATUS,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="未アプローチ / アプローチ中 / 商談中 / 契約 / 失注",
+            options=("未アプローチ", "アプローチ中", "商談中", "契約", "失注"),
+        ),
+        PropertyDefinition(
+            name="親取引先",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="グループ企業（親会社・子会社）の階層表現（自DBセルフリレーション）",
+            relation_target="client_master",
+        ),
+        PropertyDefinition(
+            name="チェーン",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="チェーンDBへの紐付け",
+            relation_target="chain",
+        ),
+        PropertyDefinition(
+            name="郵便番号",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="公的マスデータ結合のキーとなる",
+        ),
+        PropertyDefinition(
+            name="都道府県",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="公的マスデータ結合のキーとなる",
+        ),
+        PropertyDefinition(
+            name="住所",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="公的マスデータ結合のキーとなる",
+        ),
+        PropertyDefinition(
+            name="TEL",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="企業基本情報",
+        ),
+        PropertyDefinition(
+            name="FAX",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="企業基本情報",
+        ),
+        PropertyDefinition(
+            name="メールアドレス",
+            property_type=PropertyType.EMAIL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="企業基本情報",
+        ),
+        PropertyDefinition(
+            name="WEBサイト",
+            property_type=PropertyType.URL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="企業基本情報",
+        ),
+        PropertyDefinition(
+            name="エリア属性データ",
+            property_type=PropertyType.JSON_TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.SPREADSHEET_ONLY,
+            description="国交省・観光庁データの自動補記領域",
+        ),
+        PropertyDefinition(
+            name="エリアポテンシャルスコア",
+            property_type=PropertyType.NUMBER,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.SPREADSHEET_ONLY,
+            description="エリア属性から自動算出",
+        ),
+        # 以下2つはNotion側が実際に保持する外部ID値そのもの（レコードごとに異なる）。
+        # DatabaseSchema.kintone_key/zoho_key（移行元のフィールド名／アプリ名。DB定義で1つだけ）とは別物。
+        PropertyDefinition(
+            name="kintone_ID",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+            description="外部システムの元IDを保持",
+        ),
+        PropertyDefinition(
+            name="Zoho_ID",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+            description="外部システムの元IDを保持",
+        ),
+        *common_internal_properties(),
+    ),
+)

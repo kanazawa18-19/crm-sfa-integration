@@ -1,0 +1,105 @@
+"""③ 連絡先DB（CNT-xxx、新規独立）。03_プロパティ定義 該当行を反映。"""
+
+from __future__ import annotations
+
+from src.db_schema.base import (
+    DatabaseSchema,
+    PropertyDefinition,
+    PropertyType,
+    RequirementLevel,
+    SyncScope,
+    common_internal_properties,
+)
+
+CONTACT_SCHEMA = DatabaseSchema(
+    key="contact",
+    display_name="連絡先DB",
+    id_prefix="CNT-",
+    kintone_key="担当者名1〜3（分割）",
+    zoho_key="連絡先（リード）",
+    properties=(
+        PropertyDefinition(
+            name="連絡先ID",
+            property_type=PropertyType.TITLE,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="CNT-xxx",
+        ),
+        PropertyDefinition(
+            name="氏名",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="取引先マスター",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="所属企業",
+            relation_target="client_master",
+        ),
+        PropertyDefinition(
+            name="部署",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="Eightからの更新対象",
+        ),
+        PropertyDefinition(
+            name="役職",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="Eightからの更新対象",
+        ),
+        PropertyDefinition(
+            name="メールアドレス",
+            property_type=PropertyType.EMAIL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="名寄せの一意キーとして使用",
+        ),
+        PropertyDefinition(
+            name="携帯番号",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="直通TEL",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="Eight連携ID",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Eight連携で自動投入",
+        ),
+        PropertyDefinition(
+            name="名刺交換日",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Eight連携で自動投入",
+        ),
+        PropertyDefinition(
+            name="名刺交換者",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Eight連携で自動投入",
+        ),
+        PropertyDefinition(
+            name="人事異動フラグ",
+            property_type=PropertyType.CHECKBOX,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Eightで部署・役職の変更を検知した際にON",
+        ),
+        *common_internal_properties(),
+    ),
+)

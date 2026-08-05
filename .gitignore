@@ -13,3 +13,4 @@ config/.env
 dist/
 build/
 node_modules/
+scripts/.notion_db_ids.json
