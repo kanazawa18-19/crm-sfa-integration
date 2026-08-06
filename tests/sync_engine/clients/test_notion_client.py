@@ -271,6 +271,12 @@ def test_get_page_retries_on_429_then_succeeds(
         (PropertyType.SELECT, "A", {"select": {"name": "A"}}),
         (PropertyType.SELECT, None, {"select": None}),
         (PropertyType.STATUS, "提案中", {"status": {"name": "提案中"}}),
+        (
+            PropertyType.MULTI_SELECT,
+            ["リピッテ", "メイリー"],
+            {"multi_select": [{"name": "リピッテ"}, {"name": "メイリー"}]},
+        ),
+        (PropertyType.MULTI_SELECT, None, {"multi_select": []}),
         (PropertyType.NUMBER, 500000, {"number": 500000}),
         (PropertyType.CURRENCY, 1000, {"number": 1000}),
         (PropertyType.DATE, "2026-08-05", {"date": {"start": "2026-08-05"}}),

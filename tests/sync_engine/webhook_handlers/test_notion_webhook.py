@@ -32,9 +32,9 @@ def _payload() -> dict:
         "database_id": "26d6f1e2-1111-1111-1111-111111111111",
         "last_edited_time": "2026-08-05T09:00:00.000Z",
         "properties": {
-            "案件ID": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
+            "案件名": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
             "営業ステータス": {"type": "status", "status": {"name": "提案中"}},
-            "初期費用（イニシャル）": {"type": "number", "number": 500000},
+            "初期費用": {"type": "number", "number": 500000},
         },
     }
 
@@ -60,6 +60,11 @@ def _payload() -> dict:
         ({"type": "url", "url": "https://example.com"}, "https://example.com"),
         ({"type": "relation", "relation": [{"id": "rel-1"}, {"id": "rel-2"}]}, ["rel-1", "rel-2"]),
         ({"type": "people", "people": [{"id": "user-1"}]}, ["user-1"]),
+        (
+            {"type": "multi_select", "multi_select": [{"name": "リピッテ"}, {"name": "メイリー"}]},
+            ["リピッテ", "メイリー"],
+        ),
+        ({"type": "multi_select", "multi_select": []}, []),
     ],
 )
 def test_parse_notion_property_value(prop: dict, expected: object) -> None:
@@ -82,9 +87,9 @@ def test_notion_payload_to_sync_event_builds_expected_event() -> None:
     assert event.external_id == "26d6f1e2-0000-0000-0000-000000000000"
     assert event.occurred_at == datetime(2026, 8, 5, 9, 0, 0, tzinfo=timezone.utc)
     assert event.properties == {
-        "案件ID": "MSA-PJ-001",
+        "案件名": "MSA-PJ-001",
         "営業ステータス": "提案中",
-        "初期費用（イニシャル）": 500000,
+        "初期費用": 500000,
     }
     assert event.sync_system_id is None
 
@@ -100,6 +105,90 @@ def test_notion_payload_to_sync_event_reads_sync_system_id_header_case_insensiti
 def test_notion_payload_to_sync_event_unknown_database_id_raises() -> None:
     with pytest.raises(ValueError):
         notion_payload_to_sync_event(_payload(), {}, db_id_to_db_key={})
+
+
+def _real_data_shaped_project_payload() -> dict:
+    """実データの案件管理DBを模した、読み取り専用プロパティ（rollup/formula/button/
+    unique_id/created_time/last_edited_time/created_by）を複数含むペイロード。"""
+    return {
+        "event_id": "evt_xxx",
+        "type": "page.updated",
+        "page_id": "26d6f1e2-0000-0000-0000-000000000000",
+        "database_id": "26d6f1e2-1111-1111-1111-111111111111",
+        "last_edited_time": "2026-08-05T09:00:00.000Z",
+        "properties": {
+            "案件名": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
+            "営業ステータス": {"type": "status", "status": {"name": "提案中"}},
+            "提案サービス": {
+                "type": "multi_select",
+                "multi_select": [{"name": "リピッテ"}, {"name": "メイリー"}],
+            },
+            # 以下は読み取り専用（is_writable=False）のためスキップされるべきプロパティ。
+            "粗利": {"type": "formula", "formula": {"type": "number", "number": 100000}},
+            "アクションログ": {"type": "rollup", "rollup": {"type": "array", "array": []}},
+            "案件ID": {"type": "unique_id", "unique_id": {"prefix": "MSA-PJ", "number": 1}},
+            "作成日時": {"type": "created_time", "created_time": "2026-08-01T00:00:00.000Z"},
+            "最終更新日時": {
+                "type": "last_edited_time",
+                "last_edited_time": "2026-08-05T09:00:00.000Z",
+            },
+        },
+    }
+
+
+def test_notion_payload_to_sync_event_skips_read_only_properties() -> None:
+    event = notion_payload_to_sync_event(
+        _real_data_shaped_project_payload(), {}, db_id_to_db_key=DB_ID_MAP
+    )
+
+    assert event.properties == {
+        "案件名": "MSA-PJ-001",
+        "営業ステータス": "提案中",
+        "提案サービス": ["リピッテ", "メイリー"],
+    }
+
+
+def test_notion_payload_to_sync_event_skips_files_property_without_raising() -> None:
+    """shirokuma-sec/kuma-qa指摘: 案件管理DBの「申込書・契約書」「見積書」はFILES型かつ
+    is_writable=Trueだが、parse_notion_property_value()が未対応のため、例外を送出せず
+    ホワイトリスト外としてスキップされる必要がある。"""
+    payload = _real_data_shaped_project_payload()
+    payload["properties"]["申込書・契約書"] = {
+        "type": "files",
+        "files": [{"name": "契約書.pdf", "file": {"url": "https://example.com/a.pdf"}}],
+    }
+    payload["properties"]["見積書"] = {"type": "files", "files": []}
+
+    event = notion_payload_to_sync_event(payload, {}, db_id_to_db_key=DB_ID_MAP)
+
+    assert "申込書・契約書" not in event.properties
+    assert "見積書" not in event.properties
+    assert event.properties == {
+        "案件名": "MSA-PJ-001",
+        "営業ステータス": "提案中",
+        "提案サービス": ["リピッテ", "メイリー"],
+    }
+
+
+def test_notion_payload_to_sync_event_parses_multi_select_property() -> None:
+    event = notion_payload_to_sync_event(
+        _real_data_shaped_project_payload(), {}, db_id_to_db_key=DB_ID_MAP
+    )
+
+    assert event.properties["提案サービス"] == ["リピッテ", "メイリー"]
+
+
+def test_notion_payload_to_sync_event_ignores_unknown_property_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = _payload()
+    payload["properties"]["未定義プロパティ"] = {"type": "rich_text", "rich_text": []}
+
+    with caplog.at_level("WARNING"):
+        event = notion_payload_to_sync_event(payload, {}, db_id_to_db_key=DB_ID_MAP)
+
+    assert "未定義プロパティ" not in event.properties
+    assert any("未定義プロパティ" in record.getMessage() for record in caplog.records)
 
 
 # --- handler -----------------------------------------------------------------------------
@@ -283,9 +372,9 @@ def _raw_notion_page() -> dict:
         "parent": {"type": "database_id", "database_id": "26d6f1e2-1111-1111-1111-111111111111"},
         "last_edited_time": "2026-08-05T09:00:00.000Z",
         "properties": {
-            "案件ID": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
+            "案件名": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
             "営業ステータス": {"type": "status", "status": {"name": "提案中"}},
-            "初期費用（イニシャル）": {"type": "number", "number": 500000},
+            "初期費用": {"type": "number", "number": 500000},
         },
     }
 
@@ -554,9 +643,9 @@ def test_handler_with_proxy_dispatches_sync_event_with_expected_fields(
     assert dispatched.external_id == "26d6f1e2-0000-0000-0000-000000000000"
     assert dispatched.occurred_at == datetime(2026, 8, 5, 9, 0, 0, tzinfo=timezone.utc)
     assert dispatched.properties == {
-        "案件ID": "MSA-PJ-001",
+        "案件名": "MSA-PJ-001",
         "営業ステータス": "提案中",
-        "初期費用（イニシャル）": 500000,
+        "初期費用": 500000,
     }
 
 
@@ -599,9 +688,9 @@ def test_handler_with_proxy_works_with_real_http_notion_client(
     assert dispatched.db_key == "project"
     assert dispatched.external_id == page_id
     assert dispatched.properties == {
-        "案件ID": "MSA-PJ-001",
+        "案件名": "MSA-PJ-001",
         "営業ステータス": "提案中",
-        "初期費用（イニシャル）": 500000,
+        "初期費用": 500000,
     }
 
 

@@ -42,7 +42,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
-from src.db_schema.base import Tool
+from src.db_schema.base import PropertyType, Tool
+from src.db_schema.registry import get_schema
 from src.sync_engine.clients._http import ApiError
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.sync_event import SyncEvent
@@ -71,6 +72,32 @@ def _default_db_id_to_db_key() -> dict[str, str]:
     return {database_id: db_key for db_key, database_id in raw.items()}
 
 
+# parse_notion_property_value()が実際にパース可能なスキーマ上のプロパティ型のホワイトリスト。
+# is_writable（Notion API上書き込み可能か）だけで判定すると、FILESのように書き込み可能
+# だがparse_notion_property_value()が未対応の型が素通りしてValueErrorを送出してしまう
+# （案件管理DBの「申込書・契約書」「見積書」がFILES型かつsync_scope=NOTION_ONLYで実在する）。
+# 将来Notion側に新しい型が追加された場合も、ここに無ければ安全側（スキップ）に倒れる。
+_SYNCABLE_PROPERTY_TYPES: frozenset[PropertyType] = frozenset(
+    {
+        PropertyType.TITLE,
+        PropertyType.TEXT,
+        PropertyType.SELECT,
+        PropertyType.STATUS,
+        PropertyType.NUMBER,
+        PropertyType.CURRENCY,
+        PropertyType.CHECKBOX,
+        PropertyType.DATE,
+        PropertyType.DATETIME,
+        PropertyType.EMAIL,
+        PropertyType.PHONE,
+        PropertyType.URL,
+        PropertyType.RELATION,
+        PropertyType.USER,
+        PropertyType.MULTI_SELECT,
+    }
+)
+
+
 def parse_notion_property_value(prop: Mapping[str, Any]) -> Any:
     """Notion APIのプロパティ値オブジェクトを素のPython値へ変換する。"""
     prop_type = prop.get("type")
@@ -84,6 +111,8 @@ def parse_notion_property_value(prop: Mapping[str, Any]) -> Any:
     if prop_type == "status":
         status = prop.get("status")
         return status.get("name") if status else None
+    if prop_type == "multi_select":
+        return [option.get("name") for option in prop.get("multi_select") or []]
     if prop_type == "number":
         return prop.get("number")
     if prop_type == "checkbox":
@@ -113,10 +142,41 @@ def notion_payload_to_sync_event(
     if db_key is None:
         raise ValueError(f"unknown Notion database_id: {database_id!r}")
 
-    properties = {
-        name: parse_notion_property_value(value)
-        for name, value in (payload.get("properties") or {}).items()
-    }
+    schema = get_schema(db_key)
+    properties: dict[str, Any] = {}
+    for name, value in (payload.get("properties") or {}).items():
+        try:
+            prop_def = schema.get_property(name)
+        except KeyError:
+            # Notion側で列が将来追加された場合等にWebhook処理全体を落とさないよう無視する。
+            logger.warning(
+                "ignoring unknown Notion property '%s' for db_key=%r (not in schema)",
+                name,
+                db_key,
+            )
+            continue
+        if prop_def.property_type not in _SYNCABLE_PROPERTY_TYPES:
+            # parse_notion_property_value()が未対応の型（files等）はホワイトリスト外として
+            # スキップする。is_writable（Notion API上書き込み可能か）だけでは判定できない
+            # （FILESは書き込み可能だがparse_notion_property_value()が非対応）。
+            logger.debug(
+                "skipping non-syncable Notion property '%s' (type=%s) for db_key=%r",
+                name,
+                prop_def.property_type.value,
+                db_key,
+            )
+            continue
+        if not prop_def.is_writable:
+            # rollup/formula/button/unique_id/created_time/last_edited_time/created_by等は
+            # sync_scope=INTERNALで元々同期対象外。
+            logger.debug(
+                "skipping read-only Notion property '%s' (type=%s) for db_key=%r",
+                name,
+                prop_def.property_type.value,
+                db_key,
+            )
+            continue
+        properties[name] = parse_notion_property_value(value)
 
     return SyncEvent(
         source_tool=Tool.NOTION,

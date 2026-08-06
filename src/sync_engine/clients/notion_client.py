@@ -65,6 +65,8 @@ def build_notion_property_value(property_type: PropertyType, value: Any) -> dict
         return {"select": ({"name": value} if value else None)}
     if property_type == PropertyType.STATUS:
         return {"status": ({"name": value} if value else None)}
+    if property_type == PropertyType.MULTI_SELECT:
+        return {"multi_select": [{"name": option} for option in _as_id_list(value)]}
     if property_type in (PropertyType.NUMBER, PropertyType.CURRENCY):
         return {"number": value}
     if property_type in (PropertyType.DATE, PropertyType.DATETIME):
