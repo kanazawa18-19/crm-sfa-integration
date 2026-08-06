@@ -18,6 +18,7 @@ from scripts.migrate_data import (
     _DEFAULT_ID_MAPPING_DB_PATH,
     _DEFAULT_REPORT_PATH,
     build_notion_clients,
+    load_db_ids,
     main,
     read_csv_rows,
 )
@@ -422,6 +423,25 @@ def test_resolved_properties_converts_prepared_record_refs_to_notion_keys() -> N
     resolved = resolved_properties(record)
 
     assert resolved == {"取引先マスター": ["page-abc"], "案件名": "テスト案件"}
+
+
+# --- load_db_ids: shirokuma-secレビューWARN対応（.notion_db_ids.jsonキャッシュ廃止）--------
+
+
+def test_load_db_ids_resolves_all_schemas_from_registry_without_cache_file() -> None:
+    """.notion_db_ids.jsonキャッシュファイルを読まず、ALL_SCHEMASのnotion_database_idから
+    直接db_key -> database_idの対応表を組み立てられることを検証する。"""
+    db_ids = load_db_ids()
+
+    assert set(db_ids.keys()) == set(SCHEMAS_BY_KEY.keys())
+    for key, schema in SCHEMAS_BY_KEY.items():
+        assert db_ids[key] == schema.notion_database_id
+
+    # 全DBのnotion_database_idが設定済みのため、build_notion_clients()もそのままDB不足エラー
+    # にならずに通る（NOTION_API_KEY未設定時のHttpNotionClient初期化エラーはここでの
+    # 検証対象外のため、build_notion_clients()内でmissingになっていないことのみ確認する）。
+    missing = [key for key in SCHEMAS_BY_KEY if key not in db_ids]
+    assert missing == []
 
 
 # --- build_notion_clients: DB未作成時のエラー -----------------------------------------

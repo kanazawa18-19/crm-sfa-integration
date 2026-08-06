@@ -32,14 +32,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.db_schema.registry import SCHEMAS_BY_KEY
+from src.db_schema.registry import ALL_SCHEMAS, SCHEMAS_BY_KEY
 from src.migration.migration_pipeline import (
     MigrationPlan,
     MigrationSummary,
@@ -55,8 +54,6 @@ from src.sync_engine.id_mapping import SQLiteIdMappingStore
 
 logger = logging.getLogger(__name__)
 
-# scripts/setup_notion_databases.py が作成時に書き出すキャッシュ（db_key -> notion database_id）。
-_DB_IDS_CACHE_PATH = Path(__file__).resolve().parent / ".notion_db_ids.json"
 # PIIを含むファイル（IDマッピングDB・各種レポートCSV）のデフォルト出力先。誤ってコミット
 # されないよう、専用ディレクトリへ隔離した上で.gitignoreへ登録している（BLOCKER6）。
 _MIGRATION_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "migration_output"
@@ -106,9 +103,16 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 
 def load_db_ids() -> dict[str, str]:
-    if not _DB_IDS_CACHE_PATH.exists():
-        return {}
-    return json.loads(_DB_IDS_CACHE_PATH.read_text(encoding="utf-8"))
+    """DBスキーマ定義（src.db_schema.registry.ALL_SCHEMAS）から db_key -> notion database_id
+    を直接組み立てる。以前は scripts/.notion_db_ids.json キャッシュファイルを読み込んでいたが、
+    全6DBが既に DatabaseSchema.notion_database_id を保持しているためキャッシュは不要になった
+    （shirokuma-secレビュー: WARN）。notion_database_id が未設定のスキーマは除外する。
+    """
+    return {
+        schema.key: schema.notion_database_id
+        for schema in ALL_SCHEMAS
+        if schema.notion_database_id is not None
+    }
 
 
 def build_notion_clients(db_ids: dict[str, str]) -> dict[str, HttpNotionClient]:

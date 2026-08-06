@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.db_schema.base import Tool
+from src.db_schema.registry import ALL_SCHEMAS
 from src.sync_engine.clients.notion_client import HttpNotionClient, NotionApiError
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.id_mapping import SQLiteIdMappingStore
@@ -14,6 +15,7 @@ from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.webhook_handlers._common import WEBHOOK_SECRET_HEADER
 from src.sync_engine.webhook_handlers.notion_webhook import (
     NotionPageClient,
+    _default_db_id_to_db_key,
     fetch_and_normalize_notion_page,
     handler,
     handler_with_proxy,
@@ -37,6 +39,19 @@ def _payload() -> dict:
             "初期費用": {"type": "number", "number": 500000},
         },
     }
+
+
+# --- _default_db_id_to_db_key: shirokuma-secレビューWARN対応（.notion_db_ids.jsonキャッシュ廃止）
+
+
+def test_default_db_id_to_db_key_resolves_all_schemas_from_registry_without_cache_file() -> None:
+    """.notion_db_ids.jsonキャッシュファイルを読まず、ALL_SCHEMASのnotion_database_idから
+    直接database_id -> db_keyの逆引き表を組み立てられることを検証する。"""
+    resolver = _default_db_id_to_db_key()
+
+    assert len(resolver) == len(ALL_SCHEMAS)
+    for schema in ALL_SCHEMAS:
+        assert resolver[schema.notion_database_id] == schema.key
 
 
 # --- parse_notion_property_value --------------------------------------------------------

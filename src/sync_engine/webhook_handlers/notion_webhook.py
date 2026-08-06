@@ -39,11 +39,10 @@ docs/notion_webhook_proxy_note.md も参照）。実運用のエントリポイ�
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from src.db_schema.base import PropertyType, Tool
-from src.db_schema.registry import get_schema
+from src.db_schema.registry import ALL_SCHEMAS, get_schema
 from src.sync_engine.clients._http import ApiError
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.sync_event import SyncEvent
@@ -58,18 +57,19 @@ from src.sync_engine.webhook_handlers._common import (
     verify_webhook_secret,
 )
 
-# scripts/setup_notion_databases.py が作成時に書き出すキャッシュ（db_key -> notion database_id）。
-# デフォルトの逆引き元として利用する（テスト等では db_id_to_db_key を明示的に注入する）。
-_DEFAULT_DB_IDS_CACHE_PATH = (
-    Path(__file__).resolve().parents[3] / "scripts" / ".notion_db_ids.json"
-)
-
 
 def _default_db_id_to_db_key() -> dict[str, str]:
-    if not _DEFAULT_DB_IDS_CACHE_PATH.exists():
-        return {}
-    raw: dict[str, str] = json.loads(_DEFAULT_DB_IDS_CACHE_PATH.read_text(encoding="utf-8"))
-    return {database_id: db_key for db_key, database_id in raw.items()}
+    """DBスキーマ定義（src.db_schema.registry.ALL_SCHEMAS）から notion database_id -> db_key
+    の逆引き表を直接組み立てる。以前は scripts/.notion_db_ids.json キャッシュファイルを
+    読み込んでいたが、全6DBが既に DatabaseSchema.notion_database_id を保持しているため
+    キャッシュは不要になった（shirokuma-secレビュー: WARN）。デフォルトの逆引き元として
+    利用する（テスト等では db_id_to_db_key を明示的に注入する）。
+    """
+    return {
+        schema.notion_database_id: schema.key
+        for schema in ALL_SCHEMAS
+        if schema.notion_database_id is not None
+    }
 
 
 # parse_notion_property_value()が実際にパース可能なスキーマ上のプロパティ型のホワイトリスト。

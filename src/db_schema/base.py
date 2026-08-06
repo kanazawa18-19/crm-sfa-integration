@@ -195,9 +195,8 @@ class DatabaseSchema:
     spreadsheet_sheet_name: str
     properties: tuple[PropertyDefinition, ...]
     # 既存の稼働中Notionワークスペースに実在するDBのdatabase_id（Notion API
-    # `GET /v1/databases/{id}` で取得済みの固定値）。scripts/.notion_db_ids.json
-    # キャッシュに依存せず、スキーマ定義から直接database_idを引けるようにするため。
-    # 未設定（None）の場合は従来通りキャッシュ／新規作成フローに委ねる。
+    # `GET /v1/databases/{id}` で取得済みの固定値）。migrate_data.py・notion_webhook.py
+    # はこの値をALL_SCHEMAS経由で直接参照する（旧scripts/.notion_db_ids.jsonキャッシュは廃止済み）。
     notion_database_id: str | None = None
 
     def __post_init__(self) -> None:

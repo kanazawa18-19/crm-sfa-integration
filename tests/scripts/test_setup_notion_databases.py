@@ -1,18 +1,29 @@
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock
+
 import pytest
 
+from scripts import setup_notion_databases
 from scripts.setup_notion_databases import (
-    build_create_database_payload,
+    TARGET_DB_KEYS,
     build_property_payload,
-    build_relation_patch_payload,
+    build_update_properties_payload,
+    print_dry_run_plan,
+    update_target_databases,
 )
 from src.db_schema.base import (
+    DatabaseSchema,
     PropertyDefinition,
     PropertyType,
     RequirementLevel,
     SyncScope,
 )
 from src.db_schema.client_master import CLIENT_MASTER_SCHEMA
+from src.db_schema.contact import CONTACT_SCHEMA
 from src.db_schema.product import PRODUCT_SCHEMA
+from src.db_schema.registry import ALL_SCHEMAS
 
 
 def test_build_property_payload_title() -> None:
@@ -23,7 +34,7 @@ def test_build_property_payload_title() -> None:
         sync_scope=SyncScope.ALL_TOOLS,
     )
 
-    assert build_property_payload(prop, created_db_ids={}) == {"title": {}}
+    assert build_property_payload(prop) == {"title": {}}
 
 
 def test_build_property_payload_select_includes_options() -> None:
@@ -35,7 +46,7 @@ def test_build_property_payload_select_includes_options() -> None:
         options=("A", "B"),
     )
 
-    assert build_property_payload(prop, created_db_ids={}) == {
+    assert build_property_payload(prop) == {
         "select": {"options": [{"name": "A"}, {"name": "B"}]}
     }
 
@@ -49,12 +60,40 @@ def test_build_property_payload_status_falls_back_to_select() -> None:
         options=("初回接触", "契約済"),
     )
 
-    payload = build_property_payload(prop, created_db_ids={})
+    payload = build_property_payload(prop)
 
     assert payload == {"select": {"options": [{"name": "初回接触"}, {"name": "契約済"}]}}
 
 
-def test_build_property_payload_relation_uses_dual_property() -> None:
+def test_build_property_payload_relation_resolves_target_via_registry() -> None:
+    prop = CONTACT_SCHEMA.get_property("取引先マスター")
+
+    payload = build_property_payload(prop)
+
+    assert payload == {
+        "relation": {
+            "database_id": CLIENT_MASTER_SCHEMA.notion_database_id,
+            "single_property": {},
+        }
+    }
+
+
+def test_build_property_payload_relation_uses_single_property_not_dual() -> None:
+    """shirokuma-secレビューBLOCKER: dual_propertyだとNotion API側の自動処理で参照先DB
+    （取引先マスター等の実データを保持する既存4DB）にも逆参照プロパティが自動生成されて
+    しまう。single_propertyであれば連絡先DB側の片方向リレーションのみが作成され、
+    既存4DBには一切変更が加わらないことを検証する。"""
+    prop = CONTACT_SCHEMA.get_property("取引先マスター")
+
+    payload = build_property_payload(prop)
+
+    assert "single_property" in payload["relation"]
+    assert "dual_property" not in payload["relation"]
+
+
+def test_build_property_payload_relation_missing_notion_id_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prop = PropertyDefinition(
         name="取引先マスター",
         property_type=PropertyType.RELATION,
@@ -62,23 +101,28 @@ def test_build_property_payload_relation_uses_dual_property() -> None:
         sync_scope=SyncScope.ALL_TOOLS,
         relation_target="client_master",
     )
-
-    payload = build_property_payload(prop, created_db_ids={"client_master": "db-abc"})
-
-    assert payload == {"relation": {"database_id": "db-abc", "dual_property": {}}}
-
-
-def test_build_property_payload_relation_missing_target_raises() -> None:
-    prop = PropertyDefinition(
-        name="取引先マスター",
-        property_type=PropertyType.RELATION,
-        requirement=RequirementLevel.REQUIRED,
-        sync_scope=SyncScope.ALL_TOOLS,
-        relation_target="client_master",
+    schema_without_id = DatabaseSchema(
+        key="client_master",
+        display_name="取引先マスター",
+        id_prefix="CLI-",
+        kintone_key="dummy",
+        zoho_key="dummy",
+        zoho_api_module="Accounts",
+        spreadsheet_sheet_name="取引先マスター",
+        properties=(
+            PropertyDefinition(
+                name="ID",
+                property_type=PropertyType.TITLE,
+                requirement=RequirementLevel.REQUIRED,
+                sync_scope=SyncScope.ALL_TOOLS,
+            ),
+        ),
+        notion_database_id=None,
     )
+    monkeypatch.setattr(setup_notion_databases, "get_schema", lambda key: schema_without_id)
 
     with pytest.raises(RuntimeError):
-        build_property_payload(prop, created_db_ids={})
+        build_property_payload(prop)
 
 
 def test_build_property_payload_currency_uses_yen_format() -> None:
@@ -89,7 +133,7 @@ def test_build_property_payload_currency_uses_yen_format() -> None:
         sync_scope=SyncScope.ALL_TOOLS,
     )
 
-    assert build_property_payload(prop, created_db_ids={}) == {"number": {"format": "yen"}}
+    assert build_property_payload(prop) == {"number": {"format": "yen"}}
 
 
 def test_build_property_payload_number_uses_number_format() -> None:
@@ -100,7 +144,7 @@ def test_build_property_payload_number_uses_number_format() -> None:
         sync_scope=SyncScope.ALL_TOOLS,
     )
 
-    assert build_property_payload(prop, created_db_ids={}) == {"number": {"format": "number"}}
+    assert build_property_payload(prop) == {"number": {"format": "number"}}
 
 
 def test_build_property_payload_text_maps_to_rich_text() -> None:
@@ -111,45 +155,106 @@ def test_build_property_payload_text_maps_to_rich_text() -> None:
         sync_scope=SyncScope.ALL_TOOLS,
     )
 
-    assert build_property_payload(prop, created_db_ids={}) == {"rich_text": {}}
+    assert build_property_payload(prop) == {"rich_text": {}}
 
 
-def test_build_create_database_payload_excludes_relation_properties() -> None:
-    payload = build_create_database_payload(CLIENT_MASTER_SCHEMA, parent_page_id="page-123")
+def test_build_property_payload_unsupported_type_raises_value_error() -> None:
+    prop = PropertyDefinition(
+        name="粗利ロールアップ",
+        property_type=PropertyType.ROLLUP,
+        requirement=RequirementLevel.AUTO,
+        sync_scope=SyncScope.INTERNAL,
+    )
 
-    assert payload["parent"] == {"type": "page_id", "page_id": "page-123"}
-    assert payload["title"] == [
-        {"type": "text", "text": {"content": CLIENT_MASTER_SCHEMA.display_name}}
-    ]
-    property_names = set(payload["properties"].keys())
-    relation_names = {
-        p.name for p in CLIENT_MASTER_SCHEMA.properties if p.property_type == PropertyType.RELATION
+    with pytest.raises(ValueError, match="未対応の型です"):
+        build_property_payload(prop)
+
+
+def test_build_update_properties_payload_excludes_title_for_contact() -> None:
+    payload = build_update_properties_payload(CONTACT_SCHEMA)
+
+    expected_names = {
+        p.name for p in CONTACT_SCHEMA.properties if p.property_type != PropertyType.TITLE
     }
-    assert relation_names & property_names == set()
-    assert "取引先ID" in property_names
+    assert "名前" not in payload["properties"]
+    assert set(payload["properties"].keys()) == expected_names
+    assert payload["properties"]["取引先マスター"] == {
+        "relation": {
+            "database_id": CLIENT_MASTER_SCHEMA.notion_database_id,
+            "single_property": {},
+        }
+    }
 
 
-def test_build_create_database_payload_without_relations_includes_all_properties() -> None:
-    payload = build_create_database_payload(PRODUCT_SCHEMA, parent_page_id="page-123")
+def test_build_update_properties_payload_excludes_title_for_product() -> None:
+    payload = build_update_properties_payload(PRODUCT_SCHEMA)
 
-    expected_names = {p.name for p in PRODUCT_SCHEMA.properties}
+    expected_names = {
+        p.name for p in PRODUCT_SCHEMA.properties if p.property_type != PropertyType.TITLE
+    }
+    assert "名前" not in payload["properties"]
     assert set(payload["properties"].keys()) == expected_names
 
 
-def test_build_relation_patch_payload_only_includes_relation_properties() -> None:
-    created_db_ids = {"client_master": "db-cli", "chain": "db-chain"}
+def test_target_db_keys_limited_to_contact_and_product() -> None:
+    assert set(TARGET_DB_KEYS) == {"contact", "product"}
 
-    payload = build_relation_patch_payload(CLIENT_MASTER_SCHEMA, created_db_ids)
 
-    relation_names = {
-        p.name for p in CLIENT_MASTER_SCHEMA.properties if p.property_type == PropertyType.RELATION
+def test_update_target_databases_only_patches_contact_and_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_patch = MagicMock(return_value=mock_response)
+    monkeypatch.setattr("requests.patch", mock_patch)
+
+    update_target_databases(api_key="secret-key")
+
+    assert mock_patch.call_count == 2
+    called_urls = {call.args[0] for call in mock_patch.call_args_list}
+    assert called_urls == {
+        f"https://api.notion.com/v1/databases/{CONTACT_SCHEMA.notion_database_id}",
+        f"https://api.notion.com/v1/databases/{PRODUCT_SCHEMA.notion_database_id}",
     }
-    assert set(payload["properties"].keys()) == relation_names
-    for prop_payload in payload["properties"].values():
-        assert "dual_property" in prop_payload["relation"]
+    # 既存4DB（実データを保持する稼働中DB）へのリクエストは一切発生しない。
+    untouched_schemas = [s for s in ALL_SCHEMAS if s.key not in TARGET_DB_KEYS]
+    untouched_urls = {
+        f"https://api.notion.com/v1/databases/{s.notion_database_id}" for s in untouched_schemas
+    }
+    assert called_urls.isdisjoint(untouched_urls)
 
 
-def test_build_relation_patch_payload_no_relations_returns_empty_properties() -> None:
-    payload = build_relation_patch_payload(PRODUCT_SCHEMA, created_db_ids={})
+def test_update_target_databases_sends_relation_and_title_excluded_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_patch = MagicMock(return_value=mock_response)
+    monkeypatch.setattr("requests.patch", mock_patch)
 
-    assert payload == {"properties": {}}
+    update_target_databases(api_key="secret-key")
+
+    payloads_by_url: dict[str, Any] = {
+        call.args[0]: call.kwargs["json"] for call in mock_patch.call_args_list
+    }
+    contact_payload = payloads_by_url[
+        f"https://api.notion.com/v1/databases/{CONTACT_SCHEMA.notion_database_id}"
+    ]
+    assert "名前" not in contact_payload["properties"]
+    assert contact_payload["properties"]["取引先マスター"]["relation"]["database_id"] == (
+        CLIENT_MASTER_SCHEMA.notion_database_id
+    )
+
+
+def test_print_dry_run_plan_distinguishes_existing_and_target_dbs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    print_dry_run_plan()
+    output = capsys.readouterr().out
+
+    assert "連絡先DB" in output
+    assert "サービス・商品DB" in output
+    assert "変更なし（既存DBのため）" in output
+    for schema in ALL_SCHEMAS:
+        if schema.key not in TARGET_DB_KEYS:
+            assert f"[{schema.display_name}] (key={schema.key}) -> 変更なし（既存DBのため）" in output
