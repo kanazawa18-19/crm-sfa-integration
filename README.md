@@ -66,7 +66,8 @@ cp config/.env.example config/.env  # 各種APIキーを設定
 Phase 2（同期エンジン）→ Phase 3（分析・レポート・外部連携）→
 Phase 4（データ移行・総合テスト）→ Phase 5（本番移行）。
 
-■ Phase 2 実装ノート: Notion Webhook実運用にはプロキシ層の追加実装が必要
+■ Phase 2 実装ノート: Notion Webhook実運用向けのプロキシ層（`handler_with_proxy()`）は
+実装済み。デプロイ設定自体は別スコープ
 （[`docs/notion_webhook_proxy_note.md`](docs/notion_webhook_proxy_note.md) 参照）。
 
 ■ Phase 3 実装ノート: メンバー別パフォーマンス評価（週報「営業パフォーマンス分析」）の

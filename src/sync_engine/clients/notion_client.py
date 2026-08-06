@@ -168,6 +168,19 @@ class HttpNotionClient:
             for name, value in (page.get("properties") or {}).items()
         }
 
+    def get_raw_page(self, page_id: str) -> dict[str, Any]:
+        """Notion API `GET /v1/pages/{page_id}` の生レスポンスJSONをそのまま返す。
+
+        `get_page`（`properties`を内部値のフラット辞書へ変換して返す）とは異なり、
+        `id`/`parent`/`last_edited_time`/`properties`を含むレスポンスをそのまま返す。
+        `webhook_handlers/notion_webhook.py`の`NotionPageClient` Protocolを満たし、
+        `fetch_and_normalize_notion_page`（Webhookプロキシ層）から利用される。
+        """
+        response = self._request("GET", f"/pages/{page_id}")
+        raise_for_error(response, NotionApiError)
+        page: dict[str, Any] = response.json()
+        return page
+
     def create_page(self, properties: dict[str, Any]) -> str:
         body = {
             "parent": {"database_id": self._database_id},

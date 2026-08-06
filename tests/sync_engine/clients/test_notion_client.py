@@ -97,6 +97,68 @@ def test_get_page_raises_notion_api_error_on_5xx(
     assert exc_info.value.status_code == 500
 
 
+# --- get_raw_page -------------------------------------------------------------------------
+
+
+def test_get_raw_page_returns_response_json_unmodified(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    raw_page = {
+        "id": PAGE_ID,
+        "parent": {"type": "database_id", "database_id": DATABASE_ID},
+        "last_edited_time": "2026-08-05T09:00:00.000Z",
+        "properties": {
+            "取引先ID": {"type": "title", "title": [{"plain_text": "CLI-001"}]},
+        },
+    }
+    requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}", json=raw_page)
+
+    assert client.get_raw_page(PAGE_ID) == raw_page
+
+
+def test_get_raw_page_raises_notion_api_error_on_404(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        status_code=404,
+        json={"message": "not found"},
+    )
+
+    with pytest.raises(NotionApiError) as exc_info:
+        client.get_raw_page(PAGE_ID)
+    assert exc_info.value.status_code == 404
+
+
+def test_get_raw_page_raises_notion_api_error_on_5xx(
+    requests_mock, client: HttpNotionClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("src.sync_engine.clients._http.time.sleep", lambda seconds: None)
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        status_code=500,
+        json={"message": "internal error"},
+    )
+
+    with pytest.raises(NotionApiError) as exc_info:
+        client.get_raw_page(PAGE_ID)
+    assert exc_info.value.status_code == 500
+
+
+def test_get_raw_page_sends_bearer_token_and_notion_version_header(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}", json={"id": PAGE_ID, "properties": {}}
+    )
+
+    client.get_raw_page(PAGE_ID)
+
+    sent_headers = requests_mock.last_request.headers
+    assert sent_headers["Authorization"] == "Bearer secret-notion-key"
+    assert sent_headers["Notion-Version"] == "2022-06-28"
+
+
 # --- create_page ---------------------------------------------------------------------------
 
 
