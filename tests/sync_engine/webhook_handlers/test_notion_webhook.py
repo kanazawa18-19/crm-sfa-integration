@@ -709,6 +709,83 @@ def test_handler_with_proxy_works_with_real_http_notion_client(
     }
 
 
+# --- calendar_sync フック ------------------------------------------------------------------
+
+
+def test_handler_with_proxy_calls_calendar_sync_when_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    calls: list[tuple[dict, str]] = []
+
+    def _calendar_sync(properties: dict, page_id: str) -> None:
+        calls.append((dict(properties), page_id))
+
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(
+        event, context=None, notion_client=client, calendar_sync=_calendar_sync
+    )
+
+    assert response["statusCode"] == 200
+    assert len(calls) == 1
+    called_properties, called_page_id = calls[0]
+    assert called_page_id == "26d6f1e2-0000-0000-0000-000000000000"
+    assert called_properties == {
+        "案件名": "MSA-PJ-001",
+        "営業ステータス": "提案中",
+        "初期費用": 500000,
+    }
+
+
+def test_handler_with_proxy_returns_200_even_when_calendar_sync_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+
+    def _failing_calendar_sync(properties: dict, page_id: str) -> None:
+        raise RuntimeError("calendar sync boom")
+
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    with caplog.at_level("ERROR"):
+        response = handler_with_proxy(
+            event, context=None, notion_client=client, calendar_sync=_failing_calendar_sync
+        )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+    assert any("calendar" in record.getMessage() for record in caplog.records)
+
+
+def test_handler_with_proxy_without_calendar_sync_behaves_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """calendar_sync未注入時は既存の挙動と変わらないことを確認する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(event, context=None, notion_client=client)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+
+
 def test_handler_with_proxy_with_real_http_notion_client_returns_200_on_404(
     requests_mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

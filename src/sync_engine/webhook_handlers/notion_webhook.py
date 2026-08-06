@@ -39,7 +39,7 @@ docs/notion_webhook_proxy_note.md も参照）。実運用のエントリポイ�
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from src.db_schema.base import PropertyType, Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
@@ -260,6 +260,7 @@ def handler_with_proxy(
     *,
     notion_client: NotionPageClient,
     dispatcher: Dispatcher | None = None,
+    calendar_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
 ) -> dict[str, Any]:
     """Lambda/Cloud Functions エントリポイント（実際のNotion API Webhooksの軽量ペイロードを
     受け取る想定。API Gateway形式のHTTPイベントを想定）。実運用ではこちらを使う。
@@ -276,6 +277,14 @@ def handler_with_proxy(
 
     実際のデプロイ設定（SAM/Serverless Framework等）は範囲外。dispatcherを注入すれば
     変換後のSyncEventをそのままディスパッチする（未注入時は変換結果の検証のみ行う）。
+
+    `calendar_sync`（省略可、既定`None`）を注入すると、db_key="project"（案件管理DB）の
+    SyncEventについて`calendar_sync(sync_event.properties, sync_event.external_id)`を呼び、
+    「次回アクション日」変更をGoogle Calendarへ同期する
+    （`src.calendar_sync.service.sync_next_action_date_to_calendar`を想定）。
+    `dispatcher.dispatch()`の同期処理とは独立した副作用であり、`calendar_sync`が例外を
+    送出してもWebhook全体としては既存の200レスポンスをそのまま返す
+    （メインの同期処理を絶対に壊さないため）。
     """
     headers = event.get("headers") or {}
     if not verify_webhook_secret(headers, "NOTION_WEBHOOK_SECRET"):
@@ -323,6 +332,16 @@ def handler_with_proxy(
     except Exception:
         logger.exception("unexpected error while dispatching notion sync event")
         return internal_error_response()
+
+    if calendar_sync is not None and sync_event.db_key == "project":
+        try:
+            calendar_sync(sync_event.properties, sync_event.external_id)
+        except Exception:
+            logger.exception(
+                "unexpected error while syncing calendar event (non-fatal, "
+                "webhook still returns 200): page_id=%s",
+                sync_event.external_id,
+            )
 
     return {
         "statusCode": 200,
