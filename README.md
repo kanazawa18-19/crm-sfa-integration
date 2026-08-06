@@ -32,6 +32,7 @@ tests/              各モジュールに対応するユニットテスト
 config/             環境変数サンプル・閾値等の設定ファイル
 docs/               仕様書・設計ドキュメント
 scripts/            Notion DB自動作成などのセットアップスクリプト
+gas/                Googleスプレッドシート側のGoogle Apps Script（onEdit変更検知・タブ自動セットアップ）
 ```
 
 ## 開発方針
@@ -81,6 +82,14 @@ Phase 4（データ移行・総合テスト）→ Phase 5（本番移行）。
 への置き換えが必要
 （[`docs/spreadsheet_auth_note.md`](docs/spreadsheet_auth_note.md) 参照）。
 
+■ Phase 1 実装ノート: Googleスプレッドシートのタブ構成（`gas/`配下）は、09節ロードマップの
+「全5タブ＋同期ログタブ」という記載に対し、6DB業務タブ全部＋分析タブ＋クロスセル対象タブ＋
+同期ログタブの計9タブとして実装した。数の不一致は仕様書に明記の無い新規論点として扱っている
+（[`docs/spreadsheet_tabs_design.md`](docs/spreadsheet_tabs_design.md) 参照）。変更検知は
+GAS（Google Apps Script）の`onEdit`インストーラブルトリガーで実装しており、Python側とは
+別ランタイムのため`gas/payloadUtils.test.js`をNode.jsで実行して検証する
+（`node --test gas/payloadUtils.test.js`）。
+
 ## 保留・要確認事項
 
 仕様書 `10_保留・要確認事項` に10件の未決定論点がある（Q-01〜Q-10）。
@@ -88,3 +97,7 @@ Phase 4（データ移行・総合テスト）→ Phase 5（本番移行）。
 同期エンジン・分析ロジックの設計に直接影響するため、実装は暫定の想定値
 （常時双方向同期を継続 / 自動メールログ取得元は未確定としてインターフェースのみ用意）
 で進めている。確定次第、設定ファイルの値を更新すること。
+
+さらに、Google スプレッドシートのタブ数（09節「全5タブ」 vs 実装した9タブ構成）についても
+仕様書に明記の無い追加論点（Q-11相当）が発生している
+（[`docs/spreadsheet_tabs_design.md`](docs/spreadsheet_tabs_design.md) 参照）。
