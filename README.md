@@ -12,7 +12,7 @@ Any-to-Any 相互リアルタイム同期、営業分析、自動チーム日報
 
 - **マスターDB**: Notion（Single Source of Truth、全6DB）
 - **閲覧・分析UI**: Google スプレッドシート
-- **既存業務DB**: kintone（常時双方向同期）
+- **既存業務DB**: kintone（他ツール→kintoneへの一方向書き込みのみ。kintone側での入力は今後行われないため、kintone発の変更同期は実装しない。初期データはNotionへ統合する）
 - **過渡期CRM**: Zoho CRM（`ENABLE_ZOHO=False` で切離し可能）
 - **名刺連携**: Eight（片方向 Eight → Notion）
 - **同期エンジン**: AWS Lambda / GCP Cloud Functions（Python 3.11）
@@ -98,13 +98,36 @@ GAS（Google Apps Script）の`onEdit`インストーラブルトリガーで実
 判断点が複数ある
 （[`docs/migration_pipeline_note.md`](docs/migration_pipeline_note.md) 参照）。
 
+■ 重要な前提変更（2026-08-06）: `src/db_schema/` は当初「Notionに新規6DBをゼロから作る」
+前提で設計していたが、実際には既存の稼働中Notionワークスペースに4DB（取引先マスター/
+チェーン/案件管理/アクション履歴）が既に存在し、独自のプロパティ構成（多数のrollup/formula
+/button等の読み取り専用プロパティを含む）を持っていることが判明した。これに合わせて
+`src/db_schema/`・`sync_engine`のNotion変換層・`analytics`/`reports`の営業ステータス判定
+ロジックを全面的に実データ構造へ書き直した。営業ステータス11値・確度A〜D（S/A/B/Cではない）
+等、仕様書の想定と異なる点が多数ある。`scripts/setup_notion_databases.py`は「新規2DB
+（連絡先・サービス商品）へのプロパティ追加専用」に役割を変更し、既存4DBには一切変更を
+加えない設計にしている（Notion APIの`dual_property`が参照先DBに副作用を及ぼす問題を
+レビューで検出・修正済み）。
+
+■ 未対応・保留中の機能: Eight連携（名刺データ自動登録）、商談手当計算、外部データ連携
+（国交省/観光庁オープンデータ）、Zoho CRMとNotionのデータマージは、いずれも詳細確認待ちで
+実装未着手。kintoneのCSVエクスポートが揃うまで、`src/migration/`パッケージの実データ完全
+対応（顧客種別・契約進捗状況・アクション内容のkintone値↔Notion値マッピング）も保留中。
+
 ## 保留・要確認事項
 
 仕様書 `10_保留・要確認事項` に10件の未決定論点がある（Q-01〜Q-10）。
-特に Q-01（kintone常時同期継続の要否）・Q-09（自動メールログの取得元）は
-同期エンジン・分析ロジックの設計に直接影響するため、実装は暫定の想定値
-（常時双方向同期を継続 / 自動メールログ取得元は未確定としてインターフェースのみ用意）
-で進めている。確定次第、設定ファイルの値を更新すること。
+
+**Q-01（kintone常時同期継続の要否）は確定済み**: kintone側での入力は今後行われない。
+常時双方向同期の対象ではなく、「他ツール（Notion/スプレッドシート/Zoho）→kintoneへの
+一方向書き込み」のみを行う。kintone発のWebhookイベントは想定しない
+（`src/sync_engine/webhook_handlers/kintone_webhook.py`のdocstring参照）。
+初期データ（取引先・案件・アクション）はNotionへ一括統合する
+（[`docs/migration_pipeline_note.md`](docs/migration_pipeline_note.md) 参照、kintone CSV到着待ち）。
+
+Q-09（自動メールログの取得元）は同期エンジン・分析ロジックの設計に直接影響するため、
+実装は暫定の想定値（未確定としてインターフェースのみ用意）で進めている。確定次第、
+設定ファイルの値を更新すること。
 
 さらに、Google スプレッドシートのタブ数（09節「全5タブ」 vs 実装した9タブ構成）についても
 仕様書に明記の無い追加論点（Q-11相当）が発生している
