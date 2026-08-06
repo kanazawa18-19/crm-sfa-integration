@@ -3,6 +3,7 @@ import logging
 import pytest
 
 from src.migration.kintone_client_master import (
+    derive_client_sales_status,
     extract_chain_name,
     normalize_customer_type,
     transform_client_master,
@@ -79,3 +80,51 @@ def test_extract_chain_name_returns_stripped_name() -> None:
 def test_extract_chain_name_returns_none_when_blank() -> None:
     assert extract_chain_name({"本部名": "  "}) is None
     assert extract_chain_name({}) is None
+
+
+# --- derive_client_sales_status（BLOCKER1: 取引先マスターの営業ステータス導出） -----------
+
+
+def test_derive_client_sales_status_no_projects_returns_not_approached() -> None:
+    assert derive_client_sales_status([]) == "未アプローチ"
+
+
+def test_derive_client_sales_status_any_contracted_project_wins() -> None:
+    # 契約済案件が1件でもあれば、他が失注でも「契約」が最優先される。
+    assert derive_client_sales_status(["失注", "契約済", "商談中(B)"]) == "契約"
+
+
+def test_derive_client_sales_status_negotiation_in_progress() -> None:
+    assert derive_client_sales_status(["商談中(B)"]) == "商談中"
+    assert derive_client_sales_status(["商談中(C)"]) == "商談中"
+
+
+def test_derive_client_sales_status_early_stage_maps_to_approaching() -> None:
+    assert derive_client_sales_status(["初回接触"]) == "アプローチ中"
+    assert derive_client_sales_status(["提案中"]) == "アプローチ中"
+    assert derive_client_sales_status(["見積提出"]) == "アプローチ中"
+
+
+def test_derive_client_sales_status_all_lost_or_cancelled() -> None:
+    assert derive_client_sales_status(["失注"]) == "失注"
+    assert derive_client_sales_status(["解約"]) == "失注"
+
+
+def test_derive_client_sales_status_priority_order_negotiation_over_early_stage() -> None:
+    assert derive_client_sales_status(["初回接触", "商談中(B)"]) == "商談中"
+
+
+def test_derive_client_sales_status_unknown_status_falls_back_to_not_approached() -> None:
+    """マッピング表に無い未知の案件ステータスのみの場合、安全側の「未アプローチ」に
+    フォールバックする（normalize_customer_typeの未知値フォールバックと同種のパターン）。"""
+    assert derive_client_sales_status(["謎のステータス"]) == "未アプローチ"
+
+
+def test_derive_client_sales_status_unknown_status_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """無言フォールバックにならないよう、未知の値を検知したらログへ元の値を残す。"""
+    with caplog.at_level(logging.WARNING):
+        derive_client_sales_status(["謎のステータス"])
+
+    assert any("謎のステータス" in record.message for record in caplog.records)

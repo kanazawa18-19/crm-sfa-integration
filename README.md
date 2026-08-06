@@ -92,6 +92,12 @@ GAS（Google Apps Script）の`onEdit`インストーラブルトリガーで実
 別ランタイムのため`gas/payloadUtils.test.js`をNode.jsで実行して検証する
 （`node --test gas/payloadUtils.test.js`）。
 
+■ Phase 4 実装ノート: kintone CSV → Notion 6DBへの一括インポート（`scripts/migrate_data.py`）
+は、取引先マスターDBの「営業ステータス」導出ロジック・リレーションキー列名の推測・USER型
+プロパティ未解決・PIIを含む出力ファイルの取り扱い等、04_項目マッピングに明記の無い実装者
+判断点が複数ある
+（[`docs/migration_pipeline_note.md`](docs/migration_pipeline_note.md) 参照）。
+
 ## 保留・要確認事項
 
 仕様書 `10_保留・要確認事項` に10件の未決定論点がある（Q-01〜Q-10）。

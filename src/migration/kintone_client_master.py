@@ -3,12 +3,51 @@
 from __future__ import annotations
 
 import logging
+from typing import Iterable
 
 from src.db_schema.client_master import CLIENT_MASTER_SCHEMA
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_CUSTOMER_TYPE = "その他"
+
+# ①取引先マスターDBの「営業ステータス」（必須）を、紐づく④案件管理DBの営業ステータス
+# （8種）から縮約するための優先順位マップ（BLOCKER1: kintone取引先マスタ側に対応する
+# 「契約進捗状況」等の列が無く、04_項目マッピングにも導出方法の明記が無いため実装者判断）。
+# 1つの取引先に複数案件がある場合、最も商談が進んでいるステータスを代表値として採用する
+# 方針（営業サマリーとしては「一番良い状態」を見せるのが実用上妥当なため）。
+# 優先順位: 契約済 > 商談中(B/C) > 初回接触/提案中/見積提出 > 失注/解約（先頭が最優先）。
+_CLIENT_STATUS_FROM_PROJECT_STATUS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("契約済",), "契約"),
+    (("商談中(B)", "商談中(C)"), "商談中"),
+    (("初回接触", "提案中", "見積提出"), "アプローチ中"),
+    (("失注", "解約"), "失注"),
+)
+_FALLBACK_CLIENT_STATUS_NO_PROJECT = "未アプローチ"
+
+
+def derive_client_sales_status(project_statuses: Iterable[str]) -> str:
+    """紐づく④案件管理DBの営業ステータス群から①取引先マスターDBの営業ステータスを導出する。
+
+    案件が1件も無ければ「未アプローチ」。1件以上あれば `_CLIENT_STATUS_FROM_PROJECT_STATUS`
+    の優先順位で最も商談が進んでいるステータスを採用する。詳細な設計判断の理由は
+    docs/migration_pipeline_note.md を参照。
+    """
+    statuses = set(project_statuses)
+    if not statuses:
+        return _FALLBACK_CLIENT_STATUS_NO_PROJECT
+    for keys, result in _CLIENT_STATUS_FROM_PROJECT_STATUS:
+        if statuses & set(keys):
+            return result
+    # 案件はあるが上記いずれの優先順位カテゴリにも一致しない未知のステータスのみの場合。
+    # 顧客種別と同様、必須項目のフォールバックとして安全側の「未アプローチ」を採用しログを残す。
+    logger.warning(
+        "unmapped project status set for client sales status derivation: %r, "
+        "falling back to %r",
+        statuses,
+        _FALLBACK_CLIENT_STATUS_NO_PROJECT,
+    )
+    return _FALLBACK_CLIENT_STATUS_NO_PROJECT
 
 
 def normalize_customer_type(raw: str | None) -> str | None:
