@@ -24,6 +24,7 @@ class PropertyType(str, Enum):
     TEXT = "text"
     SELECT = "select"
     STATUS = "status"
+    MULTI_SELECT = "multi_select"
     RELATION = "relation"
     NUMBER = "number"
     CURRENCY = "currency"
@@ -35,6 +36,29 @@ class PropertyType(str, Enum):
     CHECKBOX = "checkbox"
     USER = "user"
     JSON_TEXT = "json_text"
+    # 以下はNotion APIから一切書き込めない読み取り専用型（PropertyDefinition.is_writable参照）。
+    ROLLUP = "rollup"
+    FORMULA = "formula"
+    BUTTON = "button"
+    UNIQUE_ID = "unique_id"
+    CREATED_TIME = "created_time"
+    LAST_EDITED_TIME = "last_edited_time"
+    CREATED_BY = "created_by"
+    FILES = "files"
+
+
+# Notion APIが値の書き込みを受け付けない型（サーバー側で自動計算・自動設定される）。
+READ_ONLY_PROPERTY_TYPES: frozenset[PropertyType] = frozenset(
+    {
+        PropertyType.ROLLUP,
+        PropertyType.FORMULA,
+        PropertyType.BUTTON,
+        PropertyType.UNIQUE_ID,
+        PropertyType.CREATED_TIME,
+        PropertyType.LAST_EDITED_TIME,
+        PropertyType.CREATED_BY,
+    }
+)
 
 
 class RequirementLevel(str, Enum):
@@ -91,6 +115,13 @@ class PropertyDefinition:
     def __post_init__(self) -> None:
         if self.property_type == PropertyType.RELATION and not self.relation_target:
             raise ValueError(f"relation property '{self.name}' must set relation_target")
+        # 読み取り専用型はNotion API側から書き込めないため、同期エンジンの書き込み対象に
+        # ならないことを型システムで保証する（INTERNAL以外のscopeは矛盾）。
+        if self.property_type in READ_ONLY_PROPERTY_TYPES and self.sync_scope != SyncScope.INTERNAL:
+            raise ValueError(
+                f"read-only property '{self.name}' ({self.property_type.value}) "
+                f"must use sync_scope=SyncScope.INTERNAL"
+            )
 
     @property
     def is_required(self) -> bool:
@@ -99,6 +130,11 @@ class PropertyDefinition:
     @property
     def is_auto(self) -> bool:
         return self.requirement == RequirementLevel.AUTO
+
+    @property
+    def is_writable(self) -> bool:
+        """Notion APIから値を書き込める型かどうか。"""
+        return self.property_type not in READ_ONLY_PROPERTY_TYPES
 
     def should_sync_to(self, tool: Tool) -> bool:
         return self.sync_scope.includes(tool)
@@ -158,6 +194,11 @@ class DatabaseSchema:
     # 壊れるため、明示的なフィールドとして保持する。
     spreadsheet_sheet_name: str
     properties: tuple[PropertyDefinition, ...]
+    # 既存の稼働中Notionワークスペースに実在するDBのdatabase_id（Notion API
+    # `GET /v1/databases/{id}` で取得済みの固定値）。scripts/.notion_db_ids.json
+    # キャッシュに依存せず、スキーマ定義から直接database_idを引けるようにするため。
+    # 未設定（None）の場合は従来通りキャッシュ／新規作成フローに委ねる。
+    notion_database_id: str | None = None
 
     def __post_init__(self) -> None:
         titles = [p for p in self.properties if p.property_type == PropertyType.TITLE]

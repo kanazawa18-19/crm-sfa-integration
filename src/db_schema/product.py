@@ -1,4 +1,14 @@
-"""⑤ サービス・商品DB（PRD-xxx、新規独立）。03_プロパティ定義 該当行を反映。"""
+"""⑤ サービス・商品DB（PRD-xxx、新規独立）。
+
+既存4DBと異なり、Notion側は現時点でtitleプロパティ「名前」のみを持つ空DB
+（database_id=3b4d8ea8-d4f3-80ed-a431-c2e4f5561fd6）として存在する。
+titleは仕様書03節が想定していた「サービスID（自動採番）」ではなく、既存のNotion側
+「名前」をそのまま使う。仕様書03節の「サービス名」テキストプロパティは「名前」titleと
+重複するため新設しない。
+
+標準初期費用・標準月額費用は、既存4DB側の実データ（初期費用・月額費用）がNotionの
+実際の型として number であることに合わせ、CURRENCY型ではなくNUMBER型で定義する。
+"""
 
 from __future__ import annotations
 
@@ -19,39 +29,32 @@ PRODUCT_SCHEMA = DatabaseSchema(
     zoho_key="サービス・商品",
     zoho_api_module="Products",
     spreadsheet_sheet_name="サービス・商品",
+    notion_database_id="3b4d8ea8-d4f3-80ed-a431-c2e4f5561fd6",
     properties=(
         PropertyDefinition(
-            name="サービスID",
+            name="名前",
             property_type=PropertyType.TITLE,
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="PRD-xxx",
-        ),
-        PropertyDefinition(
-            name="サービス名",
-            property_type=PropertyType.TEXT,
-            requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="リピッテ / メイリー / ホテラボ / オルト 等",
+            description="Notion側で既存のtitleプロパティ。サービス名そのものを保持する",
         ),
         PropertyDefinition(
             name="課金形態",
             property_type=PropertyType.SELECT,
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="月額ストック / イニシャルスポット / 成果報酬",
             options=("月額ストック", "イニシャルスポット", "成果報酬"),
         ),
         PropertyDefinition(
             name="標準初期費用",
-            property_type=PropertyType.CURRENCY,
+            property_type=PropertyType.NUMBER,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
             description="見積の基準値",
         ),
         PropertyDefinition(
             name="標準月額費用",
-            property_type=PropertyType.CURRENCY,
+            property_type=PropertyType.NUMBER,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
             description="見積の基準値",

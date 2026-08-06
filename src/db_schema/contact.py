@@ -1,4 +1,15 @@
-"""③ 連絡先DB（CNT-xxx、新規独立）。03_プロパティ定義 該当行を反映。"""
+"""③ 連絡先DB（CNT-xxx、新規独立）。
+
+既存4DBと異なり、Notion側は現時点でtitleプロパティ「名前」のみを持つ空DB
+（database_id=3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae）として存在する。
+titleは仕様書03節が想定していた「連絡先ID（自動採番）」ではなく、既存のNotion側
+「名前」をそのまま使う（Notion側で既にtitleとして存在するため、名前を変更すると
+Notion API側で不整合が起きる可能性がある）。氏名は「名前」titleが担うため、
+仕様書03節の「氏名」テキストプロパティは重複となり新設しない。
+
+その他のプロパティは仕様書03節の定義をベースに、既存4DBの命名慣習（relationの
+参照先プロパティ名は「取引先マスター」等）に合わせて設計する。
+"""
 
 from __future__ import annotations
 
@@ -19,19 +30,14 @@ CONTACT_SCHEMA = DatabaseSchema(
     zoho_key="連絡先（リード）",
     zoho_api_module="Contacts",
     spreadsheet_sheet_name="連絡先",
+    notion_database_id="3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae",
     properties=(
         PropertyDefinition(
-            name="連絡先ID",
+            name="名前",
             property_type=PropertyType.TITLE,
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="CNT-xxx",
-        ),
-        PropertyDefinition(
-            name="氏名",
-            property_type=PropertyType.TEXT,
-            requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
+            description="Notion側で既存のtitleプロパティ。氏名そのものを保持する",
         ),
         PropertyDefinition(
             name="取引先マスター",

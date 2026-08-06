@@ -1,4 +1,15 @@
-"""① 取引先マスターDB（CLI-xxx）。03_プロパティ定義 該当行を反映。"""
+"""① 取引先マスターDB（CLI-xxx）。
+
+既存の稼働中Notionワークスペースに実在するDB（database_id=b8c17123-96a1-429e-82f1-
+9d39595c9861）のプロパティ構成を、Notion API `GET /v1/databases/{id}` で取得した
+実データそのまま反映する。仕様書03節が想定していた新規6DB設計ではなく、この実データ
+構造を正として扱う。
+
+■ 設計意図（【営業部】営業ステータス）: このプロパティはrollup型（案件管理DBの
+営業ステータスから自動集計）であり、取引先側に直接書き込める営業ステータス列は
+存在しない。つまり取引先の営業ステータスは、配下の案件（案件管理DB）の状況から
+自動的に判断される設計であり、取引先マスター単体で手動編集する手段は無い。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +19,21 @@ from src.db_schema.base import (
     PropertyType,
     RequirementLevel,
     SyncScope,
-    common_internal_properties,
+)
+
+# 都道府県 select の実データは、標準47都道府県だけでなく郵便番号・市区町村名・
+# 表記ゆれ・海外国名等が混在する。Notion API `GET /v1/databases/{id}` で取得した
+# 実際のoptions一覧をそのまま反映する。
+_PREFECTURE_OPTIONS: tuple[str, ...] = (
+    "和歌山県", "三重県", "静岡県", "愛知県", "群馬", "岐阜県", "北海道", "大阪府",
+    "滋賀県", "埼玉県", "茨城県", "東京都", "島根県", "広島県", "茨城", "青森",
+    "東京", "兵庫県", "高知県", "沖縄県", "千葉", "千葉県", "京都府", "長野県",
+    "宮城県", "山梨県", "神奈川県", "栃木県", "富山県", "愛媛県", "新潟県", "奈良県",
+    "岡山県", "長崎県", "山形県", "鹿児島県", "福岡県", "福井県", "大分県", "秋田県",
+    "福島県", "鳥取県", "岩手県", "熊本県", "山口県", "香川県", "群馬県", "石川県",
+    "佐賀県", "青森県", "宮崎県", "徳島県", "981-0504", "山梨", "大阪", "京都市",
+    "新潟", "カンボジア王国", "81", "鹿児島", "和歌山", "24", "兵庫県兵庫県",
+    "福岡県福岡県", "栃木県那須郡那須町大字湯本212",
 )
 
 CLIENT_MASTER_SCHEMA = DatabaseSchema(
@@ -19,132 +44,221 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
     zoho_key="取引先",
     zoho_api_module="Accounts",
     spreadsheet_sheet_name="取引先マスター",
+    notion_database_id="b8c17123-96a1-429e-82f1-9d39595c9861",
     properties=(
         PropertyDefinition(
-            name="取引先ID",
+            name="取引先名",
             property_type=PropertyType.TITLE,
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="CLI-xxx。全システム共通の主キー",
+            description="法人名・施設名",
         ),
         PropertyDefinition(
-            name="取引先名",
-            property_type=PropertyType.TEXT,
-            requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="法人名・施設名",
+            name="取引先ID",
+            property_type=PropertyType.UNIQUE_ID,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+            description="CLI-xxx。読取専用・自動採番",
         ),
         PropertyDefinition(
             name="顧客種別",
             property_type=PropertyType.SELECT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="ホテル・旅館 / 飲食 / ビューティー / 一般企業 等",
-            options=("ホテル・旅館", "飲食", "ビューティー", "一般企業", "その他"),
+            options=(
+                "宿泊施設",
+                "決済業社",
+                "ホテル運営コンサル",
+                "パートナー",
+                "クリニック・医院",
+                "【競合】ホテルWEB支援",
+                "システムベンダー",
+                "WEBマーケティング会社",
+            ),
         ),
         PropertyDefinition(
-            name="営業ステータス",
-            property_type=PropertyType.STATUS,
-            requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="未アプローチ / アプローチ中 / 商談中 / 契約 / 失注",
-            options=("未アプローチ", "アプローチ中", "商談中", "契約", "失注"),
-        ),
-        PropertyDefinition(
-            name="親取引先",
-            property_type=PropertyType.RELATION,
-            requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.NOTION_ONLY,
-            description="グループ企業（親会社・子会社）の階層表現（自DBセルフリレーション）",
-            relation_target="client_master",
-        ),
-        PropertyDefinition(
-            name="チェーン",
-            property_type=PropertyType.RELATION,
+            name="都道府県",
+            property_type=PropertyType.SELECT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="チェーンDBへの紐付け",
-            relation_target="chain",
+            description="実データには郵便番号・市区町村名等の表記ゆれが混在する",
+            options=_PREFECTURE_OPTIONS,
         ),
         PropertyDefinition(
             name="郵便番号",
             property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="公的マスデータ結合のキーとなる",
-        ),
-        PropertyDefinition(
-            name="都道府県",
-            property_type=PropertyType.TEXT,
-            requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="公的マスデータ結合のキーとなる",
         ),
         PropertyDefinition(
             name="住所",
             property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="公的マスデータ結合のキーとなる",
         ),
         PropertyDefinition(
-            name="TEL",
-            property_type=PropertyType.PHONE,
+            name="決算",
+            property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="企業基本情報",
         ),
         PropertyDefinition(
-            name="FAX",
-            property_type=PropertyType.PHONE,
+            name="予算組の時期",
+            property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="企業基本情報",
+        ),
+        PropertyDefinition(
+            name="日付",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="備考",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="チェーン",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="チェーンDBへの紐付け（dual_property）",
+            relation_target="chain",
+        ),
+        PropertyDefinition(
+            name="【営業部】案件管理DB",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="案件管理DBへの紐付け（dual_property）",
+            relation_target="project",
+        ),
+        PropertyDefinition(
+            name="【営業部・パーソネル】アクション履歴DB",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="アクション履歴DBへの紐付け（dual_property）",
+            relation_target="action",
+        ),
+        # --- 以下、読み取り専用（rollup/button/created_time/unique_id） ---
+        PropertyDefinition(
+            name="最終アクション日",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="メルアポ",
+            property_type=PropertyType.BUTTON,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="テレアポ",
+            property_type=PropertyType.BUTTON,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="アクション担当",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="決済者名",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="作成日時",
+            property_type=PropertyType.CREATED_TIME,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
         ),
         PropertyDefinition(
             name="メールアドレス",
-            property_type=PropertyType.EMAIL,
-            requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="企業基本情報",
-        ),
-        PropertyDefinition(
-            name="WEBサイト",
-            property_type=PropertyType.URL,
-            requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="企業基本情報",
-        ),
-        PropertyDefinition(
-            name="エリア属性データ",
-            property_type=PropertyType.JSON_TEXT,
-            requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.SPREADSHEET_ONLY,
-            description="国交省・観光庁データの自動補記領域",
-        ),
-        PropertyDefinition(
-            name="エリアポテンシャルスコア",
-            property_type=PropertyType.NUMBER,
-            requirement=RequirementLevel.AUTO,
-            sync_scope=SyncScope.SPREADSHEET_ONLY,
-            description="エリア属性から自動算出",
-        ),
-        # 以下2つはNotion側が実際に保持する外部ID値そのもの（レコードごとに異なる）。
-        # DatabaseSchema.kintone_key/zoho_key（移行元のフィールド名／アプリ名。DB定義で1つだけ）とは別物。
-        PropertyDefinition(
-            name="kintone_ID",
-            property_type=PropertyType.TEXT,
+            property_type=PropertyType.ROLLUP,
             requirement=RequirementLevel.AUTO,
             sync_scope=SyncScope.INTERNAL,
-            description="外部システムの元IDを保持",
         ),
         PropertyDefinition(
-            name="Zoho_ID",
-            property_type=PropertyType.TEXT,
+            name="本社所在地",
+            property_type=PropertyType.ROLLUP,
             requirement=RequirementLevel.AUTO,
             sync_scope=SyncScope.INTERNAL,
-            description="外部システムの元IDを保持",
         ),
-        *common_internal_properties(),
+        PropertyDefinition(
+            name="【営業部】営業ステータス",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+            description="案件管理DBから自動集計。取引先側に直接書き込める列は無い",
+        ),
+        PropertyDefinition(
+            name="案件作成",
+            property_type=PropertyType.BUTTON,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="本社アプローチ状況",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="担当者",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="運営会社",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="担当者（アクション時）",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="先方担当者",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="共有メモ",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="【営業部】案件ベース_アクション履歴",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="【営業部】提案済みサービス",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
+        PropertyDefinition(
+            name="電話番号",
+            property_type=PropertyType.ROLLUP,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+        ),
     ),
 )

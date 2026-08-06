@@ -123,3 +123,120 @@ def test_database_schema_get_property_unknown_raises_keyerror() -> None:
     )
     with pytest.raises(KeyError):
         schema.get_property("存在しない")
+
+
+def test_database_schema_notion_database_id_defaults_to_none() -> None:
+    schema = DatabaseSchema(
+        key="dummy",
+        display_name="ダミーDB",
+        id_prefix="DMY-",
+        kintone_key="dummy",
+        zoho_key="dummy",
+        zoho_api_module="Dummy",
+        spreadsheet_sheet_name="ダミー",
+        properties=(_title_property("ID"),),
+    )
+    assert schema.notion_database_id is None
+
+
+def test_database_schema_notion_database_id_can_be_set() -> None:
+    schema = DatabaseSchema(
+        key="dummy",
+        display_name="ダミーDB",
+        id_prefix="DMY-",
+        kintone_key="dummy",
+        zoho_key="dummy",
+        zoho_api_module="Dummy",
+        spreadsheet_sheet_name="ダミー",
+        properties=(_title_property("ID"),),
+        notion_database_id="11111111-2222-3333-4444-555555555555",
+    )
+    assert schema.notion_database_id == "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.mark.parametrize(
+    "property_type",
+    [
+        PropertyType.ROLLUP,
+        PropertyType.FORMULA,
+        PropertyType.BUTTON,
+        PropertyType.UNIQUE_ID,
+        PropertyType.CREATED_TIME,
+        PropertyType.LAST_EDITED_TIME,
+        PropertyType.CREATED_BY,
+    ],
+)
+def test_read_only_property_types_are_not_writable(property_type: PropertyType) -> None:
+    prop = PropertyDefinition(
+        name="読取専用",
+        property_type=property_type,
+        requirement=RequirementLevel.AUTO,
+        sync_scope=SyncScope.INTERNAL,
+    )
+    assert prop.is_writable is False
+
+
+@pytest.mark.parametrize(
+    "property_type",
+    [
+        PropertyType.TITLE,
+        PropertyType.TEXT,
+        PropertyType.SELECT,
+        PropertyType.STATUS,
+        PropertyType.MULTI_SELECT,
+        PropertyType.NUMBER,
+        PropertyType.DATE,
+        PropertyType.EMAIL,
+        PropertyType.PHONE,
+        PropertyType.URL,
+        PropertyType.CHECKBOX,
+        PropertyType.USER,
+        PropertyType.FILES,
+    ],
+)
+def test_writable_property_types_are_writable(property_type: PropertyType) -> None:
+    prop = PropertyDefinition(
+        name="書き込み可能",
+        property_type=property_type,
+        requirement=RequirementLevel.OPTIONAL,
+        sync_scope=SyncScope.ALL_TOOLS,
+    )
+    assert prop.is_writable is True
+
+
+@pytest.mark.parametrize(
+    "property_type",
+    [
+        PropertyType.ROLLUP,
+        PropertyType.FORMULA,
+        PropertyType.BUTTON,
+        PropertyType.UNIQUE_ID,
+        PropertyType.CREATED_TIME,
+        PropertyType.LAST_EDITED_TIME,
+        PropertyType.CREATED_BY,
+    ],
+)
+@pytest.mark.parametrize(
+    "sync_scope",
+    [SyncScope.ALL_TOOLS, SyncScope.NOTION_ONLY, SyncScope.SPREADSHEET_ONLY],
+)
+def test_read_only_property_type_requires_internal_sync_scope(
+    property_type: PropertyType, sync_scope: SyncScope
+) -> None:
+    with pytest.raises(ValueError):
+        PropertyDefinition(
+            name="読取専用",
+            property_type=property_type,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=sync_scope,
+        )
+
+
+def test_read_only_property_type_with_internal_sync_scope_succeeds() -> None:
+    prop = PropertyDefinition(
+        name="読取専用",
+        property_type=PropertyType.ROLLUP,
+        requirement=RequirementLevel.AUTO,
+        sync_scope=SyncScope.INTERNAL,
+    )
+    assert prop.sync_scope == SyncScope.INTERNAL

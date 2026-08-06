@@ -1,4 +1,8 @@
-"""② チェーンDB（HC-xxx）。03_プロパティ定義 該当行を反映。"""
+"""② チェーンDB（HC-xxx）。
+
+既存の稼働中Notionワークスペースに実在するDB（database_id=d6cb6fe0-5667-416c-
+a416-ac321d2ea52a）のプロパティ構成を実データそのまま反映する。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,6 @@ from src.db_schema.base import (
     PropertyType,
     RequirementLevel,
     SyncScope,
-    common_internal_properties,
 )
 
 CHAIN_SCHEMA = DatabaseSchema(
@@ -21,41 +24,47 @@ CHAIN_SCHEMA = DatabaseSchema(
     # プレースホルダを割り当てる（実際のカスタムモジュールAPI名が確定次第、置き換えること）。
     zoho_api_module="CustomModule1",
     spreadsheet_sheet_name="チェーン",
+    notion_database_id="d6cb6fe0-5667-416c-a416-ac321d2ea52a",
     properties=(
         PropertyDefinition(
-            name="チェーンID",
+            name="グループ名",
             property_type=PropertyType.TITLE,
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="HC-xxx",
         ),
         PropertyDefinition(
-            name="チェーン名",
-            property_type=PropertyType.TEXT,
-            requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="ブランド名",
+            name="チェーンID",
+            property_type=PropertyType.UNIQUE_ID,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.INTERNAL,
+            description="HC-xxx。読取専用・自動採番",
         ),
         PropertyDefinition(
-            name="グループ名",
-            property_type=PropertyType.TEXT,
-            requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="ブランド名",
-        ),
-        PropertyDefinition(
-            name="運営会社",
-            property_type=PropertyType.TEXT,
+            name="アプローチ状況",
+            property_type=PropertyType.STATUS,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="運営法人名",
+            options=(
+                "未アプローチ",
+                "連絡済み（アポNG）",
+                "連絡済み（担当者未達）",
+                "連絡済み（返信待ち）",
+                "アポ調整中",
+                "アポ確定済み",
+                "提案済み",
+                "トライアル",
+                "【追加提案】別サービス",
+                "【追加提案】横展開",
+                "【一部】受注",
+                "【全施設】受注",
+                "失注",
+            ),
         ),
         PropertyDefinition(
             name="施設数",
-            property_type=PropertyType.NUMBER,
+            property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="多店舗展開規模。優先度判定に使用",
         ),
         PropertyDefinition(
             name="本社",
@@ -70,35 +79,135 @@ CHAIN_SCHEMA = DatabaseSchema(
             sync_scope=SyncScope.ALL_TOOLS,
         ),
         PropertyDefinition(
-            name="アプローチ状況",
-            property_type=PropertyType.SELECT,
-            requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="未アプローチ / アプローチ中 / 導入済み",
-            options=("未アプローチ", "アプローチ中", "導入済み"),
-        ),
-        PropertyDefinition(
-            name="自動チェックイン",
+            name="運営会社",
             property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.NOTION_ONLY,
-            description="既存Notion運用を踏襲",
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="電話",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
         ),
         PropertyDefinition(
             name="URL",
             property_type=PropertyType.URL,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.NOTION_ONLY,
-            description="既存Notion運用を踏襲",
+            sync_scope=SyncScope.ALL_TOOLS,
         ),
         PropertyDefinition(
-            name="取引先マスター",
+            name="自動チェックインURL",
+            property_type=PropertyType.URL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="自動チェックイン",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="決裁",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="メイリー",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="提案サービス「メイリー」に関する自由記述",
+        ),
+        PropertyDefinition(
+            name="リピッテ",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="提案サービス「リピッテ」に関する自由記述",
+        ),
+        PropertyDefinition(
+            name="ホテラボ",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="提案サービス「ホテラボ」に関する自由記述",
+        ),
+        PropertyDefinition(
+            name="オルト",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="提案サービス「オルト」に関する自由記述",
+        ),
+        PropertyDefinition(
+            name="三密",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="提案サービス「三密」に関する自由記述",
+        ),
+        PropertyDefinition(
+            name="その他ブランド",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="その他",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="未導入店舗へのアプローチ",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="メモ",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="最終アプローチ日",
+            property_type=PropertyType.DATE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="担当",
+            property_type=PropertyType.USER,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="👨‍👩‍👧‍👦 取引先マスター",
             property_type=PropertyType.RELATION,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="傘下の取引先",
+            description="取引先マスターDBへの紐付け（dual_property）",
             relation_target="client_master",
         ),
-        *common_internal_properties(),
+        PropertyDefinition(
+            name="案件管理",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="案件管理DBへの紐付け（dual_property）",
+            relation_target="project",
+        ),
+        PropertyDefinition(
+            name="アクション履歴",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="アクション履歴DBへの紐付け（dual_property）",
+            relation_target="action",
+        ),
     ),
 )
