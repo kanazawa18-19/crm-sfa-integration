@@ -1,5 +1,7 @@
 # CRM/SFA 統合システム
 
+![CI](https://github.com/kanazawa18-19/crm-sfa-integration/actions/workflows/ci.yml/badge.svg)
+
 Notion をマスターデータベースとし、Google スプレッドシート・kintone・Zoho CRM 間の
 Any-to-Any 相互リアルタイム同期、営業分析、自動チーム日報・週報を実現する自社開発基盤。
 
