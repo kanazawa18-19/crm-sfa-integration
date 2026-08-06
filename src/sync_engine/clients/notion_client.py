@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -32,6 +33,8 @@ from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_propert
 
 _NOTION_VERSION = "2022-06-28"
 _BASE_URL = "https://api.notion.com/v1"
+
+logger = logging.getLogger(__name__)
 
 
 class NotionApiError(ApiError):
@@ -169,6 +172,40 @@ class HttpNotionClient:
             name: parse_notion_property_value(value)
             for name, value in (page.get("properties") or {}).items()
         }
+
+    def query_all_pages(self, *, page_size: int = 100) -> list[dict[str, Any]]:
+        """Notion API `POST /v1/databases/{database_id}/query` で当DBの全ページを取得する。
+
+        `start_cursor`/`has_more`でページングしながら全件取得し、Notion APIの生ページ
+        オブジェクト（`id`, `properties`等を含む。`get_raw_page`と同じ「生JSON」方針）の
+        リストをそのまま返す。読み取り専用の冪等操作のためidempotent=True（既定）で呼ぶ。
+        """
+        pages: list[dict[str, Any]] = []
+        start_cursor: str | None = None
+        while True:
+            body: dict[str, Any] = {"page_size": page_size}
+            if start_cursor is not None:
+                body["start_cursor"] = start_cursor
+            response = self._request(
+                "POST", f"/databases/{self._database_id}/query", json_body=body
+            )
+            raise_for_error(response, NotionApiError)
+            data = response.json()
+            pages.extend(data.get("results") or [])
+            if not data.get("has_more"):
+                break
+            start_cursor = data.get("next_cursor")
+            if not start_cursor:
+                # has_more=Trueかつnext_cursorが空という、Notion API本来の契約上は
+                # 起きないはずのレスポンス。start_cursor=Noneのままループを続けると
+                # 先頭ページの再取得を繰り返す無限ループになるため、打ち切る。
+                logger.warning(
+                    "query_all_pages: has_more=True but next_cursor is missing for "
+                    "database_id=%r; stopping pagination to avoid an infinite loop",
+                    self._database_id,
+                )
+                break
+        return pages
 
     def get_raw_page(self, page_id: str) -> dict[str, Any]:
         """Notion API `GET /v1/pages/{page_id}` の生レスポンスJSONをそのまま返す。

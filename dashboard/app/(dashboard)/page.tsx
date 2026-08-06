@@ -1,0 +1,152 @@
+import ErrorMessage from "@/components/ErrorMessage";
+import ForecastBarChart from "@/components/charts/ForecastBarChart";
+import StatusCategoryChart from "@/components/charts/StatusCategoryChart";
+import { DashboardSummary, getDashboardSummary, getErrorMessage } from "@/lib/backend";
+import { formatYen } from "@/lib/format";
+
+// バックエンドの最新データを毎リクエスト取得するため、静的プリレンダリングを無効化する。
+export const dynamic = "force-dynamic";
+
+const CATEGORY_BADGE_CLASSES: Record<string, string> = {
+  契約済: "bg-green-100 text-green-800",
+  進行中: "bg-blue-100 text-blue-800",
+  失注: "bg-red-100 text-red-800",
+  解約: "bg-gray-200 text-gray-700",
+};
+
+const CATEGORY_CHART_COLORS: Record<string, string> = {
+  契約済: "#16a34a",
+  進行中: "#2563eb",
+  失注: "#dc2626",
+  解約: "#6b7280",
+};
+
+export default async function DashboardPage() {
+  let summary: DashboardSummary;
+  try {
+    summary = await getDashboardSummary();
+  } catch (error) {
+    return <ErrorMessage message={getErrorMessage(error)} />;
+  }
+
+  const { forecast, status_breakdown, totals, as_of } = summary;
+
+  const initialFeeData = [
+    { name: "Min", value: forecast.min.initial_fee },
+    { name: "Expected", value: forecast.expected.initial_fee },
+    { name: "Max", value: forecast.max.initial_fee },
+  ];
+  const mrrData = [
+    { name: "Min", value: forecast.min.mrr },
+    { name: "Expected", value: forecast.expected.mrr },
+    { name: "Max", value: forecast.max.mrr },
+  ];
+
+  const categoryCounts = new Map<string, number>();
+  for (const item of status_breakdown) {
+    categoryCounts.set(item.category, (categoryCounts.get(item.category) ?? 0) + item.count);
+  }
+  const categoryChartData = Array.from(categoryCounts.entries()).map(([name, value]) => ({
+    name,
+    value,
+  }));
+
+  const summaryCards = [
+    { label: "案件数", value: totals.project_count },
+    { label: "契約済", value: totals.confirmed_count },
+    { label: "進行中", value: totals.active_count },
+    { label: "失注", value: totals.lost_count },
+    { label: "解約", value: totals.cancelled_count },
+  ];
+
+  return (
+    <div className="flex flex-col gap-8">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">全社ダッシュボード</h1>
+        <p className="mt-1 text-sm text-gray-500">基準日: {as_of}</p>
+      </div>
+
+      <section>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+          {summaryCards.map((card) => (
+            <div key={card.label} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+              <p className="text-sm text-gray-500">{card.label}</p>
+              <p className="mt-1 text-2xl font-bold text-gray-900">{card.value.toLocaleString("ja-JP")}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-lg font-semibold text-gray-900">クオーター着地予測</h2>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+            <h3 className="mb-2 text-sm font-medium text-gray-700">初期費用</h3>
+            <ForecastBarChart data={initialFeeData} color="#2563eb" />
+            <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
+              {initialFeeData.map((item) => (
+                <div key={item.name}>
+                  <dt>{item.name}</dt>
+                  <dd className="font-semibold text-gray-900">{formatYen(item.value)}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+            <h3 className="mb-2 text-sm font-medium text-gray-700">MRR</h3>
+            <ForecastBarChart data={mrrData} color="#16a34a" />
+            <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
+              {mrrData.map((item) => (
+                <div key={item.name}>
+                  <dt>{item.name}</dt>
+                  <dd className="font-semibold text-gray-900">{formatYen(item.value)}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-lg font-semibold text-gray-900">営業ステータス内訳</h2>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+            <StatusCategoryChart data={categoryChartData} colors={CATEGORY_CHART_COLORS} />
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-2 text-left font-medium text-gray-500">ステータス</th>
+                  <th className="px-4 py-2 text-left font-medium text-gray-500">区分</th>
+                  <th className="px-4 py-2 text-right font-medium text-gray-500">件数</th>
+                  <th className="px-4 py-2 text-right font-medium text-gray-500">初期費用計</th>
+                  <th className="px-4 py-2 text-right font-medium text-gray-500">月額計</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {status_breakdown.map((item) => (
+                  <tr key={item.status}>
+                    <td className="px-4 py-2 text-gray-900">{item.status}</td>
+                    <td className="px-4 py-2">
+                      <span
+                        className={`rounded px-2 py-0.5 text-xs font-medium ${
+                          CATEGORY_BADGE_CLASSES[item.category] ?? "bg-gray-100 text-gray-700"
+                        }`}
+                      >
+                        {item.category}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-right text-gray-900">{item.count.toLocaleString("ja-JP")}</td>
+                    <td className="px-4 py-2 text-right text-gray-900">{formatYen(item.initial_fee_sum)}</td>
+                    <td className="px-4 py-2 text-right text-gray-900">{formatYen(item.monthly_fee_sum)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
