@@ -20,6 +20,7 @@ Notion APIページング（100件/回）への対応は、この即時処理で
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from src.db_schema.base import Tool
@@ -37,6 +38,8 @@ from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import is_own_system_event
 from src.sync_engine.sync_targets.base import SyncTarget
 from src.sync_engine.sync_targets.spreadsheet_sync import SpreadsheetSyncTarget
+
+logger = logging.getLogger(__name__)
 
 _ALL_TOOLS: tuple[Tool, ...] = (Tool.NOTION, Tool.SPREADSHEET, Tool.KINTONE, Tool.ZOHO)
 
@@ -99,7 +102,19 @@ class Dispatcher:
 
         results: list[PropertyDispatchResult] = []
         for property_name, new_value in event.properties.items():
-            prop = schema.get_property(property_name)
+            try:
+                prop = schema.get_property(property_name)
+            except KeyError:
+                # 送信元ツール（Notion/kintone/Zoho/スプシ）を問わず、スキーマ未定義の
+                # プロパティが1件でも含まれるとイベント全体がKeyErrorで失われてしまうため、
+                # そのプロパティだけをスキップし他のプロパティの処理は継続する。
+                logger.warning(
+                    "ignoring unknown property '%s' for db_key=%r (source_tool=%s, not in schema)",
+                    property_name,
+                    event.db_key,
+                    event.source_tool.value,
+                )
+                continue
 
             if event.source_tool is Tool.NOTION:
                 # Notionは常にマスターであり、Notion発の変更に競合判定は不要。

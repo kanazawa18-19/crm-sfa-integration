@@ -1,5 +1,9 @@
 """kintone Webhookの受信ハンドラ（05_同期・競合制御「変更検知の仕組み」: kintone Webhook）。
 
+kintoneは他ツール（Notion/スプレッドシート/Zoho）→kintoneへの一方向書き込み専用となったため、
+本Webhookハンドラは現時点では実運用で呼ばれない想定（将来kintone側の運用が変わった場合に
+備えて実装は残す）。
+
 kintoneの実際のWebhook通知は type/app/record を含む形で送信され、recordは
 kintone REST APIのレコード取得結果と同じ形式（各フィールドが {"value": ...} でラップされる）。
 

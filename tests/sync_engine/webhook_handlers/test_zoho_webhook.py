@@ -24,7 +24,7 @@ def _payload() -> dict:
                 "id": "4876876000000488001",
                 "Modified_Time": "2026-08-05T09:00:00+09:00",
                 "営業ステータス": "商談中(B)",
-                "初期費用（イニシャル）": 500000,
+                "初期費用": 500000,
             }
         ],
     }
@@ -50,7 +50,7 @@ def test_zoho_payload_to_sync_event_builds_expected_event() -> None:
     assert event.occurred_at == datetime(
         2026, 8, 5, 9, 0, 0, tzinfo=timezone(timedelta(hours=9))
     )
-    assert event.properties == {"営業ステータス": "商談中(B)", "初期費用（イニシャル）": 500000}
+    assert event.properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
     assert event.sync_system_id is None
 
 
@@ -88,6 +88,20 @@ def test_zoho_payload_to_sync_event_display_label_is_not_a_valid_module_by_defau
     """BLOCKER4回帰確認: zoho_key（「案件」等の日本語ラベル）では逆引きできない。"""
     with pytest.raises(ValueError):
         zoho_payload_to_sync_event(_payload(), {})  # module="案件"はzoho_keyでありAPI名ではない
+
+
+def test_zoho_payload_to_sync_event_ignores_unknown_property_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = _payload()
+    payload["data"][0]["未定義プロパティ"] = "何かの値"
+
+    with caplog.at_level("WARNING"):
+        event = zoho_payload_to_sync_event(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert "未定義プロパティ" not in event.properties
+    assert event.properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
+    assert any("未定義プロパティ" in record.getMessage() for record in caplog.records)
 
 
 def test_handler_dispatches_to_injected_dispatcher_when_zoho_enabled(

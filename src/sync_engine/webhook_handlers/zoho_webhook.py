@@ -26,7 +26,7 @@ import json
 from typing import Any, Mapping
 
 from src.db_schema.base import Tool
-from src.db_schema.registry import ALL_SCHEMAS
+from src.db_schema.registry import ALL_SCHEMAS, get_schema
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import HEADER_NAME
@@ -69,7 +69,25 @@ def zoho_payload_to_sync_event(
     if not records:
         raise ValueError("zoho webhook payload has no data records")
     record = records[0]
-    properties = {k: v for k, v in record.items() if k not in _SYSTEM_FIELDS}
+
+    # Dispatcher側（未定義プロパティのスキップ）で根本的には保護されるが、Zoho側でも
+    # 早期に警告ログを出しておく（Notionのようなrollup/formula型の大量発生は想定しにくいため、
+    # notion_webhook.pyのような型ホワイトリストまでは設けない簡易対応）。
+    schema = get_schema(db_key)
+    properties: dict[str, Any] = {}
+    for k, v in record.items():
+        if k in _SYSTEM_FIELDS:
+            continue
+        try:
+            schema.get_property(k)
+        except KeyError:
+            logger.warning(
+                "ignoring unknown Zoho property '%s' for db_key=%r (not in schema)",
+                k,
+                db_key,
+            )
+            continue
+        properties[k] = v
 
     return SyncEvent(
         source_tool=Tool.ZOHO,

@@ -7,7 +7,14 @@ from typing import Any
 
 import pytest
 
-from src.db_schema.base import Tool
+from src.db_schema.base import (
+    DatabaseSchema,
+    PropertyDefinition,
+    PropertyType,
+    RequirementLevel,
+    SyncScope,
+    Tool,
+)
 from src.sync_engine.conflict_resolver import RejectedData, ResolutionAction
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
@@ -242,8 +249,40 @@ def test_kintone_source_excludes_kintone_from_writes(
 
 
 def test_notion_source_respects_spreadsheet_only_sync_scope(
-    store: SQLiteIdMappingStore, mapping: IdMapping
+    store: SQLiteIdMappingStore, mapping: IdMapping, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """SPREADSHEET_ONLYスコープの伝播（Notion発の変更がスプレッドシートにのみ伝わり
+    kintone/Zohoには伝播しないこと）を検証する。
+
+    08_外部データ連携（国交省/観光庁オープンデータの自動補記）が保留中で、実データスキーマ上
+    SPREADSHEET_ONLYスコープを持つプロパティが現状1つも存在しないため、テスト用の
+    DatabaseSchemaをその場で組み立て、実際のALL_SCHEMASに依存しない自己完結したテストにする。
+    """
+    test_schema = DatabaseSchema(
+        key="client_master",
+        display_name="取引先マスタ（テスト用）",
+        id_prefix="CLI",
+        kintone_key="取引先マスタ",
+        zoho_key="取引先",
+        zoho_api_module="Accounts",
+        spreadsheet_sheet_name="取引先マスタ",
+        properties=(
+            PropertyDefinition(
+                name="取引先名",
+                property_type=PropertyType.TITLE,
+                requirement=RequirementLevel.REQUIRED,
+                sync_scope=SyncScope.ALL_TOOLS,
+            ),
+            PropertyDefinition(
+                name="エリア属性データ",
+                property_type=PropertyType.JSON_TEXT,
+                requirement=RequirementLevel.OPTIONAL,
+                sync_scope=SyncScope.SPREADSHEET_ONLY,
+            ),
+        ),
+    )
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: test_schema)
+
     targets = _all_targets()
     dispatcher = Dispatcher(store, targets)
     event = SyncEvent(
@@ -491,6 +530,76 @@ def test_conflict_rejected_data_logged_to_spreadsheet_regardless_of_importance(
     assert logged["採用値"] == "Notion側案件名"
     assert logged["却下値"] == "kintone側案件名"
     assert logged["却下元ツール"] == "kintone"
+
+
+# --- スキーマ未定義プロパティのスキップ（Dispatcher堅牢性向上） --------------------------
+
+
+def test_dispatch_skips_unknown_property_while_writing_known_property(
+    store: SQLiteIdMappingStore, mapping: IdMapping, caplog: pytest.LogCaptureFixture
+) -> None:
+    """スキーマ未定義のプロパティと定義済みのプロパティが1つのイベントに混在する場合、
+    未定義プロパティはwritten_toolsに一切現れずupsert_recordも呼ばれない一方、
+    定義済みプロパティは通常通り書き込まれresult.propertiesに含まれることを確認する。
+    """
+    targets = _all_targets()
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.NOTION,
+        db_key="client_master",
+        external_id="CLI-001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称", "存在しない項目": "何かの値"},
+    )
+
+    with caplog.at_level("WARNING"):
+        result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    # 未定義プロパティはresult.propertiesにも現れず、書き込みも一切発生しない。
+    assert len(result.properties) == 1
+    prop_result = result.properties[0]
+    assert prop_result.property_name == "取引先名"
+    assert prop_result.written_tools == frozenset({Tool.KINTONE, Tool.ZOHO, Tool.SPREADSHEET})
+
+    for target in targets.values():
+        for _external_id, properties in target.upsert_calls:
+            assert "存在しない項目" not in properties
+
+    # 定義済みプロパティは通常通り書き込まれる。
+    assert targets[Tool.KINTONE].upsert_calls == [("1001", {"取引先名": "新名称"})]
+    assert targets[Tool.ZOHO].upsert_calls == [("zoho-1", {"取引先名": "新名称"})]
+    assert targets[Tool.SPREADSHEET].upsert_calls == [("5", {"取引先名": "新名称"})]
+
+    assert any(
+        "存在しない項目" in record.getMessage() for record in caplog.records
+    )
+
+
+def test_dispatch_all_properties_unknown_yields_empty_result_without_error(
+    store: SQLiteIdMappingStore, mapping: IdMapping, caplog: pytest.LogCaptureFixture
+) -> None:
+    """境界ケース: propertiesが全て未定義の場合、result.properties == ()（空タプル）となり
+    例外が発生しないことを確認する。"""
+    targets = _all_targets()
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.NOTION,
+        db_key="client_master",
+        external_id="CLI-001",
+        occurred_at=NOW,
+        properties={"存在しない項目1": "a", "存在しない項目2": "b"},
+    )
+
+    with caplog.at_level("WARNING"):
+        result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    assert result.properties == ()
+    for target in targets.values():
+        assert target.upsert_calls == []
+    assert any("存在しない項目1" in record.getMessage() for record in caplog.records)
+    assert any("存在しない項目2" in record.getMessage() for record in caplog.records)
 
 
 def test_conflict_notifies_slack_for_important_property(store: SQLiteIdMappingStore) -> None:

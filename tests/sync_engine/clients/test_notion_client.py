@@ -167,15 +167,15 @@ def test_create_page_sends_correct_body_and_returns_id(
 ) -> None:
     requests_mock.post("https://api.notion.com/v1/pages", json={"id": "new-page-id"})
 
-    page_id = client.create_page({"取引先ID": "CLI-002", "顧客種別": "飲食"})
+    page_id = client.create_page({"取引先名": "株式会社サンプル", "顧客種別": "宿泊施設"})
 
     assert page_id == "new-page-id"
     sent_body = requests_mock.last_request.json()
     assert sent_body["parent"] == {"database_id": DATABASE_ID}
-    assert sent_body["properties"]["取引先ID"] == {
-        "title": [{"type": "text", "text": {"content": "CLI-002"}}]
+    assert sent_body["properties"]["取引先名"] == {
+        "title": [{"type": "text", "text": {"content": "株式会社サンプル"}}]
     }
-    assert sent_body["properties"]["顧客種別"] == {"select": {"name": "飲食"}}
+    assert sent_body["properties"]["顧客種別"] == {"select": {"name": "宿泊施設"}}
 
 
 def test_create_page_does_not_retry_on_5xx(
@@ -190,7 +190,7 @@ def test_create_page_does_not_retry_on_5xx(
     )
 
     with pytest.raises(NotionApiError):
-        client.create_page({"取引先ID": "CLI-002"})
+        client.create_page({"取引先名": "株式会社サンプル"})
 
     assert requests_mock.call_count == 1
 
@@ -201,12 +201,12 @@ def test_create_page_does_not_retry_on_5xx(
 def test_update_page_sends_patch_with_properties(requests_mock, client: HttpNotionClient) -> None:
     requests_mock.patch(f"https://api.notion.com/v1/pages/{PAGE_ID}", json={"id": PAGE_ID})
 
-    client.update_page(PAGE_ID, {"取引先名": "更新後の名称"})
+    client.update_page(PAGE_ID, {"住所": "更新後の住所"})
 
     sent_body = requests_mock.last_request.json()
     assert sent_body == {
         "properties": {
-            "取引先名": {"rich_text": [{"type": "text", "text": {"content": "更新後の名称"}}]}
+            "住所": {"rich_text": [{"type": "text", "text": {"content": "更新後の住所"}}]}
         }
     }
     assert "parent" not in sent_body
@@ -304,10 +304,10 @@ def test_build_notion_property_value_rejects_unsupported_type() -> None:
 def test_build_notion_properties_uses_schema_to_determine_type() -> None:
     schema = get_schema(DB_KEY)
 
-    result = build_notion_properties({"取引先ID": "CLI-001", "顧客種別": "飲食"}, schema)
+    result = build_notion_properties({"取引先名": "株式会社サンプル", "顧客種別": "宿泊施設"}, schema)
 
-    assert result["取引先ID"] == {"title": [{"type": "text", "text": {"content": "CLI-001"}}]}
-    assert result["顧客種別"] == {"select": {"name": "飲食"}}
+    assert result["取引先名"] == {"title": [{"type": "text", "text": {"content": "株式会社サンプル"}}]}
+    assert result["顧客種別"] == {"select": {"name": "宿泊施設"}}
 
 
 def test_build_notion_properties_raises_key_error_for_unknown_property() -> None:
