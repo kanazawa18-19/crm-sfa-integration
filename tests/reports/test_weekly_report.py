@@ -64,7 +64,7 @@ def test_weekly_confirmed_revenue_sums_only_contracts_within_the_week() -> None:
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=100000,
             monthly_fee=10000,
             contract_date=date(2026, 8, 5),  # 週内
@@ -73,7 +73,7 @@ def test_weekly_confirmed_revenue_sums_only_contracts_within_the_week() -> None:
             project_id="P2",
             client_name="株式会社B",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=999999,
             monthly_fee=99999,
             contract_date=date(2026, 8, 1),  # 週外（先週）
@@ -82,7 +82,7 @@ def test_weekly_confirmed_revenue_sums_only_contracts_within_the_week() -> None:
             project_id="P3",
             client_name="株式会社C",
             assignee="佐藤",
-            status="提案中",  # 未契約 -> 対象外
+            status="アポ",  # 未契約 -> 対象外
             initial_fee=999999,
             monthly_fee=99999,
             contract_date=date(2026, 8, 5),
@@ -102,6 +102,35 @@ def test_weekly_confirmed_revenue_is_zero_when_no_projects() -> None:
     assert data.weekly_confirmed_mrr == 0
 
 
+def test_weekly_confirmed_revenue_counts_both_facility_contract_and_contract_statuses() -> None:
+    """「施設契約」「契約」の両方が契約済扱いになること（複数値対応の回帰確認）。"""
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="施設契約",
+            initial_fee=100000,
+            monthly_fee=10000,
+            contract_date=date(2026, 8, 5),
+        ),
+        WeeklyProjectRecord(
+            project_id="P2",
+            client_name="株式会社B",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=200000,
+            monthly_fee=20000,
+            contract_date=date(2026, 8, 5),
+        ),
+    ]
+
+    data = _build(active_projects=projects)
+
+    assert data.weekly_confirmed_initial_fee == 300000
+    assert data.weekly_confirmed_mrr == 30000
+
+
 # --- active_projectsにクオーター範囲外の契約済みレコードが混入した場合の防御的チェック ---
 
 
@@ -116,7 +145,7 @@ def test_warns_when_confirmed_project_has_contract_date_outside_quarter(
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=100000,
             monthly_fee=10000,
             contract_date=date(2026, 4, 1),  # 前クオーター -> 範囲外
@@ -137,7 +166,7 @@ def test_does_not_warn_when_confirmed_project_contract_date_is_within_quarter() 
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=100000,
             monthly_fee=10000,
             contract_date=date(2026, 8, 5),  # 当クオーター内
@@ -165,7 +194,7 @@ def test_progress_rate_is_computed_against_target() -> None:
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),
@@ -236,7 +265,7 @@ def test_member_performances_overall_score_is_none_when_quality_undetermined() -
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="提案中",
+            status="アポ",
         ),
     ]
 
@@ -255,7 +284,7 @@ def test_member_performances_reflects_win_rate_and_deadline_compliance() -> None
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             contract_date=date(2026, 8, 5),
         ),
         WeeklyProjectRecord(
@@ -268,7 +297,7 @@ def test_member_performances_reflects_win_rate_and_deadline_compliance() -> None
             project_id="P3",
             client_name="株式会社C",
             assignee="佐藤",
-            status="商談中(B)",
+            status="リスケ",
             next_action_date=date(2026, 8, 1),  # WEEK_END(8/7)より過去 -> 期限判定対象
         ),
     ]
@@ -294,7 +323,7 @@ def test_member_performances_is_absent_from_data_when_no_member_actions_passed()
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             contract_date=date(2026, 8, 5),
         ),
     ]
@@ -314,7 +343,7 @@ def test_quarter_forecast_reflects_active_projects() -> None:
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=100,
             monthly_fee=10,
             contract_date=date(2026, 8, 5),
@@ -352,7 +381,7 @@ def test_stagnation_risk_projects_lists_projects_exceeding_threshold() -> None:
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="商談中(B)",
+            status="リスケ",
             total_contact_count=16,  # 平均10 * 1.5 = 15 を超過
             last_action_date=WEEK_END,
         ),
@@ -396,7 +425,7 @@ def test_generate_weekly_report_text_renders_all_sections() -> None:
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=100000,
             monthly_fee=10000,
             contract_date=date(2026, 8, 5),
@@ -405,7 +434,7 @@ def test_generate_weekly_report_text_renders_all_sections() -> None:
             project_id="P2",
             client_name="株式会社B",
             assignee="鈴木",
-            status="商談中(B)",
+            status="リスケ",
             total_contact_count=16,
             last_action_date=WEEK_END,
         ),
@@ -448,7 +477,7 @@ def test_generate_weekly_report_text_splits_initial_fee_and_mrr_progress_into_se
             project_id="P1",
             client_name="株式会社A",
             assignee="佐藤",
-            status="契約済",
+            status="契約",
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),

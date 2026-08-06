@@ -33,8 +33,6 @@ from src.analytics.condition import (
     judge_condition,
 )
 from src.analytics.forecast import (
-    ACTIVE_STATUSES,
-    CONFIRMED_STATUS,
     ForecastAmount,
     ForecastProject,
     QuarterForecast,
@@ -48,6 +46,10 @@ from src.analytics.member_performance import (
 )
 from src.analytics.win_pattern import ProposalRecord, WinPattern, analyze_win_patterns
 from src.analytics.win_rate import ProjectOutcome, average_won_contact_count
+# ACTIVE_STATUSES/CONFIRMED_STATUSESはforecast.py経由の再エクスポートではなく、
+# 定義元のdb_schema.projectから直接importする（依存関係を1本化し、forecast.pyの
+# import構成が変わってもここが追従不要になるようにするため）。
+from src.db_schema.project import ACTIVE_STATUSES, CONFIRMED_STATUSES
 
 
 @dataclass(frozen=True)
@@ -198,7 +200,7 @@ def build_weekly_report_data(
       期限判定対象の案件があるメンバーについてはスピードが確定した悪い実績（0%）ではなく
       未確定（None）として扱われる（ボリュームは引き続き全メンバー0件）。
     """
-    confirmed_projects = [p for p in active_projects if p.status == CONFIRMED_STATUS]
+    confirmed_projects = [p for p in active_projects if p.status in CONFIRMED_STATUSES]
 
     out_of_quarter_confirmed = [
         p.project_id

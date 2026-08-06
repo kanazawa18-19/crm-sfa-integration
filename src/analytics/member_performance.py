@@ -8,8 +8,8 @@
   COUNTABLE_ACTION_TYPES（自動メール／テレアポ／訪問商談／オンライン商談）を
   メンバー単位に適用する（`count_total_contacts`は案件単位の集計のため転用できない）。
 - クオリティ: メンバーごとの受注率。担当案件のうち決着済み（営業ステータスが
-  `forecast.CONFIRMED_STATUS`／`LOST_STATUS`／`CANCELLED_STATUS`のいずれか、
-  すなわち`forecast.ACTIVE_STATUSES`に含まれない）案件を分母、`CONFIRMED_STATUS`を
+  `db_schema.project.CONFIRMED_STATUSES`／`LOST_STATUSES`／`CANCELLED_STATUSES`の
+  いずれか、すなわち`ACTIVE_STATUSES`に含まれない）案件を分母、`CONFIRMED_STATUSES`を
   分子とする。
 - スピード（簡易代替指標）: 「次回アクション期限遵守率」。本来ガイドラインが求める
   スピード指標（一次返信時間の実測等）に対応するプロパティはNotion側に存在せず、
@@ -32,11 +32,11 @@ from datetime import date
 from typing import Sequence
 
 from src.analytics.contact_count import COUNTABLE_ACTION_TYPES
-from src.analytics.forecast import CANCELLED_STATUS, CONFIRMED_STATUS, LOST_STATUS
+from src.db_schema.project import CANCELLED_STATUSES, CONFIRMED_STATUSES, LOST_STATUSES
 
-# 決着済み（今後動かない）案件を表す営業ステータス。forecast.ACTIVE_STATUSESの補集合
-# （契約済・失注・解約の3つ。src/db_schema/project.py「営業ステータス」選択肢参照）。
-DECIDED_STATUSES = frozenset({CONFIRMED_STATUS, LOST_STATUS, CANCELLED_STATUS})
+# 決着済み（今後動かない）案件を表す営業ステータス。ACTIVE_STATUSESの補集合
+# （契約済・失注・解約。src/db_schema/project.py「営業ステータス」選択肢参照）。
+DECIDED_STATUSES = CONFIRMED_STATUSES | LOST_STATUSES | CANCELLED_STATUSES
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ def member_win_rates(projects: Sequence[MemberProjectRecord]) -> dict[str, float
         members.add(p.member)
         if p.status in DECIDED_STATUSES:
             decided[p.member] = decided.get(p.member, 0) + 1
-            if p.status == CONFIRMED_STATUS:
+            if p.status in CONFIRMED_STATUSES:
                 won[p.member] = won.get(p.member, 0) + 1
 
     return {

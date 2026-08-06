@@ -41,8 +41,8 @@ def test_member_contact_counts_returns_empty_dict_for_no_actions() -> None:
 
 def test_member_win_rates_returns_none_when_member_has_no_decided_projects() -> None:
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="提案中"),
-        MemberProjectRecord(project_id="P2", member="佐藤", status="商談中(B)"),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="アポ"),
+        MemberProjectRecord(project_id="P2", member="佐藤", status="リスケ"),
     ]
 
     rates = member_win_rates(projects)
@@ -52,10 +52,10 @@ def test_member_win_rates_returns_none_when_member_has_no_decided_projects() -> 
 
 def test_member_win_rates_computed_against_decided_projects_only() -> None:
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="契約済"),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="契約"),
         MemberProjectRecord(project_id="P2", member="佐藤", status="失注"),
         MemberProjectRecord(project_id="P3", member="佐藤", status="解約"),
-        MemberProjectRecord(project_id="P4", member="佐藤", status="提案中"),  # 分母に含めない
+        MemberProjectRecord(project_id="P4", member="佐藤", status="アポ"),  # 分母に含めない
     ]
 
     rates = member_win_rates(projects)
@@ -74,6 +74,18 @@ def test_member_win_rates_is_zero_when_no_wins_among_decided_projects() -> None:
     assert rates == {"佐藤": 0.0}
 
 
+def test_member_win_rates_counts_both_facility_contract_and_contract_as_won() -> None:
+    """「施設契約」「契約」の両方が契約済（受注）扱いになること（複数値対応の回帰確認）。"""
+    projects = [
+        MemberProjectRecord(project_id="P1", member="佐藤", status="施設契約"),
+        MemberProjectRecord(project_id="P2", member="佐藤", status="契約"),
+    ]
+
+    rates = member_win_rates(projects)
+
+    assert rates == {"佐藤": 1.0}
+
+
 # --- member_deadline_compliance_rates（スピード簡易代替指標） ---
 
 
@@ -81,9 +93,9 @@ def test_deadline_compliance_rate_is_none_when_no_projects_are_past_due() -> Non
     """次回アクション日が全て未来（または未設定）のケース。"""
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 10)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 10)
         ),
-        MemberProjectRecord(project_id="P2", member="佐藤", status="提案中", next_action_date=None),
+        MemberProjectRecord(project_id="P2", member="佐藤", status="アポ", next_action_date=None),
     ]
 
     rates = member_deadline_compliance_rates(projects, [], as_of=AS_OF)
@@ -94,7 +106,7 @@ def test_deadline_compliance_rate_is_none_when_no_projects_are_past_due() -> Non
 def test_deadline_compliance_rate_counts_project_as_compliant_when_followed_up() -> None:
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
@@ -111,7 +123,7 @@ def test_deadline_compliance_rate_counts_project_as_overdue_when_no_follow_up() 
     対する追いかけアクションが1件も無い、という「本当に遵守できなかった」ケース。"""
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
@@ -130,7 +142,7 @@ def test_deadline_compliance_rate_is_none_when_due_but_no_action_data_at_all() -
     """
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
 
@@ -146,10 +158,10 @@ def test_deadline_compliance_rate_excludes_decided_projects() -> None:
     """
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="契約済", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="契約", next_action_date=date(2026, 8, 1)
         ),
         MemberProjectRecord(
-            project_id="P2", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P2", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
@@ -172,7 +184,7 @@ def test_deadline_compliance_rate_counts_email_action_as_valid_follow_up() -> No
     """
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
@@ -188,7 +200,7 @@ def test_deadline_compliance_rate_counts_action_on_exact_same_day_as_followed_up
     """action_dateがnext_action_dateと厳密に同日の境界値。`>=`により遵守扱いとする仕様。"""
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
@@ -204,7 +216,7 @@ def test_deadline_compliance_rate_ignores_action_before_next_action_date() -> No
     """次回アクション日より前のアクションはフォロー実施とみなさない。"""
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 5)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 5)
         ),
     ]
     actions = [
@@ -219,7 +231,7 @@ def test_deadline_compliance_rate_ignores_action_before_next_action_date() -> No
 def test_deadline_compliance_rate_excludes_project_due_today() -> None:
     """次回アクション日がas_ofと同日（＝まだ過ぎていない）は判定対象外。"""
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="提案中", next_action_date=AS_OF),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="アポ", next_action_date=AS_OF),
     ]
 
     rates = member_deadline_compliance_rates(projects, [], as_of=AS_OF)
@@ -251,7 +263,7 @@ def test_compute_member_performance_returns_empty_tuple_for_no_data() -> None:
 
 def test_compute_member_performance_volume_score_is_zero_when_no_contacts_at_all() -> None:
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="契約済"),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="契約"),
     ]
 
     results = compute_member_performance(projects, [], as_of=AS_OF)
@@ -262,8 +274,8 @@ def test_compute_member_performance_volume_score_is_zero_when_no_contacts_at_all
 
 def test_compute_member_performance_normalizes_volume_relative_to_group_max() -> None:
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="契約済"),
-        MemberProjectRecord(project_id="P2", member="鈴木", status="契約済"),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="契約"),
+        MemberProjectRecord(project_id="P2", member="鈴木", status="契約"),
     ]
     actions = [
         MemberActionRecord(project_id="P1", member="佐藤", action_type="テレアポ", action_date=AS_OF)
@@ -287,17 +299,17 @@ def test_compute_member_performance_overall_score_is_product_of_three_metrics() 
     """
     projects = [
         # クオリティ用: 決着済み5件中3件受注 -> quality = 3/5 = 0.6
-        MemberProjectRecord(project_id="Q1", member="佐藤", status="契約済"),
-        MemberProjectRecord(project_id="Q2", member="佐藤", status="契約済"),
-        MemberProjectRecord(project_id="Q3", member="佐藤", status="契約済"),
+        MemberProjectRecord(project_id="Q1", member="佐藤", status="契約"),
+        MemberProjectRecord(project_id="Q2", member="佐藤", status="契約"),
+        MemberProjectRecord(project_id="Q3", member="佐藤", status="契約"),
         MemberProjectRecord(project_id="Q4", member="佐藤", status="失注"),
         MemberProjectRecord(project_id="Q5", member="佐藤", status="解約"),
         # スピード用: 次回アクション日が過去の5件中4件フォロー済み -> speed = 1 - 1/5 = 0.8
-        MemberProjectRecord(project_id="S1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)),
-        MemberProjectRecord(project_id="S2", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)),
-        MemberProjectRecord(project_id="S3", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)),
-        MemberProjectRecord(project_id="S4", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)),
-        MemberProjectRecord(project_id="S5", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)),
+        MemberProjectRecord(project_id="S1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)),
+        MemberProjectRecord(project_id="S2", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)),
+        MemberProjectRecord(project_id="S3", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)),
+        MemberProjectRecord(project_id="S4", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)),
+        MemberProjectRecord(project_id="S5", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)),
     ]
     actions = [
         MemberActionRecord(project_id="S1", member="佐藤", action_type="テレアポ", action_date=date(2026, 8, 2)),
@@ -328,7 +340,7 @@ def test_compute_member_performance_overall_score_is_none_when_only_quality_is_n
     """クオリティのみ未確定（決着済み案件0件）、スピードは確定しているケース。"""
     projects = [
         MemberProjectRecord(
-            project_id="P1", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P1", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
@@ -348,7 +360,7 @@ def test_compute_member_performance_overall_score_is_none_when_only_speed_is_non
     """スピードのみ未確定（次回アクション期限判定対象の案件が無い）、クオリティは確定
     しているケース。"""
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="契約済"),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="契約"),
     ]
 
     results = compute_member_performance(projects, [], as_of=AS_OF)
@@ -364,9 +376,9 @@ def test_compute_member_performance_overall_score_is_zero_when_volume_score_is_z
     """volume_score=0.0（接触実績なし）だがquality/speedが確定しているケースで、
     overall_scoreがNoneではなく正しく0.0になることを検証する。"""
     projects = [
-        MemberProjectRecord(project_id="P1", member="佐藤", status="契約済"),
+        MemberProjectRecord(project_id="P1", member="佐藤", status="契約"),
         MemberProjectRecord(
-            project_id="P2", member="佐藤", status="提案中", next_action_date=date(2026, 8, 1)
+            project_id="P2", member="佐藤", status="アポ", next_action_date=date(2026, 8, 1)
         ),
     ]
     actions = [
