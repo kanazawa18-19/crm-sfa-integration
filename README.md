@@ -74,6 +74,12 @@ Phase 4（データ移行・総合テスト）→ Phase 5（本番移行）。
 で実装している。本来の一次返信時間等の実測にはNotion側への新規プロパティ追加が必要
 （[`docs/member_performance_note.md`](docs/member_performance_note.md) 参照）。
 
+■ Phase 2 実装ノート: Googleスプレッドシート連携（`HttpSpreadsheetClient`）は、サービス
+アカウントJWTからのトークン取得ではなく`GOOGLE_ACCESS_TOKEN`直接指定による簡略認証で
+実装している。本番運用にはサービスアカウントJWTからの自動トークン取得・リフレッシュ処理
+への置き換えが必要
+（[`docs/spreadsheet_auth_note.md`](docs/spreadsheet_auth_note.md) 参照）。
+
 ## 保留・要確認事項
 
 仕様書 `10_保留・要確認事項` に10件の未決定論点がある（Q-01〜Q-10）。
