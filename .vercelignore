@@ -1,0 +1,7 @@
+pyproject.toml
+tests/
+dashboard/
+docs/
+scripts/
+gas/
+.venv/

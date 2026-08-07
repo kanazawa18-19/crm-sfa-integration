@@ -17,3 +17,5 @@ scripts/.notion_db_ids.json
 # 移行スクリプト（scripts/migrate_data.py）出力先。氏名・部署・役職・携帯番号・
 # メールアドレス等のPIIを含むIDマッピングDB・レポートCSVが生成されるため丸ごと除外する。
 migration_output/
+.vercel
+.env*
