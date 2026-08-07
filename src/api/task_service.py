@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from src.api.notion_display import parse_notion_property_for_display
+from src.api.user_directory import NotionUserDirectory
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 _JST = timezone(timedelta(hours=9))
@@ -85,23 +86,32 @@ def _parse_property(properties: dict[str, Any], name: str) -> Any:
     return parse_notion_property_for_display(value)
 
 
-def _person_display_names(people: Any) -> list[str]:
-    """`parse_notion_property_for_display`が返す`[{"id":..., "name":...}, ...]`を、
-    表示名（`name`が無ければ`id`のまま）のリストへ変換する。"""
+def _resolve_person_name(person: Any, user_directory: Any) -> str | None:
+    """`parse_notion_property_for_display`が返す`{"id":..., "name":...}`形式1件を表示名へ変換する。
+
+    `dashboard_service._resolve_person_name`と同じ考え方（ページに埋め込まれた`name`を
+    最優先し、欠落時のみ`NotionUserDirectory`でID解決、それでも解決できなければ
+    生UUIDではなく人間が読めるプレースホルダーにする）。
+    """
+    if not isinstance(person, dict):
+        return None
+    name = person.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    person_id = person.get("id")
+    if not person_id:
+        return None
+    resolved = user_directory.resolve(str(person_id))
+    if resolved == str(person_id):
+        return f"不明なメンバー（{str(person_id)[:8]}）"
+    return resolved
+
+
+def _person_display_names(people: Any, user_directory: Any) -> list[str]:
     if not isinstance(people, list):
         return []
-    names: list[str] = []
-    for person in people:
-        if not isinstance(person, dict):
-            continue
-        name = person.get("name")
-        if isinstance(name, str) and name.strip():
-            names.append(name.strip())
-            continue
-        person_id = person.get("id")
-        if person_id:
-            names.append(str(person_id))
-    return names
+    names = [_resolve_person_name(person, user_directory) for person in people]
+    return [name for name in names if name]
 
 
 def _parse_due_date(value: Any) -> date | None:
@@ -121,15 +131,17 @@ def _truncate_title(title: str | None) -> str:
     return stripped[:TITLE_SUMMARY_MAX_LENGTH] + "…"
 
 
-def _page_to_task_dict(page: dict[str, Any]) -> dict[str, Any]:
+def _page_to_task_dict(page: dict[str, Any], user_directory: Any) -> dict[str, Any]:
     properties = page.get("properties") or {}
     return {
         "notion_page_id": page["id"],
         "title": _parse_property(properties, PROP_名前),
         "status": _parse_property(properties, PROP_ステータス),
         "due_date": _parse_due_date(_parse_property(properties, PROP_期限)),
-        "assignees": _person_display_names(_parse_property(properties, PROP_担当者)),
-        "ball": _person_display_names(_parse_property(properties, PROP_ボール)),
+        "assignees": _person_display_names(
+            _parse_property(properties, PROP_担当者), user_directory
+        ),
+        "ball": _person_display_names(_parse_property(properties, PROP_ボール), user_directory),
         "category": _parse_property(properties, PROP_タスクカテゴリ) or [],
         "tags": _parse_property(properties, PROP_タグ) or [],
         "has_project_link": bool(_parse_property(properties, PROP_案件管理)),
@@ -139,20 +151,23 @@ def _page_to_task_dict(page: dict[str, Any]) -> dict[str, Any]:
 class TaskDataSource:
     """「todo」DBのNotionページを表示用dictへ変換して取得するデータソース。
 
-    `notion_client`（`query_all_pages()`を持つオブジェクト）を注入できる
-    （未指定時は実際のNotion APIを叩く`HttpNotionClient`を使う）。テストではフェイク
-    実装に差し替える。
+    `notion_client`（`query_all_pages()`を持つオブジェクト）・`user_directory`
+    （`resolve`を持つオブジェクト）を注入できる（未指定時は実際のNotion APIを叩く
+    `HttpNotionClient`/`NotionUserDirectory`を使う）。テストではフェイク実装に差し替える。
     """
 
-    def __init__(self, *, notion_client: Any | None = None) -> None:
+    def __init__(
+        self, *, notion_client: Any | None = None, user_directory: Any | None = None
+    ) -> None:
         self._notion_client = notion_client or HttpNotionClient("task", TASK_DB_ID)
+        self._user_directory = user_directory or NotionUserDirectory()
 
     def get_tasks(self) -> list[dict[str, Any]]:
         return _cached("tasks", self._fetch_tasks)
 
     def _fetch_tasks(self) -> list[dict[str, Any]]:
         pages = self._notion_client.query_all_pages()
-        return [_page_to_task_dict(page) for page in pages]
+        return [_page_to_task_dict(page, self._user_directory) for page in pages]
 
 
 def _sort_key(task: dict[str, Any]) -> tuple[int, str]:
@@ -169,10 +184,11 @@ def build_tasks(
     *,
     as_of: date | None = None,
     notion_client: Any | None = None,
+    user_directory: Any | None = None,
 ) -> dict[str, Any]:
     """未完了タスクを、期限超過を先頭にしたソート順で返す。"""
     resolved_as_of = as_of or _today_jst()
-    source = TaskDataSource(notion_client=notion_client)
+    source = TaskDataSource(notion_client=notion_client, user_directory=user_directory)
     tasks = [task for task in source.get_tasks() if task["status"] != STATUS_完了]
 
     for task in tasks:

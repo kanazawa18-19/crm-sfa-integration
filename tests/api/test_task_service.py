@@ -70,6 +70,28 @@ class _FakeNotionClient:
         return self._pages
 
 
+class _FakeUserDirectory:
+    """`NotionUserDirectory`の未知ID時のフォールバック仕様（IDをそのまま返す）を模す。"""
+
+    def resolve(self, user_id: str) -> str:
+        return user_id
+
+    def resolve_many(self, user_ids: list[str]) -> list[str]:
+        return list(user_ids)
+
+
+class _ResolvingUserDirectory:
+    def resolve(self, user_id: str) -> str:
+        return f"resolved:{user_id}"
+
+    def resolve_many(self, user_ids: list[str]) -> list[str]:
+        return [self.resolve(uid) for uid in user_ids]
+
+
+def _build_tasks(*, as_of: date, notion_client: _FakeNotionClient) -> dict[str, Any]:
+    return build_tasks(as_of=as_of, notion_client=notion_client, user_directory=_FakeUserDirectory())
+
+
 # --- 完了タスクの除外 -----------------------------------------------------------------------
 
 
@@ -78,7 +100,7 @@ def test_build_tasks_excludes_completed_tasks() -> None:
         _page(page_id="t1", status="完了"),
         _page(page_id="t2", status="未着手"),
     ]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert [t["notion_page_id"] for t in result["tasks"]] == ["t2"]
     assert result["total_count"] == 1
@@ -89,7 +111,7 @@ def test_build_tasks_excludes_completed_tasks() -> None:
 
 def test_build_tasks_marks_past_due_date_as_overdue() -> None:
     pages = [_page(page_id="t1", due_date="2023-08-21")]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert result["tasks"][0]["is_overdue"] is True
     assert result["overdue_count"] == 1
@@ -97,7 +119,7 @@ def test_build_tasks_marks_past_due_date_as_overdue() -> None:
 
 def test_build_tasks_marks_future_due_date_as_not_overdue() -> None:
     pages = [_page(page_id="t1", due_date="2027-01-01")]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert result["tasks"][0]["is_overdue"] is False
     assert result["overdue_count"] == 0
@@ -105,14 +127,14 @@ def test_build_tasks_marks_future_due_date_as_not_overdue() -> None:
 
 def test_build_tasks_marks_today_due_date_as_not_overdue() -> None:
     pages = [_page(page_id="t1", due_date="2026-08-05")]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert result["tasks"][0]["is_overdue"] is False
 
 
 def test_build_tasks_missing_due_date_is_not_overdue() -> None:
     pages = [_page(page_id="t1", due_date=None)]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert result["tasks"][0]["is_overdue"] is False
     assert result["tasks"][0]["due_date"] is None
@@ -129,7 +151,7 @@ def test_build_tasks_sorts_overdue_first_then_upcoming_then_no_due_date() -> Non
         _page(page_id="upcoming-early", due_date="2026-09-01"),
         _page(page_id="overdue-early", due_date="2020-01-01"),
     ]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert [t["notion_page_id"] for t in result["tasks"]] == [
         "overdue-early",
@@ -146,7 +168,7 @@ def test_build_tasks_sorts_overdue_first_then_upcoming_then_no_due_date() -> Non
 def test_build_tasks_truncates_long_title() -> None:
     long_title = "あ" * 100
     pages = [_page(page_id="t1", title=long_title)]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     summary = result["tasks"][0]["title_summary"]
     assert len(summary) == 41  # 40文字 + 省略記号
@@ -155,7 +177,7 @@ def test_build_tasks_truncates_long_title() -> None:
 
 def test_build_tasks_keeps_short_title_unchanged() -> None:
     pages = [_page(page_id="t1", title="短いタスク")]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert result["tasks"][0]["title_summary"] == "短いタスク"
 
@@ -174,7 +196,7 @@ def test_build_tasks_parses_assignees_ball_category_tags_and_project_link() -> N
             project_relation=["proj-1"],
         )
     ]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     task = result["tasks"][0]
     assert task["assignees"] == ["田中太郎"]
@@ -186,23 +208,43 @@ def test_build_tasks_parses_assignees_ball_category_tags_and_project_link() -> N
 
 def test_build_tasks_has_project_link_false_when_relation_empty() -> None:
     pages = [_page(page_id="t1", project_relation=[])]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
 
     assert result["tasks"][0]["has_project_link"] is False
 
 
-def test_build_tasks_assignee_falls_back_to_id_when_name_missing() -> None:
+def test_build_tasks_assignee_falls_back_to_directory_when_name_missing() -> None:
     pages = [_page(page_id="t1", assignees=[{"id": "u1", "name": None}])]
-    result = build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+    result = build_tasks(
+        as_of=date(2026, 8, 5),
+        notion_client=_FakeNotionClient(pages),
+        user_directory=_ResolvingUserDirectory(),
+    )
 
-    assert result["tasks"][0]["assignees"] == ["u1"]
+    assert result["tasks"][0]["assignees"] == ["resolved:u1"]
+
+
+def test_build_tasks_assignee_shows_placeholder_when_unresolvable_by_directory_too() -> None:
+    """実データ回帰確認: 削除済み・ゲストユーザー等、NotionがnameもGET /v1/usersでの
+    解決も返さないケースが実在する。生のUUIDをそのまま表示せず人間が読めるプレースホルダー
+    にする（dashboard_serviceの同種のバグ修正と同じ考え方をtask_serviceにも適用）。
+    """
+    pages = [
+        _page(
+            page_id="t1",
+            assignees=[{"id": "a3a0e027-c89b-4fd8-b975-da5cdf7decb9", "name": None}],
+        )
+    ]
+    result = _build_tasks(as_of=date(2026, 8, 5), notion_client=_FakeNotionClient(pages))
+
+    assert result["tasks"][0]["assignees"] == ["不明なメンバー（a3a0e027）"]
 
 
 # --- as_of省略時のデフォルト -----------------------------------------------------------------
 
 
 def test_build_tasks_uses_today_when_as_of_omitted() -> None:
-    result = build_tasks(notion_client=_FakeNotionClient([]))
+    result = build_tasks(notion_client=_FakeNotionClient([]), user_directory=_FakeUserDirectory())
 
     assert "as_of" in result
     assert result["tasks"] == []
