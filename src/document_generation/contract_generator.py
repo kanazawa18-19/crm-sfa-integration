@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from src.document_generation.common import (
@@ -17,6 +16,7 @@ from src.document_generation.common import (
     DocumentResult,
     resolve_template,
 )
+from src.document_generation.google_auth import get_google_access_token
 from src.document_generation.google_drive_client import GoogleDriveDocClient
 from src.document_generation.project_data import fetch_project_document_data
 from src.document_generation.template_registry import TemplateRegistry
@@ -54,18 +54,15 @@ class GoogleDocsTextReplacer:
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,
     ) -> None:
-        self._access_token = (
-            access_token if access_token is not None else os.environ.get("GOOGLE_ACCESS_TOKEN")
-        )
-        if not self._access_token:
-            raise ValueError(
-                "GOOGLE_ACCESS_TOKEN environment variable (or access_token argument) "
-                "is required but not set"
-            )
+        self._access_token = access_token
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+
+    def _headers(self) -> dict[str, str]:
+        token = self._access_token if self._access_token is not None else get_google_access_token()
+        return {"Authorization": f"Bearer {token}"}
 
     def replace_all_text(self, document_id: str, *, search_text: str, replace_text: str) -> int:
         """`search_text`を`replace_text`へ全置換し、実際に置換された件数を返す。
@@ -78,7 +75,7 @@ class GoogleDocsTextReplacer:
         response = request_with_retry(
             "POST",
             f"{self._base_url}/{document_id}:batchUpdate",
-            headers={"Authorization": f"Bearer {self._access_token}"},
+            headers=self._headers(),
             json_body={
                 "requests": [
                     {

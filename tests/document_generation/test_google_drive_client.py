@@ -23,9 +23,10 @@ def client() -> GoogleDriveDocClient:
 
 def test_raises_value_error_when_access_token_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
 
     with pytest.raises(ValueError, match="GOOGLE_ACCESS_TOKEN"):
-        GoogleDriveDocClient()
+        GoogleDriveDocClient().get_mime_type("file-1")
 
 
 def test_get_mime_type_sends_supports_all_drives(requests_mock, client: GoogleDriveDocClient) -> None:

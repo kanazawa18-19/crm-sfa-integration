@@ -6,19 +6,19 @@
 全リクエストで`supportsAllDrives=true`を必ず付与する（実データ確認済み。付け忘れると
 mimeTypeが判明していても404 File not foundになる）。
 
-認証は`src/sync_engine/clients/spreadsheet_client.py`と同様、呼び出し元が有効なOAuth2
-アクセストークンを`GOOGLE_ACCESS_TOKEN`環境変数（または明示的な`access_token`引数）で
-用意している前提のBearerトークン認証のみを実装する。
+認証は`google_auth.get_google_access_token()`経由（サービスアカウント優先・`GOOGLE_ACCESS_TOKEN`
+へフォールバック）で解決したBearerトークンを使う。`access_token`引数を明示指定した場合は
+そちらを優先する（テスト用）。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import requests
 
+from src.document_generation.google_auth import get_google_access_token
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
@@ -47,21 +47,17 @@ class GoogleDriveDocClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,
     ) -> None:
-        self._access_token = (
-            access_token if access_token is not None else os.environ.get("GOOGLE_ACCESS_TOKEN")
-        )
-        if not self._access_token:
-            raise ValueError(
-                "GOOGLE_ACCESS_TOKEN environment variable (or access_token argument) "
-                "is required but not set"
-            )
+        # access_tokenを明示指定しない場合は毎リクエスト時にget_google_access_token()を
+        # 呼び、サービスアカウントの自動更新（有効期限切れ間近での再取得）を効かせる。
+        self._access_token = access_token
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_base = backoff_base
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._access_token}"}
+        token = self._access_token if self._access_token is not None else get_google_access_token()
+        return {"Authorization": f"Bearer {token}"}
 
     def _request(
         self,

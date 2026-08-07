@@ -209,6 +209,7 @@ def test_http_client_raises_value_error_when_access_token_not_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
 
     with pytest.raises(ValueError, match="GOOGLE_ACCESS_TOKEN"):
-        HttpSheetsValuesClient()
+        HttpSheetsValuesClient().get_values(SPREADSHEET_ID, "A1:A1")

@@ -221,6 +221,7 @@ def test_google_docs_text_replacer_raises_value_error_when_access_token_not_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
 
     with pytest.raises(ValueError, match="GOOGLE_ACCESS_TOKEN"):
-        GoogleDocsTextReplacer()
+        GoogleDocsTextReplacer().replace_all_text("doc-1", search_text="x", replace_text="y")

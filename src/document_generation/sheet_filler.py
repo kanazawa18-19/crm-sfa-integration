@@ -9,9 +9,9 @@ Python側で検索、その行の隣接セルへ値を書き込むという汎�
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Protocol
 
+from src.document_generation.google_auth import get_google_access_token
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
@@ -57,21 +57,15 @@ class HttpSheetsValuesClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,
     ) -> None:
-        self._access_token = (
-            access_token if access_token is not None else os.environ.get("GOOGLE_ACCESS_TOKEN")
-        )
-        if not self._access_token:
-            raise ValueError(
-                "GOOGLE_ACCESS_TOKEN environment variable (or access_token argument) "
-                "is required but not set"
-            )
+        self._access_token = access_token
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_base = backoff_base
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._access_token}"}
+        token = self._access_token if self._access_token is not None else get_google_access_token()
+        return {"Authorization": f"Bearer {token}"}
 
     def get_values(self, spreadsheet_id: str, range_: str) -> list[list[Any]]:
         response = request_with_retry(
