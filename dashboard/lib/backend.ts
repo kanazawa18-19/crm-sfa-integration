@@ -39,8 +39,15 @@ async function fetchBackend<T>(path: string): Promise<T> {
   }
 
   if (!response.ok) {
+    // バックエンドはエラー時にJSON {"detail": "..."} を返す（TemplateNotFoundError等、
+    // 利用者が次に何をすればよいか分かる日本語メッセージが入っている）。これを握りつぶして
+    // 汎用メッセージに丸めると、書類生成失敗時等に重要な情報が失われる
+    // （obasan-qualityレビュー: search/generateでエラー処理方針が非対称との指摘を反映し、
+    // fetchBackend経由の呼び出し元も含めて統一的にdetailを優先するようにした）。
+    const body = await response.json().catch(() => null);
+    const detail = body && typeof body.detail === "string" ? body.detail : null;
     throw new BackendApiError(
-      `バックエンドAPIがエラーを返しました（status: ${response.status}）`,
+      detail ?? `バックエンドAPIがエラーを返しました（status: ${response.status}）`,
       response.status
     );
   }
@@ -121,4 +128,20 @@ export interface MembersPerformanceResponse {
 export function getMembersPerformance(asOf?: string): Promise<MembersPerformanceResponse> {
   const query = asOf ? `?as_of=${encodeURIComponent(asOf)}` : "";
   return fetchBackend<MembersPerformanceResponse>(`/api/members/performance${query}`);
+}
+
+export interface ProjectSearchResult {
+  notion_page_id: string;
+  project_name: string;
+  status: string | null;
+  proposed_services: string[];
+}
+
+export interface ProjectSearchResponse {
+  projects: ProjectSearchResult[];
+  total_matched: number;
+}
+
+export function searchProjects(query: string): Promise<ProjectSearchResponse> {
+  return fetchBackend<ProjectSearchResponse>(`/api/projects/search?q=${encodeURIComponent(query)}`);
 }
