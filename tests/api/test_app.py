@@ -178,6 +178,36 @@ def test_cors_header_absent_for_disallowed_origin(monkeypatch: pytest.MonkeyPatc
     importlib.reload(app_module)
 
 
+# --- /api/tasks --------------------------------------------------------------------------------
+
+
+def test_get_tasks_returns_401_when_token_not_set(client: TestClient) -> None:
+    response = client.get("/api/tasks")
+
+    assert response.status_code == 401
+
+
+def test_get_tasks_returns_build_tasks_result(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def fake_build_tasks() -> dict[str, object]:
+        return {"as_of": "2026-08-05", "tasks": [], "overdue_count": 0, "total_count": 0}
+
+    monkeypatch.setattr("src.api.app.build_tasks", fake_build_tasks)
+
+    response = client.get("/api/tasks", headers={"Authorization": "Bearer correct-token"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "as_of": "2026-08-05",
+        "tasks": [],
+        "overdue_count": 0,
+        "total_count": 0,
+    }
+
+
 # --- /api/projects/search --------------------------------------------------------------------
 
 

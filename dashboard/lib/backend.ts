@@ -145,3 +145,27 @@ export interface ProjectSearchResponse {
 export function searchProjects(query: string): Promise<ProjectSearchResponse> {
   return fetchBackend<ProjectSearchResponse>(`/api/projects/search?q=${encodeURIComponent(query)}`);
 }
+
+export interface Task {
+  notion_page_id: string;
+  title_summary: string;
+  status: string | null;
+  due_date: string | null;
+  is_overdue: boolean;
+  assignees: string[];
+  ball: string[];
+  category: string[];
+  tags: string[];
+  has_project_link: boolean;
+}
+
+export interface TasksResponse {
+  as_of: string;
+  tasks: Task[];
+  overdue_count: number;
+  total_count: number;
+}
+
+export function getTasks(): Promise<TasksResponse> {
+  return fetchBackend<TasksResponse>("/api/tasks");
+}

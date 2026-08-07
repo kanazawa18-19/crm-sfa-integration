@@ -23,6 +23,7 @@ from src.api.dashboard_service import (
     build_member_performance,
     search_projects,
 )
+from src.api.task_service import build_tasks
 from src.document_generation.application_generator import generate_application
 from src.document_generation.common import ContractGenerationError, TemplateNotFoundError
 from src.document_generation.contract_generator import generate_contract
@@ -88,6 +89,11 @@ def get_daily_report(date: str | None = None) -> dict[str, Any]:
 def get_member_performance(as_of: str | None = None) -> dict[str, Any]:
     as_of_date = _parse_date_param(as_of, param_name="as_of")
     return build_member_performance(as_of_date)
+
+
+@app.get("/api/tasks", dependencies=[Depends(verify_dashboard_api_token)])
+def get_tasks() -> dict[str, Any]:
+    return build_tasks()
 
 
 @app.get("/api/projects/search", dependencies=[Depends(verify_dashboard_api_token)])

@@ -4,6 +4,7 @@ const navItems = [
   { href: "/", label: "ダッシュボード" },
   { href: "/reports", label: "日報" },
   { href: "/members", label: "メンバー実績" },
+  { href: "/tasks", label: "タスク" },
   { href: "/documents", label: "書類作成" },
 ];
 
