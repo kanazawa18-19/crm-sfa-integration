@@ -178,6 +178,50 @@ def test_cors_header_absent_for_disallowed_origin(monkeypatch: pytest.MonkeyPatc
     importlib.reload(app_module)
 
 
+# --- /api/projects/search --------------------------------------------------------------------
+
+
+def test_search_projects_returns_401_when_token_not_set(client: TestClient) -> None:
+    response = client.get("/api/projects/search?q=サンプル")
+
+    assert response.status_code == 401
+
+
+def test_search_projects_returns_empty_when_q_blank(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.get(
+        "/api/projects/search?q=", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"projects": [], "total_matched": 0}
+
+
+def test_search_projects_returns_matched_projects(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def fake_search_projects(query: str) -> dict[str, object]:
+        assert query == "サンプル"
+        return {
+            "projects": [{"notion_page_id": "p1", "project_name": "サンプルホテル"}],
+            "total_matched": 1,
+        }
+
+    monkeypatch.setattr("src.api.app.search_projects", fake_search_projects)
+
+    response = client.get(
+        "/api/projects/search?q=サンプル", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_matched"] == 1
+
+
 # --- /api/documents/generate -------------------------------------------------------------------
 
 

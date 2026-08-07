@@ -9,6 +9,7 @@ from src.api.dashboard_service import (
     build_dashboard_summary,
     build_member_performance,
     reset_cache,
+    search_projects,
 )
 
 
@@ -340,3 +341,41 @@ def test_build_dashboard_summary_with_explicit_data_source_is_unaffected_by_modu
 
     assert result_a["totals"]["active_count"] == 1
     assert result_b["totals"]["confirmed_count"] == 1
+
+
+# --- search_projects ------------------------------------------------------------------------
+
+
+def test_search_projects_matches_case_insensitive_substring() -> None:
+    data_source = FakeDataSource(
+        projects=[
+            _project(notion_page_id="p1", 案件名="サンプルホテル大阪"),
+            _project(notion_page_id="p2", 案件名="別のホテル"),
+        ]
+    )
+
+    result = search_projects("サンプル", data_source=data_source)
+
+    assert [p["notion_page_id"] for p in result["projects"]] == ["p1"]
+    assert result["total_matched"] == 1
+
+
+def test_search_projects_returns_empty_for_no_match() -> None:
+    data_source = FakeDataSource(projects=[_project(案件名="サンプルホテル")])
+
+    result = search_projects("存在しない案件名", data_source=data_source)
+
+    assert result["projects"] == []
+    assert result["total_matched"] == 0
+
+
+def test_search_projects_caps_results_at_max_but_reports_total_matched() -> None:
+    projects = [
+        _project(notion_page_id=f"p{i}", 案件名=f"サンプルホテル{i}") for i in range(25)
+    ]
+    data_source = FakeDataSource(projects=projects)
+
+    result = search_projects("サンプル", data_source=data_source)
+
+    assert len(result["projects"]) == 20
+    assert result["total_matched"] == 25

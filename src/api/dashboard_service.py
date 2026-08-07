@@ -435,3 +435,41 @@ def build_member_performance(
             "期間フィルタは行っておらず、全期間累積の集計です。",
         ],
     }
+
+
+_MAX_SEARCH_RESULTS = 20
+
+
+def search_projects(
+    query: str,
+    *,
+    data_source: NotionDataSource | None = None,
+) -> dict[str, Any]:
+    """案件名の部分一致（大文字小文字無視）で案件を検索する。
+
+    書類自動生成機能（`src/document_generation/`）でNotionページIDを指定するための
+    案件選択UI（`dashboard/`）から呼ばれる想定。案件そのものの詳細集計は行わず、
+    選択に必要な最小限の項目のみを返す。
+    """
+    source = data_source or NotionDataSource()
+    projects = source.get_projects()
+
+    normalized_query = query.strip().lower()
+    matched = [
+        p
+        for p in projects
+        if normalized_query and normalized_query in (p.get(PROP_案件名) or "").lower()
+    ]
+
+    return {
+        "projects": [
+            {
+                "notion_page_id": p["notion_page_id"],
+                "project_name": p.get(PROP_案件名) or "",
+                "status": p.get(PROP_営業ステータス),
+                "proposed_services": p.get(PROP_提案サービス) or [],
+            }
+            for p in matched[:_MAX_SEARCH_RESULTS]
+        ],
+        "total_matched": len(matched),
+    }

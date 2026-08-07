@@ -21,6 +21,7 @@ from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
     build_member_performance,
+    search_projects,
 )
 from src.document_generation.application_generator import generate_application
 from src.document_generation.common import ContractGenerationError, TemplateNotFoundError
@@ -87,6 +88,14 @@ def get_daily_report(date: str | None = None) -> dict[str, Any]:
 def get_member_performance(as_of: str | None = None) -> dict[str, Any]:
     as_of_date = _parse_date_param(as_of, param_name="as_of")
     return build_member_performance(as_of_date)
+
+
+@app.get("/api/projects/search", dependencies=[Depends(verify_dashboard_api_token)])
+def get_project_search(q: str = "") -> dict[str, Any]:
+    """書類自動生成画面の案件選択UIから呼ばれる、案件名の部分一致検索。"""
+    if not q.strip():
+        return {"projects": [], "total_matched": 0}
+    return search_projects(q)
 
 
 @app.get("/api/documents/generate", dependencies=[Depends(verify_dashboard_api_token)])
