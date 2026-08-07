@@ -25,7 +25,11 @@ from src.api.dashboard_service import (
 )
 from src.api.task_service import build_tasks
 from src.document_generation.application_generator import generate_application
-from src.document_generation.common import ContractGenerationError, TemplateNotFoundError
+from src.document_generation.common import (
+    ContractGenerationError,
+    TemplateNotFoundError,
+    TemplateSheetNotFoundError,
+)
 from src.document_generation.contract_generator import generate_contract
 from src.document_generation.quote_generator import generate_quote
 from src.sync_engine.clients.notion_client import NotionApiError
@@ -122,6 +126,8 @@ def generate_document(notion_project_id: str, category: str) -> Response:
     try:
         result = generator(notion_project_id)
     except TemplateNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TemplateSheetNotFoundError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ContractGenerationError as exc:
         # 契約書の宛先プレースホルダ置換件数が想定外だった場合。利用者側の入力ミスでは

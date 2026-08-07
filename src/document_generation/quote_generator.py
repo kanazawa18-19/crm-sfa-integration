@@ -11,7 +11,13 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from src.document_generation.common import BASELINE_NOTE, DocumentResult, resolve_template
+from src.document_generation.common import (
+    BASELINE_NOTE,
+    TEMPLATE_SHEET_TITLE,
+    DocumentResult,
+    TemplateSheetNotFoundError,
+    resolve_template,
+)
 from src.document_generation.google_drive_client import GoogleDriveDocClient
 from src.document_generation.project_data import fetch_project_document_data
 from src.document_generation.sheet_filler import (
@@ -75,14 +81,18 @@ def generate_quote(
         new_name=f"__tmp_quote_{notion_page_id}",
     )
     try:
-        sheet_name = resolved_sheets_client.get_first_sheet_title(copy_id)
-        # テンプレートには複数の既存案件タブがあり、「先頭タブ＝空の雛形」という前提で
-        # 差し込んでいる（暫定仕様）。この前提が崩れていた場合に利用者が気づけるよう、
-        # 使用したタブ名を必ずnotesに残す（obasan-qualityレビュー指摘を反映）。
-        notes.append(
-            f"テンプレートの「{sheet_name}」タブを複製して使用しました。"
-            "実案件データが入ったタブを誤って複製していないか確認してください。"
-        )
+        found = resolved_sheets_client.find_sheet(copy_id, exact_title=TEMPLATE_SHEET_TITLE)
+        if found is None:
+            raise TemplateSheetNotFoundError(
+                f"テンプレート「{template.file_name}」に「{TEMPLATE_SHEET_TITLE}」という名前の"
+                "空タブが見つかりませんでした。スプレッドシート上に空の雛形タブを作成し、"
+                f"タブ名を「{TEMPLATE_SHEET_TITLE}」にしてください。"
+            )
+        sheet_name, sheet_id = found
+        # Drive APIのexportはワークブック全体（＝他の全クライアントの過去案件タブ）を
+        # まとめて書き出してしまうため、対象タブ以外を削除してから export する
+        # （実データ確認で判明した重大な情報漏洩リスクへの対応）。
+        resolved_sheets_client.keep_only_sheet(copy_id, sheet_id=sheet_id)
 
         values_by_label: dict[str, str] = {
             "見積書NO": _generate_quote_number(notion_page_id),
@@ -98,14 +108,14 @@ def generate_quote(
         fill_labeled_cells(resolved_sheets_client, copy_id, sheet_name, values_by_label)
 
         if project_data.client_name:
-            found = fill_cell_containing(
+            addressee_found = fill_cell_containing(
                 resolved_sheets_client,
                 copy_id,
                 sheet_name,
                 _ADDRESSEE_MARKER,
                 f"{project_data.client_name}　{_ADDRESSEE_MARKER}",
             )
-            if not found:
+            if not addressee_found:
                 notes.append("宛先セル（「御中」を含むセル）が見つからず、宛先の差し込みは未反映です。")
         else:
             notes.append("取引先名が案件データから取得できなかったため、宛先の差し込みは未反映です。")

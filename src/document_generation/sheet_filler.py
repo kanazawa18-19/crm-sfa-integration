@@ -99,26 +99,73 @@ class HttpSheetsValuesClient:
         )
         raise_for_error(response, SheetsApiError)
 
-    def get_first_sheet_title(self, spreadsheet_id: str) -> str:
-        """コピー後のスプレッドシートの先頭タブのシート名を返す。
+    def find_sheet(self, spreadsheet_id: str, *, exact_title: str) -> tuple[str, int] | None:
+        """`exact_title`と完全一致するタブがあれば`(タブ名, sheetId)`を返す。無ければNoneを返す。
 
-        各テンプレートファイルには複数の既存案件タブが並んでいるため、先頭タブが
-        差し込み対象の雛形タブである前提で解決する（実データでの事前確認が必要な暫定仕様）。
+        各テンプレートファイルには多数の既存クライアントタブが並んでおり、以前は「先頭タブ＝
+        空の雛形」という前提で解決していたが、実データ確認の結果その前提が成立せず（全タブが
+        実在クライアントの過去案件だった）、誤って他クライアントのデータを複製してしまう
+        リスクが判明した。差し込み対象のタブ名をテンプレート管理者に固定してもらい
+        （既定では`common.TEMPLATE_SHEET_TITLE`）、完全一致でのみ解決することで事故を防ぐ。
         """
         response = request_with_retry(
             "GET",
             f"{self._base_url}/{spreadsheet_id}",
             headers=self._headers(),
-            params={"fields": "sheets.properties.title"},
+            params={"fields": "sheets.properties"},
             timeout=self._timeout,
             max_retries=self._max_retries,
             backoff_base=self._backoff_base,
         )
         raise_for_error(response, SheetsApiError)
         sheets = response.json().get("sheets") or []
-        if not sheets:
-            raise SheetsApiError(response.status_code, f"spreadsheet {spreadsheet_id!r} has no sheets")
-        return sheets[0]["properties"]["title"]
+        for sheet in sheets:
+            props = sheet["properties"]
+            if props.get("title") == exact_title:
+                return props["title"], props["sheetId"]
+        return None
+
+    def keep_only_sheet(self, spreadsheet_id: str, *, sheet_id: int) -> None:
+        """`spreadsheet_id`内で`sheet_id`以外の全タブを削除する。
+
+        Drive APIの`files.export`はスプレッドシート内の特定タブだけを指定してエクスポート
+        する方法がなく、ワークブック全体（＝他の全クライアントの過去案件タブ）をまとめて
+        PDF/Excel化してしまう（実データ確認で判明した重大な情報漏洩リスク）。生成用コピー上で
+        対象タブ以外を全て削除してからexportすることで、常に対象タブ1枚分だけが出力される
+        ようにする（コピーは使い捨てのため、削除しても元テンプレートには影響しない）。
+        """
+        response = request_with_retry(
+            "GET",
+            f"{self._base_url}/{spreadsheet_id}",
+            headers=self._headers(),
+            params={"fields": "sheets.properties.sheetId"},
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+        )
+        raise_for_error(response, SheetsApiError)
+        all_sheet_ids = [
+            sheet["properties"]["sheetId"] for sheet in (response.json().get("sheets") or [])
+        ]
+        other_sheet_ids = [sid for sid in all_sheet_ids if sid != sheet_id]
+        if not other_sheet_ids:
+            return
+
+        # 削除は非冪等な操作（タイムアウト後にリトライすると、既に削除済みのsheetIdを
+        # 再度指定してしまいエラーになる）ため、idempotent=Falseでリトライを無効化する。
+        batch_response = request_with_retry(
+            "POST",
+            f"{self._base_url}/{spreadsheet_id}:batchUpdate",
+            headers=self._headers(),
+            json_body={
+                "requests": [{"deleteSheet": {"sheetId": sid}} for sid in other_sheet_ids]
+            },
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+            idempotent=False,
+        )
+        raise_for_error(batch_response, SheetsApiError)
 
 
 def _column_letter(index: int) -> str:

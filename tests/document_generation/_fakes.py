@@ -93,10 +93,20 @@ class FakeGoogleDriveDocClient:
 
 
 class FakeSheetsClient:
-    def __init__(self, rows: list[list[Any]] | None = None, *, first_sheet_title: str = "案件タブ1") -> None:
+    def __init__(
+        self,
+        rows: list[list[Any]] | None = None,
+        *,
+        sheet_title: str = "雛形",
+        sheet_id: int = 1,
+        has_template_sheet: bool = True,
+    ) -> None:
         self.rows = rows or []
-        self.first_sheet_title = first_sheet_title
+        self.sheet_title = sheet_title
+        self.sheet_id = sheet_id
+        self.has_template_sheet = has_template_sheet
         self.updates: dict[str, str] = {}
+        self.keep_only_sheet_calls: list[dict[str, Any]] = []
 
     def get_values(self, spreadsheet_id: str, range_: str) -> list[list[Any]]:
         return self.rows
@@ -104,8 +114,13 @@ class FakeSheetsClient:
     def update_value(self, spreadsheet_id: str, cell: str, value: str) -> None:
         self.updates[cell] = value
 
-    def get_first_sheet_title(self, spreadsheet_id: str) -> str:
-        return self.first_sheet_title
+    def find_sheet(self, spreadsheet_id: str, *, exact_title: str) -> tuple[str, int] | None:
+        if not self.has_template_sheet:
+            return None
+        return self.sheet_title, self.sheet_id
+
+    def keep_only_sheet(self, spreadsheet_id: str, *, sheet_id: int) -> None:
+        self.keep_only_sheet_calls.append({"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id})
 
 
 class FakeDocsClient:

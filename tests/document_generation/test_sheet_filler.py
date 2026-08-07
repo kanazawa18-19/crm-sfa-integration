@@ -1,6 +1,6 @@
 """ラベル駆動セル書き込みロジックの単体テスト（フェイクLabelSheetsClientを使用）。
 
-HttpSheetsValuesClientの実HTTP通信部分（get_values/update_value/get_first_sheet_title）は
+HttpSheetsValuesClientの実HTTP通信部分（get_values/update_value/find_sheet/keep_only_sheet）は
 requests_mockで別途検証する。
 """
 
@@ -134,24 +134,75 @@ def test_http_client_update_value_sends_put_request(
     assert requests_mock.last_request.json() == {"values": [["2026/08/07"]]}
 
 
-def test_http_client_get_first_sheet_title_returns_first_sheet(
+def test_http_client_find_sheet_returns_title_and_id_on_exact_match(
     requests_mock, http_client: HttpSheetsValuesClient
 ) -> None:
     requests_mock.get(
         BASE,
-        json={"sheets": [{"properties": {"title": "案件Aタブ"}}, {"properties": {"title": "案件Bタブ"}}]},
+        json={
+            "sheets": [
+                {"properties": {"title": "既存クライアントA", "sheetId": 111}},
+                {"properties": {"title": "雛形", "sheetId": 222}},
+            ]
+        },
     )
 
-    assert http_client.get_first_sheet_title(SPREADSHEET_ID) == "案件Aタブ"
+    assert http_client.find_sheet(SPREADSHEET_ID, exact_title="雛形") == ("雛形", 222)
 
 
-def test_http_client_get_first_sheet_title_raises_when_no_sheets(
+def test_http_client_find_sheet_returns_none_when_no_exact_match(
+    requests_mock, http_client: HttpSheetsValuesClient
+) -> None:
+    requests_mock.get(
+        BASE,
+        json={"sheets": [{"properties": {"title": "既存クライアントA", "sheetId": 111}}]},
+    )
+
+    assert http_client.find_sheet(SPREADSHEET_ID, exact_title="雛形") is None
+
+
+def test_http_client_find_sheet_returns_none_when_no_sheets(
     requests_mock, http_client: HttpSheetsValuesClient
 ) -> None:
     requests_mock.get(BASE, json={"sheets": []})
 
-    with pytest.raises(SheetsApiError):
-        http_client.get_first_sheet_title(SPREADSHEET_ID)
+    assert http_client.find_sheet(SPREADSHEET_ID, exact_title="雛形") is None
+
+
+def test_http_client_keep_only_sheet_deletes_all_other_sheets(
+    requests_mock, http_client: HttpSheetsValuesClient
+) -> None:
+    requests_mock.get(
+        BASE,
+        json={
+            "sheets": [
+                {"properties": {"sheetId": 111}},
+                {"properties": {"sheetId": 222}},
+                {"properties": {"sheetId": 333}},
+            ]
+        },
+    )
+    requests_mock.post(f"{BASE}:batchUpdate", json={})
+
+    http_client.keep_only_sheet(SPREADSHEET_ID, sheet_id=222)
+
+    assert requests_mock.last_request.json() == {
+        "requests": [
+            {"deleteSheet": {"sheetId": 111}},
+            {"deleteSheet": {"sheetId": 333}},
+        ]
+    }
+
+
+def test_http_client_keep_only_sheet_skips_batch_update_when_no_other_sheets(
+    requests_mock, http_client: HttpSheetsValuesClient
+) -> None:
+    requests_mock.get(BASE, json={"sheets": [{"properties": {"sheetId": 222}}]})
+    batch_mock = requests_mock.post(f"{BASE}:batchUpdate", json={})
+
+    http_client.keep_only_sheet(SPREADSHEET_ID, sheet_id=222)
+
+    assert not batch_mock.called
 
 
 def test_http_client_raises_value_error_when_access_token_not_set(
