@@ -41,21 +41,21 @@ def transform_kintone_project(record: dict[str, str]) -> dict[str, object]:
 
     取引先マスター・サービス・商品へのリレーションはこの時点では解決せず、
     後続の解決ステップ用に `_取引先名`（名寄せ用）/ `_サービス名リスト` として残す。
-    契約日は確定契約（営業ステータス「契約」）の場合のみ、それ以外は予想契約日に
-    課金開始予定日を入れる。
+    契約日・予想契約日はNotion側では単一の「契約日 / 予想契約日」DATEプロパティ
+    （個別の「契約日」「初期費用（イニシャル）」等のプロパティはPROJECT_SCHEMAに存在しない。
+    以前はこれら存在しないキー名で返しており、実書き込み時に確実にKeyErrorで失敗する
+    バグだった）に統合されており、確定契約（営業ステータス「契約」）なら契約日、
+    それ以外なら予想契約日として同じ値を入れる。
     """
     status = normalize_project_status(record.get("契約進捗状況", ""))
     billing_date = record.get("課金開始予定日") or None
-    contract_date = billing_date if status == "契約" else None
-    expected_contract_date = None if status == "契約" else billing_date
 
     return {
         "kintone_ID": record.get("レコード番号", ""),
         "_取引先名": record.get("施設名（会社名）", ""),
         "営業ステータス": status,
-        "契約日": contract_date,
-        "予想契約日": expected_contract_date,
-        "月額費用（ランニング）": record.get("提案料金（ランニング）") or None,
-        "初期費用（イニシャル）": record.get("提案料金（イニシャル）") or None,
+        "契約日 / 予想契約日": billing_date,
+        "月額費用": record.get("提案料金（ランニング）") or None,
+        "初期費用": record.get("提案料金（イニシャル）") or None,
         "_サービス名リスト": parse_multi_value(record.get("サービス（ショット）")),
     }

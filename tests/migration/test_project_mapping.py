@@ -70,12 +70,13 @@ def test_transform_kintone_project_contracted_sets_contract_date() -> None:
 
     result = transform_kintone_project(record)
 
+    # PROJECT_SCHEMAには「契約日」「予想契約日」を分けたプロパティは存在せず、単一の
+    # 「契約日 / 予想契約日」DATEプロパティに統合されている。
     assert result["営業ステータス"] == "契約"
-    assert result["契約日"] == "2026-09-01"
-    assert result["予想契約日"] is None
+    assert result["契約日 / 予想契約日"] == "2026-09-01"
     assert result["_サービス名リスト"] == ["リピッテ", "メイリー"]
-    assert result["月額費用（ランニング）"] == "50000"
-    assert result["初期費用（イニシャル）"] == "100000"
+    assert result["月額費用"] == "50000"
+    assert result["初期費用"] == "100000"
     assert result["_取引先名"] == "株式会社サンプル"
     assert result["kintone_ID"] == "3001"
 
@@ -93,6 +94,5 @@ def test_transform_kintone_project_in_progress_sets_expected_date() -> None:
     result = transform_kintone_project(record)
 
     assert result["営業ステータス"] == "アポ"
-    assert result["契約日"] is None
-    assert result["予想契約日"] == "2026-10-01"
+    assert result["契約日 / 予想契約日"] == "2026-10-01"
     assert result["_サービス名リスト"] == []

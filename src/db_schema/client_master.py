@@ -113,6 +113,23 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
         ),
+        # kintone移行の実データ検証（2026-08-10）で判明: transform_client_master()は元々
+        # "TEL"/"FAX"キーを返していたが、既存の「電話番号」はロールアップ（読取専用、
+        # 案件/アクション経由の自動集計）でありNotion側に書き込み可能な電話・FAX列が
+        # 存在せず、本番書き込み時に確実にKeyErrorで失敗するバグだった。業務判断により
+        # 取引先マスターDBへ新規プロパティとして追加した（Notion API PATCHで作成済み）。
+        PropertyDefinition(
+            name="TEL",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
+        PropertyDefinition(
+            name="FAX",
+            property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+        ),
         PropertyDefinition(
             name="決算",
             property_type=PropertyType.TEXT,

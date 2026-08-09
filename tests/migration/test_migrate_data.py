@@ -73,6 +73,27 @@ def _find(records: list[PreparedRecord], kintone_id: str) -> PreparedRecord:
     return next(r for r in records if r.kintone_id == kintone_id)
 
 
+# --- BLOCKER回帰: PreparedRecord.propertiesが実在するNotionプロパティ名のみを含むこと ---
+
+
+def test_all_prepared_record_properties_are_valid_notion_properties(plan: MigrationPlan) -> None:
+    """PreparedRecord.propertiesの各キーが、対象DBスキーマに実在するプロパティ名であることを
+    検証する回帰テスト。
+
+    materialize(dry_run=True)はbuild_notion_properties()（schema.get_property()による
+    プロパティ名検証）を一切通らないため、存在しないプロパティ名（例: 過去に混入していた
+    "kintone_ID"/"kintone_Act_ID"。IDマッピング専用の内部値のはずが、誤ってNotion書き込み用
+    のprops辞書にも残っていた）が紛れ込んでいてもdry-runでは検知できず、本番書き込み時
+    （materialize(dry_run=False) → HttpNotionClient.create_page()）に初めてKeyErrorで
+    発覚するバグが実際にあった。
+    """
+    for db_key, records in plan.prepared.items():
+        schema = SCHEMAS_BY_KEY[db_key]
+        for record in records:
+            for prop_name in record.properties:
+                schema.get_property(prop_name)  # 存在しなければKeyErrorが送出される
+
+
 # --- ①→②→③→④→⑤→⑥ のリレーション解決 --------------------------------------
 
 
@@ -80,7 +101,8 @@ def test_client_and_chain_relation_resolved(plan: MigrationPlan) -> None:
     client = _find(plan.prepared["client_master"], "1001")
     chain = plan.prepared["chain"][0]
 
-    assert chain.properties["チェーン名"] == "サンプルチェーン本部"
+    # CHAIN_SCHEMAのtitleプロパティは"グループ名"（"チェーン名"というプロパティは存在しない）。
+    assert chain.properties["グループ名"] == "サンプルチェーン本部"
     assert client.properties["チェーン"] == [chain]
 
 
@@ -110,9 +132,11 @@ def test_action_relations_resolved_against_client_project_contact(plan: Migratio
     project = _find(plan.prepared["project"], "3001")
     action = _find(plan.prepared["action"], "4001")
 
-    assert action.properties["取引先マスター"] == [client]
-    assert action.properties["案件管理"] == [project]
-    assert [c.properties["名前"] for c in action.properties["先方担当者"]] == ["山田太郎"]
+    # ACTION_SCHEMAでの実際のプロパティ名は"👨‍👩‍👧‍👦 取引先マスター"（絵文字プレフィックス付き）・
+    # "案件名"（実体はrelation）・"先方担当者"（RELATIONではなくTEXT型の自由記述）。
+    assert action.properties["👨‍👩‍👧‍👦 取引先マスター"] == [client]
+    assert action.properties["案件名"] == [project]
+    assert action.properties["先方担当者"] == "山田太郎"
 
 
 def test_resolved_properties_omits_user_type_properties(plan: MigrationPlan) -> None:
@@ -166,7 +190,7 @@ def test_action_contact_cross_company_fallback_logs_warning(
         plan = plan_migration(client_master_rows, [], action_rows)
 
     action = _find(plan.prepared["action"], "5001")
-    assert [c.properties["名前"] for c in action.properties["先方担当者"]] == ["田中一郎"]
+    assert action.properties["先方担当者"] == "田中一郎"
     assert any("フォールバック解決" in r.message for r in caplog.records)
 
 
@@ -390,14 +414,18 @@ def test_materialize_wires_real_page_ids_into_action_relation_properties() -> No
         for record in (client_record, project_record, contact_record, action_record):
             assert record.notion_key is not None
 
-        sent_properties = next(
-            payload
-            for payload in clients["action"].created
-            if payload["kintone_Act_ID"] == "4001"
-        )
-        assert sent_properties["取引先マスター"] == [client_record.notion_key]
-        assert sent_properties["案件管理"] == [project_record.notion_key]
-        assert sent_properties["先方担当者"] == [contact_record.notion_key]
+        # "kintone_Act_ID"はNotionへ送るprops辞書には含まれない（PreparedRecord.kintone_idと
+        # してのみ保持され、ACTION_SCHEMAに存在しないプロパティ名のため意図的に除外している）。
+        # clients["action"].createdはprepared["action"]と同じ順序で記録されるため、
+        # 位置で対応するペイロードを取得する。
+        action_index = full_plan.prepared["action"].index(action_record)
+        sent_properties = clients["action"].created[action_index]
+        assert "kintone_Act_ID" not in sent_properties
+        # ACTION_SCHEMAでの実際のプロパティ名は"👨‍👩‍👧‍👦 取引先マスター"・"案件名"。
+        # "先方担当者"はRELATIONではなくTEXT型のため、page_idのlistではなく素の氏名文字列。
+        assert sent_properties["👨‍👩‍👧‍👦 取引先マスター"] == [client_record.notion_key]
+        assert sent_properties["案件名"] == [project_record.notion_key]
+        assert sent_properties["先方担当者"] == "山田太郎"
     finally:
         store.close()
 

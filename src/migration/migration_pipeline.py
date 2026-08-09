@@ -232,7 +232,14 @@ def plan_migration(
         # 失われ、Notion上のタイトルが全件"CLI-001"のような連番IDになってしまうバグが
         # あった（実データ検証で発覚）。取引先名は既にtransform_client_master()の戻り値に
         # 含まれているため、ここでの追加代入は不要かつ有害だった。
-        record = PreparedRecord("client_master", props["kintone_ID"] or None, props)
+        # BLOCKER: "kintone_ID"はNotion側に存在しないプロパティ名（CLIENT_MASTER_SCHEMAには
+        # 定義が無い）。PreparedRecord.propertiesにそのまま残していると、実際の
+        # build_notion_properties()呼び出し時（materialize()のdry_run=Falseパス）に
+        # 確実にKeyErrorで失敗する。IDマッピング用の外部IDとしてのみ使い、
+        # Notion書き込み対象のprops辞書からは取り除く（--dry-runではこの経路を通らず
+        # 検知できないバグだったため実データ検証でも見つからなかった）。
+        kintone_id = props.pop("kintone_ID") or None
+        record = PreparedRecord("client_master", kintone_id, props)
         prepared["client_master"].append(record)
         name = props["取引先名"]
         if name:
@@ -257,12 +264,15 @@ def plan_migration(
         chain_name = extract_chain_name(row)
         if chain_name is None or chain_name in chain_by_name:
             continue
+        # BLOCKER: 以前は存在しない"チェーン名"キーへも書き込んでおり（CHAIN_SCHEMAの
+        # titleプロパティは"グループ名"のみで"チェーン名"というプロパティは無い）、実書き込み
+        # 時に確実にKeyErrorで失敗するバグがあった（"グループ名"キーで後から上書きされる
+        # dict重複キーの挙動でtitle自体は正しく設定されていたため、titleの上書き調査だけでは
+        # 見つからず、schema.get_property()による全キー検証の回帰テストで発覚）。
         chain_props: dict[str, Any] = {
-            CHAIN_SCHEMA.title_property.name: ids.next("chain"),
-            "チェーン名": chain_name,
             # kintone取引先マスタに「グループ名」に相当する個別項目が無いため、
             # チェーン名をそのまま流用する。
-            "グループ名": chain_name,
+            CHAIN_SCHEMA.title_property.name: chain_name,
         }
         chain_record = PreparedRecord("chain", f"chain:{chain_name}", chain_props)
         prepared["chain"].append(chain_record)
@@ -404,10 +414,9 @@ def plan_migration(
             "取引先マスター": [client_record] if client_record else [],
             "営業ステータス": transformed["営業ステータス"],
             "提案サービス": service_records,
-            "初期費用（イニシャル）": transformed["初期費用（イニシャル）"],
-            "月額費用（ランニング）": transformed["月額費用（ランニング）"],
-            "契約日": transformed["契約日"],
-            "予想契約日": transformed["予想契約日"],
+            "初期費用": transformed["初期費用"],
+            "月額費用": transformed["月額費用"],
+            "契約日 / 予想契約日": transformed["契約日 / 予想契約日"],
         }
         # NOTE: PROJECT_SCHEMAには"kintone_ID"に相当するプロパティが定義されていないため
         # (CLIENT_MASTER_SCHEMA/ACTION_SCHEMAとは異なる)、Notionプロパティとしては送らず
@@ -512,16 +521,31 @@ def plan_migration(
         if next_action_date and project_record is not None:
             project_record.properties["次回アクション日"] = next_action_date
 
+        # BLOCKER: 以下3件は以前、実在しないプロパティ名/誤った値の型で書き込もうとしており
+        # 実書き込み時に確実にKeyError（またはbuild_notion_property_valueでの型不一致）に
+        # なるバグだった（schema.get_property()による全キー検証の回帰テストで発覚）。
+        # - "取引先マスター" → ACTION_SCHEMAでの実際のプロパティ名は
+        #   "👨‍👩‍👧‍👦 取引先マスター"（絵文字プレフィックス付き）。
+        # - "案件管理" → ACTION_SCHEMAには存在せず、実際のプロパティ名は"案件名"
+        #   （名前はtitleっぽく紛らわしいが実体はrelation。ACTION_SCHEMAのtitleは
+        #   別途「商談回数・電話回数・メール回数（何回目）」）。
+        # - "先方担当者" → プロパティ自体はキー名として存在するが、ACTION_SCHEMA上は
+        #   RELATIONではなくTEXT型（自由記述、連絡先DBへの正式なリレーションは無い設計）。
+        #   contact_recordの解決結果はリレーションlistではなく素のテキスト名として書き込む
+        #   （contact_record自体は解決成否のログ・未解決レポート用に引き続き算出している）。
         action_props = {
             ACTION_SCHEMA.title_property.name: ids.next("action"),
             "アクション種別": transformed["アクション種別"],
             "アクション日": row.get("アクション日") or None,
-            "取引先マスター": [client_record] if client_record else [],
-            "案件管理": [project_record] if project_record else [],
-            "先方担当者": [contact_record] if contact_record else [],
+            "👨‍👩‍👧‍👦 取引先マスター": [client_record] if client_record else [],
+            "案件名": [project_record] if project_record else [],
+            "先方担当者": contact_name or None,
             "履歴メモ": transformed["履歴メモ"],
-            "kintone_Act_ID": transformed["kintone_Act_ID"],
         }
+        # BLOCKER: "kintone_Act_ID"もclient_masterの"kintone_ID"と同種のバグで、
+        # ACTION_SCHEMAに存在しないプロパティ名のため実書き込み時に確実にKeyErrorになる。
+        # 上のkintone_act_id変数（PreparedRecordの外部IDとしてのみ使用）で足りており、
+        # action_propsへ重複して含める必要は無い。
         prepared["action"].append(PreparedRecord("action", kintone_act_id, action_props))
         # 担当営業（USER型・必須）は氏名→NotionユーザーIDの対応表がまだ無いため解決しない。
         # kintone「対応者」の氏名だけは`_担当営業氏名`として抽出済みなので、手動割当作業の
