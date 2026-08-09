@@ -124,6 +124,16 @@ ACTION_SCHEMA = DatabaseSchema(
             description="取引先マスターDBへの紐付け（dual_property）",
             relation_target="client_master",
         ),
+        # 2026-08-10、連絡先DB側にdual_propertyリレーションを追加した際に自動生成された
+        # 逆参照プロパティ。
+        PropertyDefinition(
+            name="連絡先",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="連絡先DBからのdual_property逆参照",
+            relation_target="contact",
+        ),
         # --- 以下、読み取り専用（rollup/created_time/created_by） ---
         PropertyDefinition(
             name="決済者",

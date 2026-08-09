@@ -66,6 +66,33 @@ PRODUCT_SCHEMA = DatabaseSchema(
             sync_scope=SyncScope.NOTION_ONLY,
             description="併売の推奨条件を定義",
         ),
+        # 2026-08-10、ZohoデータとNotionデータのマージに際し金沢さんの要望で追加
+        # （dual_property。参照先の案件管理DB/取引先マスターDB/チェーンDB側にも
+        # 「サービス・商品」という逆参照プロパティが自動生成される）。
+        PropertyDefinition(
+            name="案件管理",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="案件管理DBへの紐付け（dual_property）",
+            relation_target="project",
+        ),
+        PropertyDefinition(
+            name="取引先マスター",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="取引先マスターDBへの紐付け（dual_property）",
+            relation_target="client_master",
+        ),
+        PropertyDefinition(
+            name="チェーン",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="チェーンDBへの紐付け（dual_property）",
+            relation_target="chain",
+        ),
         *common_internal_properties(),
     ),
 )

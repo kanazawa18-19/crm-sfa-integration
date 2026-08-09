@@ -47,6 +47,33 @@ CONTACT_SCHEMA = DatabaseSchema(
             description="所属企業",
             relation_target="client_master",
         ),
+        # 2026-08-10、ZohoデータとNotionデータのマージに際し金沢さんの要望で追加
+        # （dual_property。参照先の案件管理DB/アクション履歴DB/チェーンDB側にも
+        # 「連絡先」という逆参照プロパティが自動生成される）。
+        PropertyDefinition(
+            name="案件管理",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="案件管理DBへの紐付け（dual_property）",
+            relation_target="project",
+        ),
+        PropertyDefinition(
+            name="アクション履歴",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="アクション履歴DBへの紐付け（dual_property）",
+            relation_target="action",
+        ),
+        PropertyDefinition(
+            name="チェーン",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="チェーンDBへの紐付け（dual_property）",
+            relation_target="chain",
+        ),
         PropertyDefinition(
             name="部署",
             property_type=PropertyType.TEXT,

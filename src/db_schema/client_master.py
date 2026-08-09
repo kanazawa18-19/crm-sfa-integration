@@ -162,6 +162,16 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
             description="チェーンDBへの紐付け（dual_property）",
             relation_target="chain",
         ),
+        # 2026-08-10、サービス・商品DB側にdual_propertyリレーションを追加した際に
+        # 自動生成された逆参照プロパティ。
+        PropertyDefinition(
+            name="サービス・商品",
+            property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="サービス・商品DBからのdual_property逆参照",
+            relation_target="product",
+        ),
         PropertyDefinition(
             name="【営業部】案件管理DB",
             property_type=PropertyType.RELATION,
