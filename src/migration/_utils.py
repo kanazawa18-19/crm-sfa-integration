@@ -2,8 +2,29 @@
 
 from __future__ import annotations
 
+import re
+
 _PRIMARY_DELIMITER = "、"
 _OTHER_DELIMITERS = (",", "，")
+
+_NOTION_PAGE_ID_RE = re.compile(r"notion\.so/(?:[^/?#]*-)?([0-9a-fA-F]{32})")
+
+
+def extract_notion_page_id(text: str | None) -> str | None:
+    """Zoho側の自由記述/リンク項目に埋め込まれたNotionページURLからページIDを取り出す。
+
+    Zoho実データ確認済み(2026-08-10): 過去の連携作業の名残で、「【Notion】取引先マスター」
+    「案件名」等の一部列に`会社名 (https://www.notion.so/xxxxxxxx...?pvs=21)`という形式で
+    Notionページへの直リンクが埋め込まれている。これがあれば会社名でのあいまい照合より
+    確実な突合キーとして使える。ハイフン区切りのスラグ付きURL
+    （`https://www.notion.so/slug-xxxxxxxx...`）にも対応する。
+    """
+    if not text:
+        return None
+    match = _NOTION_PAGE_ID_RE.search(text)
+    if not match:
+        return None
+    return match.group(1)
 
 
 def parse_multi_value(value: str | list[str] | None) -> list[str]:

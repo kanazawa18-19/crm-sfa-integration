@@ -1,4 +1,4 @@
-from src.migration._utils import parse_checkbox_columns, parse_multi_value
+from src.migration._utils import extract_notion_page_id, parse_checkbox_columns, parse_multi_value
 
 
 def test_parse_multi_value_from_list() -> None:
@@ -45,3 +45,24 @@ def test_parse_checkbox_columns_ignores_columns_with_different_prefix() -> None:
     record = {"サービス（イニシャル）[ホテラボ（初期）]": "1", "サービス（ランニング）[ホテラボ]": "1"}
 
     assert parse_checkbox_columns(record, prefix="サービス（ランニング）") == ["ホテラボ"]
+
+
+def test_extract_notion_page_id_plain_url() -> None:
+    text = "裾野セントラルホテル寿々木 (https://www.notion.so/5fbae3fd718f49e98eeb83aa10c880ea?pvs=21)"
+
+    assert extract_notion_page_id(text) == "5fbae3fd718f49e98eeb83aa10c880ea"
+
+
+def test_extract_notion_page_id_slugged_url() -> None:
+    text = (
+        "hotel la foresta（ホテル ラ フォレスタ） "
+        "(https://www.notion.so/hotel-la-foresta-d78b68ec36fc49fbb49489e4b9229721?pvs=21)"
+    )
+
+    assert extract_notion_page_id(text) == "d78b68ec36fc49fbb49489e4b9229721"
+
+
+def test_extract_notion_page_id_no_url_returns_none() -> None:
+    assert extract_notion_page_id("プレーンテキスト") is None
+    assert extract_notion_page_id("") is None
+    assert extract_notion_page_id(None) is None
