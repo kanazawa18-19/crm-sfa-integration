@@ -6,6 +6,7 @@ from src.migration.kintone_client_master import (
     derive_client_sales_status,
     extract_chain_name,
     normalize_customer_type,
+    remap_duplicate_contact_columns,
     transform_client_master,
 )
 
@@ -15,7 +16,7 @@ def test_normalize_customer_type_known_value_passthrough() -> None:
 
 
 def test_normalize_customer_type_strips_whitespace() -> None:
-    assert normalize_customer_type("  飲食 ") == "飲食"
+    assert normalize_customer_type("  飲食店 ") == "飲食店"
 
 
 def test_normalize_customer_type_unknown_value_falls_back() -> None:
@@ -38,13 +39,15 @@ def test_normalize_customer_type_empty_returns_none() -> None:
 
 
 def test_transform_client_master_maps_expected_fields() -> None:
+    """実データ回帰確認: 「都道府県」「住所」はkintone実データ側の列名
+    （「都道府県名」「住所（市区町村以下を記載）」）を参照する。"""
     record = {
         "レコード番号": "1001",
         "顧客名（法人・個人・施設）": "株式会社サンプル",
         "顧客種別": "ホテル・旅館",
         "〒": "100-0001",
-        "都道府県": "東京都",
-        "住所": "千代田区1-1-1",
+        "都道府県名": "東京都",
+        "住所（市区町村以下を記載）": "千代田区1-1-1",
         "TEL": "03-1234-5678",
         "FAX": "03-1234-5679",
     }
@@ -128,3 +131,91 @@ def test_derive_client_sales_status_unknown_status_logs_warning(
         derive_client_sales_status(["謎のステータス"])
 
     assert any("謎のステータス" in record.message for record in caplog.records)
+
+
+# --- remap_duplicate_contact_columns（担当者1〜3人分の重複列の一意化） -------------------
+
+
+def _make_header() -> list[str]:
+    """実データ確認済みの取引先マスタCSVヘッダー（41列）を組み立てる。"""
+    header = [""] * 41
+    header[0] = "顧客名（法人・個人・施設）"
+    header[7] = "部署"
+    header[8] = "担当者名2"
+    header[9] = "レコード番号"
+    header[20] = "メールアドレス"
+    header[21] = "担当者名"
+    header[22] = "部署"
+    header[23] = "役職"
+    header[24] = "携帯番号"
+    header[26] = "部署"
+    header[28] = "メールアドレス"
+    header[29] = "役職"
+    header[30] = "携帯番号"
+    header[31] = "担当者名3"
+    header[33] = "メールアドレス"
+    header[39] = "携帯番号"
+    header[40] = "役職"
+    return header
+
+
+def _make_row(values: dict[int, str]) -> list[str]:
+    row = [""] * 41
+    for index, value in values.items():
+        row[index] = value
+    return row
+
+
+def test_remap_duplicate_contact_columns_extracts_all_three_contacts() -> None:
+    """実データ回帰確認: 「部署」「役職」「携帯番号」「メールアドレス」列が担当者1〜3人分、
+    同名列として重複エクスポートされていても、1〜3人目それぞれの値を取り出せる。"""
+    header = _make_header()
+    row = _make_row(
+        {
+            0: "株式会社サンプル",
+            9: "1001",
+            20: "ichiro@example.com",
+            21: "田中一郎",
+            22: "営業部",
+            23: "部長",
+            24: "090-1111-1111",
+            8: "鈴木二郎",
+            26: "経理部",
+            28: "jiro@example.com",
+            29: "係長",
+            30: "090-2222-2222",
+            31: "佐藤三郎",
+            33: "saburo@example.com",
+            39: "090-3333-3333",
+            40: "主任",
+        }
+    )
+
+    result = remap_duplicate_contact_columns(header, row)
+
+    assert result["顧客名（法人・個人・施設）"] == "株式会社サンプル"
+    assert result["レコード番号"] == "1001"
+    assert result["担当者名1"] == "田中一郎"
+    assert result["部署1"] == "営業部"
+    assert result["役職1"] == "部長"
+    assert result["携帯1"] == "090-1111-1111"
+    assert result["メール1"] == "ichiro@example.com"
+    assert result["担当者名2"] == "鈴木二郎"
+    assert result["部署2"] == "経理部"
+    assert result["役職2"] == "係長"
+    assert result["携帯2"] == "090-2222-2222"
+    assert result["メール2"] == "jiro@example.com"
+    assert result["担当者名3"] == "佐藤三郎"
+    assert result["役職3"] == "主任"
+    assert result["携帯3"] == "090-3333-3333"
+    assert result["メール3"] == "saburo@example.com"
+
+
+def test_remap_duplicate_contact_columns_raises_when_header_layout_unexpected() -> None:
+    """列インデックスがハードコードされているため、想定と異なるヘッダーが来たら
+    静かに誤ったデータを拾わず明示的にエラーにする。"""
+    header = _make_header()
+    header[21] = "違うラベル"
+
+    with pytest.raises(ValueError, match="列レイアウトが想定と異なります"):
+        remap_duplicate_contact_columns(header, _make_row({}))

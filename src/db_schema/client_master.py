@@ -65,6 +65,9 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
             property_type=PropertyType.SELECT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
+            # kintone実データ移行(2026-08-09)で判明した実データの主要カテゴリ
+            # （ホテル・旅館/ビューティー等）を選択肢に追加した。追加前は元々の8種類しか
+            # 無く、実データ6.2万件の大半が「その他」にフォールバックしていた。
             options=(
                 "宿泊施設",
                 "決済業社",
@@ -74,6 +77,20 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
                 "【競合】ホテルWEB支援",
                 "システムベンダー",
                 "WEBマーケティング会社",
+                "ホテル・旅館",
+                "ビューティー",
+                "飲食店",
+                "テイクアウト＆デリバリー",
+                "グループ本部",
+                "その他",
+                "代理店・協力企業",
+                "台湾",
+                "組合・団体など",
+                "運営会社名",
+                "OTA・サイト事業者",
+                "従業員",
+                "三密代官",
+                "ビットスリープ",
             ),
         ),
         PropertyDefinition(

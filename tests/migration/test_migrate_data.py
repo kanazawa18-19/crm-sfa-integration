@@ -20,6 +20,7 @@ from scripts.migrate_data import (
     build_notion_clients,
     load_db_ids,
     main,
+    read_client_master_csv_rows,
     read_csv_rows,
 )
 from src.db_schema.base import Tool
@@ -62,7 +63,7 @@ def fake_notion_clients() -> dict[str, FakeNotionClient]:
 
 @pytest.fixture
 def plan() -> MigrationPlan:
-    client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
     project_rows = read_csv_rows(FIXTURES_DIR / "project.csv")
     action_rows = read_csv_rows(FIXTURES_DIR / "action.csv")
     return plan_migration(client_master_rows, project_rows, action_rows)
@@ -87,7 +88,7 @@ def test_duplicate_client_name_logs_warning(caplog: pytest.LogCaptureFixture) ->
     """WARN10: fixtureの1001/1002は同名「株式会社サンプル」。名寄せ対象外だが、無言だと
     実データ調査が困難なため重複を検知したら警告ログを残す。"""
     with caplog.at_level(logging.WARNING):
-        client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+        client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
         plan_migration(client_master_rows, [], [])
 
     assert any("duplicate" in r.message and "株式会社サンプル" in r.message for r in caplog.records)
@@ -98,21 +99,10 @@ def test_project_client_and_service_relations_resolved(plan: MigrationPlan) -> N
     project = _find(plan.prepared["project"], "3001")
 
     assert project.properties["取引先マスター"] == [client]
-    service_names = {p.properties["サービス名"] for p in project.properties["提案サービス"]}
+    service_names = {p.properties["名前"] for p in project.properties["提案サービス"]}
     assert service_names == {"リピッテ", "メイリー"}
     # ショット起点のサービスのため課金形態はイニシャルスポットで暫定登録される。
     assert all(p.properties["課金形態"] == "イニシャルスポット" for p in project.properties["提案サービス"])
-
-
-def test_client_sales_status_derived_from_linked_project_status(plan: MigrationPlan) -> None:
-    """BLOCKER1: 取引先マスターの営業ステータス（必須）は、紐づく案件管理の営業ステータスから
-    導出される。1001は3001(契約済)に紐づくため「契約」、案件が無い1003は「未アプローチ」。
-    """
-    contracted_client = _find(plan.prepared["client_master"], "1001")
-    no_project_client = _find(plan.prepared["client_master"], "1003")
-
-    assert contracted_client.properties["営業ステータス"] == "契約"
-    assert no_project_client.properties["営業ステータス"] == "未アプローチ"
 
 
 def test_action_relations_resolved_against_client_project_contact(plan: MigrationPlan) -> None:
@@ -122,7 +112,7 @@ def test_action_relations_resolved_against_client_project_contact(plan: Migratio
 
     assert action.properties["取引先マスター"] == [client]
     assert action.properties["案件管理"] == [project]
-    assert [c.properties["氏名"] for c in action.properties["先方担当者"]] == ["山田太郎"]
+    assert [c.properties["名前"] for c in action.properties["先方担当者"]] == ["山田太郎"]
 
 
 def test_resolved_properties_omits_user_type_properties(plan: MigrationPlan) -> None:
@@ -176,7 +166,7 @@ def test_action_contact_cross_company_fallback_logs_warning(
         plan = plan_migration(client_master_rows, [], action_rows)
 
     action = _find(plan.prepared["action"], "5001")
-    assert [c.properties["氏名"] for c in action.properties["先方担当者"]] == ["田中一郎"]
+    assert [c.properties["名前"] for c in action.properties["先方担当者"]] == ["田中一郎"]
     assert any("フォールバック解決" in r.message for r in caplog.records)
 
 
@@ -189,7 +179,7 @@ def test_action_next_action_date_reflected_on_project(plan: MigrationPlan) -> No
 def test_action_proposed_service_registers_product_without_duplicating(plan: MigrationPlan) -> None:
     """アクション管理の「提案サービス」はサービス・商品DBへの登録のみ行い、
     既に案件管理側で登録済みの名前は重複登録しない。"""
-    product_names = [p.properties["サービス名"] for p in plan.prepared["product"]]
+    product_names = [p.properties["名前"] for p in plan.prepared["product"]]
 
     assert product_names == ["リピッテ", "メイリー"]
 
@@ -202,7 +192,7 @@ def test_unresolved_relations_do_not_stop_processing_and_are_logged(
 ) -> None:
     with caplog.at_level(logging.WARNING):
         # fixtureのplanは既に構築済みだが、警告ログの再現のため同一入力で再実行する。
-        client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+        client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
         project_rows = read_csv_rows(FIXTURES_DIR / "project.csv")
         action_rows = read_csv_rows(FIXTURES_DIR / "action.csv")
         plan_migration(client_master_rows, project_rows, action_rows)
@@ -309,7 +299,7 @@ def test_dry_run_via_cli_prints_summary_without_api_key(
 
 
 def test_materialize_skips_creation_when_id_mapping_already_exists() -> None:
-    client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
     small_plan = plan_migration(client_master_rows, [], [])
     store = SQLiteIdMappingStore(":memory:")
     try:
@@ -334,7 +324,7 @@ def test_materialize_skips_creation_when_id_mapping_already_exists() -> None:
 
 def test_materialize_running_twice_does_not_create_duplicates() -> None:
     """同一inputで2回materializeすると、2回目は全件スキップされる（再実行の冪等性）。"""
-    client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
     store = SQLiteIdMappingStore(":memory:")
     try:
         plan_1 = plan_migration(client_master_rows, [], [])
@@ -357,7 +347,7 @@ def test_materialize_running_twice_does_not_create_duplicates() -> None:
 
 
 def test_materialize_wires_real_page_ids_into_relation_properties() -> None:
-    client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
     project_rows = read_csv_rows(FIXTURES_DIR / "project.csv")
     full_plan = plan_migration(client_master_rows, project_rows, [])
     store = SQLiteIdMappingStore(":memory:")
@@ -382,7 +372,7 @@ def test_materialize_wires_real_page_ids_into_action_relation_properties() -> No
     """BLOCKER2: アクション管理の取引先マスター・案件管理・先方担当者の3つのリレーションが、
     PreparedRecord参照レベルだけでなく、materialize()が実際にNotion APIへ送るペイロード
     （page_idレベル）まで正しく解決されていることを検証する。"""
-    client_master_rows = read_csv_rows(FIXTURES_DIR / "client_master.csv")
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
     project_rows = read_csv_rows(FIXTURES_DIR / "project.csv")
     action_rows = read_csv_rows(FIXTURES_DIR / "action.csv")
     full_plan = plan_migration(client_master_rows, project_rows, action_rows)
@@ -493,7 +483,7 @@ def test_print_summary_warns_when_unresolved_rate_exceeds_threshold(
         {
             "レコード番号": str(3000 + i),
             "施設名（会社名）": f"存在しない取引先{i}",
-            "契約進捗状況": "初回接触",
+            "契約進捗状況": "アポ",
         }
         for i in range(5)
     ]

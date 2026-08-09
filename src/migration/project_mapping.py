@@ -5,16 +5,23 @@ from __future__ import annotations
 from src.db_schema.project import PROJECT_SCHEMA
 from src.migration._utils import parse_multi_value
 
-# 契約進捗状況の表記ゆれ（全角括弧等）をNotion側セレクト値へ正規化するための対応表。
-# 未掲載の値は strip 後そのまま採用され、PROJECT_SCHEMA の有効な選択肢か検証される。
+# 契約進捗状況（kintone実データ側の表記）を④案件管理DBの営業ステータス（実Notionスキーマ、
+# 既存タスク#32で実データに合わせて全面書き直し済み: 施設契約/解約/リスケ/失注/アポ/Dヨミ/
+# Cヨミ/Bヨミ/Aヨミ/トライアル/契約）へ正規化するための対応表。
+# 「商談中（A/B/C/D）」はA〜Dヨミ（商談確度ランク）へ細分せず、まとめて「アポ」に統合する
+# 方針（2026-08-09、業務判断確認済み）。未掲載の値は strip 後そのまま採用され、
+# PROJECT_SCHEMA の有効な選択肢か検証される。
 _STATUS_ALIASES: dict[str, str] = {
-    "商談中（B）": "商談中(B)",
-    "商談中（C）": "商談中(C)",
+    "契約済": "契約",
+    "商談中（A）": "アポ",
+    "商談中（B）": "アポ",
+    "商談中（C）": "アポ",
+    "商談中（D）": "アポ",
 }
 
 
 def normalize_project_status(kintone_status: str | None) -> str:
-    """契約進捗状況（契約済/商談中(B)(C)/失注 等）を④案件管理DBの営業ステータス値へ正規化する。
+    """契約進捗状況（契約済/商談中(A〜D)/失注 等）を④案件管理DBの営業ステータス値へ正規化する。
 
     営業ステータスは必須項目（RequirementLevel.REQUIRED）で、かつ本モジュールの
     契約日／予想契約日の振り分けロジックが値に直接依存するため、未知の値は
@@ -34,12 +41,13 @@ def transform_kintone_project(record: dict[str, str]) -> dict[str, object]:
 
     取引先マスター・サービス・商品へのリレーションはこの時点では解決せず、
     後続の解決ステップ用に `_取引先名`（名寄せ用）/ `_サービス名リスト` として残す。
-    契約日は確定契約（契約済ステータス）の場合のみ、それ以外は予想契約日に課金開始予定日を入れる。
+    契約日は確定契約（営業ステータス「契約」）の場合のみ、それ以外は予想契約日に
+    課金開始予定日を入れる。
     """
     status = normalize_project_status(record.get("契約進捗状況", ""))
     billing_date = record.get("課金開始予定日") or None
-    contract_date = billing_date if status == "契約済" else None
-    expected_contract_date = None if status == "契約済" else billing_date
+    contract_date = billing_date if status == "契約" else None
+    expected_contract_date = None if status == "契約" else billing_date
 
     return {
         "kintone_ID": record.get("レコード番号", ""),

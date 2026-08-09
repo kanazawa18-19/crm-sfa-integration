@@ -6,18 +6,16 @@ from src.migration.project_mapping import normalize_project_status, transform_ki
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("契約済", "契約済"),
-        ("商談中(B)", "商談中(B)"),
-        ("商談中(C)", "商談中(C)"),
-        ("商談中（B）", "商談中(B)"),
-        ("商談中（C）", "商談中(C)"),
+        ("契約済", "契約"),
+        ("商談中（A）", "アポ"),
+        ("商談中（B）", "アポ"),
+        ("商談中（C）", "アポ"),
+        ("商談中（D）", "アポ"),
         ("失注", "失注"),
-        ("初回接触", "初回接触"),
-        (" 提案中 ", "提案中"),
-        ("見積提出", "見積提出"),
-        (" 見積提出 ", "見積提出"),
         ("解約", "解約"),
         (" 解約 ", "解約"),
+        ("アポ", "アポ"),
+        ("契約", "契約"),
     ],
 )
 def test_normalize_project_status_known_values(raw: str, expected: str) -> None:
@@ -25,11 +23,12 @@ def test_normalize_project_status_known_values(raw: str, expected: str) -> None:
 
 
 def test_normalize_project_status_covers_all_schema_options() -> None:
-    """仕様書03節の営業ステータス全8値を網羅していることを保証する回帰テスト。"""
+    """実Notionスキーマ（既存タスク#32で実データに合わせて全面書き直し済み）の
+    営業ステータス全11値を網羅していることを保証する回帰テスト。"""
     from src.db_schema.project import PROJECT_SCHEMA
 
     valid_options = PROJECT_SCHEMA.get_property("営業ステータス").options
-    assert len(valid_options) == 8
+    assert len(valid_options) == 11
     for option in valid_options:
         assert normalize_project_status(option) == option
 
@@ -58,6 +57,7 @@ def test_transform_kintone_project_status_field_none_raises_value_error() -> Non
 
 
 def test_transform_kintone_project_contracted_sets_contract_date() -> None:
+    """実データ回帰確認: kintoneの「契約済」は実Notionスキーマの「契約」へ正規化される。"""
     record = {
         "レコード番号": "3001",
         "施設名（会社名）": "株式会社サンプル",
@@ -70,7 +70,7 @@ def test_transform_kintone_project_contracted_sets_contract_date() -> None:
 
     result = transform_kintone_project(record)
 
-    assert result["営業ステータス"] == "契約済"
+    assert result["営業ステータス"] == "契約"
     assert result["契約日"] == "2026-09-01"
     assert result["予想契約日"] is None
     assert result["_サービス名リスト"] == ["リピッテ", "メイリー"]
@@ -81,15 +81,18 @@ def test_transform_kintone_project_contracted_sets_contract_date() -> None:
 
 
 def test_transform_kintone_project_in_progress_sets_expected_date() -> None:
+    """実データ回帰確認: kintoneの「商談中（B）」は実Notionスキーマの「アポ」へ正規化される
+    （A〜Dヨミへは細分せず、まとめて「アポ」に統合する方針、2026-08-09業務判断確認済み）。"""
     record = {
         "レコード番号": "3002",
         "施設名（会社名）": "株式会社サンプル2",
-        "契約進捗状況": "商談中(B)",
+        "契約進捗状況": "商談中（B）",
         "課金開始予定日": "2026-10-01",
     }
 
     result = transform_kintone_project(record)
 
+    assert result["営業ステータス"] == "アポ"
     assert result["契約日"] is None
     assert result["予想契約日"] == "2026-10-01"
     assert result["_サービス名リスト"] == []

@@ -14,10 +14,17 @@ Notion API・IDマッピングストアをモックせずに検証でき、mater
 API呼び出し回数・冪等性を検証できる。
 
 ■ 既知の設計判断・データギャップ（04_項目マッピングに明記が無いため実装者判断で補った点）:
-  - kintone アクション管理が取引先・案件とどのカラムで紐づくかは仕様書に明記が無いため、
-    案件管理アプリと同じ命名規則（取引先名＝「施設名（会社名）」、案件の一意キー＝
-    「案件番号」列に案件管理側のレコード番号が入る想定）を前提とする。実データのCSV列名が
-    異なる場合は要調整。
+  - kintone アクション管理の取引先名は「顧客名（法人・個人・施設）」列（取引先マスタと同じ
+    表記）で、案件管理側の「施設名（会社名）」とは列名が異なる（実データ確認済み。以前は
+    案件管理側の列名を誤って流用しており、取引先マスターへのリレーションがほぼ全件解決
+    できていなかった）。
+  - kintone アクション管理には案件管理側のレコード番号に相当する「案件番号」列が実データ上
+    存在しない（実データ確認済み）。そのためアクション管理DBの「案件管理」リレーション、
+    および次回アクション日の案件管理側への反映（`extract_next_action_date_for_project`
+    経由）は、現状のkintoneエクスポートでは常に未解決のまま（コード上のロジックは
+    `project_kintone_id`が空文字列になるため`_note_attempt`自体が呼ばれず、未解決レポートにも
+    出てこない静かな機能不全になる点に注意）。案件との紐付けが必要な場合は、取引先名＋
+    時系列等で手動突合するか、kintone側のデータ構造の見直しが必要。
   - 案件管理DBの「案件名」・アクション管理DBの「アクション名」はkintone側に対応項目が
     無い/未確認のため、CSVに同名列があればそれを採用し、無ければ取引先名／アクション種別を
     代用する。
@@ -28,10 +35,10 @@ API呼び出し回数・冪等性を検証できる。
     まだ無いため本移行スクリプトでは解決しない（Notion側で空欄のまま作成され、手動割当が
     必要）。未設定になった件数・対象レコードは `unresolved_user_properties` として記録し、
     レポートCSVへ出力する。
-  - 取引先マスターDBの「営業ステータス」（必須）はkintone取引先マスタ側に対応する列が
-    無いため、紐づく案件管理側の営業ステータスから導出する
-    （`kintone_client_master.derive_client_sales_status`）。導出ロジックの詳細・理由は
-    docs/migration_pipeline_note.md を参照。
+  - 取引先マスターDBには紐づく案件管理側の営業ステータスから自動集計する
+    「【営業部】営業ステータス」ロールアップが既に存在するため、本パイプラインからの
+    書き込みは行わない（`kintone_client_master.derive_client_sales_status`は将来
+    独立プロパティとして必要になった場合のために残してあるが、現状未使用）。
 """
 
 from __future__ import annotations
@@ -60,7 +67,6 @@ from src.migration.contact_migration import (
     split_kintone_contacts,
 )
 from src.migration.kintone_client_master import (
-    derive_client_sales_status,
     extract_chain_name,
     transform_client_master,
 )
@@ -221,7 +227,11 @@ def plan_migration(
     client_by_name: dict[str, PreparedRecord] = {}
     for row in client_master_rows:
         props = transform_client_master(row)
-        props[CLIENT_MASTER_SCHEMA.title_property.name] = ids.next("client_master")
+        # BLOCKER: 以前はここで props[title_property.name]（="取引先名"）を ids.next(...)
+        # の連番IDで上書きしており、transform_client_master()が既にセットした実際の会社名が
+        # 失われ、Notion上のタイトルが全件"CLI-001"のような連番IDになってしまうバグが
+        # あった（実データ検証で発覚）。取引先名は既にtransform_client_master()の戻り値に
+        # 含まれているため、ここでの追加代入は不要かつ有害だった。
         record = PreparedRecord("client_master", props["kintone_ID"] or None, props)
         prepared["client_master"].append(record)
         name = props["取引先名"]
@@ -305,9 +315,12 @@ def plan_migration(
                 raw_value=client_name,
             )
 
+        # BLOCKER: CONTACT_SCHEMAのdocstringに明記の通り、Notion側のtitleプロパティ
+        # （"名前"）が氏名そのものを保持する設計であり、"氏名"という別プロパティは存在
+        # しない。以前はtitleに連番IDを入れ、存在しない"氏名"キーへ実際の氏名を書き込もう
+        # としており、Notion書き込み時にKeyErrorで確実に失敗していた（実データ検証で発覚）。
         props: dict[str, Any] = {
-            CONTACT_SCHEMA.title_property.name: ids.next("contact"),
-            "氏名": merged["氏名"],
+            CONTACT_SCHEMA.title_property.name: merged["氏名"],
             "部署": merged.get("部署"),
             "役職": merged.get("役職"),
             "携帯番号": merged.get("携帯番号"),
@@ -340,9 +353,13 @@ def plan_migration(
         existing = product_by_name.get(name)
         if existing is not None:
             return existing
+        # BLOCKER: PRODUCT_SCHEMAのdocstringに明記の通り、Notion側のtitleプロパティ
+        # （"名前"）がサービス名そのものを保持する設計であり、"サービス名"という別プロパティ
+        # は存在しない。以前はtitleに連番IDを入れ、存在しない"サービス名"キーへ実際の値を
+        # 書き込もうとしており、Notion書き込み時にKeyErrorで確実に失敗していた
+        # （実データ検証で発覚）。
         product_props: dict[str, Any] = {
-            PRODUCT_SCHEMA.title_property.name: ids.next("product"),
-            "サービス名": name,
+            PRODUCT_SCHEMA.title_property.name: name,
             # 案件管理「サービス（ショット）」・アクション管理「提案サービス」はいずれも
             # ショット（単発）提案起点の項目で、月額/成果報酬を判別するソースが無いため、
             # 初期値は「イニシャルスポット」とする（実データ精査後に手動調整する前提）。
@@ -354,10 +371,6 @@ def plan_migration(
         return new_record
 
     project_by_kintone_id: dict[str, PreparedRecord] = {}
-    # ①取引先マスターの「営業ステータス」導出（BLOCKER1）用に、取引先名ごとの案件ステータスを
-    # 集計する（derive_client_sales_status に渡す。実データの取引先名と一致しない
-    # 案件（未解決リレーション）分は単に使われずに終わるだけで害はない）。
-    client_project_statuses: dict[str, list[str]] = {}
     for row in project_rows:
         try:
             transformed = transform_kintone_project(row)
@@ -379,9 +392,6 @@ def plan_migration(
                 relation_name="取引先マスター",
                 raw_value=client_name or "",
             )
-        if client_name:
-            client_project_statuses.setdefault(client_name, []).append(transformed["営業ステータス"])
-
         service_records = [
             ensure_product(name) for name in dict.fromkeys(transformed["_サービス名リスト"])
         ]
@@ -418,13 +428,11 @@ def plan_migration(
             )
         )
 
-    # ①取引先マスターの「営業ステータス」を、紐づく案件の集計結果から導出して補完する
-    # （BLOCKER1）。transform_client_master()の時点では案件データが未参照のため、
-    # ④案件管理の処理が終わった後にまとめて補完する。
-    for client_record in prepared["client_master"]:
-        client_name = client_record.properties["取引先名"]
-        statuses = client_project_statuses.get(client_name, [])
-        client_record.properties["営業ステータス"] = derive_client_sales_status(statuses)
+    # NOTE: ①取引先マスターDBには、紐づく案件の営業ステータスから自動集計する
+    # 「【営業部】営業ステータス」が既にロールアップ（読み取り専用）として存在するため、
+    # 同じ目的の値を独立プロパティへ重複して書き込む処理は行わない（2026-08-09、
+    # 業務判断確認済み。旧実装は"営業ステータス"という存在しないプロパティ名で書き込もう
+    # としており、実行時に確実にKeyErrorで失敗するバグがあった）。
 
     # === ⑥ アクション管理 =====================================================
     for row in action_rows:
@@ -438,7 +446,11 @@ def plan_migration(
 
         kintone_act_id = transformed["kintone_Act_ID"] or None
 
-        client_name = (row.get("施設名（会社名）") or "").strip()
+        # 実データ確認済み: 取引先の会社名を表すkintoneの列名はアプリごとに表記が異なる
+        # （取引先マスタ・アクション管理＝「顧客名（法人・個人・施設）」、案件管理＝
+        # 「施設名（会社名）」）。以前は案件管理側の列名をそのまま流用しており、
+        # アクション管理の取引先マスターへのリレーションがほぼ全件解決できなかった。
+        client_name = (row.get("顧客名（法人・個人・施設）") or "").strip()
         _note_attempt("action", "取引先マスター")
         client_record = client_by_name.get(client_name) if client_name else None
         if client_record is None:
@@ -502,9 +514,6 @@ def plan_migration(
 
         action_props = {
             ACTION_SCHEMA.title_property.name: ids.next("action"),
-            # kintoneアクション管理に「アクション名」専用の項目が確認できない場合は
-            # アクション種別で代用する。
-            "アクション名": row.get("アクション名") or transformed["アクション種別"],
             "アクション種別": transformed["アクション種別"],
             "アクション日": row.get("アクション日") or None,
             "取引先マスター": [client_record] if client_record else [],
@@ -537,8 +546,8 @@ def plan_migration(
 
 
 def business_id(record: PreparedRecord) -> str:
-    """レコードのタイトルID（例: CLI-001）を返す。dry-run時のnotion_keyプレースホルダ、
-    およびレポート表示に使う。
+    """レコードのtitleプロパティ値（DBによって連番ID/取引先名/氏名/サービス名等）を返す。
+    dry-run時のnotion_keyプレースホルダ、およびレポート表示に使う。
     """
     title_name = get_schema(record.db_key).title_property.name
     return str(record.properties[title_name])

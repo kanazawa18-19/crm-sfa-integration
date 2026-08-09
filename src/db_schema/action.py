@@ -6,8 +6,13 @@
 ■ titleプロパティに関する注意: 「商談回数・電話回数・メール回数（何回目）」が
 title。仕様書03節が想定していた「アクション名」ではなく、この自由記述フィールド
 自体がタイトルかつ実質のアクション内容記述である（表記ゆれが激しい: 【電話】N回目、
-【商談】N回目、テレアポ↓（担当者名）等）。無理に「アクション種別」列を新設せず、
-自由記述のまま扱う方針とする。
+【商談】N回目、テレアポ↓（担当者名）等）。
+
+■ 「アクション種別」に関する注意: 当初は無理に列を新設せずtitleの自由記述のまま
+扱う方針だったが、kintone実データ移行（migrationパッケージ）でアクション種別
+（テレアポ/訪問商談/オンライン商談等）を構造化して保持する必要が生じたため、
+select型で新規追加した（2026-08-09、実データ確認済みの選択肢: テレアポ/訪問商談/
+オンライン商談/メール/問い合わせメール/飛び込み/自動メール/その他）。
 
 ■ 「案件名」プロパティに関する注意: プロパティ名は"案件名"だが実体はrelation
 （案件管理DBへの紐付け）であり、titleではない点に注意。
@@ -44,6 +49,23 @@ ACTION_SCHEMA = DatabaseSchema(
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
             description="実質のアクション内容の自由記述。表記ゆれが激しい",
+        ),
+        PropertyDefinition(
+            name="アクション種別",
+            property_type=PropertyType.SELECT,
+            requirement=RequirementLevel.REQUIRED,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="kintone実データ移行のため2026-08-09に新規追加したselect項目",
+            options=(
+                "テレアポ",
+                "訪問商談",
+                "オンライン商談",
+                "メール",
+                "問い合わせメール",
+                "飛び込み",
+                "自動メール",
+                "その他",
+            ),
         ),
         PropertyDefinition(
             name="営業部アクションID",

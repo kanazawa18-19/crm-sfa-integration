@@ -42,13 +42,19 @@ def test_transform_kintone_action_action_type_field_none_raises_value_error() ->
 
 
 def test_transform_kintone_action_maps_expected_fields() -> None:
+    """実データ回帰確認: 「提案サービス」はkintone上チェックボックス項目のため、
+    CSVでは「提案サービス[選択肢]」という複数列に展開されてエクスポートされる
+    （単一の「提案サービス」列は存在しない）。"""
     record = {
         "レコード番号": "4001",
         "アクション内容": "訪問商談",
         "コメント": "先方担当者と初回打ち合わせ",
         "対応者": "営業太郎",
         "担当者名": "山田太郎",
-        "提案サービス": "リピッテ、メイリー",
+        "提案サービス[未確定]": "",
+        "提案サービス[リピッテ]": "1",
+        "提案サービス[メイリー]": "1",
+        "提案サービス[ホテラボ]": "",
     }
 
     result = transform_kintone_action(record)
@@ -61,6 +67,21 @@ def test_transform_kintone_action_maps_expected_fields() -> None:
         "_先方担当者氏名": "山田太郎",
         "_提案サービス名リスト": ["リピッテ", "メイリー"],
     }
+
+
+def test_transform_kintone_action_excludes_mikakutei_checkbox_from_service_list() -> None:
+    """「提案サービス[未確定]」は実サービス名ではなく「まだ決まっていない」を表す
+    特殊な選択肢のため、サービス名リストから除外されることを確認する。"""
+    record = {
+        "レコード番号": "4004",
+        "アクション内容": "テレアポ",
+        "対応者": "営業太郎",
+        "提案サービス[未確定]": "1",
+    }
+
+    result = transform_kintone_action(record)
+
+    assert result["_提案サービス名リスト"] == []
 
 
 def test_transform_kintone_action_missing_optional_fields_become_none() -> None:

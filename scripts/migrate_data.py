@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import logging
 import sys
 from pathlib import Path
@@ -39,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.db_schema.registry import ALL_SCHEMAS, SCHEMAS_BY_KEY
+from src.migration.kintone_client_master import remap_duplicate_contact_columns
 from src.migration.migration_pipeline import (
     MigrationPlan,
     MigrationSummary,
@@ -92,14 +94,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def read_csv_rows(path: Path) -> list[dict[str, str]]:
-    """kintoneエクスポートCSVを読み込む。
+_CSV_ENCODING_CANDIDATES = ("utf-8-sig", "cp932")
 
-    kintone/ExcelのCSV出力はUTF-8 BOM付きになることが多いため utf-8-sig で読む
-    （BOM無しCSVでも問題なく読める）。
+
+def _decode_csv_text(path: Path) -> str:
+    """kintoneエクスポートCSVをデコードする。
+
+    kintoneのCSVエクスポートは文字コードを選べる仕様で、UTF-8（BOM付き）とShift-JIS
+    （実データではcp932として読めるものが確認できた）のどちらもあり得るため、
+    utf-8-sigを試し、デコードできなければcp932にフォールバックする（実データ確認済み:
+    kintone標準エクスポートのデフォルトはcp932だった）。
     """
-    with path.open(newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+    raw_bytes = path.read_bytes()
+    last_error: UnicodeDecodeError | None = None
+    for encoding in _CSV_ENCODING_CANDIDATES:
+        try:
+            return raw_bytes.decode(encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+    assert last_error is not None
+    raise last_error
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    """kintoneエクスポートCSVを読み込む（通常版、列名の重複が無い前提）。"""
+    text = _decode_csv_text(path)
+    return list(csv.DictReader(io.StringIO(text, newline="")))
+
+
+def read_client_master_csv_rows(path: Path) -> list[dict[str, str]]:
+    """取引先マスタCSVを読み込む。
+
+    担当者情報（担当者名・部署・役職・携帯番号・メールアドレス）が担当者1〜3人分、
+    同名列としてkintoneから重複エクスポートされる仕様のため、通常のcsv.DictReaderでは
+    読めない（重複列名は最後の値のみが残り、1・2人目の情報が失われる）。
+    `kintone_client_master.remap_duplicate_contact_columns`で列インデックスに基づき
+    一意なキーへ変換してから読み込む。
+    """
+    text = _decode_csv_text(path)
+    reader = csv.reader(io.StringIO(text, newline=""))
+    header = next(reader)
+    return [remap_duplicate_contact_columns(header, row) for row in reader]
 
 
 def load_db_ids() -> dict[str, str]:
@@ -162,7 +198,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
 
-    client_master_rows = read_csv_rows(args.client_master_csv)
+    client_master_rows = read_client_master_csv_rows(args.client_master_csv)
     project_rows = read_csv_rows(args.project_csv)
     action_rows = read_csv_rows(args.action_csv)
 

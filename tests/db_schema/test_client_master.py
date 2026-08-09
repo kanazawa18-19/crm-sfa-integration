@@ -7,6 +7,9 @@ def test_client_master_schema_notion_database_id_matches_real_data() -> None:
 
 
 def test_client_master_schema_kojushu_property_options_match_real_data() -> None:
+    """kintone実データ移行(2026-08-09)で、実データの主要カテゴリ（ホテル・旅館/ビューティー
+    等）を選択肢に追加した。追加前の8種類のみだと実データ6.2万件の大半が「その他」に
+    フォールバックしてしまうため拡張済み（Notion本番DB側にも同じ選択肢を追加済み）。"""
     prop = CLIENT_MASTER_SCHEMA.get_property("顧客種別")
     assert set(prop.options) == {
         "宿泊施設",
@@ -17,6 +20,20 @@ def test_client_master_schema_kojushu_property_options_match_real_data() -> None
         "【競合】ホテルWEB支援",
         "システムベンダー",
         "WEBマーケティング会社",
+        "ホテル・旅館",
+        "ビューティー",
+        "飲食店",
+        "テイクアウト＆デリバリー",
+        "グループ本部",
+        "その他",
+        "代理店・協力企業",
+        "台湾",
+        "組合・団体など",
+        "運営会社名",
+        "OTA・サイト事業者",
+        "従業員",
+        "三密代官",
+        "ビットスリープ",
     }
 
 
