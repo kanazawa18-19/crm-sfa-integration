@@ -417,6 +417,16 @@ PROJECT_SCHEMA = DatabaseSchema(
             sync_scope=SyncScope.NOTION_ONLY,
             description="Any-to-Any同期のスコープ外（ファイル同期は非対応）",
         ),
+        # 2026-08-10、Zoho添付ファイル移行に際し新規作成。同名"個別提案資料"での作成は
+        # Notion API側で「関連DBにアクセスできない」エラーとなったため（原因不明、削除済み
+        # プロパティの内部状態が残っている可能性）、別名で作成した。
+        PropertyDefinition(
+            name="提案資料",
+            property_type=PropertyType.FILES,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Any-to-Any同期のスコープ外（ファイル同期は非対応）。Zoho「個別提案資料」由来",
+        ),
         # --- 以下、読み取り専用（formula/rollup/created_time/last_edited_time） ---
         PropertyDefinition(
             name="失注から90日オーバー",

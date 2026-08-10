@@ -88,6 +88,16 @@ def build_notion_property_value(property_type: PropertyType, value: Any) -> dict
         return {"relation": [{"id": related_id} for related_id in _as_id_list(value)]}
     if property_type == PropertyType.JSON_TEXT:
         return {"rich_text": _rich_text_content(value)}
+    if property_type == PropertyType.FILES:
+        # valueは{"name": str, "url": str}の辞書のリストを想定（外部URL参照方式）。
+        # Notion側にファイル本体をアップロードするのではなく、既存の外部ストレージ
+        # （Google Drive等）へのリンクとして登録する（2026-08-10、Zoho添付ファイル移行で導入）。
+        return {
+            "files": [
+                {"type": "external", "name": f["name"], "external": {"url": f["url"]}}
+                for f in _as_id_list(value)
+            ]
+        }
     raise ValueError(f"unsupported PropertyType for Notion conversion: {property_type!r}")
 
 

@@ -290,6 +290,20 @@ def test_get_page_retries_on_429_then_succeeds(
         (PropertyType.RELATION, ["rel-1"], {"relation": [{"id": "rel-1"}]}),
         (PropertyType.RELATION, None, {"relation": []}),
         (PropertyType.JSON_TEXT, '{"k": 1}', {"rich_text": [{"type": "text", "text": {"content": '{"k": 1}'}}]}),
+        (
+            PropertyType.FILES,
+            [{"name": "見積書.pdf", "url": "https://drive.google.com/file/d/abc/view"}],
+            {
+                "files": [
+                    {
+                        "type": "external",
+                        "name": "見積書.pdf",
+                        "external": {"url": "https://drive.google.com/file/d/abc/view"},
+                    }
+                ]
+            },
+        ),
+        (PropertyType.FILES, None, {"files": []}),
     ],
 )
 def test_build_notion_property_value(property_type: PropertyType, value, expected) -> None:

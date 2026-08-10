@@ -93,6 +93,25 @@ ACTION_SCHEMA = DatabaseSchema(
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
         ),
+        # 2026-08-10、金沢さんの指摘により新規作成。Zoho実データには「Notta」
+        # 「録画・音声ファイル」という、いずれもNotta.ai（議事録・文字起こしサービス）の
+        # URLが入った列が存在するが、Notion側に対応するプロパティが無かった。
+        PropertyDefinition(
+            name="議事録・録画リンク",
+            property_type=PropertyType.URL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="Notta.ai等の議事録・録画URL",
+        ),
+        # 2026-08-10、Zoho添付ファイル移行に際し新規作成。Zoho「手当情報アップロード」
+        # （商談手当計算用の領収書等の画像、762件）を紐付けるためのファイルプロパティ。
+        PropertyDefinition(
+            name="手当情報アップロード",
+            property_type=PropertyType.FILES,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Any-to-Any同期のスコープ外（ファイル同期は非対応）",
+        ),
         PropertyDefinition(
             name="先方担当者",
             property_type=PropertyType.TEXT,

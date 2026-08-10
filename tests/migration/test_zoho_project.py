@@ -95,11 +95,18 @@ def test_transform_zoho_project_maps_expected_fields() -> None:
         "月額費用": "8800",
         "契約日 / 予想契約日": "2026-09-01",
         "メモ": "備考メモ",
+        "【Notion】テキスト": "自由記述テキスト",
         "サイトコントローラー": "リンカーン",
+        "【Notion】ファーストタッチ": "テレアポ, 紹介",
         "かつやさん": "true",
+        "問合せ": "true",
         "ネックポイント": "予算未確保",
         "失注理由": "",
-        "アクション日": "2026-08-01",
+        "失注日": "",
+        "【Notion】担当者名": "田中様",
+        "決裁者": "本社",
+        "【Notion】次回アクション": "見積送付",
+        "【Notion】サービス数（施設数）": "3",
         "メールアドレス": "sample@example.com",
         "電話番号": "03-1234-5678",
         "ステージ": "契約済",
@@ -118,11 +125,18 @@ def test_transform_zoho_project_maps_expected_fields() -> None:
         "月額費用": 8800.0,
         "契約日 / 予想契約日": "2026-09-01",
         "メモ": "備考メモ",
+        "テキスト": "自由記述テキスト",
         "サイトコントローラー": ["リンカーン"],
+        "ファーストタッチ": ["テレアポ", "紹介"],
         "かつやさん": True,
+        "問合せ": True,
         "ネックポイント": "予算未確保",
         "失注理由": None,
-        "アクション日": "2026-08-01",
+        "失注日": None,
+        "担当者名": "田中様",
+        "決裁者名": "本社",
+        "次回アクション": "見積送付",
+        "サービス数（施設数）": 3.0,
         "メールアドレス": "sample@example.com",
         "電話番号": "03-1234-5678",
         "_サービス名リスト": ["リピッテ", "メイリー"],
@@ -132,9 +146,11 @@ def test_transform_zoho_project_maps_expected_fields() -> None:
 
 
 def test_transform_zoho_project_does_not_include_readonly_formula_or_rollup_properties() -> None:
-    """粗利・個人粗利(FORMULA型)、予算組のタイミング・決算月(ROLLUP型)は
-    Notion側で自動計算される読み取り専用プロパティのため、同名のZoho列があっても
-    書き込み対象に含めない。"""
+    """粗利・個人粗利・契約スピード・失注経過日数・初期フィー・フィー率・経過日数
+    (FORMULA型)、予算組のタイミング・アクション日・決算月・チェーン本社・アクションログ
+    (ROLLUP型)は、Notion側で自動計算される読み取り専用プロパティのため、同名のZoho列が
+    あっても書き込み対象に含めない。「アクション日」は当初誤って書き込み対象に含めて
+    しまっていたバグの回帰確認を兼ねる。"""
     record = {
         "データID": "zcrm_789",
         "案件名": "テスト案件",
@@ -142,6 +158,7 @@ def test_transform_zoho_project_does_not_include_readonly_formula_or_rollup_prop
         "個人粗利": "50000",
         "予算組のタイミング": "4月",
         "決算月": "3月",
+        "アクション日": "2026-08-01",
     }
 
     result = transform_zoho_project(record)
@@ -150,6 +167,29 @@ def test_transform_zoho_project_does_not_include_readonly_formula_or_rollup_prop
     assert "個人粗利" not in result
     assert "予算組のタイミング" not in result
     assert "決算月" not in result
+    assert "アクション日" not in result
+
+
+def test_transform_zoho_project_first_touch_parses_comma_separated_values() -> None:
+    """「ファーストタッチ」はカンマ区切りの複数値であることの回帰確認。"""
+    record = {
+        "データID": "1",
+        "案件名": "A",
+        "【Notion】ファーストタッチ": "引継ぎ, 横展開・追加提案",
+    }
+
+    result = transform_zoho_project(record)
+
+    assert result["ファーストタッチ"] == ["引継ぎ", "横展開・追加提案"]
+
+
+def test_transform_zoho_project_first_touch_drops_unknown_values() -> None:
+    """既存選択肢に無い値は無言で捨てず除外する。"""
+    record = {"データID": "1", "案件名": "A", "【Notion】ファーストタッチ": "謎の値"}
+
+    result = transform_zoho_project(record)
+
+    assert result["ファーストタッチ"] == []
 
 
 def test_transform_zoho_project_boolean_field_parses_true_false_strings_correctly() -> None:
@@ -189,12 +229,19 @@ def test_transform_zoho_project_missing_optional_fields_become_none() -> None:
     assert result["月額費用"] is None
     assert result["契約日 / 予想契約日"] is None
     assert result["メモ"] is None
+    assert result["テキスト"] is None
     assert result["ネックポイント"] is None
     assert result["失注理由"] is None
-    assert result["アクション日"] is None
+    assert result["失注日"] is None
+    assert result["担当者名"] is None
+    assert result["決裁者名"] is None
+    assert result["次回アクション"] is None
+    assert result["サービス数（施設数）"] is None
     assert result["メールアドレス"] is None
     assert result["電話番号"] is None
     assert result["営業ステータス"] is None
+    assert result["ファーストタッチ"] == []
+    assert result["問合せ"] is False
     assert result["_サービス名リスト"] == []
     assert result["_取引先_zoho_id"] is None
     assert result["_取引先_notion_page_id"] is None
