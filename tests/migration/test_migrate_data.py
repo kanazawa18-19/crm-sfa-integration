@@ -13,21 +13,26 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from scripts.migrate_data import (
     _DEFAULT_ID_MAPPING_DB_PATH,
     _DEFAULT_REPORT_PATH,
     build_notion_clients,
     load_db_ids,
+    load_existing_client_index,
     main,
+    parse_args,
     read_client_master_csv_rows,
     read_csv_rows,
+    read_zoho_csv_rows,
 )
 from src.db_schema.base import Tool
 from src.db_schema.registry import SCHEMAS_BY_KEY
 from src.migration.migration_pipeline import (
     MigrationPlan,
     MigrationSummary,
+    NeedsReviewClient,
     PreparedRecord,
     UnresolvedRelation,
     materialize,
@@ -35,9 +40,11 @@ from src.migration.migration_pipeline import (
     print_summary,
     resolved_properties,
     write_dedupe_report_csv,
+    write_needs_review_clients_report_csv,
     write_unresolved_report_csv,
     write_unresolved_user_report_csv,
 )
+from src.migration.notion_dedupe import ClientMasterSnapshot, ClientMatchIndex
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -686,3 +693,296 @@ def test_main_outputs_reports_even_when_materialize_raises(
     assert report_path.exists()
     assert (tmp_path / "migration_report_unresolved.csv").exists()
     assert (tmp_path / "migration_report_unresolved_users.csv").exists()
+
+
+# --- タスク#63: scripts/migrate_data.py のZoho CSV対応 ----------------------------------
+
+
+def _write_zoho_client_master_csv(path: Path) -> None:
+    path.write_text(
+        "データID,取引先名,郵便番号\nzcrm_1,株式会社Zohoサンプル,530-0001\n", encoding="utf-8"
+    )
+
+
+def test_read_zoho_csv_rows_reads_utf8_without_bom(tmp_path: Path) -> None:
+    """Zoho実データはkintoneと異なりUTF-8（BOM無し）のため、cp932フォールバックを
+    持つread_csv_rows()とは別関数で読む（実データ確認済み仕様）。"""
+    path = tmp_path / "zoho_client_master.csv"
+    _write_zoho_client_master_csv(path)
+
+    rows = read_zoho_csv_rows(path)
+
+    assert rows == [{"データID": "zcrm_1", "取引先名": "株式会社Zohoサンプル", "郵便番号": "530-0001"}]
+
+
+def test_parse_args_errors_when_no_csv_given_at_all() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--dry-run"])
+
+
+def test_parse_args_accepts_zoho_only_arguments(tmp_path: Path) -> None:
+    """kintone側CSVを一切指定せず、Zoho側のみでも起動できる（Zoho単独再実行のユースケース）。"""
+    path = tmp_path / "zoho_client_master.csv"
+    _write_zoho_client_master_csv(path)
+
+    args = parse_args(["--zoho-client-master-csv", str(path), "--dry-run"])
+
+    assert args.zoho_client_master_csv == path
+    assert args.client_master_csv is None
+
+
+def test_main_with_zoho_only_csv_creates_client_master_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """kintone側CSVを1つも渡さずZoho側のみでmain()を実行しても、取引先マスターが
+    作成予定として計上されること（CLI全体の配線確認、タスク#63）。"""
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    zoho_client_master_csv = tmp_path / "zoho_client_master.csv"
+    _write_zoho_client_master_csv(zoho_client_master_csv)
+    report_path = tmp_path / "migration_report.csv"
+
+    main(
+        [
+            "--zoho-client-master-csv",
+            str(zoho_client_master_csv),
+            "--dry-run",
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "取引先マスターDB" in out
+    assert "作成予定: 1件" in out
+
+
+def test_main_with_kintone_and_zoho_together_avoids_duplicate_client_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """obasan-qualityレビューINFO対応: kintone・Zoho両方のCSVを同時にmain()へ渡した場合、
+    CLI引数→CSV読み込み→plan_migration()への配線を経由しても、同じ会社名（fixtureの
+    「株式会社サンプル」）が重複作成されないこと（タスク#63の目玉である「1回の実行で
+    まとめて処理し重複を防ぐ」動作を、plan_migration()直呼びだけでなくCLI全体で確認する）。
+    fixtureのkintone取引先マスタは「株式会社サンプル」(1001/1002)・「個人事業主B」(1003)の
+    3件。Zoho側に「株式会社サンプル」（重複させない）と「株式会社Zoho新規」（新規）の
+    2件を渡すと、合計4件（kintone3件+Zoho新規1件）になるはず。
+    """
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    zoho_client_master_csv = tmp_path / "zoho_client_master.csv"
+    zoho_client_master_csv.write_text(
+        "データID,取引先名\nzcrm_1,株式会社サンプル\nzcrm_2,株式会社Zoho新規\n", encoding="utf-8"
+    )
+    report_path = tmp_path / "migration_report.csv"
+
+    main(
+        [
+            "--client-master-csv",
+            str(FIXTURES_DIR / "client_master.csv"),
+            "--zoho-client-master-csv",
+            str(zoho_client_master_csv),
+            "--dry-run",
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "[取引先マスターDB] 作成予定: 4件" in out
+
+
+def test_load_existing_client_index_skips_when_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--no-existing-client-match指定時はNOTION_API_KEYが設定されていてもNoneを返す
+    （Notion APIへの読み取りアクセス自体を発生させない）。"""
+    monkeypatch.setenv("NOTION_API_KEY", "dummy-key")
+
+    result = load_existing_client_index(no_existing_client_match=True)
+
+    assert result is None
+
+
+def test_load_existing_client_index_returns_none_without_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NOTION_API_KEY未設定時は、突合をスキップして常に新規作成する従来動作へ安全に
+    フォールバックする（移行そのものは止めない）。"""
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+
+    result = load_existing_client_index(no_existing_client_match=False)
+
+    assert result is None
+
+
+def test_load_existing_client_index_falls_back_to_none_when_notion_api_call_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shirokuma-sec/obasan-qualityレビューBLOCKER対応: NOTION_API_KEYは設定されているが
+    APIキー失効・対象DBへのインテグレーション未接続・一時的な5xx等でNotion API呼び出し
+    自体が失敗した場合も、例外を伝播させずNoneへフォールバックし、移行そのものは止めない
+    （--dry-runが理由不明のクラッシュで無出力のまま終了しないことを保証する回帰テスト）。
+    """
+    monkeypatch.setenv("NOTION_API_KEY", "dummy-key")
+    import scripts.migrate_data as migrate_data_module
+    from src.sync_engine.clients._http import ApiError
+
+    def _boom(client: object) -> None:
+        raise ApiError(401, "invalid API key or DB not shared with integration")
+
+    monkeypatch.setattr(migrate_data_module, "fetch_client_master_snapshots", _boom)
+    monkeypatch.setattr(migrate_data_module, "HttpNotionClient", lambda db_key, db_id: MagicMock())
+
+    result = load_existing_client_index(no_existing_client_match=False)
+
+    assert result is None
+
+
+def test_load_existing_client_index_falls_back_to_none_on_network_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kuma-qaレビューWARN対応: except節が捕捉する2種類の例外のうち、Notion API側の
+    エラー（ApiError）は既にテスト済みだが、タイムアウト・接続断等のネットワークレベルの
+    例外（requests.exceptions.RequestException）側の分岐は未検証だったため追加する。"""
+    monkeypatch.setenv("NOTION_API_KEY", "dummy-key")
+    import scripts.migrate_data as migrate_data_module
+
+    def _boom(client: object) -> None:
+        raise requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(migrate_data_module, "fetch_client_master_snapshots", _boom)
+    monkeypatch.setattr(migrate_data_module, "HttpNotionClient", lambda db_key, db_id: MagicMock())
+
+    result = load_existing_client_index(no_existing_client_match=False)
+
+    assert result is None
+
+
+def test_load_existing_client_index_builds_index_from_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NOTION_API_KEYが設定されていれば、fetch_client_master_snapshots()経由で
+    既存Notion取引先マスターを取得し、突合インデックスを構築する。"""
+    monkeypatch.setenv("NOTION_API_KEY", "dummy-key")
+    import scripts.migrate_data as migrate_data_module
+
+    fake_snapshots = [
+        ClientMasterSnapshot(
+            page_id="existing-page-1",
+            title="株式会社既存サンプル",
+            postal_code=None,
+            prefecture=None,
+            address=None,
+        )
+    ]
+    monkeypatch.setattr(
+        migrate_data_module, "fetch_client_master_snapshots", lambda client: fake_snapshots
+    )
+    monkeypatch.setattr(migrate_data_module, "HttpNotionClient", lambda db_key, db_id: MagicMock())
+
+    result = load_existing_client_index(no_existing_client_match=False)
+
+    assert isinstance(result, ClientMatchIndex)
+
+
+# --- 取引先マスター要レビューレポート（金沢さん方針: データ欠損より重複の方がマシ）-----------
+
+
+def test_write_needs_review_clients_report_csv_contains_all_entries(tmp_path: Path) -> None:
+    path = tmp_path / "needs_review_clients.csv"
+    entries = [
+        NeedsReviewClient(
+            source="zoho",
+            external_id="zcrm_1",
+            name="株式会社サンプル",
+            reason="postal_code_mismatch",
+            candidate_page_id="existing-page-1",
+        )
+    ]
+
+    write_needs_review_clients_report_csv(entries, path)
+
+    content = path.read_text(encoding="utf-8-sig")
+    assert "source,external_id,name,reason,candidate_page_id" in content
+    assert "zoho,zcrm_1,株式会社サンプル,postal_code_mismatch,existing-page-1" in content
+
+
+def test_print_summary_includes_needs_review_clients_section(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = MigrationPlan(
+        prepared={key: [] for key in SCHEMAS_BY_KEY},
+        needs_review_clients=[
+            NeedsReviewClient(
+                source="zoho",
+                external_id="zcrm_1",
+                name="株式会社サンプル",
+                reason="company name matched but postal code conflicts",
+                candidate_page_id="existing-page-1",
+            )
+        ],
+    )
+    summary = MigrationSummary(
+        created={key: 0 for key in SCHEMAS_BY_KEY}, skipped_existing={key: 0 for key in SCHEMAS_BY_KEY}
+    )
+
+    print_summary(plan, summary, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "取引先マスター要レビューサマリー: 1件" in out
+    assert "株式会社サンプル" in out
+    # 英語の内部reason文字列ではなく、日本語に変換した文言で表示される（obasan-qualityレビューINFO対応）。
+    assert "会社名一致・郵便番号不一致" in out
+    assert "postal code conflicts" not in out
+
+
+def test_print_summary_shows_needs_review_count_before_raw_dedupe_details(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """obasan-qualityレビューWARN対応: 取引先マスター要レビューの件数サマリーは、他の集計
+    サマリー（未解決・USER型未設定）と同様に、名寄せ結果等の生データより先に表示される。
+    個別明細は末尾の詳細セクションに残る。"""
+    plan = MigrationPlan(
+        prepared={key: [] for key in SCHEMAS_BY_KEY},
+        needs_review_clients=[
+            NeedsReviewClient(
+                source="zoho",
+                external_id="zcrm_1",
+                name="株式会社サンプル",
+                reason="company name matched but postal code conflicts",
+                candidate_page_id="existing-page-1",
+            )
+        ],
+    )
+    summary = MigrationSummary(
+        created={key: 0 for key in SCHEMAS_BY_KEY}, skipped_existing={key: 0 for key in SCHEMAS_BY_KEY}
+    )
+
+    print_summary(plan, summary, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert out.index("取引先マスター要レビューサマリー") < out.index("名寄せ結果")
+    assert out.index("取引先マスター要レビューサマリー") < out.index("取引先マスター要レビュー 詳細一覧")
+
+
+def test_main_writes_needs_review_clients_report_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    report_path = tmp_path / "migration_report.csv"
+
+    main(
+        [
+            "--client-master-csv",
+            str(FIXTURES_DIR / "client_master.csv"),
+            "--project-csv",
+            str(FIXTURES_DIR / "project.csv"),
+            "--action-csv",
+            str(FIXTURES_DIR / "action.csv"),
+            "--dry-run",
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    needs_review_path = tmp_path / "migration_report_needs_review_clients.csv"
+    assert needs_review_path.exists()
+    assert f"取引先マスター要レビューレポートを出力しました: {needs_review_path}" in out

@@ -964,6 +964,31 @@ def _format_record_for_display(record: Mapping[str, Any]) -> str:
     return ", ".join(parts) if parts else "(全項目空欄)"
 
 
+# notion_dedupe.match_existing_client()が返すNeedsReviewClient.reasonは、内部処理向けの
+# 英語文字列（notion_dedupe.py自体は「純粋な突合ロジック」に徹し、表示文言は持たない設計の
+# ため）。obasan-qualityレビューINFO対応: 要レビューレポートは人（金沢さん）が実際に読んで
+# Notion上の重複を判断する入口のため、write_dedupe_report_csv()と同様に表示側でのみ
+# 日本語へ変換する（notion_dedupe.py側のreason文字列自体は変更しない。テストでの厳密な
+# 文字列比較は行われていないことを確認済み）。
+_REASON_LABELS = {
+    "company name matched but postal code conflicts": "会社名一致・郵便番号不一致",
+    "normalized name matched but postal code conflicts": "正規化後の会社名一致・郵便番号不一致",
+}
+
+
+def _display_reason(reason: str) -> str:
+    if reason in _REASON_LABELS:
+        return _REASON_LABELS[reason]
+    if reason.startswith("normalized name matched ") and reason.endswith(
+        " existing records ambiguously"
+    ):
+        count = reason.removeprefix("normalized name matched ").removesuffix(
+            " existing records ambiguously"
+        )
+        return f"正規化後の会社名が既存{count}件と曖昧に一致"
+    return reason
+
+
 def print_summary(plan: MigrationPlan, summary: MigrationSummary, *, dry_run: bool) -> None:
     """作成件数・未解決サマリーを先頭に、名寄せの生データ等の詳細情報は末尾に表示する。
 
@@ -1025,6 +1050,16 @@ def print_summary(plan: MigrationPlan, summary: MigrationSummary, *, dry_run: bo
     for (db_key, property_name), count in user_unresolved_counts.items():
         print(f"  [{db_key}] {property_name}: {count}件（氏名→NotionユーザーID対応表が無いため未設定。手動割当が必要）")
 
+    # obasan-qualityレビューWARN対応: 件数だけは他の集計サマリー（未解決・USER型未設定）と
+    # 同様に先頭付近へ出す（print_summary()自体のdocstringが明言する「集計サマリーを詳細
+    # 情報より優先して表示する」原則に合わせる。個別明細は末尾の詳細セクションに残す）。
+    print(f"\n=== 取引先マスター要レビューサマリー: {len(plan.needs_review_clients)}件 ===")
+    if not plan.needs_review_clients:
+        print("  要レビューなし")
+    else:
+        print("  （会社名は一致したが郵便番号の食い違い等で自動確定できず、安全側で新規作成した"
+              "ケース。金沢さん方針によりスキップはせず作成済み。全件はCSVレポートを参照）")
+
     print(f"\n=== 名寄せ結果（{len(plan.dedupe_report)}件を統合） ===")
     for entry in plan.dedupe_report:
         print(f"  [{entry.db_key}] key={entry.dedupe_key} ({len(entry.sources)}件を統合)")
@@ -1037,6 +1072,13 @@ def print_summary(plan: MigrationPlan, summary: MigrationSummary, *, dry_run: bo
         print(
             f"  [{item.db_key}] kintone_id={item.kintone_id} "
             f"{item.relation_name}={item.raw_value!r} が解決できませんでした"
+        )
+
+    print("\n=== 取引先マスター要レビュー 詳細一覧（全件はCSVレポートを参照） ===")
+    for entry in plan.needs_review_clients:
+        print(
+            f"  [{entry.source}] external_id={entry.external_id} name={entry.name!r} "
+            f"reason={_display_reason(entry.reason)} candidate_page_id={entry.candidate_page_id}"
         )
 
 
@@ -1083,3 +1125,25 @@ def write_unresolved_user_report_csv(entries: list[UnresolvedUserProperty], path
         writer.writerow(["db_key", "kintone_id", "property_name", "raw_value"])
         for entry in entries:
             writer.writerow([entry.db_key, entry.kintone_id, entry.property_name, entry.raw_value])
+
+
+def write_needs_review_clients_report_csv(entries: list[NeedsReviewClient], path: Path) -> None:
+    """取引先マスターの要レビュー一覧（会社名一致・郵便番号不一致等）をCSVへ書き出す。
+
+    金沢さん方針（2026-08-10、データ欠損より重複の方がマシ）により、該当ケースは
+    スキップせず新規作成した上でこのレポートに記録する。全件はここで確認し、
+    重複が疑われるものは後から人の目でNotion上を突合・統合する運用を想定している。
+    """
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["source", "external_id", "name", "reason", "candidate_page_id"])
+        for entry in entries:
+            writer.writerow(
+                [
+                    entry.source,
+                    entry.external_id,
+                    entry.name,
+                    _display_reason(entry.reason),
+                    entry.candidate_page_id,
+                ]
+            )
