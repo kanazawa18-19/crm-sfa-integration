@@ -15,6 +15,10 @@
   しかなく主要な手段にはならない）。
 - 「先方担当者」は自由記述テキスト（kintoneのアクション管理と同様、正式なリレーションは
   無い）。ACTION_SCHEMAの「先方担当者」もTEXT型のため、そのまま文字列として反映する。
+- 「Notta」（0.7%）「録画・音声ファイル」（0.2%）はいずれもNotta.ai（議事録・文字起こし
+  サービス）のURLで、Notion側に対応プロパティが無かったため2026-08-10に金沢さんの
+  指摘で「議事録・録画リンク」（URL型）を新規作成した。「Notta」列を優先し、無ければ
+  「録画・音声ファイル」を使う。
 """
 
 from __future__ import annotations
@@ -80,6 +84,7 @@ def transform_zoho_action(record: dict[str, str]) -> dict[str, object]:
         "アクション日": record.get("アクション日") or None,
         "履歴メモ": record.get("履歴メモ") or None,
         "先方担当者": record.get("先方担当者") or None,
+        "議事録・録画リンク": record.get("Notta") or record.get("録画・音声ファイル") or None,
         "_取引先_zoho_id": client_zoho_id,
         "_取引先_notion_page_id": client_notion_page_id,
         "_案件_notion_page_id": project_notion_page_id,

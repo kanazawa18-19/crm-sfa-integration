@@ -70,7 +70,14 @@ from src.migration.kintone_client_master import (
     extract_chain_name,
     transform_client_master,
 )
+from src.migration.notion_dedupe import ClientMatchIndex, match_existing_client
 from src.migration.project_mapping import transform_kintone_project
+from src.migration.zoho_action import transform_zoho_action
+from src.migration.zoho_chain import transform_zoho_chain
+from src.migration.zoho_client_master import transform_zoho_client_master
+from src.migration.zoho_contact import transform_zoho_contact
+from src.migration.zoho_product import transform_zoho_product
+from src.migration.zoho_project import transform_zoho_project
 from src.sync_engine.id_mapping import IdMapping, IdMappingStore
 
 logger = logging.getLogger(__name__)
@@ -143,12 +150,28 @@ class DedupeReportEntry:
 
 
 @dataclass
+class NeedsReviewClient:
+    """既存Notion取引先マスターとの突合で、会社名は一致（または曖昧に複数一致）したが
+    郵便番号の食い違い等により自動確定できず、安全側（新規作成）に倒したケース
+    （2026-08-10金沢さん方針: データ欠損より重複の方がマシなため、needs_reviewの場合は
+    スキップせず新規作成した上でこのレポートに記録し、後からの人の目での重複調査に委ねる）。
+    """
+
+    source: str  # "kintone" or "zoho"
+    external_id: str | None
+    name: str
+    reason: str
+    candidate_page_id: str | None
+
+
+@dataclass
 class MigrationPlan:
     prepared: dict[str, list[PreparedRecord]]
     unresolved: list[UnresolvedRelation] = field(default_factory=list)
     unresolved_user_properties: list[UnresolvedUserProperty] = field(default_factory=list)
     dedupe_report: list[DedupeReportEntry] = field(default_factory=list)
     skipped_transform_errors: list[str] = field(default_factory=list)
+    needs_review_clients: list[NeedsReviewClient] = field(default_factory=list)
     # (db_key, relation_name) ごとの解決試行回数。未解決率算出用（値が入っている行のみ
     # カウントする。空欄でリレーション自体が存在しない場合は試行にカウントしない）。
     relation_attempts: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -196,13 +219,42 @@ def plan_migration(
     client_master_rows: list[dict[str, str]],
     project_rows: list[dict[str, str]],
     action_rows: list[dict[str, str]],
+    *,
+    existing_client_index: ClientMatchIndex | None = None,
+    zoho_client_master_rows: list[dict[str, str]] | None = None,
+    zoho_contact_rows: list[dict[str, str]] | None = None,
+    zoho_project_rows: list[dict[str, str]] | None = None,
+    zoho_action_rows: list[dict[str, str]] | None = None,
+    zoho_product_rows: list[dict[str, str]] | None = None,
+    zoho_chain_rows: list[dict[str, str]] | None = None,
 ) -> MigrationPlan:
     """CSV行から、Notion作成前の全レコード（リレーション解決済み）と各種レポートを組み立てる。
 
     I/O（Notion API・IDマッピングストア）を一切行わない純粋関数。依存順序が
     ①取引先マスター→②チェーン→③連絡先→④案件管理→⑤サービス・商品→⑥アクション管理
-    であるため、この順で処理する。
+    であるため、この順で処理する（kintone分・Zoho分とも、この順で同じ共有状態
+    （client_by_name等）へ書き込むため、片方のソースで作成/一致したレコードをもう片方も
+    自動的に再利用する＝重複作成を避けられる。2026-08-10、金沢さん方針「kintoneもZohoも
+    一気に、確実性重視・データ欠損より重複の方がマシ」により導入）。
+
+    `existing_client_index`（省略可）は、既にNotionへ存在する取引先マスターとの名寄せに
+    使う（notion_dedupe.fetch_client_master_snapshots()+build_client_match_index()で
+    事前に構築し、呼び出し側から渡す。ここでのNotion API呼び出しは行わない＝純粋関数の
+    原則を保つ）。Noneの場合は既存Notionとの突合を行わず、常に新規作成する
+    （kintone単独での従来動作と同一）。
+
+    取引先マスター以外（連絡先・案件・アクション・サービス・商品・チェーン）のZohoデータは、
+    既存Notionとの突合までは行わず「常に新規作成」とする（金沢さん確認済みの方針:
+    取引先ほどの厳密な突合は今回は行わず、重複が疑われるものは実データのレポートで
+    可視化するに留める）。
     """
+    zoho_client_master_rows = zoho_client_master_rows or []
+    zoho_contact_rows = zoho_contact_rows or []
+    zoho_project_rows = zoho_project_rows or []
+    zoho_action_rows = zoho_action_rows or []
+    zoho_product_rows = zoho_product_rows or []
+    zoho_chain_rows = zoho_chain_rows or []
+
     prepared: dict[str, list[PreparedRecord]] = {
         "client_master": [],
         "chain": [],
@@ -215,6 +267,7 @@ def plan_migration(
     unresolved_user_properties: list[UnresolvedUserProperty] = []
     dedupe_report: list[DedupeReportEntry] = []
     skipped_transform_errors: list[str] = []
+    needs_review_clients: list[NeedsReviewClient] = []
     relation_attempts: dict[tuple[str, str], int] = {}
     ids = TitleIdGenerator()
 
@@ -225,6 +278,77 @@ def plan_migration(
 
     # === ① 取引先マスター ===================================================
     client_by_name: dict[str, PreparedRecord] = {}
+    # Zoho固有の外部ID（zoho データID）→ 解決済みPreparedRecord。案件・アクションの
+    # Zoho行が「取引先名.id」で参照してきた際の突合に使う。
+    client_by_zoho_id: dict[str, PreparedRecord] = {}
+    # 既存Notionページのpage_id → 解決済みPreparedRecord（notion_key未設定・prepared未登録の
+    # "参照専用"レコード）。Zoho行に埋め込まれたNotionページ直リンクの解決に使う。
+    client_by_existing_page_id: dict[str, PreparedRecord] = {}
+
+    def _resolve_or_create_client(
+        props: dict[str, Any], name: str, postal_code: str | None, external_id: str | None, *, source: str
+    ) -> PreparedRecord:
+        """同一実行内で既に解決済み（kintone/Zohoどちらか片方が先に処理済み）の取引先が
+        あればそれを再利用し、無ければ既存Notionとの名寄せを試み、それも無ければ新規作成する
+        （2026-08-10、kintone/Zoho両ソースを1回の実行で扱う際の重複作成防止の核心ロジック）。
+
+        needs_review（会社名は一致したが郵便番号が食い違う・複数候補で曖昧等）の場合は、
+        誤結合のリスクを避けるため既存ページの再利用はせず安全側の新規作成とし、
+        `needs_review_clients`へ記録して後から人が確認できるようにする（金沢さん方針:
+        データ欠損より重複の方がマシなため、スキップはせず必ず作成する）。
+        """
+        if name in client_by_name:
+            return client_by_name[name]
+        if existing_client_index is not None:
+            match_result = match_existing_client(name, postal_code, existing_client_index)
+            if match_result.matched is not None and not match_result.needs_review:
+                existing_record = PreparedRecord(
+                    "client_master",
+                    None,
+                    {CLIENT_MASTER_SCHEMA.title_property.name: match_result.matched.title},
+                    notion_key=match_result.matched.page_id,
+                )
+                client_by_name[name] = existing_record
+                return existing_record
+            if match_result.needs_review:
+                needs_review_clients.append(
+                    NeedsReviewClient(
+                        source=source,
+                        external_id=external_id,
+                        name=name,
+                        reason=match_result.reason or "unknown",
+                        candidate_page_id=(
+                            match_result.matched.page_id if match_result.matched else None
+                        ),
+                    )
+                )
+        new_record = PreparedRecord("client_master", external_id, props)
+        prepared["client_master"].append(new_record)
+        client_by_name[name] = new_record
+        return new_record
+
+    def _resolve_client_by_zoho_hint(zoho_id: str | None, notion_page_id: str | None) -> PreparedRecord | None:
+        """Zohoの案件・アクション行が持つ「取引先.id」「【Notion】取引先マスター」埋め込み
+        リンクから、既に①で解決済みの取引先マスターPreparedRecordを引き当てる。
+        ①で作成/一致した取引先とは独立の手がかり（zoho データID／既存Notionページ直リンク）
+        のため、専用のインデックス2つ（client_by_zoho_id/client_by_existing_page_id）を
+        別途参照する。"""
+        if zoho_id and zoho_id in client_by_zoho_id:
+            return client_by_zoho_id[zoho_id]
+        if notion_page_id:
+            if notion_page_id not in client_by_existing_page_id:
+                client_by_existing_page_id[notion_page_id] = PreparedRecord(
+                    "client_master", None, {}, notion_key=notion_page_id
+                )
+            return client_by_existing_page_id[notion_page_id]
+        return None
+
+    # 行ごとに解決済みPreparedRecordを記録する（②チェーンのリレーション付けで
+    # `client_master_rows`と位置対応させて参照する。かつては`prepared["client_master"]`が
+    # 各行と1:1対応することを前提にzip()していたが、既存Notionと一致した行は
+    # `prepared["client_master"]`に追加されなくなった（新規作成しないため）ため、
+    # 位置対応が崩れてしまう。専用のリストで対応関係を明示的に保持する。
+    client_records_by_row: list[PreparedRecord] = []
     for row in client_master_rows:
         props = transform_client_master(row)
         # BLOCKER: 以前はここで props[title_property.name]（="取引先名"）を ids.next(...)
@@ -239,24 +363,48 @@ def plan_migration(
         # Notion書き込み対象のprops辞書からは取り除く（--dry-runではこの経路を通らず
         # 検知できないバグだったため実データ検証でも見つからなかった）。
         kintone_id = props.pop("kintone_ID") or None
-        record = PreparedRecord("client_master", kintone_id, props)
-        prepared["client_master"].append(record)
         name = props["取引先名"]
-        if name:
-            # 同名取引先が複数行ある場合、最初に出現したレコードを以降のリレーション解決の
-            # 正とする（Q-08の名寄せ対象はあくまで連絡先。取引先自体の名寄せは対象外のため
-            # 単純な先勝ちルールに留める）。同名重複はデータ不整合の可能性があるため
+        if name and name in client_by_name:
+            # 同名取引先がkintone CSV内に複数行ある場合、以前からの既存動作（各行を
+            # そのまま新規作成し、最初の行のみをリレーション解決の正とする）を維持する
+            # （Q-08の名寄せ対象はあくまで連絡先。取引先自体の同一ソース内名寄せは対象外の
+            # 従来方針。ここを変えるとkintone単独運用時の挙動が変わってしまうため、
+            # 今回のkintone/Zoho統合では触れない）。同名重複はデータ不整合の可能性があるため
             # 気づけるよう警告ログを残す（WARN10）。
-            if name in client_by_name:
-                logger.warning(
-                    "duplicate 取引先名 detected: %r (kintone_id=%s). "
-                    "only the first occurrence (kintone_id=%s) is used for relation resolution",
-                    name,
-                    record.kintone_id,
-                    client_by_name[name].kintone_id,
-                )
-            else:
-                client_by_name[name] = record
+            logger.warning(
+                "duplicate 取引先名 detected: %r (kintone_id=%s). "
+                "only the first occurrence (kintone_id=%s) is used for relation resolution",
+                name,
+                kintone_id,
+                client_by_name[name].kintone_id,
+            )
+            record = PreparedRecord("client_master", kintone_id, props)
+            prepared["client_master"].append(record)
+            client_records_by_row.append(record)
+            continue
+        if not name:
+            record = PreparedRecord("client_master", kintone_id, props)
+            prepared["client_master"].append(record)
+            client_records_by_row.append(record)
+            continue
+        client_records_by_row.append(
+            _resolve_or_create_client(props, name, props.get("郵便番号"), kintone_id, source="kintone")
+        )
+
+    # === ① 取引先マスター（Zoho） ============================================
+    # kintoneと異なり、Zoho側はCSV内の同名重複も含めて①の共有レジストリ（client_by_name）で
+    # 名寄せする（Zohoは新規統合のため、kintoneのような温存すべき既存動作が無いため）。
+    for row in zoho_client_master_rows:
+        props = transform_zoho_client_master(row)
+        zoho_id = props.pop("zoho_ID") or None
+        name = props["取引先名"]
+        if not name:
+            record = PreparedRecord("client_master", zoho_id, props)
+            prepared["client_master"].append(record)
+            continue
+        record = _resolve_or_create_client(props, name, props.get("郵便番号"), zoho_id, source="zoho")
+        if zoho_id:
+            client_by_zoho_id[zoho_id] = record
 
     # === ② チェーン =========================================================
     chain_by_name: dict[str, PreparedRecord] = {}
@@ -278,7 +426,7 @@ def plan_migration(
         prepared["chain"].append(chain_record)
         chain_by_name[chain_name] = chain_record
 
-    for row, client_record in zip(client_master_rows, prepared["client_master"]):
+    for row, client_record in zip(client_master_rows, client_records_by_row):
         chain_name = extract_chain_name(row)
         if chain_name is None:
             continue
@@ -294,6 +442,19 @@ def plan_migration(
             )
             continue
         client_record.properties["チェーン"] = [chain_record]
+
+    # === ② チェーン（Zoho） ==================================================
+    # kintone由来のチェーン（取引先マスタ「本部名」から抽出した簡易的なもの）と同じ
+    # chain_by_nameを共有し、名前が一致すれば重複作成しない。
+    for row in zoho_chain_rows:
+        chain_props = transform_zoho_chain(row)
+        zoho_chain_id = chain_props.pop("zoho_ID") or None
+        chain_name = chain_props["グループ名"]
+        if not chain_name or chain_name in chain_by_name:
+            continue
+        chain_record = PreparedRecord("chain", zoho_chain_id, chain_props)
+        prepared["chain"].append(chain_record)
+        chain_by_name[chain_name] = chain_record
 
     # === ③ 連絡先 ============================================================
     raw_contacts: list[dict[str, str | None]] = []
@@ -356,6 +517,33 @@ def plan_migration(
                 )
             )
 
+    # === ③ 連絡先（Zoho） ====================================================
+    # 取引先マスターへのリレーションは①で共有したclient_by_nameの完全一致のみで解決する
+    # （連絡先・案件・アクションはZoho側で厳密な突合までは行わない方針、金沢さん確認済み）。
+    for row in zoho_contact_rows:
+        contact_props = transform_zoho_contact(row)
+        zoho_contact_id = contact_props.pop("zoho_ID") or None
+        company_name = contact_props.pop("_会社名") or ""
+        contact_name = contact_props["名前"]
+        if not contact_name:
+            continue
+        _note_attempt("contact", "取引先マスター")
+        client_record = client_by_name.get(company_name) if company_name else None
+        if client_record is None and company_name:
+            _record_unresolved(
+                unresolved,
+                db_key="contact",
+                kintone_id=zoho_contact_id,
+                relation_name="取引先マスター",
+                raw_value=company_name,
+            )
+        contact_props["取引先マスター"] = [client_record] if client_record else []
+        contact_record = PreparedRecord("contact", zoho_contact_id, contact_props)
+        prepared["contact"].append(contact_record)
+        contact_by_name.setdefault(contact_name, contact_record)
+        if company_name:
+            contact_by_name_and_client.setdefault((contact_name, company_name), contact_record)
+
     # === ④ 案件管理 & ⑤ サービス・商品 ========================================
     product_by_name: dict[str, PreparedRecord] = {}
 
@@ -379,6 +567,21 @@ def plan_migration(
         prepared["product"].append(new_record)
         product_by_name[name] = new_record
         return new_record
+
+    # === ⑤ サービス・商品（Zoho） ============================================
+    # Zohoには実際のサービス・商品マスタ（サービス・商品_001.csv）が存在するため、
+    # ensure_product()（kintone側の案件・アクションから拾った名前のみの簡易登録）とは別に、
+    # 実データ（初期費用・月額費用込み）をそのまま登録する。同名の場合は
+    # ensure_product/kintone側どちらが先でも重複させない。
+    for row in zoho_product_rows:
+        zoho_product_props = transform_zoho_product(row)
+        zoho_product_id = zoho_product_props.pop("zoho_ID") or None
+        zoho_product_name = zoho_product_props["名前"]
+        if not zoho_product_name or zoho_product_name in product_by_name:
+            continue
+        zoho_product_record = PreparedRecord("product", zoho_product_id, zoho_product_props)
+        prepared["product"].append(zoho_product_record)
+        product_by_name[zoho_product_name] = zoho_product_record
 
     project_by_kintone_id: dict[str, PreparedRecord] = {}
     for row in project_rows:
@@ -442,6 +645,58 @@ def plan_migration(
     # 同じ目的の値を独立プロパティへ重複して書き込む処理は行わない（2026-08-09、
     # 業務判断確認済み。旧実装は"営業ステータス"という存在しないプロパティ名で書き込もう
     # としており、実行時に確実にKeyErrorで失敗するバグがあった）。
+
+    # 案件へのNotionページ直リンク参照専用インデックス（Zohoアクションの「案件名」列に
+    # 埋め込まれたNotion案件管理ページへの直リンク解決に使う。①の
+    # client_by_existing_page_idと同じ考え方）。
+    project_by_existing_page_id: dict[str, PreparedRecord] = {}
+
+    def _resolve_project_by_notion_hint(notion_page_id: str | None) -> PreparedRecord | None:
+        if not notion_page_id:
+            return None
+        if notion_page_id not in project_by_existing_page_id:
+            project_by_existing_page_id[notion_page_id] = PreparedRecord(
+                "project", None, {}, notion_key=notion_page_id
+            )
+        return project_by_existing_page_id[notion_page_id]
+
+    # === ④ 案件管理（Zoho） ==================================================
+    # 実データ確認済み(2026-08-10): PROJECT_SCHEMAの多くのプロパティ名がZoho側とほぼ
+    # 1対1で一致するカスタム構築のため、transform_zoho_project()の戻り値をそのまま
+    # ベースに使い、リレーション（取引先マスター・提案サービス）のみここで解決する。
+    # 「案件名」（titleプロパティ）はkintoneと異なりZoho側に実データがあるため、
+    # ids.next()による連番上書きは行わない（transform_zoho_project()が既に実際の
+    # 案件名をセットしている）。
+    for row in zoho_project_rows:
+        transformed = transform_zoho_project(row)
+        zoho_project_id = transformed.pop("zoho_ID") or None
+        client_zoho_id = transformed.pop("_取引先_zoho_id")
+        client_notion_page_id = transformed.pop("_取引先_notion_page_id")
+        service_names = transformed.pop("_サービス名リスト")
+
+        _note_attempt("project", "取引先マスター")
+        client_record = _resolve_client_by_zoho_hint(client_zoho_id, client_notion_page_id)
+        if client_record is None:
+            _record_unresolved(
+                unresolved,
+                db_key="project",
+                kintone_id=zoho_project_id,
+                relation_name="取引先マスター",
+                raw_value=client_zoho_id or client_notion_page_id or "",
+            )
+        transformed["取引先マスター"] = [client_record] if client_record else []
+        transformed["提案サービス"] = [ensure_product(name) for name in dict.fromkeys(service_names)]
+
+        zoho_project_record = PreparedRecord("project", zoho_project_id, transformed)
+        prepared["project"].append(zoho_project_record)
+        unresolved_user_properties.append(
+            UnresolvedUserProperty(
+                db_key="project",
+                kintone_id=zoho_project_id,
+                property_name="担当メンバー",
+                raw_value=None,
+            )
+        )
 
     # === ⑥ アクション管理 =====================================================
     for row in action_rows:
@@ -559,10 +814,55 @@ def plan_migration(
             )
         )
 
+    # === ⑥ アクション管理（Zoho） =============================================
+    # 実データ確認済み(2026-08-10): 取引先へのリレーションはZoho内部ID（「取引先.id」）と
+    # 過去の連携作業で埋め込まれたNotionページ直リンク（「【Notion】取引先マスター」）を
+    # 合わせて93.9%が解決できる（①で構築したclient_by_zoho_id/client_by_existing_page_id
+    # を介して解決）。案件へのリレーションは埋め込みNotionページ直リンクのみ（10.0%）。
+    # 先方担当者はACTION_SCHEMA上TEXT型（正式なリレーションが無い設計）のため、
+    # transform_zoho_action()が返す文字列をそのまま使う（追加の解決処理は不要）。
+    for row in zoho_action_rows:
+        transformed = transform_zoho_action(row)
+        zoho_act_id = transformed.pop("zoho_Act_ID") or None
+        client_zoho_id = transformed.pop("_取引先_zoho_id")
+        client_notion_page_id = transformed.pop("_取引先_notion_page_id")
+        project_notion_page_id = transformed.pop("_案件_notion_page_id")
+
+        _note_attempt("action", "取引先マスター")
+        zoho_client_record = _resolve_client_by_zoho_hint(client_zoho_id, client_notion_page_id)
+        if zoho_client_record is None:
+            _record_unresolved(
+                unresolved,
+                db_key="action",
+                kintone_id=zoho_act_id,
+                relation_name="取引先マスター",
+                raw_value=client_zoho_id or client_notion_page_id or "",
+            )
+
+        if project_notion_page_id:
+            _note_attempt("action", "案件管理")
+        zoho_project_ref = _resolve_project_by_notion_hint(project_notion_page_id)
+
+        transformed["👨‍👩‍👧‍👦 取引先マスター"] = [zoho_client_record] if zoho_client_record else []
+        transformed["案件名"] = [zoho_project_ref] if zoho_project_ref else []
+
+        prepared["action"].append(PreparedRecord("action", zoho_act_id, transformed))
+        # 担当営業（USER型・必須）はZoho「アクションの担当者.id」→Notionユーザーの対応表が
+        # まだ無いため解決しない（kintoneと同様の既知の制約）。
+        unresolved_user_properties.append(
+            UnresolvedUserProperty(
+                db_key="action",
+                kintone_id=zoho_act_id,
+                property_name="担当営業",
+                raw_value=None,
+            )
+        )
+
     return MigrationPlan(
         prepared=prepared,
         unresolved=unresolved,
         unresolved_user_properties=unresolved_user_properties,
+        needs_review_clients=needs_review_clients,
         dedupe_report=dedupe_report,
         skipped_transform_errors=skipped_transform_errors,
         relation_attempts=relation_attempts,

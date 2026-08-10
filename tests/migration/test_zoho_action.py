@@ -65,6 +65,7 @@ def test_transform_zoho_action_maps_expected_fields() -> None:
         "アクション日": "2025-08-04",
         "履歴メモ": "不在のため改めて連絡",
         "先方担当者": "中島様",
+        "議事録・録画リンク": None,
         "_取引先_zoho_id": "zcrm_456",
         "_取引先_notion_page_id": None,
         "_案件_notion_page_id": None,
@@ -87,6 +88,35 @@ def test_transform_zoho_action_extracts_embedded_notion_page_ids() -> None:
     assert result["_案件_notion_page_id"] == "518be8be9ba3492caf37affb4fa4acb6"
 
 
+def test_transform_zoho_action_notta_field_prefers_notta_over_recording_column() -> None:
+    """「Notta」「録画・音声ファイル」はいずれもNotta.aiのURLだが、値がある場合は
+    「Notta」列を優先する(2026-08-10、金沢さんの指摘により新規作成した「議事録・録画
+    リンク」プロパティ用)。"""
+    record = {
+        "データID": "1",
+        "アクション名": "商談",
+        "Notta": "https://app.notta.ai/share/aaa",
+        "録画・音声ファイル": "https://app.notta.ai/share/bbb",
+    }
+
+    result = transform_zoho_action(record)
+
+    assert result["議事録・録画リンク"] == "https://app.notta.ai/share/aaa"
+
+
+def test_transform_zoho_action_notta_field_falls_back_to_recording_column() -> None:
+    record = {
+        "データID": "1",
+        "アクション名": "商談",
+        "Notta": "",
+        "録画・音声ファイル": "https://app.notta.ai/share/bbb",
+    }
+
+    result = transform_zoho_action(record)
+
+    assert result["議事録・録画リンク"] == "https://app.notta.ai/share/bbb"
+
+
 def test_transform_zoho_action_missing_optional_fields_become_none() -> None:
     record = {"データID": "zcrm_999", "アクション名": "テレアポ"}
 
@@ -95,6 +125,7 @@ def test_transform_zoho_action_missing_optional_fields_become_none() -> None:
     assert result["アクション日"] is None
     assert result["履歴メモ"] is None
     assert result["先方担当者"] is None
+    assert result["議事録・録画リンク"] is None
     assert result["_取引先_zoho_id"] is None
     assert result["_取引先_notion_page_id"] is None
     assert result["_案件_notion_page_id"] is None
