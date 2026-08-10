@@ -94,6 +94,15 @@ Notion API呼び出し中に例外が発生した場合でも、`scripts/migrate
 （2026-08-10、以前は`except Exception`のみでKeyboardInterruptを拾えず、Ctrl+Cで止めた場合
 だけ部分レポートが出ないという非対称な挙動があったため修正した）。
 
+Ctrl+Cによる意図的な中断と、実際のバグによる例外は区別してログ出力する（2026-08-10、
+動物チームレビューWARN対応）。KeyboardInterruptは`logger.warning`（トレースバック無し）、
+それ以外の例外は従来通り`logger.exception`（ERROR＋フルトレースバック）とする。同じERRORログ
+＋トレースバックにしていると、148,000件規模の無人長時間実行のログを後から見た運用者が、
+意図した中断だったのか実障害だったのかを一見区別できないため。回帰テストとして
+`tests/migration/test_migrate_data.py`の
+`test_main_outputs_reports_even_when_materialize_raises_keyboard_interrupt`を追加した
+（KeyboardInterruptを拾えなくなる巻き戻しと、ログレベルの巻き戻しの両方を検知する）。
+
 ## 8. レート制限（429）時のリトライ
 
 `create_page()`はレコード作成という非冪等操作のため、タイムアウト・5xxはリトライしない
@@ -107,6 +116,30 @@ Notion API呼び出し中に例外が発生した場合でも、`scripts/migrate
 
 2026-08-10、Notion本番一括投入（数万〜十数万件規模）で最初にレート制限へ到達した瞬間に
 処理全体が停止していた問題への対応として導入した。
+
+**429リトライを対話的APIから分離**（2026-08-10、shirokuma-secレビューWARN対応）: 上記の
+最大30回・バックオフ上限30秒/回という既定値（`DEFAULT_MAX_RATE_LIMIT_RETRIES`）は、数時間
+規模のバッチ処理を想定した値で、ワーカースレッドが最悪ケースで合計約15分ブロックされても
+移行スクリプト自体には実害が無い。しかし`request_with_retry()`はNotionクライアント全体
+（`HttpNotionClient`/`NotionUserDirectory`）で共有されるため、これを既定のまま使うと、
+移行スクリプト以外の**ダッシュボード/タスクAPI**（`src/api/dashboard_service.py`,
+`src/api/task_service.py`。それぞれ`/`・`/tasks`画面が使う同期的なリクエストハンドラ）も
+同じ既定値を使ってしまう。移行処理が本番Notionをレート制限させている最中に通常の閲覧
+リクエストが来ると、最悪15分近くブロックされ、Vercel Functionのタイムアウトで応答不能に
+なりうる。対応として`src/sync_engine/clients/_http.py`に`INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+= 3`という小さい既定値を新設し、`dashboard_service.py`/`task_service.py`が
+`HttpNotionClient`/`NotionUserDirectory`をインスタンス化する箇所でこの値を明示的に渡すよう
+にした。移行スクリプト（`scripts/migrate_data.py`）側は従来どおり`DEFAULT_MAX_RATE_LIMIT_
+RETRIES`（30回）のまま。回帰テスト`tests/sync_engine/clients/test_notion_client.py`の
+`test_max_rate_limit_retries_is_honored`で、この引数が実際に`request_with_retry()`まで
+伝播することを固定化している。新しいNotionクライアントの呼び出し元を追加する際は、
+対話的（リクエスト/レスポンス型）かバッチかを判断し、対話的ならこの小さい値を明示的に
+渡すこと（既定値のままだと大きい方の予算が使われる）。
+
+また、429リトライが上限に到達した場合、以前は無言でレスポンスを返すだけで「リトライを
+諦めた」ことがログに残らなかった（2026-08-10、obasan-qualityレビューWARN対応）。
+`logger.warning("rate limit retries exhausted after %d attempts, giving up: ...")`を
+追加し、無人長時間実行のログを後から追う運用者が上限到達に気づけるようにした。
 
 ## 9. 複数トークンでの並列書き込み
 
