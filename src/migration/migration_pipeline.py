@@ -45,9 +45,11 @@ from __future__ import annotations
 
 import csv
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, TypeVar
+from typing import Any, Callable, Mapping, Protocol, Sequence, TypeVar
 
 from src.db_schema.action import ACTION_SCHEMA
 from src.db_schema.base import Tool
@@ -97,6 +99,11 @@ _MATERIALIZATION_ORDER: tuple[str, ...] = (
 # リレーション未解決率がこの割合を超えたら、リレーションキー列名の推測が実データと
 # ずれている可能性が高いとみなし、print_summary先頭で目立つ警告を出す（BLOCKER4/5）。
 _UNRESOLVED_RATE_WARNING_THRESHOLD = 0.3
+
+# materialize()の進捗ログを何件ごとに出すか（2026-08-10、obasan-qualityレビューBLOCKER対応。
+# 148,000件規模の本番投入で進捗が全く見えず、ハングと正常進行の区別がつかない問題への対応。
+# 毎件ログすると148,000行のノイズになるため、粒度を落として一定間隔のみログする）。
+_PROGRESS_LOG_INTERVAL = 500
 
 
 class NotionClientLike(Protocol):
@@ -898,45 +905,195 @@ def materialize(
     id_mapping_store: IdMappingStore | None,
     notion_clients: Mapping[str, NotionClientLike] | None,
     dry_run: bool,
+    notion_client_pools: Mapping[str, Sequence[NotionClientLike]] | None = None,
 ) -> MigrationSummary:
     """計画済みレコードを実際にNotionへ作成し、IDマッピングストアへ登録する。
 
     dry_run=True の場合、Notion API・IDマッピングストアへは一切アクセスしない
-    （引数に何を渡していても呼び出さない）。
+    （引数に何を渡していても呼び出さない）。`notion_client_pools`を渡していても
+    dry_run=True時は完全に無視される（並列実行のテスト目的でdry_run=Trueと
+    notion_client_poolsを組み合わせても意味を持たない）。
+
+    `notion_client_pools`（省略可）にdb_keyを指定すると、そのdb_keyのレコード作成を
+    複数のNotionClientLike（別々のAPIトークンを持つ複数のNotionインテグレーション）を
+    使ってスレッドプールで並列実行する（2026-08-10、Notion本番一括投入（148,000件規模・
+    単一トークンでは10時間超）を短縮するために追加。Notionのレート制限は1インテグレーション
+    あたり平均秒3リクエスト程度のため、複数の別インテグレーションを対象DB全てに共有すれば
+    実質的な上限を線形に引き上げられる）。指定されなかったdb_keyは従来通り
+    `notion_clients[db_key]` を使った逐次実行のまま。並列化するのは同一db_key内の
+    レコード同士のみで、db_key間の依存順序（_MATERIALIZATION_ORDER）は従来通り守る
+    （後続db_keyのレコードは先行db_keyの`record.notion_key`確定を前提に
+    リレーション解決するため）。
     """
     created = {key: 0 for key in _MATERIALIZATION_ORDER}
     skipped_existing = {key: 0 for key in _MATERIALIZATION_ORDER}
+    # created/skipped_existingへの書き込みとid_mapping_storeへのアクセス（SQLite、
+    # 複数スレッドからの同時書き込みは想定されていない）を、並列実行時のみロックで直列化する。
+    counts_lock = threading.Lock()
+    store_lock = threading.Lock()
 
-    for db_key in _MATERIALIZATION_ORDER:
-        for record in plan.prepared[db_key]:
-            if dry_run:
-                record.notion_key = business_id(record)
-                created[db_key] += 1
-                continue
+    # shirokuma-secレビューBLOCKER対応: kintone_idごとの排他ロック。同一kintone_idを持つ
+    # 2レコードが並列実行され、「存在チェック（find_by_external_id）」と「作成+登録
+    # （create_page+upsert）」が別々のロック区間に分かれていたため、両方が同時に
+    # 「未登録」と判定してしまい、(a)Notion側に孤児ページが2件作成され、(b)2件目の
+    # upsert()がUNIQUE制約違反（DuplicateExternalIdError）でmaterialize()全体を
+    # クラッシュさせる、というTOCTOU（check-then-act）競合が実際に再現された。
+    # kintone_idごとにロックし、同一idの処理だけを直列化することで、異なるid同士の並列性は
+    # 保ったまま解消する（辞書へのロックオブジェクト登録自体はid_locks_guardで保護する）。
+    id_locks: dict[str, threading.Lock] = {}
+    id_locks_guard = threading.Lock()
 
-            if id_mapping_store is None or notion_clients is None:
-                raise ValueError("dry_run=False の場合、id_mapping_store/notion_clients は必須です")
+    def _lock_for_kintone_id(kintone_id: str) -> threading.Lock:
+        with id_locks_guard:
+            lock = id_locks.get(kintone_id)
+            if lock is None:
+                lock = threading.Lock()
+                id_locks[kintone_id] = lock
+            return lock
 
+    def _maybe_log_progress(db_key: str, total: int) -> None:
+        """obasan-qualityレビューBLOCKER対応: 148,000件規模・数時間の無人実行で、
+        進捗ログが起動時の1行しか出ずハングと正常進行の区別がつかなかった問題への対応。
+        counts_lock保持中に呼ぶ前提（doneの読み取りとログ出力の間で値がずれないように）。
+        """
+        done = created[db_key] + skipped_existing[db_key]
+        if done % _PROGRESS_LOG_INTERVAL == 0 or done == total:
+            logger.info(
+                "[%s] %d/%d件処理済み（作成%d件・既存スキップ%d件）",
+                db_key,
+                done,
+                total,
+                created[db_key],
+                skipped_existing[db_key],
+            )
+
+    def _check_create_and_register(
+        db_key: str, record: PreparedRecord, client: NotionClientLike, *, total: int, client_label: str
+    ) -> None:
+        with store_lock:
             existing = (
                 id_mapping_store.find_by_external_id(Tool.KINTONE, record.kintone_id)
                 if record.kintone_id
                 else None
             )
-            if existing is not None:
-                # 一度Notionへ移行済みのレコードは、以後Notionを正とする運用方針
-                # （05_同期・競合制御「Notion優先」原則）に合わせ、再実行時は上書きせず
-                # スキップする（このバッチが手動修正結果を巻き戻さないようにするため）。
-                record.notion_key = existing.notion_key
+        if existing is not None:
+            # 一度Notionへ移行済みのレコードは、以後Notionを正とする運用方針
+            # （05_同期・競合制御「Notion優先」原則）に合わせ、再実行時は上書きせず
+            # スキップする（このバッチが手動修正結果を巻き戻さないようにするため）。
+            record.notion_key = existing.notion_key
+            with counts_lock:
                 skipped_existing[db_key] += 1
-                continue
+                _maybe_log_progress(db_key, total)
+            return
 
-            client = notion_clients[db_key]
+        try:
             page_id = client.create_page(resolved_properties(record))
-            record.notion_key = page_id
-            created[db_key] += 1
+        except Exception:
+            # obasan-qualityレビューWARN対応: 複数トークンを並列で使う運用では、DB共有忘れ等の
+            # 設定ミスで特定のトークンだけが失敗するケースがあり得る。プール中の何番目の
+            # クライアント（=何番目のAPIキー）が原因かをログに残し、原因切り分けの初手を
+            # 「6トークンを1つずつ疑う」作業にしないようにする。
+            logger.error("[%s] %s でのcreate_page()が失敗しました", db_key, client_label)
+            raise
+        record.notion_key = page_id
+        with store_lock:
             id_mapping_store.upsert(
                 IdMapping(notion_key=page_id, db_key=db_key, kintone_id=record.kintone_id)
             )
+        with counts_lock:
+            created[db_key] += 1
+            _maybe_log_progress(db_key, total)
+
+    def _materialize_one(
+        db_key: str, record: PreparedRecord, client: NotionClientLike, *, total: int, client_label: str
+    ) -> None:
+        assert id_mapping_store is not None
+        # 「存在チェック→作成→登録」全体をkintone_id単位で直列化する（上のBLOCKER対応
+        # コメント参照）。kintone_idが無いレコードはそもそも名寄せ判定自体を行わない
+        # （そのようなレコードは複数存在しても重複判定の対象外＝従来通り全件作成される）
+        # ため、ロック無しで進める。
+        if record.kintone_id:
+            with _lock_for_kintone_id(record.kintone_id):
+                _check_create_and_register(db_key, record, client, total=total, client_label=client_label)
+        else:
+            _check_create_and_register(db_key, record, client, total=total, client_label=client_label)
+
+    for db_key in _MATERIALIZATION_ORDER:
+        records = plan.prepared[db_key]
+
+        if dry_run:
+            for record in records:
+                record.notion_key = business_id(record)
+                created[db_key] += 1
+            continue
+
+        if not records:
+            # 対象レコードが無いdb_keyについては、従来通りid_mapping_store/notion_clientsの
+            # 必須チェックも含めて一切アクセスしない（この db_key 分のクライアントを
+            # 呼び出し側が用意していなくても問題にならない、という既存動作を維持する）。
+            continue
+
+        if id_mapping_store is None or notion_clients is None:
+            raise ValueError("dry_run=False の場合、id_mapping_store/notion_clients は必須です")
+
+        total = len(records)
+        logger.info("[%s] %d件の書き込みを開始します", db_key, total)
+
+        pool = notion_client_pools.get(db_key) if notion_client_pools else None
+        if pool:
+            executor = ThreadPoolExecutor(max_workers=len(pool))
+            futures = [
+                executor.submit(
+                    _materialize_one,
+                    db_key,
+                    record,
+                    pool[i % len(pool)],
+                    total=total,
+                    client_label=f"トークン{i % len(pool) + 1}/{len(pool)}",
+                )
+                for i, record in enumerate(records)
+            ]
+            try:
+                # shirokuma-secレビューWARN対応: 以前は`future.result()`をsubmit順に
+                # 呼んでいたため、最初に見つかった失敗の例外だけが送出され、それより後ろの
+                # futureで発生した別の失敗は`.result()`が一度も呼ばれず無言で握りつぶされて
+                # いた（実際に複数件同時失敗のシナリオで再現された）。全futureの完了を待って
+                # `.exception()`で結果を集め、失敗が複数あっても全件ログに残す。
+                errors: list[BaseException] = []
+                for future in futures:
+                    exc = future.exception()
+                    if exc is not None:
+                        errors.append(exc)
+            except BaseException:
+                # obasan-qualityレビューBLOCKER対応: KeyboardInterrupt等での中断時、
+                # cancel_futures=Trueでまだ着手していないFutureを即座にキャンセルし、
+                # 数万件規模のキューが残っていても長時間ブロックしないようにする。
+                # wait=Trueは維持する: wait=Falseにすると、既に実行中のワーカースレッド
+                # （最大でもワーカー数分程度）がid_mapping_store（SQLite単一コネクション）へ
+                # アクセスしている最中に、呼び出し元がid_mapping_store.close()を呼んで
+                # しまう競合が起き得る（実際にテストでセグフォルトを起こして発覚した）。
+                # 実行中のワーカー数分だけは短時間で完了を待ち、安全に終了させる。
+                executor.shutdown(wait=True, cancel_futures=True)
+                raise
+            else:
+                executor.shutdown(wait=True)
+
+            if errors:
+                if len(errors) > 1:
+                    logger.error(
+                        "[%s] %d件のレコード作成が失敗しました。最初の1件のみ例外として"
+                        "送出しますが、残り%d件も直前のログ（create_page()失敗ログ）を"
+                        "参照してください",
+                        db_key,
+                        len(errors),
+                        len(errors) - 1,
+                    )
+                raise errors[0]
+        else:
+            client = notion_clients[db_key]
+            client_label = "単一トークン"
+            for record in records:
+                _materialize_one(db_key, record, client, total=total, client_label=client_label)
 
     return MigrationSummary(created=created, skipped_existing=skipped_existing)
 

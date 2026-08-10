@@ -39,6 +39,15 @@ kintone・Zohoいずれか一方のみ、または両方同時に指定できる
 取引先マスターとの名寄せ突合プレビューのため、設定されていれば--dry-run時も読み取り専用で
 使う。--no-existing-client-matchでこの突合自体を無効化できる）。
 
+■ 大量データ投入時の並列書き込み高速化（2026-08-10）: Notionの1トークンあたりのレート
+制限（平均秒3リクエスト程度）により、数万〜十数万件規模の本番投入は単一トークンだと
+数時間〜10時間超かかる。環境変数 NOTION_API_KEY_2, _3, _4...（対象6DB全てにNotion側の
+「Connections」で共有した別インテグレーションのトークン）を設定しておくと、
+load_notion_api_key_pool()が自動検出し、それらを使った並列書き込みに切り替わる
+（--dry-run時は無関係、本番書き込み時のみ有効）。1つも設定しなければ従来通り単一トークン・
+逐次実行のまま。429（レート制限）はidempotent操作でなくても自動的にリトライされる
+（詳細はsrc/sync_engine/clients/_http.pyのrequest_with_retry()docstring参照）。
+
 ■ 出力ファイルの取り扱い注意（BLOCKER6）: IDマッピングDB・各種レポートCSVには氏名・部署・
 役職・携帯番号・メールアドレス等のPII（個人情報）が含まれる。デフォルト出力先は
 リポジトリ直下の `migration_output/`（.gitignore登録済み）とし、誤ってコミットされない
@@ -52,6 +61,7 @@ import argparse
 import csv
 import io
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -284,6 +294,54 @@ def build_notion_clients(db_ids: dict[str, str]) -> dict[str, HttpNotionClient]:
     return {key: HttpNotionClient(key, db_ids[key]) for key in SCHEMAS_BY_KEY}
 
 
+def load_notion_api_key_pool() -> list[str]:
+    """本番一括投入の書き込み高速化用に、NOTION_API_KEY_2, _3, _4...の順で設定されている
+    追加のNotionインテグレーショントークンを全て集める（2026-08-10、タスク#57/#64向け。
+    単一トークンだと平均秒3リクエスト程度のレート制限に縛られ148,000件規模の投入が
+    10時間超かかるため、対象6DB全てに共有された複数の別インテグレーションへ分散
+    書き込みすることで実質的な上限を引き上げる）。1つも設定されていなければ空リストを
+    返し、呼び出し元は従来通りの単一トークン・逐次実行にフォールバックする。
+    """
+    keys: list[str] = []
+    i = 2
+    while True:
+        key = os.environ.get(f"NOTION_API_KEY_{i}")
+        if not key:
+            break
+        keys.append(key)
+        i += 1
+
+    # obasan-qualityレビューWARN対応: NOTION_API_KEY_3が空でNOTION_API_KEY_4以降に
+    # 値がある、という番号の飛びは設定ミスの可能性が高いが、これまで無言で無視していた
+    # （結果、意図した並列度より少ない状態で気づかれずに実行されてしまう）。連番の切れ目
+    # より先（_i+1〜_i+10）にキーが存在する場合は警告ログを出す。
+    _GAP_SCAN_RANGE = 10
+    if any(os.environ.get(f"NOTION_API_KEY_{j}") for j in range(i + 1, i + 1 + _GAP_SCAN_RANGE)):
+        logger.warning(
+            "NOTION_API_KEY_%d が未設定のため、それ以降の番号のトークンは無視します"
+            "（連番の途中に空きがあると設定ミスの可能性があります。%d個のトークンのみ使用: 主トークン+%d個）",
+            i,
+            len(keys) + 1,
+            len(keys),
+        )
+    return keys
+
+
+def build_notion_client_pools(
+    db_ids: dict[str, str],
+    notion_clients: dict[str, HttpNotionClient],
+    extra_api_keys: list[str],
+) -> dict[str, list[HttpNotionClient]]:
+    """db_keyごとに、主トークン（notion_clientsで既に使っているもの）+ 追加トークン全ての
+    HttpNotionClientリストを組み立てる。主トークンも遊ばせず並列プールの一員として使う。
+    """
+    return {
+        db_key: [notion_clients[db_key]]
+        + [HttpNotionClient(db_key, db_ids[db_key], api_key=key) for key in extra_api_keys]
+        for db_key in SCHEMAS_BY_KEY
+    }
+
+
 def _related_report_path(report_path: Path, suffix: str) -> Path:
     """--report-path を基準に、未解決系レポートの出力パスを組み立てる
     （例: migration_report.csv -> migration_report_unresolved.csv）。"""
@@ -355,23 +413,37 @@ def main(argv: list[str] | None = None) -> None:
 
     id_mapping_store = None
     notion_clients = None
+    notion_client_pools = None
     if not args.dry_run:
         args.id_mapping_db.parent.mkdir(parents=True, exist_ok=True)
         id_mapping_store = SQLiteIdMappingStore(str(args.id_mapping_db))
-        notion_clients = build_notion_clients(load_db_ids())
+        db_ids = load_db_ids()
+        notion_clients = build_notion_clients(db_ids)
+        extra_api_keys = load_notion_api_key_pool()
+        if extra_api_keys:
+            logger.info(
+                "NOTION_API_KEY_2以降が%d件検出されたため、並列書き込み(合計%d並列)で実行します",
+                len(extra_api_keys),
+                len(extra_api_keys) + 1,
+            )
+            notion_client_pools = build_notion_client_pools(db_ids, notion_clients, extra_api_keys)
 
     try:
         summary = materialize(
             plan,
             id_mapping_store=id_mapping_store,
             notion_clients=notion_clients,
+            notion_client_pools=notion_client_pools,
             dry_run=args.dry_run,
         )
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         # materialize()が例外で中断しても、途中経過のサマリー・レポートを出力してから
         # 例外を再送出する（BLOCKER8: 失敗時に何の手掛かりも残らない事態を避ける）。
+        # KeyboardInterruptもここで拾う（obasan-qualityレビューBLOCKER対応: 元は
+        # `except Exception`のみだったため、148,000件規模の本番投入中にCtrl+Cで
+        # 意図的に中断した場合だけ部分レポートが一切出ない、という非対称な挙動があった）。
         logger.exception(
-            "materialize() が例外で中断しました。ここまでの進捗でサマリー・レポートを出力します。"
+            "materialize() が中断されました。ここまでの進捗でサマリー・レポートを出力します。"
         )
         print_summary(plan, _partial_summary_from_plan(plan), dry_run=args.dry_run)
         write_reports(plan, args.report_path)

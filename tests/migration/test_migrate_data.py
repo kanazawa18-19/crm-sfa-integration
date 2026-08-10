@@ -8,6 +8,9 @@ tests/migration/fixtures/ の小さなkintoneエクスポートCSV（数件）�
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,9 +21,11 @@ import requests
 from scripts.migrate_data import (
     _DEFAULT_ID_MAPPING_DB_PATH,
     _DEFAULT_REPORT_PATH,
+    build_notion_client_pools,
     build_notion_clients,
     load_db_ids,
     load_existing_client_index,
+    load_notion_api_key_pool,
     main,
     parse_args,
     read_client_master_csv_rows,
@@ -66,6 +71,25 @@ class FakeNotionClient:
 
 def fake_notion_clients() -> dict[str, FakeNotionClient]:
     return {key: FakeNotionClient(key) for key in SCHEMAS_BY_KEY}
+
+
+class ThreadSafeFakeNotionClient:
+    """並列materialize()のテスト用に、複数スレッドから安全にcreate_page()を呼べる
+    ダブル（FakeNotionClientの`self._counter += 1`はロック無しで競合するため、
+    並列実行のテストではこちらを使う）。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.created: list[dict[str, Any]] = []
+        self._counter = 0
+        self._lock = threading.Lock()
+
+    def create_page(self, properties: dict[str, Any]) -> str:
+        with self._lock:
+            self._counter += 1
+            counter = self._counter
+            self.created.append(properties)
+        return f"{self.name}-page-{counter}"
 
 
 @pytest.fixture
@@ -986,3 +1010,285 @@ def test_main_writes_needs_review_clients_report_path(
     needs_review_path = tmp_path / "migration_report_needs_review_clients.csv"
     assert needs_review_path.exists()
     assert f"取引先マスター要レビューレポートを出力しました: {needs_review_path}" in out
+
+
+# --- 2026-08-10: materialize()の並列書き込み(notion_client_pools)対応 -----------------
+# タスク#57/#64のNotion本番一括投入(148,000件規模、単一トークン逐次実行だと10時間超)を
+# 短縮するため、db_keyごとに複数のNotionClientLike(別トークン)を渡すとスレッドプールで
+# 並列実行できるようにした。
+
+
+def test_materialize_with_client_pool_distributes_across_all_clients() -> None:
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
+    small_plan = plan_migration(client_master_rows, [], [])
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+        client_a = ThreadSafeFakeNotionClient("a")
+        client_b = ThreadSafeFakeNotionClient("b")
+        summary = materialize(
+            small_plan,
+            id_mapping_store=store,
+            notion_clients={**fake_notion_clients(), "client_master": client_a},
+            notion_client_pools={"client_master": [client_a, client_b]},
+            dry_run=False,
+        )
+
+        assert summary.created["client_master"] == 3
+        # 3件がclient_a/client_bへラウンドロビンで分配され、両方が使われる。
+        assert len(client_a.created) + len(client_b.created) == 3
+        assert len(client_a.created) >= 1
+        assert len(client_b.created) >= 1
+        # 全レコードのnotion_keyが実際に設定されている(どちらのクライアント発行かは問わない)。
+        for record in small_plan.prepared["client_master"]:
+            assert record.notion_key is not None
+    finally:
+        store.close()
+
+
+def test_materialize_with_client_pool_still_skips_existing_id_mappings() -> None:
+    """並列実行時も冪等性(既存IDマッピングがあれば新規作成しない)は維持される。"""
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
+    small_plan = plan_migration(client_master_rows, [], [])
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+        store.upsert(
+            IdMapping(notion_key="existing-page-id", db_key="client_master", kintone_id="1001")
+        )
+        client_a = ThreadSafeFakeNotionClient("a")
+        client_b = ThreadSafeFakeNotionClient("b")
+
+        summary = materialize(
+            small_plan,
+            id_mapping_store=store,
+            notion_clients={**fake_notion_clients(), "client_master": client_a},
+            notion_client_pools={"client_master": [client_a, client_b]},
+            dry_run=False,
+        )
+
+        assert summary.skipped_existing["client_master"] == 1
+        assert summary.created["client_master"] == 2
+        assert len(client_a.created) + len(client_b.created) == 2
+    finally:
+        store.close()
+
+
+def test_materialize_without_pool_argument_is_unaffected() -> None:
+    """notion_client_poolsを渡さない既存の呼び出し方は、従来通り単一クライアントの
+    逐次実行のままであることの回帰確認。"""
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
+    small_plan = plan_migration(client_master_rows, [], [])
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+        clients = fake_notion_clients()
+
+        summary = materialize(small_plan, id_mapping_store=store, notion_clients=clients, dry_run=False)
+
+        assert summary.created["client_master"] == 3
+        assert len(clients["client_master"].created) == 3
+    finally:
+        store.close()
+
+
+def test_materialize_with_client_pool_propagates_worker_exception() -> None:
+    """プール内のいずれかのクライアントでcreate_page()が例外を送出した場合、
+    materialize()呼び出し元まで確実に伝播する(並列実行が例外を握りつぶさない)。"""
+    client_master_rows = read_client_master_csv_rows(FIXTURES_DIR / "client_master.csv")
+    small_plan = plan_migration(client_master_rows, [], [])
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+        failing_client = MagicMock()
+        failing_client.create_page.side_effect = RuntimeError("Notion API boom")
+        client_b = ThreadSafeFakeNotionClient("b")
+
+        with pytest.raises(RuntimeError, match="Notion API boom"):
+            materialize(
+                small_plan,
+                id_mapping_store=store,
+                notion_clients={**fake_notion_clients(), "client_master": failing_client},
+                notion_client_pools={"client_master": [failing_client, client_b]},
+                dry_run=False,
+            )
+    finally:
+        store.close()
+
+
+def test_materialize_with_client_pool_does_not_create_duplicate_for_same_kintone_id() -> None:
+    """shirokuma-secレビューBLOCKER対応の回帰テスト。
+
+    並列実行時、同一kintone_idを持つ2レコードが別スレッドでほぼ同時に処理されると、
+    「存在チェック（find_by_external_id）」と「作成+登録（create_page+upsert）」が
+    別々のロック区間に分かれていたため両方とも「未登録」と判定してしまい、
+    (a) Notion側に孤児ページが2件作成され、(b) 2件目のupsert()がUNIQUE制約違反
+    （DuplicateExternalIdError）でmaterialize()全体をクラッシュさせる、という
+    TOCTOU競合が実際に再現された。kintone_id単位のロックで解消したことを確認する。
+    """
+    record_1 = PreparedRecord("client_master", "DUP-1", {"取引先名": "重複1件目"})
+    record_2 = PreparedRecord("client_master", "DUP-1", {"取引先名": "重複2件目"})
+    dup_plan = MigrationPlan(
+        prepared={**{key: [] for key in SCHEMAS_BY_KEY}, "client_master": [record_1, record_2]}
+    )
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+
+        class SlowClient:
+            """create_page()にわずかな遅延を入れ、2スレッドが同時に「存在チェック」を
+            通過しようとするレース窓を意図的に広げる（修正前はここで両方通過していた）。"""
+
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.calls = 0
+
+            def create_page(self, properties: dict[str, Any]) -> str:
+                time.sleep(0.05)
+                self.calls += 1
+                return f"{self.name}-page"
+
+        client_a = SlowClient("a")
+        client_b = SlowClient("b")
+
+        summary = materialize(
+            dup_plan,
+            id_mapping_store=store,
+            notion_clients={"client_master": client_a},
+            notion_client_pools={"client_master": [client_a, client_b]},
+            dry_run=False,
+        )
+
+        # 1件だけ実際に作成され、同一kintone_idのもう1件は既存扱いでスキップされる
+        # （＝Notion側に孤児ページが2件できることも、DuplicateExternalIdErrorで
+        # クラッシュすることも無い）。
+        assert summary.created["client_master"] == 1
+        assert summary.skipped_existing["client_master"] == 1
+        assert client_a.calls + client_b.calls == 1
+    finally:
+        store.close()
+
+
+# --- 2026-08-10: CLI側のNOTION_API_KEY_2以降の自動検出・プール構築 ------------------------
+
+
+def test_load_notion_api_key_pool_returns_empty_list_when_no_extra_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTION_API_KEY_2", raising=False)
+
+    assert load_notion_api_key_pool() == []
+
+
+def test_load_notion_api_key_pool_collects_sequential_keys_until_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NOTION_API_KEY_2, _3...を連番で集める。_4が欠番なら_5以降は無視する
+    （番号の飛びをそのまま許容すると設定ミスに気づきにくいため、連番の切れ目で打ち切る）。"""
+    monkeypatch.setenv("NOTION_API_KEY_2", "key-2")
+    monkeypatch.setenv("NOTION_API_KEY_3", "key-3")
+    monkeypatch.delenv("NOTION_API_KEY_4", raising=False)
+    monkeypatch.setenv("NOTION_API_KEY_5", "key-5")
+
+    assert load_notion_api_key_pool() == ["key-2", "key-3"]
+
+
+def test_build_notion_client_pools_includes_primary_client_and_extra_keys() -> None:
+    db_ids = {key: f"{key}-db-id" for key in SCHEMAS_BY_KEY}
+    primary_clients = {key: MagicMock(name=f"primary-{key}") for key in SCHEMAS_BY_KEY}
+
+    pools = build_notion_client_pools(db_ids, primary_clients, ["extra-key-1", "extra-key-2"])
+
+    assert set(pools.keys()) == set(SCHEMAS_BY_KEY.keys())
+    for key in SCHEMAS_BY_KEY:
+        assert len(pools[key]) == 3  # 主トークン1 + 追加トークン2
+        assert pools[key][0] is primary_clients[key]
+
+
+def test_main_uses_client_pool_when_extra_notion_api_keys_are_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """NOTION_API_KEY_2が設定されている状態でmain()を実行すると、並列プールが
+    実際に使われ、複数トークン(=複数HttpNotionClientインスタンス)へレコードが
+    分配されることを確認する（CLI全体の配線確認）。"""
+    monkeypatch.setenv("NOTION_API_KEY", "primary-key")
+    monkeypatch.setenv("NOTION_API_KEY_2", "extra-key")
+    monkeypatch.delenv("NOTION_API_KEY_3", raising=False)
+
+    import scripts.migrate_data as migrate_data_module
+
+    created_by_client_master_client: list[Any] = []
+
+    class RecordingHttpNotionClient:
+        def __init__(self, db_key: str, database_id: str, *, api_key: str | None = None) -> None:
+            self.db_key = db_key
+            # 実際のHttpNotionClientと同じくapi_key未指定時はNOTION_API_KEY環境変数に
+            # フォールバックする（build_notion_clients()はapi_keyを渡さずに呼ぶため）。
+            self.api_key = api_key if api_key is not None else os.environ.get("NOTION_API_KEY")
+            self._counter = 0
+
+        def create_page(self, properties: dict[str, Any]) -> str:
+            self._counter += 1
+            if self.db_key == "client_master":
+                created_by_client_master_client.append(self.api_key)
+            return f"{self.db_key}-{self.api_key}-{self._counter}"
+
+    monkeypatch.setattr(migrate_data_module, "HttpNotionClient", RecordingHttpNotionClient)
+    monkeypatch.setattr(
+        migrate_data_module, "load_db_ids", lambda: {key: "db-id" for key in SCHEMAS_BY_KEY}
+    )
+    report_path = tmp_path / "migration_report.csv"
+    id_mapping_db = tmp_path / "migration_id_mapping.db"
+
+    with caplog.at_level(logging.INFO):
+        migrate_data_module.main(
+            [
+                "--client-master-csv",
+                str(FIXTURES_DIR / "client_master.csv"),
+                "--report-path",
+                str(report_path),
+                "--id-mapping-db",
+                str(id_mapping_db),
+                "--no-existing-client-match",
+            ]
+        )
+
+    assert any("NOTION_API_KEY_2以降が" in r.message for r in caplog.records)
+    # 3件の取引先マスターが、主トークン(primary-key)・追加トークン(extra-key)の
+    # 両方へラウンドロビンで分配されている(どちらか一方だけに偏っていない)。
+    assert set(created_by_client_master_client) == {"primary-key", "extra-key"}
+
+
+def test_main_does_not_build_pool_when_no_extra_notion_api_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("NOTION_API_KEY", "primary-key")
+    monkeypatch.delenv("NOTION_API_KEY_2", raising=False)
+
+    import scripts.migrate_data as migrate_data_module
+
+    def _fake_client() -> MagicMock:
+        client = MagicMock()
+        client.create_page.return_value = "fake-page-id"
+        return client
+
+    monkeypatch.setattr(
+        migrate_data_module,
+        "build_notion_clients",
+        lambda db_ids: {key: _fake_client() for key in SCHEMAS_BY_KEY},
+    )
+    monkeypatch.setattr(
+        migrate_data_module, "load_db_ids", lambda: {key: "db-id" for key in SCHEMAS_BY_KEY}
+    )
+    report_path = tmp_path / "migration_report.csv"
+    id_mapping_db = tmp_path / "migration_id_mapping.db"
+
+    with caplog.at_level(logging.INFO):
+        migrate_data_module.main(
+            [
+                "--client-master-csv",
+                str(FIXTURES_DIR / "client_master.csv"),
+                "--report-path",
+                str(report_path),
+                "--id-mapping-db",
+                str(id_mapping_db),
+                "--no-existing-client-match",
+            ]
+        )
+
+    assert not any("並列書き込み" in r.message for r in caplog.records)
