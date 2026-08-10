@@ -26,19 +26,30 @@ NOW = datetime(2026, 8, 5, 9, 0, 0, tzinfo=timezone.utc)
 
 
 class FakeSyncTarget(SyncTarget):
-    """テスト用のインメモリSyncTarget。get_recordの固定値・upsert呼び出し履歴を保持する。"""
+    """テスト用のインメモリSyncTarget。get_recordの固定値・upsert呼び出し履歴を保持する。
 
-    def __init__(self, tool: Tool, records: dict[str, dict[str, Any]] | None = None) -> None:
+    `always_skip=True`にすると、`_MultiDb*SyncTarget`（本番用ルーター、
+    `src/sync_engine/production_wiring.py`）が外部IDからdb_keyを解決できず実際には
+    書き込まなかったケース等を模して、`upsert_record()`がNone（`SyncTarget`の契約上
+    「実際には書き込まれなかった」を表す）を返すようにする。
+    """
+
+    def __init__(
+        self, tool: Tool, records: dict[str, dict[str, Any]] | None = None, *, always_skip: bool = False
+    ) -> None:
         self.tool = tool
         self._records = records or {}
+        self._always_skip = always_skip
         self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
         self.delete_calls: list[str] = []
 
     def get_record(self, external_id: str) -> dict[str, Any] | None:
         return self._records.get(external_id)
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str:
+    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
         self.upsert_calls.append((external_id, dict(properties)))
+        if self._always_skip:
+            return None
         return external_id or "new-id"
 
     def delete_record(self, external_id: str) -> None:
@@ -641,3 +652,132 @@ def test_conflict_notifies_slack_for_important_property(store: SQLiteIdMappingSt
     assert len(notifier.notified) == 1
     assert notifier.notified[0].rejected_value == "失注"
     assert notifier.notified[0].adopted_value == "商談中(B)"
+
+
+# --- skipped_tools伝播（obasan-quality/shirokuma-secレビュー: 「同期スキップが成功として
+# 見える」問題の修正） -------------------------------------------------------------------
+#
+# SyncTarget.upsert_record()の契約上、ツール側の都合で実際には書き込まれなかった場合は
+# Noneが返る（例: `_MultiDb*SyncTarget`が外部IDからdb_keyを解決できなかった場合）。
+# written_tools/skipped_toolsがこれを正しく反映することを検証する。
+
+
+def test_notion_source_propagation_reports_skipped_tool_when_target_declines_write(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """Notion発の単純伝播で、あるツールのupsert_record()がNoneを返した（実際には
+    書き込めなかった）場合、そのツールはwritten_toolsではなくskipped_toolsに現れること。"""
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(Tool.KINTONE, always_skip=True)
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.NOTION,
+        db_key="client_master",
+        external_id="CLI-001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    prop = result.properties[0]
+    # 書き込みは試みられる（upsert_callsには記録される）が、成功はしていない。
+    assert targets[Tool.KINTONE].upsert_calls == [("1001", {"取引先名": "新名称"})]
+    assert prop.written_tools == frozenset({Tool.ZOHO, Tool.SPREADSHEET})
+    assert prop.skipped_tools == frozenset({Tool.KINTONE})
+    assert result.has_partial_skips is True
+    # dispatch全体としては処理された（skipped=Falseのまま）。プロパティ単位の部分的な
+    # スキップと、dispatch全体のskipped（own_system_event/unknown_record/stale_event用）は
+    # 別軸であることを明示する。
+    assert result.skipped is False
+
+
+def test_notion_unavailable_fallback_reports_skipped_tool_when_target_declines_write(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """BLOCKER1のNotion取得不可フォールバック経路でも、skipped_toolsが正しく反映されること。"""
+    targets = _all_targets()  # NOTIONのget_record()は常にNoneを返す（BLOCKER1経路に入る）
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, always_skip=True)
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新規登録名"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    prop = result.properties[0]
+    assert prop.written_tools == frozenset({Tool.NOTION, Tool.SPREADSHEET})
+    assert prop.skipped_tools == frozenset({Tool.ZOHO})
+
+
+def test_conflict_resolution_reports_skipped_tool_when_target_declines_write(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """コンフリクト解決経由の書き込みでも、skipped_toolsが正しく反映されること。"""
+    notion = FakeSyncTarget(
+        Tool.NOTION, records={"CLI-001": {"取引先名": "", "updated_at": NOW - timedelta(hours=5)}}
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.SPREADSHEET] = FakeSyncTarget(Tool.SPREADSHEET, always_skip=True)
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新規登録名"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    prop = result.properties[0]
+    assert prop.resolution.action == ResolutionAction.PROPAGATE_VALUE
+    assert prop.written_tools == frozenset({Tool.NOTION, Tool.ZOHO})
+    assert prop.skipped_tools == frozenset({Tool.SPREADSHEET})
+    assert result.has_partial_skips is True
+
+
+def test_has_partial_skips_is_false_when_all_intended_writes_succeed(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    dispatcher = Dispatcher(store, _all_targets())
+    event = SyncEvent(
+        source_tool=Tool.NOTION,
+        db_key="client_master",
+        external_id="CLI-001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.has_partial_skips is False
+
+
+def test_write_skipped_because_target_not_configured_at_all_is_also_reported(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """targetsに当該ツールのSyncTargetが一切登録されていない場合も、書き込み対象として
+    意図はされていた（sync_scope上は対象）ため、written_toolsではなくskipped_toolsに
+    現れること（未接続ツールへの書き込みが暗黙に「成功扱い」にならないようにする）。"""
+    targets = _all_targets()
+    del targets[Tool.ZOHO]
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.NOTION,
+        db_key="client_master",
+        external_id="CLI-001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    prop = result.properties[0]
+    assert prop.written_tools == frozenset({Tool.KINTONE, Tool.SPREADSHEET})
+    assert prop.skipped_tools == frozenset({Tool.ZOHO})

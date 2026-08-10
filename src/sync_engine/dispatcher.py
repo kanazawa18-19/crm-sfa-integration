@@ -46,11 +46,22 @@ _ALL_TOOLS: tuple[Tool, ...] = (Tool.NOTION, Tool.SPREADSHEET, Tool.KINTONE, Too
 
 @dataclass(frozen=True)
 class PropertyDispatchResult:
-    """1プロパティ分の処理結果（テスト・ログ用）。"""
+    """1プロパティ分の処理結果（テスト・ログ用）。
+
+    written_tools/skipped_toolsはいずれも「本来書き込む意図があったツール」
+    （sync_scope・コンフリクト解決結果で書き込み対象と判定されたツール）の内訳。
+    written_toolsは実際に`SyncTarget.upsert_record()`が書き込み成功を示す値
+    （Noneでない戻り値）を返したツール、skipped_toolsはそれ以外（targetが未接続、または
+    `SyncTarget.upsert_record()`がNoneを返した＝ツール側の都合で実際には書き込まれなかった
+    ケース）を表す。両者は排反であり、written_tools | skipped_tools は「書き込み対象として
+    意図したツール」の全体と一致する（shirokuma-sec/obasan-qualityレビュー: 「同期スキップが
+    成功として見える」問題への対応）。
+    """
 
     property_name: str
     resolution: ConflictResolution | None  # コンフリクト判定を経由しなかった単純伝播の場合はNone
     written_tools: frozenset[Tool] = field(default_factory=frozenset)
+    skipped_tools: frozenset[Tool] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,14 @@ class DispatchResult:
     skipped: bool
     reason: str | None = None
     properties: tuple[PropertyDispatchResult, ...] = ()
+
+    @property
+    def has_partial_skips(self) -> bool:
+        """dispatch自体はskipped=False（処理された）だが、一部プロパティで意図した書き込み先
+        ツールのうち実際には書き込めなかったものがある場合にTrueを返す
+        （呼び出し側がログ・レスポンスへ反映するための判定に使う）。
+        """
+        return any(p.skipped_tools for p in self.properties)
 
 
 class Dispatcher:
@@ -119,11 +138,15 @@ class Dispatcher:
             if event.source_tool is Tool.NOTION:
                 # Notionは常にマスターであり、Notion発の変更に競合判定は不要。
                 # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
-                written = frozenset(t for t in target_tools if prop.should_sync_to(t))
-                for tool in written:
-                    self._write_value(tool, mapping, property_name, new_value)
+                intended = frozenset(t for t in target_tools if prop.should_sync_to(t))
+                written, skipped = self._write_values(intended, mapping, property_name, new_value)
                 results.append(
-                    PropertyDispatchResult(property_name=property_name, resolution=None, written_tools=written)
+                    PropertyDispatchResult(
+                        property_name=property_name,
+                        resolution=None,
+                        written_tools=written,
+                        skipped_tools=skipped,
+                    )
                 )
                 continue
 
@@ -145,11 +168,15 @@ class Dispatcher:
                 # ソース側に保存された値が「空欄化が新しい」と誤判定され全ツールへ
                 # Noneで伝播してしまう事故につながる。この場合はコンフリクト判定自体を
                 # スキップし、ソース側の値をそのまま各ツールへ最新化する（単純補完）。
-                written = frozenset({Tool.NOTION}) | other_tools
-                for tool in written:
-                    self._write_value(tool, mapping, property_name, new_value)
+                intended = frozenset({Tool.NOTION}) | other_tools
+                written, skipped = self._write_values(intended, mapping, property_name, new_value)
                 results.append(
-                    PropertyDispatchResult(property_name=property_name, resolution=None, written_tools=written)
+                    PropertyDispatchResult(
+                        property_name=property_name,
+                        resolution=None,
+                        written_tools=written,
+                        skipped_tools=skipped,
+                    )
                 )
                 continue
 
@@ -199,9 +226,10 @@ class Dispatcher:
             # 書き込み対象 = resolution.target_tools（現在値を比較できたツールのうち採用値と
             # 異なる方。NOTION_OVERRIDE時は送信元自身の訂正も含む） ∪ missing_tools
             # （比較には参加していないが、確定した値へ補完すべきsync_scope対象ツール）。
-            written = frozenset(resolution.target_tools | missing_tools)
-            for tool in written:
-                self._write_value(tool, mapping, property_name, resolution.resolved_value)
+            intended = frozenset(resolution.target_tools | missing_tools)
+            written, skipped = self._write_values(
+                intended, mapping, property_name, resolution.resolved_value
+            )
 
             # BLOCKER2: 却下データの退避（データ退避）とSlackアラート通知（重要項目のみ）。
             if resolution.rejected:
@@ -211,7 +239,12 @@ class Dispatcher:
                         self._slack_notifier.notify_conflict(rejected_item)
 
             results.append(
-                PropertyDispatchResult(property_name=property_name, resolution=resolution, written_tools=written)
+                PropertyDispatchResult(
+                    property_name=property_name,
+                    resolution=resolution,
+                    written_tools=written,
+                    skipped_tools=skipped,
+                )
             )
 
         self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
@@ -235,12 +268,38 @@ class Dispatcher:
             return self._store.get(event.external_id)
         return self._store.find_by_external_id(event.source_tool, event.external_id)
 
-    def _write_value(self, tool: Tool, mapping: IdMapping, property_name: str, value: object) -> None:
+    def _write_values(
+        self, tools: frozenset[Tool], mapping: IdMapping, property_name: str, value: object
+    ) -> tuple[frozenset[Tool], frozenset[Tool]]:
+        """`tools`（書き込み対象として意図した全ツール）へ書き込みを試み、実際に書き込めた
+        ツール・書き込めなかった（スキップされた）ツールを返す（両者は排反）。
+        """
+        written: set[Tool] = set()
+        skipped: set[Tool] = set()
+        for tool in tools:
+            if self._write_value(tool, mapping, property_name, value):
+                written.add(tool)
+            else:
+                skipped.add(tool)
+        return frozenset(written), frozenset(skipped)
+
+    def _write_value(self, tool: Tool, mapping: IdMapping, property_name: str, value: object) -> bool:
+        """1ツールへの書き込みを試み、実際に書き込めたかどうかを返す。
+
+        `SyncTarget.upsert_record()`の契約（`src/sync_engine/sync_targets/base.py`docstring）
+        通り、ツール側の都合で実際にはレコードが作成・更新されなかった場合はNoneが返る
+        （例: ZohoSyncTargetのENABLE_ZOHO=False時、`_MultiDb*SyncTarget`
+        （`src/sync_engine/production_wiring.py`）が外部IDからdb_keyを解決できなかった時等）。
+        そのため戻り値がNoneでないことをもって「書き込み成功」とみなす
+        （shirokuma-sec/obasan-qualityレビュー: 「同期スキップが成功として見える」問題への対応。
+        targetがそもそも`self._targets`に存在しない場合も同様にFalseを返す）。
+        """
         target = self._targets.get(tool)
         if target is None:
-            return
+            return False
         external_id = _external_id_for(tool, mapping)
-        target.upsert_record(external_id, {property_name: value})
+        result = target.upsert_record(external_id, {property_name: value})
+        return result is not None
 
 
 def _external_id_for(tool: Tool, mapping: IdMapping) -> str | None:

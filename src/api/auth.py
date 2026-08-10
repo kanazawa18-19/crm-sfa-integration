@@ -30,3 +30,20 @@ def verify_dashboard_api_token(authorization: str | None = Header(default=None))
 
     if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def verify_cron_secret(authorization: str | None = Header(default=None)) -> None:
+    """Vercel Cronからの呼び出しであることを検証するFastAPI依存性。
+
+    Vercelは`CRON_SECRET`環境変数が設定されているプロジェクトに対し、Cron Jobからの
+    リクエストへ自動的に`Authorization: Bearer $CRON_SECRET`ヘッダーを付与する
+    （https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs）。
+    `verify_dashboard_api_token`と同様fail-closed設計であり、`CRON_SECRET`未設定時は
+    デフォルトで全リクエストを401にする。
+    """
+    expected = os.environ.get("CRON_SECRET")
+    if not expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="unauthorized")
