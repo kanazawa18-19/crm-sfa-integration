@@ -436,15 +436,25 @@ def main(argv: list[str] | None = None) -> None:
             notion_client_pools=notion_client_pools,
             dry_run=args.dry_run,
         )
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt) as exc:
         # materialize()が例外で中断しても、途中経過のサマリー・レポートを出力してから
         # 例外を再送出する（BLOCKER8: 失敗時に何の手掛かりも残らない事態を避ける）。
         # KeyboardInterruptもここで拾う（obasan-qualityレビューBLOCKER対応: 元は
         # `except Exception`のみだったため、148,000件規模の本番投入中にCtrl+Cで
         # 意図的に中断した場合だけ部分レポートが一切出ない、という非対称な挙動があった）。
-        logger.exception(
-            "materialize() が中断されました。ここまでの進捗でサマリー・レポートを出力します。"
-        )
+        #
+        # obasan-qualityレビューWARN対応（2026-08-10）: Ctrl+Cによる意図的な中断と実際の
+        # バグによる例外を同じERRORログ＋フルトレースバックで出すと、無人長時間実行のログを
+        # 後から見た運用者が両者を区別できない。KeyboardInterruptはWARNING・トレースバック
+        # 無しで「意図した中断である」ことが分かる文言にする。
+        if isinstance(exc, KeyboardInterrupt):
+            logger.warning(
+                "Ctrl+Cにより中断されました。ここまでの進捗でサマリー・レポートを出力します。"
+            )
+        else:
+            logger.exception(
+                "materialize() が例外により中断されました。ここまでの進捗でサマリー・レポートを出力します。"
+            )
         print_summary(plan, _partial_summary_from_plan(plan), dry_run=args.dry_run)
         write_reports(plan, args.report_path)
         raise

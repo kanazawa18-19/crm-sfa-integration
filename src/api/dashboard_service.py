@@ -31,6 +31,7 @@ from src.reports.daily_report import (
     DailyProjectRecord,
     build_daily_report_data,
 )
+from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 logger = logging.getLogger(__name__)
@@ -173,13 +174,20 @@ class NotionDataSource:
         user_directory: Any | None = None,
     ) -> None:
         self._project_client = project_client or HttpNotionClient(
-            PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id
+            PROJECT_SCHEMA.key,
+            PROJECT_SCHEMA.notion_database_id,
+            max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
         )
         self._action_client = action_client or HttpNotionClient(
-            ACTION_SCHEMA.key, ACTION_SCHEMA.notion_database_id
+            ACTION_SCHEMA.key,
+            ACTION_SCHEMA.notion_database_id,
+            max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
         )
         self._user_directory = user_directory or _cached(
-            "user_directory", NotionUserDirectory
+            "user_directory",
+            lambda: NotionUserDirectory(
+                max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+            ),
         )
 
     def get_projects(self) -> list[dict[str, Any]]:

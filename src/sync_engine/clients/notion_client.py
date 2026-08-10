@@ -24,6 +24,7 @@ from src.db_schema.registry import get_schema
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
+    DEFAULT_MAX_RATE_LIMIT_RETRIES,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
     raise_for_error,
@@ -127,6 +128,7 @@ class HttpNotionClient:
         notion_version: str = _NOTION_VERSION,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        max_rate_limit_retries: int = DEFAULT_MAX_RATE_LIMIT_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,
     ) -> None:
         self._db_key = db_key
@@ -140,6 +142,7 @@ class HttpNotionClient:
         self._notion_version = notion_version
         self._timeout = timeout
         self._max_retries = max_retries
+        self._max_rate_limit_retries = max_rate_limit_retries
         self._backoff_base = backoff_base
 
     @property
@@ -168,6 +171,7 @@ class HttpNotionClient:
             json_body=json_body,
             timeout=self._timeout,
             max_retries=self._max_retries,
+            max_rate_limit_retries=self._max_rate_limit_retries,
             backoff_base=self._backoff_base,
             idempotent=idempotent,
         )

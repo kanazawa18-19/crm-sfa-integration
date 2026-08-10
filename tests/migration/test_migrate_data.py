@@ -719,6 +719,68 @@ def test_main_outputs_reports_even_when_materialize_raises(
     assert (tmp_path / "migration_report_unresolved_users.csv").exists()
 
 
+def test_main_outputs_reports_even_when_materialize_raises_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """obasan-qualityレビューBLOCKER対応の回帰テスト。
+
+    `except (Exception, KeyboardInterrupt):`（scripts/migrate_data.py）がCtrl+C（KeyboardInterrupt）
+    も拾って部分レポートを出力してから再送出することを固定化する。既存の
+    `test_main_outputs_reports_even_when_materialize_raises`はRuntimeErrorのみを使っており、
+    修正前の`except Exception:`でも通ってしまうため、KeyboardInterrupt専用のこのテストが無いと
+    将来このタプルが`except Exception:`へ巻き戻されても検知できない。
+
+    また、Ctrl+Cによる意図的な中断は実際のバグと区別できるよう、フルトレースバック付きの
+    ERRORではなくWARNINGでログ出力されることも合わせて検証する。
+    """
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    report_path = tmp_path / "migration_report.csv"
+    id_mapping_db = tmp_path / "migration_id_mapping.db"
+
+    import scripts.migrate_data as migrate_data_module
+
+    def _ctrl_c(*args: Any, **kwargs: Any) -> None:
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(migrate_data_module, "materialize", _ctrl_c)
+    monkeypatch.setattr(
+        migrate_data_module, "build_notion_clients", lambda db_ids: {key: MagicMock() for key in SCHEMAS_BY_KEY}
+    )
+    monkeypatch.setattr(migrate_data_module, "load_db_ids", lambda: {key: "db-id" for key in SCHEMAS_BY_KEY})
+
+    with (
+        caplog.at_level(logging.WARNING, logger=migrate_data_module.logger.name),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        migrate_data_module.main(
+            [
+                "--client-master-csv",
+                str(FIXTURES_DIR / "client_master.csv"),
+                "--project-csv",
+                str(FIXTURES_DIR / "project.csv"),
+                "--action-csv",
+                str(FIXTURES_DIR / "action.csv"),
+                "--report-path",
+                str(report_path),
+                "--id-mapping-db",
+                str(id_mapping_db),
+            ]
+        )
+
+    out = capsys.readouterr().out
+    assert "移行結果サマリー" in out
+    assert report_path.exists()
+    assert (tmp_path / "migration_report_unresolved.csv").exists()
+    assert (tmp_path / "migration_report_unresolved_users.csv").exists()
+    assert any(
+        record.levelno == logging.WARNING and "Ctrl+C" in record.message for record in caplog.records
+    )
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
 # --- タスク#63: scripts/migrate_data.py のZoho CSV対応 ----------------------------------
 
 

@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from src.api.notion_display import parse_notion_property_for_display
 from src.api.user_directory import NotionUserDirectory
+from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 _JST = timezone(timedelta(hours=9))
@@ -159,8 +160,12 @@ class TaskDataSource:
     def __init__(
         self, *, notion_client: Any | None = None, user_directory: Any | None = None
     ) -> None:
-        self._notion_client = notion_client or HttpNotionClient("task", TASK_DB_ID)
-        self._user_directory = user_directory or NotionUserDirectory()
+        self._notion_client = notion_client or HttpNotionClient(
+            "task", TASK_DB_ID, max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+        )
+        self._user_directory = user_directory or NotionUserDirectory(
+            max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+        )
 
     def get_tasks(self) -> list[dict[str, Any]]:
         return _cached("tasks", self._fetch_tasks)

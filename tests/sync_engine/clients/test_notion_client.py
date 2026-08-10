@@ -259,6 +259,33 @@ def test_get_page_retries_on_429_then_succeeds(
     assert requests_mock.call_count == 2
 
 
+def test_max_rate_limit_retries_is_honored(
+    requests_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """shirokuma-secレビューWARN対応の回帰テスト。
+
+    `HttpNotionClient`の`max_rate_limit_retries`引数が実際に`request_with_retry()`へ渡され、
+    指定した回数でリトライを打ち切ることを固定化する。この引数が無い/伝播しないと、
+    ダッシュボード/タスクAPIのような対話的な呼び出し元が`INTERACTIVE_MAX_RATE_LIMIT_RETRIES`
+    （小さい値）を指定しても効かず、移行スクリプト向けの既定値（30回・最大30秒/回）が
+    そのまま使われ、Notionが移行処理でレート制限されている最中に通常のリクエストが
+    最悪15分近くブロックされる恐れがある。
+    """
+    monkeypatch.setattr("src.sync_engine.clients._http.time.sleep", lambda seconds: None)
+    client = HttpNotionClient(
+        DB_KEY, DATABASE_ID, api_key="secret-notion-key", max_rate_limit_retries=1
+    )
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        [{"status_code": 429}, {"status_code": 429}, {"status_code": 429}],
+    )
+
+    with pytest.raises(NotionApiError):
+        client.get_page(PAGE_ID)
+
+    assert requests_mock.call_count == 2
+
+
 # --- プロパティ形式の相互変換ロジック（内部値 -> Notion形式） --------------------------------
 
 

@@ -31,6 +31,15 @@ DEFAULT_BACKOFF_BASE_SECONDS = 0.5
 # 十分大きな回数を既定値とする。無制限にはせず、キー失効等の別要因を429と誤認していた
 # 場合に無限ループしない安全弁として上限は設ける。
 DEFAULT_MAX_RATE_LIMIT_RETRIES = 30
+# shirokuma-secレビューWARN対応（2026-08-10）: DEFAULT_MAX_RATE_LIMIT_RETRIES(30)は
+# 移行スクリプトのような数時間規模のバルク処理を想定した値で、ワーカースレッドが
+# ブロックされても他に実害が無い。しかし本モジュールはNotionクライアント全体で共有される
+# ため、これをダッシュボード/タスクAPIのような同期的なリクエストハンドラの既定値にすると、
+# 移行処理がNotionをレート制限させている最中に来た通常の閲覧リクエストが最悪
+# 30回 * _MAX_RATE_LIMIT_BACKOFF_SECONDS(30秒) ≒ 15分近くブロックされ、プラットフォーム側の
+# タイムアウトで強制終了しうる。リクエスト/レスポンス型の呼び出し元は、この小さい方の値を
+# 明示的に渡すこと（`HttpNotionClient`/`NotionUserDirectory`の`max_rate_limit_retries`引数）。
+INTERACTIVE_MAX_RATE_LIMIT_RETRIES = 3
 # 429リトライのバックオフ上限（秒）。指数バックオフをそのまま伸ばすと数分単位の無駄待ちに
 # なるため、Notion側のレート制限ウィンドウ（実測でおおむね1秒程度でリセットされる）に対して
 # 現実的な待機時間で頭打ちにする。
@@ -121,6 +130,16 @@ def request_with_retry(
 
         if response.status_code == 429:
             if rate_limit_attempt >= max_rate_limit_retries:
+                # obasan-qualityレビューWARN対応（2026-08-10）: 上限到達時に何もログを
+                # 出さないと、無人長時間実行のログを後から追う運用者が「retrying (n/N)」を
+                # 自分で数えて上限到達を推測することになる。呼び出し元へエラーとして
+                # 返す直前に、上限に到達して諦めたことを明示する。
+                logger.warning(
+                    "rate limit retries exhausted after %d attempts, giving up: %s %s",
+                    rate_limit_attempt,
+                    method,
+                    url,
+                )
                 return response
             rate_limit_attempt += 1
             wait_seconds = _rate_limit_backoff_seconds(response, rate_limit_attempt, backoff_base)

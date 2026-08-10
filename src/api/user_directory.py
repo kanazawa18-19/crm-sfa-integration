@@ -12,6 +12,7 @@ from typing import Any, Sequence
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
+    DEFAULT_MAX_RATE_LIMIT_RETRIES,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
     raise_for_error,
@@ -37,6 +38,7 @@ class NotionUserDirectory:
         notion_version: str = _NOTION_VERSION,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        max_rate_limit_retries: int = DEFAULT_MAX_RATE_LIMIT_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,
     ) -> None:
         self._api_key = api_key if api_key is not None else os.environ.get("NOTION_API_KEY")
@@ -48,6 +50,7 @@ class NotionUserDirectory:
         self._notion_version = notion_version
         self._timeout = timeout
         self._max_retries = max_retries
+        self._max_rate_limit_retries = max_rate_limit_retries
         self._backoff_base = backoff_base
         self._names_by_id: dict[str, str] | None = None
 
@@ -74,6 +77,7 @@ class NotionUserDirectory:
                 params=params,
                 timeout=self._timeout,
                 max_retries=self._max_retries,
+                max_rate_limit_retries=self._max_rate_limit_retries,
                 backoff_base=self._backoff_base,
                 idempotent=True,
             )
