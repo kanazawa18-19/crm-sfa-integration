@@ -23,14 +23,21 @@ def test_normalize_project_status_known_values(raw: str, expected: str) -> None:
 
 
 def test_normalize_project_status_covers_all_schema_options() -> None:
-    """実Notionスキーマ（既存タスク#32で実データに合わせて全面書き直し済み）の
-    営業ステータス全11値を網羅していることを保証する回帰テスト。"""
+    """実Notionスキーマの営業ステータス全32値（kintone由来の既存11値＋Zoho「ステージ」
+    由来の21値、2026-08-10追加）を、normalize_project_status()がエラーにならず、かつ
+    常に有効な選択肢へ変換できることを保証する回帰テスト。
+
+    「契約済」はZoho「ステージ」由来の独立した選択肢として追加されたが、kintone側では
+    以前から「契約」への別名（_STATUS_ALIASES）として扱われている。同じ文字列でも
+    移行元システムによって意味が異なるため、素通し（恒等変換）ではなくエイリアス変換後の
+    値も含めて「有効な選択肢である」ことのみを検証する。
+    """
     from src.db_schema.project import PROJECT_SCHEMA
 
     valid_options = PROJECT_SCHEMA.get_property("営業ステータス").options
-    assert len(valid_options) == 11
+    assert len(valid_options) == 32
     for option in valid_options:
-        assert normalize_project_status(option) == option
+        assert normalize_project_status(option) in valid_options
 
 
 def test_normalize_project_status_unknown_value_raises() -> None:

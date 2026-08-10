@@ -12,7 +12,9 @@ from src.db_schema.project import (
 
 
 def test_status_partition_covers_all_real_data_values_without_overlap() -> None:
-    """実データの営業ステータス11値が4区分のいずれか1つに過不足なく属することを検証する。"""
+    """営業ステータスの全32値（kintone由来の既存11値＋Zoho「ステージ」由来の21値、
+    2026-08-10金沢さん方針「Notionをマスターにせずzohoの生の値を使う」により追加）が
+    4区分のいずれか1つに過不足なく属することを検証する。"""
     all_real_values = {
         "施設契約",
         "解約",
@@ -25,6 +27,27 @@ def test_status_partition_covers_all_real_data_values_without_overlap() -> None:
         "Aヨミ",
         "トライアル",
         "契約",
+        "契約済",
+        "解約（処理済み）",
+        "返信なし",
+        "課金前解約（処理済み）",
+        "課金前解約",
+        "連絡済み",
+        "商談中",
+        "受注（書類回収済み）",
+        "導入完了",
+        "課金確認中",
+        "アポ獲得",
+        "見積もり提出済み",
+        "受注・商談完了",
+        "商談済み",
+        "アカウント作成待ち",
+        "回答待ち",
+        "申込済",
+        "再商談調整中",
+        "口頭受注",
+        "与件整理",
+        "提案書作成中",
     }
     groups = [CONFIRMED_STATUSES, CANCELLED_STATUSES, LOST_STATUSES, ACTIVE_STATUSES]
     union = set().union(*groups)
@@ -78,6 +101,27 @@ def test_project_schema_status_property_options_match_real_data() -> None:
         "Aヨミ",
         "トライアル",
         "契約",
+        "契約済",
+        "解約（処理済み）",
+        "返信なし",
+        "課金前解約（処理済み）",
+        "課金前解約",
+        "連絡済み",
+        "商談中",
+        "受注（書類回収済み）",
+        "導入完了",
+        "課金確認中",
+        "アポ獲得",
+        "見積もり提出済み",
+        "受注・商談完了",
+        "商談済み",
+        "アカウント作成待ち",
+        "回答待ち",
+        "申込済",
+        "再商談調整中",
+        "口頭受注",
+        "与件整理",
+        "提案書作成中",
     }
 
 

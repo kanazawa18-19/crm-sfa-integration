@@ -14,10 +14,11 @@
   "true"/"false"文字列を実際のbool値へ変換する（Python の bool("false") は
   True になってしまうため、文字列比較で明示的に判定する必要がある）。
 - 「営業ステータス」プロパティ自体は実データで100%空欄。実際のステータス相当情報は
-  「ステージ」列（契約済/失注/解約（処理済み）/返信なし等19種類）に入っているが、
-  PROJECT_SCHEMAの11選択肢へどう対応させるかは金沢さんが検討中のため保留
-  （2026-08-10時点）。本モジュールでは生の値を`_ステージ`として残すのみとし、
-  「営業ステータス」プロパティへの変換は行わない（マッピング確定後に追記する）。
+  「ステージ」列（契約済/失注/解約（処理済み）/返信なし等19種類）に入っている。
+  金沢さんの方針「Notionの営業ステータスをマスターにしたくない、Zohoの生の値を
+  そのまま使いたい」（2026-08-10確認済み）により、圧縮・変換せずZohoの生の値を
+  そのまま「営業ステータス」へ反映する。Notion側の選択肢にはkintone由来の既存11種に
+  加えてこのZohoの19種も追加済み（PROJECT_SCHEMA/classify_status()参照）。
 - 取引先へのリレーション解決は、Zoho内部ID（「取引先名.id」5.0%）と過去の連携作業で
   埋め込まれたNotionページ直リンク（「【Notion】取引先マスター」1.5%）を合わせても
   6.5%程度しか手がかりが無い。アクション（93.9%）と異なり、これは案件データ自体の
@@ -36,7 +37,6 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
 
     取引先マスター・サービス・商品へのリレーションはこの時点では解決せず、
     後続の解決ステップ用に `_` プレフィックス付きの手がかりのまま残す。
-    「営業ステータス」は未確定のため意図的に含めない（呼び出し側で追記すること）。
     """
     initial_fee = record.get("初期費用") or None
     monthly_fee = record.get("月額費用") or None
@@ -47,6 +47,7 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
     return {
         "zoho_ID": record.get("データID", ""),
         "案件名": record.get("案件名", ""),
+        "営業ステータス": record.get("ステージ") or None,
         "初期費用": float(initial_fee) if initial_fee is not None else None,
         "月額費用": float(monthly_fee) if monthly_fee is not None else None,
         "契約日 / 予想契約日": record.get("契約日 / 予想契約日") or None,
@@ -58,7 +59,6 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
         "アクション日": record.get("アクション日") or None,
         "メールアドレス": record.get("メールアドレス") or None,
         "電話番号": record.get("電話番号") or None,
-        "_ステージ": record.get("ステージ") or None,
         "_サービス名リスト": parse_multi_value(record.get("提案サービス")),
         "_取引先_zoho_id": client_zoho_id,
         "_取引先_notion_page_id": client_notion_page_id,
