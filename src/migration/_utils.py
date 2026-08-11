@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import datetime
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 _PRIMARY_DELIMITER = "、"
 _OTHER_DELIMITERS = (",", "，")
 
 _NOTION_PAGE_ID_RE = re.compile(r"notion\.so/(?:[^/?#]*-)?([0-9a-fA-F]{32})")
+
+# 末尾アンカー無し（時刻付きISO 8601、例: "2024-05-10T12:00:00.000Z"も許容するため）。
+_DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(T.*)?$")
+_DATE_KANJI_RE = re.compile(r"^(\d{4})年(\d{1,2})月(\d{1,2})日$")
+_DATE_SLASH_RE = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$")
 
 
 def extract_notion_page_id(text: str | None) -> str | None:
@@ -43,6 +52,40 @@ def parse_multi_value(value: str | list[str] | None) -> list[str]:
     for delimiter in _OTHER_DELIMITERS:
         text = text.replace(delimiter, _PRIMARY_DELIMITER)
     return [v.strip() for v in text.split(_PRIMARY_DELIMITER) if v.strip()]
+
+
+def normalize_date(raw: str | None) -> str | None:
+    """kintone/ZohoのCSV由来の日付文字列をNotion DATEプロパティが要求するISO 8601
+    （`YYYY-MM-DD`）へ正規化する。
+
+    実データ確認済み（2026-08-11、本番移行の`契約日 / 予想契約日`書き込みでNotion API
+    から`HTTP 400: ... should be a valid ISO 8601 date string`が返り判明）:
+    kintone CSVは`2023/12/01`（スラッシュ区切り）、Zoho CSVは`2024年5月10日`
+    （漢字区切り）で日付を出力しており、いずれもNotion APIにそのまま渡すと拒否される。
+    既にISO 8601（`YYYY-MM-DD...`、末尾に時刻が付く場合も含む）ならそのまま返す。
+    どの形式にも一致しない場合は、移行全体を止めるより値を捨てる方が安全なため
+    Noneを返す（warningログに残し、後から実データ精査で気づけるようにする）。
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if _DATE_ISO_RE.match(text):
+        return text
+    match = _DATE_KANJI_RE.match(text) or _DATE_SLASH_RE.match(text)
+    if match:
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            # shirokuma-secレビューWARN対応（2026-08-11）: 正規表現は桁数のみ検証し
+            # 月13・日40等の暦上あり得ない値もそのまま素通ししていた。datetime.date()で
+            # 実在する暦日かどうかを検証し、不正ならISO"形式もどき"の壊れた文字列を
+            # 返さずNoneへフォールバックする（Notion APIへ送ればどのみち400になるだけの
+            # 無効な値を作り出さないため）。
+            return datetime.date(year, month, day).isoformat()
+        except ValueError:
+            logger.warning("normalize_date: 暦日として不正なため値を破棄しました: %r", raw)
+            return None
+    logger.warning("normalize_date: 未知の日付形式のため値を破棄しました: %r", raw)
+    return None
 
 
 def parse_checkbox_columns(record: dict[str, str], *, prefix: str) -> list[str]:

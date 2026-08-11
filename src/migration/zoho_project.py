@@ -43,7 +43,7 @@
 from __future__ import annotations
 
 from src.db_schema.project import PROJECT_SCHEMA
-from src.migration._utils import extract_notion_page_id, parse_multi_value
+from src.migration._utils import extract_notion_page_id, normalize_date, parse_multi_value
 
 
 def _parse_first_touch(raw: str | None) -> list[str]:
@@ -79,7 +79,7 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
         "営業ステータス": record.get("ステージ") or None,
         "初期費用": float(initial_fee) if initial_fee is not None else None,
         "月額費用": float(monthly_fee) if monthly_fee is not None else None,
-        "契約日 / 予想契約日": record.get("契約日 / 予想契約日") or None,
+        "契約日 / 予想契約日": normalize_date(record.get("契約日 / 予想契約日")),
         "メモ": record.get("メモ") or None,
         "テキスト": record.get("【Notion】テキスト") or None,
         "サイトコントローラー": [site_controller] if site_controller else [],
@@ -88,7 +88,7 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
         "問合せ": _parse_bool(record.get("問合せ")),
         "ネックポイント": record.get("ネックポイント") or None,
         "失注理由": record.get("失注理由") or None,
-        "失注日": record.get("失注日") or None,
+        "失注日": normalize_date(record.get("失注日")),
         "担当者名": record.get("【Notion】担当者名") or None,
         "決裁者名": record.get("決裁者") or None,
         "次回アクション": record.get("【Notion】次回アクション") or None,

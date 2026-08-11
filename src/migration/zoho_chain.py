@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from src.db_schema.chain import CHAIN_SCHEMA
+from src.migration._utils import normalize_date
 
 logger = logging.getLogger(__name__)
 
@@ -48,5 +49,5 @@ def transform_zoho_chain(record: dict[str, str]) -> dict[str, str | None]:
         "未導入店舗へのアプローチ": record.get("未導入店へのアプローチ") or None,
         "自動チェックインURL": record.get("自動チェックイン機（URL）") or None,
         "自動チェックイン": record.get("自動チェックイン機") or None,
-        "最終アプローチ日": record.get("最終更新日（最終アプローチ日）") or None,
+        "最終アプローチ日": normalize_date(record.get("最終更新日（最終アプローチ日）")),
     }

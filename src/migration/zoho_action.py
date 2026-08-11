@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from src.migration._utils import extract_notion_page_id
+from src.migration._utils import extract_notion_page_id, normalize_date
 
 # アクション名の部分一致パターンから既存の「アクション種別」選択肢へ分類する対応表。
 # 実データ27,238件全件を分類した結果（2026-08-10、金沢さん確認済み）:
@@ -81,7 +81,7 @@ def transform_zoho_action(record: dict[str, str]) -> dict[str, object]:
         "zoho_Act_ID": record.get("データID", ""),
         "商談回数・電話回数・メール回数（何回目）": action_name,
         "アクション種別": classify_zoho_action_type(action_name),
-        "アクション日": record.get("アクション日") or None,
+        "アクション日": normalize_date(record.get("アクション日")),
         "履歴メモ": record.get("履歴メモ") or None,
         "先方担当者": record.get("先方担当者") or None,
         "議事録・録画リンク": record.get("Notta") or record.get("録画・音声ファイル") or None,

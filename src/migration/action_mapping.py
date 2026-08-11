@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from src.db_schema.action import ACTION_SCHEMA
-from src.migration._utils import parse_checkbox_columns
+from src.migration._utils import normalize_date, parse_checkbox_columns
 
 # kintone「アクション内容」の表記ゆれをNotion側セレクト値へ正規化するための対応表。
 _ACTION_TYPE_ALIASES: dict[str, str] = {
@@ -68,4 +68,4 @@ def extract_next_action_date_for_project(record: dict[str, str]) -> str | None:
     04_項目マッピングにおいて、次回アクション日はアクション管理アプリ由来だが
     反映先は案件管理DBであるため、アクション種別の変換とは別関数として切り出す。
     """
-    return record.get("次回アクション日") or None
+    return normalize_date(record.get("次回アクション日"))

@@ -59,6 +59,7 @@ from src.db_schema.contact import CONTACT_SCHEMA
 from src.db_schema.product import PRODUCT_SCHEMA
 from src.db_schema.project import PROJECT_SCHEMA
 from src.db_schema.registry import get_schema
+from src.migration._utils import normalize_date
 from src.migration.action_mapping import (
     extract_next_action_date_for_project,
     transform_kintone_action,
@@ -798,7 +799,7 @@ def plan_migration(
         action_props = {
             ACTION_SCHEMA.title_property.name: ids.next("action"),
             "アクション種別": transformed["アクション種別"],
-            "アクション日": row.get("アクション日") or None,
+            "アクション日": normalize_date(row.get("アクション日")),
             "👨‍👩‍👧‍👦 取引先マスター": [client_record] if client_record else [],
             "案件名": [project_record] if project_record else [],
             "先方担当者": contact_name or None,

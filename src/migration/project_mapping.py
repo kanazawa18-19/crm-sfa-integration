@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from src.db_schema.project import PROJECT_SCHEMA
-from src.migration._utils import parse_multi_value
+from src.migration._utils import normalize_date, parse_multi_value
 
 # 契約進捗状況（kintone実データ側の表記）を④案件管理DBの営業ステータス（実Notionスキーマ、
 # 既存タスク#32で実データに合わせて全面書き直し済み: 施設契約/解約/リスケ/失注/アポ/Dヨミ/
@@ -48,7 +48,7 @@ def transform_kintone_project(record: dict[str, str]) -> dict[str, object]:
     それ以外なら予想契約日として同じ値を入れる。
     """
     status = normalize_project_status(record.get("契約進捗状況", ""))
-    billing_date = record.get("課金開始予定日") or None
+    billing_date = normalize_date(record.get("課金開始予定日"))
 
     return {
         "kintone_ID": record.get("レコード番号", ""),
