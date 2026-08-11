@@ -169,6 +169,33 @@ class HttpZohoClient:
             idempotent=idempotent,
         )
 
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_body: Any | None = None,
+        idempotent: bool = True,
+    ) -> requests.Response:
+        """CRUD以外（例: Notifications/watch API）のZoho API呼び出し用に、認証ヘッダー・
+        トークンキャッシュ・リトライ設定を再利用しつつ任意の絶対URLへリクエストを送る。
+
+        `get_record`/`insert_record`/`update_record`が使う`_request`は`api_base_url`
+        （`/crm/v2`固定）配下のモジュールエンドポイント専用のため、`/crm/v3/actions/watch`
+        のようなバージョン・パスが異なるエンドポイントには使えない。呼び出し元
+        （`scripts/register_zoho_webhook.py`等）が完全なURLを組み立てて渡すこと。
+        """
+        return request_with_retry(
+            method,
+            url,
+            headers=self._headers(),
+            json_body=json_body,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+            idempotent=idempotent,
+        )
+
     def get_record(self, module: str, record_id: str) -> dict[str, Any] | None:
         response = self._request("GET", f"/{module}/{record_id}")
         if response.status_code in (404, 204):

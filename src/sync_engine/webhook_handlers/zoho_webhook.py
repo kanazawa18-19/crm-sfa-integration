@@ -9,6 +9,7 @@ module は DatabaseSchema.zoho_api_module（実際のZoho CRM APIモジュール
 {
   "module": "Deals",
   "operation": "update",
+  "token": "（scripts/register_zoho_webhook.pyが登録時に指定したtoken文字列がそのまま返る）",
   "data": [
     {
       "id": "4876876000000488001",
@@ -18,6 +19,11 @@ module は DatabaseSchema.zoho_api_module（実際のZoho CRM APIモジュール
     }
   ]
 }
+
+認証: Zoho Notifications（watch）APIは着信リクエストへ任意のHTTPヘッダーを付与させる仕組みを
+持たないため、他ハンドラのようなverify_webhook_secret()（X-Webhook-Secretヘッダー方式）は
+使えない。代わりに上記の通りbody内の"token"フィールドをZOHO_WEBHOOK_SECRETと照合する
+verify_webhook_body_token()（_common.py）を使う。詳細はdocs/zoho_webhook_activation_note.md参照。
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ from src.sync_engine.webhook_handlers._common import (
     logger,
     parse_iso_datetime,
     unauthorized_response,
-    verify_webhook_secret,
+    verify_webhook_body_token,
 )
 
 _MODIFIED_TIME_FIELD = "Modified_Time"
@@ -106,20 +112,33 @@ def handler(
 
     実際のデプロイ設定（SAM/Serverless Framework等）は範囲外。ENABLE_ZOHO=False時は
     ペイロード変換・dispatcherへのdispatchのいずれも行わずスキップする。
+
+    Zohoはtokenをbody内に返すため、認証（verify_webhook_body_token）にはbodyのJSONパースが
+    必要になる。他ハンドラ（ヘッダー方式）と異なり、JSONパース失敗（400）はtoken検証（401）
+    より先に判定される点に注意。
     """
     if not is_zoho_enabled():
         return {"statusCode": 200, "body": json.dumps({"skipped": "zoho_disabled"})}
 
     headers = event.get("headers") or {}
-    if not verify_webhook_secret(headers, "ZOHO_WEBHOOK_SECRET"):
-        return unauthorized_response()
 
     try:
         body = event.get("body")
         payload = json.loads(body) if isinstance(body, str) else (body or {})
-        sync_event = zoho_payload_to_sync_event(payload, headers)
     except json.JSONDecodeError as exc:
         return bad_request_response(f"invalid JSON payload: {exc}")
+
+    # BLOCKER2: 構文的には正しいJSONでも辞書でない場合（例: "null"/"[1,2,3]"/"42"/"\"x\""/"true"）、
+    # 未認証の送信者がこの時点でverify_webhook_body_token()内のpayload.get()に到達すると
+    # AttributeErrorが未捕捉のまま外へ漏れてしまうため、JSONパース失敗と同様に400へ倒す。
+    if not isinstance(payload, dict):
+        return bad_request_response("request body must be a JSON object")
+
+    if not verify_webhook_body_token(payload, token_field="token", env_var="ZOHO_WEBHOOK_SECRET"):
+        return unauthorized_response()
+
+    try:
+        sync_event = zoho_payload_to_sync_event(payload, headers)
     except (KeyError, ValueError) as exc:
         return bad_request_response(str(exc))
     except Exception:

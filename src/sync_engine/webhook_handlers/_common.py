@@ -6,6 +6,7 @@ BLOCKER5（ペイロード不正・欠損時の未捕捉例外）・BLOCKER7（�
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -58,6 +59,28 @@ def verify_webhook_secret(headers: Mapping[str, str], env_var: str) -> bool:
     expected = os.environ.get(env_var)
     if expected:
         return get_header(headers, WEBHOOK_SECRET_HEADER) == expected
+    return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
+
+
+def verify_webhook_body_token(body: Mapping[str, Any], *, token_field: str, env_var: str) -> bool:
+    """リクエストbody内に埋め込まれた共有トークンによるWebhook認証。fail-closed設計。
+
+    Zoho CRM Notifications（watch）APIのように、外部ツール側の仕様上、着信リクエストへ
+    任意のHTTPヘッダーを付与させられないケース向け。verify_webhook_secret()（ヘッダー方式）
+    と同じfail-closedの考え方で、env_varで指定した環境変数（例: ZOHO_WEBHOOK_SECRET）が
+    body[token_field]と一致する場合のみ通過させる。env_var未設定時はデフォルトで検証失敗
+    （拒否）とし、ローカル開発でのみ ALLOW_UNSIGNED_WEBHOOKS=true による通過を許容する
+    （この場合もシークレットが設定されていて値が不一致のリクエストは引き続き拒否する）。
+
+    比較には hmac.compare_digest() を使い、タイミングサイドチャネルによるトークン漏洩を防ぐ
+    （単純な==比較は文字列長・一致文字数に応じて比較時間が変わり得るため避ける）。
+    """
+    expected = os.environ.get(env_var)
+    if expected:
+        actual = body.get(token_field)
+        if not isinstance(actual, str):
+            return False
+        return hmac.compare_digest(actual, expected)
     return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
 
 
