@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -81,9 +82,41 @@ from src.migration.zoho_client_master import transform_zoho_client_master
 from src.migration.zoho_contact import transform_zoho_contact
 from src.migration.zoho_product import transform_zoho_product
 from src.migration.zoho_project import transform_zoho_project
+from src.sync_engine.clients._http import ApiError
 from src.sync_engine.id_mapping import IdMapping, IdMappingStore
 
 logger = logging.getLogger(__name__)
+
+# 2026-08-12、本番移行実データで判明: Zoho行の自由記述項目（「【Notion】取引先マスター」等）
+# に、過去の手動連携作業で埋め込まれた古いNotionページ直リンクが残っていることがある
+# （extract_notion_page_id()が抽出しリレーションのヒントとして使う）。そのページが既に
+# 削除済み・どのインテグレーションにも共有されていない等でアクセス不能な場合、Notion APIは
+# create_page()を「HTTP 404: Could not find page with ID: <id>. Make sure the relevant
+# pages and databases are shared with your integration "<name>".」で拒否する。この404は
+# エラーメッセージに具体的にどのページIDが原因かを含むため、そのIDだけをリレーション値から
+# 取り除いて1回だけ再作成を試みる（他の正当なプロパティ・リレーションを巻き添えにしない）。
+_INVALID_NOTION_PAGE_ID_RE = re.compile(r"[Cc]ould not find page with ID:\s*([0-9a-fA-F-]{32,36})")
+
+
+def _extract_invalid_page_id(exc: ApiError) -> str | None:
+    if exc.status_code != 404:
+        return None
+    match = _INVALID_NOTION_PAGE_ID_RE.search(exc.message)
+    if not match:
+        return None
+    return match.group(1).replace("-", "")
+
+
+def _drop_invalid_page_reference(properties: dict[str, Any], invalid_page_id: str) -> dict[str, Any]:
+    """`properties`のリレーション値（リスト）からアクセス不能な`invalid_page_id`だけを除いた
+    コピーを返す（他のプロパティ・他のリレーション先はそのまま保持する）。"""
+    cleaned: dict[str, Any] = {}
+    for name, value in properties.items():
+        if isinstance(value, list) and invalid_page_id in value:
+            cleaned[name] = [v for v in value if v != invalid_page_id]
+        else:
+            cleaned[name] = value
+    return cleaned
 
 # 実行（materialize）時、リレーション先が必ず先に作成済みとなるよう依存順で並べる。
 # client_master はchainを、contactとprojectはclient_masterを、actionはclient_master/
@@ -989,6 +1022,34 @@ def materialize(
 
         try:
             page_id = client.create_page(resolved_properties(record))
+        except ApiError as exc:
+            invalid_page_id = _extract_invalid_page_id(exc)
+            if invalid_page_id is None:
+                logger.error("[%s] %s でのcreate_page()が失敗しました", db_key, client_label)
+                raise
+            # 過去の手動連携作業で埋め込まれた古いNotionページ直リンクがアクセス不能だった
+            # ケース（詳細はモジュール冒頭のコメント参照）。そのページIDだけをリレーションから
+            # 除いて1回だけ再作成を試みる。
+            logger.warning(
+                "[%s] kintone_id=%s: アクセス不能なページ参照（%s）が含まれていたため、"
+                "そのリレーションを除いて再作成を試みます",
+                db_key,
+                record.kintone_id,
+                invalid_page_id,
+            )
+            cleaned_properties = _drop_invalid_page_reference(
+                resolved_properties(record), invalid_page_id
+            )
+            try:
+                page_id = client.create_page(cleaned_properties)
+            except Exception:
+                logger.error(
+                    "[%s] %s でのcreate_page()が失敗しました（アクセス不能なページ参照を"
+                    "除いた再試行後も失敗）",
+                    db_key,
+                    client_label,
+                )
+                raise
         except Exception:
             # obasan-qualityレビューWARN対応: 複数トークンを並列で使う運用では、DB共有忘れ等の
             # 設定ミスで特定のトークンだけが失敗するケースがあり得る。プール中の何番目の

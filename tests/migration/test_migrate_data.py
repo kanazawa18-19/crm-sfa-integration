@@ -40,6 +40,8 @@ from src.migration.migration_pipeline import (
     NeedsReviewClient,
     PreparedRecord,
     UnresolvedRelation,
+    _drop_invalid_page_reference,
+    _extract_invalid_page_id,
     materialize,
     plan_migration,
     print_summary,
@@ -50,6 +52,7 @@ from src.migration.migration_pipeline import (
     write_unresolved_user_report_csv,
 )
 from src.migration.notion_dedupe import ClientMasterSnapshot, ClientMatchIndex
+from src.sync_engine.clients._http import ApiError
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -394,6 +397,149 @@ def test_materialize_running_twice_does_not_create_duplicates() -> None:
         assert summary_2.created["client_master"] == 0
         assert summary_2.skipped_existing["client_master"] == 3
         assert len(clients["client_master"].created) == total_created_first_run
+    finally:
+        store.close()
+
+
+# --- materialize: アクセス不能なページ参照(古い埋め込みNotionリンク等)からの復帰 -------
+
+
+def test_extract_invalid_page_id_parses_notion_404_message() -> None:
+    exc = ApiError(
+        404,
+        'Could not find page with ID: 9efa25d1-c756-4306-9a23-79bf2eda4f22. Make sure '
+        'the relevant pages and databases are shared with your integration "CRM・SFA3".',
+    )
+
+    assert _extract_invalid_page_id(exc) == "9efa25d1c75643069a2379bf2eda4f22"
+
+
+def test_extract_invalid_page_id_returns_none_for_non_404() -> None:
+    exc = ApiError(400, "body failed validation: body.properties.foo should be a string.")
+
+    assert _extract_invalid_page_id(exc) is None
+
+
+def test_extract_invalid_page_id_returns_none_for_unrelated_404() -> None:
+    exc = ApiError(404, "object_not_found")
+
+    assert _extract_invalid_page_id(exc) is None
+
+
+def test_drop_invalid_page_reference_removes_only_matching_id() -> None:
+    properties = {
+        "壊れたリレーション": ["deadbeefdeadbeefdeadbeefdeadbeef"],
+        "正常なリレーション": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "タイトル": "テスト",
+    }
+
+    cleaned = _drop_invalid_page_reference(properties, "deadbeefdeadbeefdeadbeefdeadbeef")
+
+    assert cleaned["壊れたリレーション"] == []
+    assert cleaned["正常なリレーション"] == ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+    assert cleaned["タイトル"] == "テスト"
+
+
+def test_materialize_retries_create_page_after_stripping_invalid_page_reference() -> None:
+    """2026-08-12本番移行実データで判明したバグの回帰テスト。Zoho由来の自由記述項目に
+    過去の手動連携作業で埋め込まれた古いNotionページ直リンクが残っており、それが既に
+    アクセス不能（削除済み・共有解除済み等）だった場合、Notion APIはcreate_page()を
+    `HTTP 404: Could not find page with ID: ...`で拒否していた（materialize()全体が
+    クラッシュし、本番移行が繰り返し中断する原因になった）。このエラーメッセージから
+    問題のページIDだけを特定し、そのリレーションだけを除いて1回だけ再作成を試みることで、
+    他の正当なレコード・リレーションを巻き添えにせず処理を継続できることを検証する。"""
+    invalid_page_id = "deadbeefdeadbeefdeadbeefdeadbeef"
+    other_page_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    plan = MigrationPlan(
+        prepared={
+            "chain": [],
+            "client_master": [
+                PreparedRecord(
+                    "client_master",
+                    "1001",
+                    {
+                        "取引先名": "テスト株式会社",
+                        "壊れたリレーション": [invalid_page_id],
+                        "正常なリレーション": [other_page_id],
+                    },
+                )
+            ],
+            "product": [],
+            "contact": [],
+            "project": [],
+            "action": [],
+        }
+    )
+
+    class FlakyOnceClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def create_page(self, properties: dict[str, Any]) -> str:
+            self.calls.append(properties)
+            if len(self.calls) == 1:
+                raise ApiError(
+                    404,
+                    "Could not find page with ID: deadbeef-dead-beef-dead-beefdeadbeef. "
+                    'Make sure the relevant pages and databases are shared with your '
+                    'integration "Test".',
+                )
+            return "client_master-page-1"
+
+    client = FlakyOnceClient()
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+        summary = materialize(
+            plan, id_mapping_store=store, notion_clients={"client_master": client}, dry_run=False
+        )
+
+        assert len(client.calls) == 2
+        assert client.calls[0]["壊れたリレーション"] == [invalid_page_id]
+        assert client.calls[1]["壊れたリレーション"] == []
+        # 無関係な他のリレーションは巻き添えにせず残す。
+        assert client.calls[1]["正常なリレーション"] == [other_page_id]
+        assert summary.created["client_master"] == 1
+    finally:
+        store.close()
+
+
+def test_materialize_reraises_when_retry_after_dropping_reference_still_fails() -> None:
+    """壊れたページ参照を除いた再試行でも失敗する場合（別の原因が併存する等）は、
+    黙って握りつぶさず例外を再送出することを確認する。"""
+    invalid_page_id = "deadbeefdeadbeefdeadbeefdeadbeef"
+    plan = MigrationPlan(
+        prepared={
+            "chain": [],
+            "client_master": [
+                PreparedRecord(
+                    "client_master", "1001", {"壊れたリレーション": [invalid_page_id]}
+                )
+            ],
+            "product": [],
+            "contact": [],
+            "project": [],
+            "action": [],
+        }
+    )
+
+    class AlwaysFailsClient:
+        def create_page(self, properties: dict[str, Any]) -> str:
+            raise ApiError(
+                404,
+                "Could not find page with ID: deadbeef-dead-beef-dead-beefdeadbeef. "
+                'Make sure the relevant pages and databases are shared with your '
+                'integration "Test".',
+            )
+
+    store = SQLiteIdMappingStore(":memory:")
+    try:
+        with pytest.raises(ApiError):
+            materialize(
+                plan,
+                id_mapping_store=store,
+                notion_clients={"client_master": AlwaysFailsClient()},
+                dry_run=False,
+            )
     finally:
         store.close()
 
