@@ -178,6 +178,65 @@ def test_cors_header_absent_for_disallowed_origin(monkeypatch: pytest.MonkeyPatc
     importlib.reload(app_module)
 
 
+# --- /api/alerts/manager -------------------------------------------------------------------
+
+
+def test_manager_alerts_returns_401_when_token_not_set(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_DASHBOARD_API", raising=False)
+
+    response = client.get("/api/alerts/manager")
+
+    assert response.status_code == 401
+
+
+def test_manager_alerts_returns_400_for_invalid_as_of(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.get(
+        "/api/alerts/manager?as_of=not-a-date",
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_manager_alerts_returns_build_manager_alerts_result(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    captured: dict[str, object] = {}
+
+    def fake_build_manager_alerts(as_of_date):
+        captured["as_of"] = as_of_date
+        return {
+            "as_of": "2026-08-05",
+            "alerts": {"lost": [], "lost_candidate": [], "stalled": [], "won": []},
+            "counts": {"lost": 0, "lost_candidate": 0, "stalled": 0, "won": 0},
+            "stalled_days_threshold": 14,
+            "notes": [],
+        }
+
+    monkeypatch.setattr("src.api.app.build_manager_alerts", fake_build_manager_alerts)
+
+    response = client.get(
+        "/api/alerts/manager", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["counts"] == {
+        "lost": 0,
+        "lost_candidate": 0,
+        "stalled": 0,
+        "won": 0,
+    }
+    assert captured["as_of"] is not None
+
+
 # --- /api/tasks --------------------------------------------------------------------------------
 
 

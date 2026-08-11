@@ -21,6 +21,7 @@ from src.api.auth import verify_cron_secret, verify_dashboard_api_token
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
+    build_manager_alerts,
     build_member_performance,
     search_projects,
 )
@@ -244,6 +245,12 @@ def get_daily_report(date: str | None = None) -> dict[str, Any]:
 def get_member_performance(as_of: str | None = None) -> dict[str, Any]:
     as_of_date = _parse_date_param(as_of, param_name="as_of")
     return build_member_performance(as_of_date)
+
+
+@app.get("/api/alerts/manager", dependencies=[Depends(verify_dashboard_api_token)])
+def get_manager_alerts(as_of: str | None = None) -> dict[str, Any]:
+    as_of_date = _parse_date_param(as_of, param_name="as_of")
+    return build_manager_alerts(as_of_date)
 
 
 @app.get("/api/tasks", dependencies=[Depends(verify_dashboard_api_token)])

@@ -25,7 +25,7 @@ from src.api.action_classifier import classify_action_type
 from src.api.notion_display import page_to_display_dict
 from src.api.user_directory import NotionUserDirectory
 from src.db_schema.action import ACTION_SCHEMA
-from src.db_schema.project import PROJECT_SCHEMA, classify_status
+from src.db_schema.project import CONFIDENCE_LEVELS, PROJECT_SCHEMA, classify_status
 from src.reports.daily_report import (
     DailyActionRecord,
     DailyProjectRecord,
@@ -40,6 +40,9 @@ _JST = timezone(timedelta(hours=9))
 
 _CACHE_TTL_ENV_VAR = "DASHBOARD_CACHE_TTL_SECONDS"
 _DEFAULT_CACHE_TTL_SECONDS = 60.0
+
+_STALLED_DAYS_ENV_VAR = "MANAGER_ALERT_STALLED_DAYS"
+_DEFAULT_STALLED_DAYS = 14
 
 # `NotionDataSource`がデフォルト引数で生成される経路（build_*関数がdata_source未指定で
 # 呼ばれた場合）にのみ効くプロセス内・TTLベースの簡易キャッシュ。`data_source`を明示的に
@@ -441,6 +444,135 @@ def build_member_performance(
             "action_typeはアクション履歴DBのtitle自由記述からのヒューリスティック推定であり、"
             "正確なアクション種別分類ではありません（詳細はdocs/dashboard_note.md参照）。",
             "期間フィルタは行っておらず、全期間累積の集計です。",
+        ],
+    }
+
+
+def _stalled_days_threshold() -> int:
+    raw = os.environ.get(_STALLED_DAYS_ENV_VAR)
+    if not raw:
+        return _DEFAULT_STALLED_DAYS
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_STALLED_DAYS
+
+
+def _manager_alert_entry(
+    project: dict[str, Any], *, reason: str, is_proxy: bool = False
+) -> dict[str, Any]:
+    next_action_date = _parse_date(project.get(PROP_次回アクション日))
+    return {
+        "notion_page_id": project["notion_page_id"],
+        "project_name": project.get(PROP_案件名),
+        "assignee": (project.get(PROP_担当メンバー) or ["未設定"])[0],
+        "status": project.get(PROP_営業ステータス),
+        "confidence": project.get(PROP_確度),
+        "next_action_date": next_action_date.isoformat() if next_action_date else None,
+        "reason": reason,
+        "is_proxy": is_proxy,
+    }
+
+
+def build_manager_alerts(
+    as_of: date,
+    *,
+    data_source: NotionDataSource | None = None,
+) -> dict[str, Any]:
+    """マネージャー向けアラート（失注・失注候補・停滞・受注）をダッシュボード表示用に集計する。
+
+    ダッシュボード表示専用機能であり、Slack等の外部送信は行わない（別途対応予定）。
+
+    案件管理DBには変更履歴プロパティが無いため、build_daily_reportのstatus_changesと同様に
+    「あるタイミングでステータスが変化した」というイベントは検知できない。ここでのアラートは
+    すべてリクエスト時点のスナップショット（現在の営業ステータス・確度・次回アクション日）
+    から導出したものであり、イベントベースの検知ではない点に注意（notesにも明記する）。
+
+    "lost_candidate"（失注候補）は、classify_status()の区分に「失注候補」に相当する実データ値が
+    存在しない（実データ確認済み：「失注」という完全一致の値のみ存在する）ため、
+    確度（PROP_確度）が最低ランクの"D"かつ進行中（ACTIVE_STATUSES）の案件を代理指標として
+    採用したものであり、実際のステータス値に基づくトリガーではない（notesにも明記する）。
+
+    "stalled"（停滞）は、次回アクション日（PROP_次回アクション日）が未設定、または
+    as_ofからstalled_days_threshold日以上前の進行中案件を対象とする、次回アクション日
+    ベース（前向き）の指標である。src.analytics.conditionが提供する既存の🔴停滞リスク
+    （総接触回数が全社平均を大きく超えても未契約）・🟡要フォロー（最終アクションから
+    14日超過、後ろ向き）とは算出根拠が異なる別概念であり、デフォルト閾値が偶然どちらも
+    14日である以外に関連はない。両者を混同・マージしない（本関数のstalledは
+    「次回アクション日」ベースという製品判断に基づく独立した指標であり、意図的に
+    condition.pyのロジックを再利用していない）。
+
+    lost_candidateとstalledは排他ではなく、確度がDかつ次回アクション日が古い/未設定の
+    案件は両方のバケットに含まれ得る（notesにも明記する）。
+    """
+    stalled_days_threshold = _stalled_days_threshold()
+    source = data_source or NotionDataSource()
+    projects = source.get_projects()
+
+    stalled_cutoff = as_of - timedelta(days=stalled_days_threshold)
+
+    lost: list[dict[str, Any]] = []
+    lost_candidate: list[dict[str, Any]] = []
+    stalled: list[dict[str, Any]] = []
+    won: list[dict[str, Any]] = []
+
+    for p in projects:
+        status = p.get(PROP_営業ステータス)
+        if status is None:
+            continue
+        try:
+            category = classify_status(status)
+        except ValueError:
+            logger.warning(
+                "build_manager_alerts: 未知の営業ステータス値を検知しました"
+                "（アラート集計から除外します）: %r",
+                status,
+            )
+            continue
+
+        if category == "失注":
+            lost.append(_manager_alert_entry(p, reason="lost"))
+        elif category == "契約済":
+            won.append(_manager_alert_entry(p, reason="won"))
+        elif category == "進行中":
+            if p.get(PROP_確度) == CONFIDENCE_LEVELS[-1]:
+                lost_candidate.append(
+                    _manager_alert_entry(p, reason="lost_candidate", is_proxy=True)
+                )
+
+            next_action_date = _parse_date(p.get(PROP_次回アクション日))
+            if next_action_date is None or next_action_date <= stalled_cutoff:
+                stalled.append(_manager_alert_entry(p, reason="stalled"))
+
+    alerts = {
+        "lost": lost,
+        "lost_candidate": lost_candidate,
+        "stalled": stalled,
+        "won": won,
+    }
+
+    return {
+        "as_of": as_of.isoformat(),
+        "alerts": alerts,
+        "counts": {key: len(value) for key, value in alerts.items()},
+        "stalled_days_threshold": stalled_days_threshold,
+        "notes": [
+            "lost_candidate（失注候補）はNotion上に「失注候補」という実データ値が存在しない"
+            "ための代理指標です。確度（確度プロパティ）が最低ランクの\"D\"かつ営業ステータスが"
+            "進行中区分の案件をリスクが高い案件として暫定的に表示しています。"
+            "実際の失注ステータスへの遷移を検知したものではありません。",
+            "status_changesと同様、案件管理DBには変更履歴データが未整備のため、本アラートは"
+            "全てリクエスト時点のスナップショット判定であり、イベント（ステータス変化）ベースの"
+            "検知ではありません（詳細はdocs/dashboard_note.md参照）。",
+            f"stalledは次回アクション日が未設定、または{stalled_days_threshold}日以上前の"
+            "進行中案件を対象としています（MANAGER_ALERT_STALLED_DAYS環境変数で変更可能）。",
+            "stalledは次回アクション日（未来向き）を基準とした独自の指標であり、"
+            "週次レポート等で使われるsrc.analytics.conditionの🔴停滞リスク／🟡要フォロー"
+            "（最終アクション日・総接触回数ベース）とは算出根拠が異なる別概念です。"
+            "デフォルト閾値がどちらも14日なのは偶然の一致であり、両者を同一視しないでください。",
+            "lost_candidateとstalledは互いに排他ではありません。確度が\"D\"かつ次回アクション日"
+            "が古い/未設定の案件は両方のバケットに重複して含まれる場合があるため、"
+            "counts配下の値を単純合算すると案件数を過大にカウントする点に注意してください。",
         ],
     }
 
