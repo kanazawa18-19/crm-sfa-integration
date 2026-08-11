@@ -18,9 +18,14 @@
 - 「例外スイッチ」「ショット」は対応するZoho列が実データで常にfalseかつ意味も一致しない
   （「ショット」はNotion側はNUMBER型だがZoho側は常にfalseのフラグ列で無関係）ため、
   マッピングしない。
-- 「サイトコントローラー」はPROJECT_SCHEMA上MULTI_SELECT型のため、Zoho側の単一自由記述
-  値を1要素のリストへ変換する。「ファーストタッチ」も同様にMULTI_SELECT型で、Zoho側は
-  カンマ区切りの複数値（例:"引継ぎ, 横展開・追加提案"）。「かつやさん」「問合せ」は
+- 「サイトコントローラー」はPROJECT_SCHEMA上MULTI_SELECT型。当初「Zoho側は単一自由記述」
+  という前提で1要素リストへ包むだけの実装にしていたが、本番投入時に実データで
+  "なし, リンカーン"のようなカンマ区切りの複数値（829件中6件）が見つかり、Notion API側
+  （multi_selectのoption名にカンマを含められない）から`HTTP 400: Invalid multi_select
+  option, commas not allowed`で拒否される事故が発生した（2026-08-11）。「ファーストタッチ」
+  と同じくカンマ区切りの複数値がありうる列だったため、`parse_multi_value()`で分割する
+  よう修正した（分割後の値は全てPROJECT_SCHEMAの登録済み選択肢と一致することを実データで
+  確認済み）。「かつやさん」「問合せ」は
   CHECKBOX型のため、Zoho側の"true"/"false"文字列を実際のbool値へ変換する
   （Python の bool("false") は True になってしまうため、文字列比較で明示的に判定する
   必要がある）。
@@ -71,7 +76,6 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
     service_count = record.get("【Notion】サービス数（施設数）") or None
     client_zoho_id = record.get("取引先名.id") or None
     client_notion_page_id = extract_notion_page_id(record.get("【Notion】取引先マスター"))
-    site_controller = (record.get("サイトコントローラー") or "").strip()
 
     return {
         "zoho_ID": record.get("データID", ""),
@@ -82,7 +86,7 @@ def transform_zoho_project(record: dict[str, str]) -> dict[str, object]:
         "契約日 / 予想契約日": normalize_date(record.get("契約日 / 予想契約日")),
         "メモ": record.get("メモ") or None,
         "テキスト": record.get("【Notion】テキスト") or None,
-        "サイトコントローラー": [site_controller] if site_controller else [],
+        "サイトコントローラー": parse_multi_value(record.get("サイトコントローラー")),
         "ファーストタッチ": _parse_first_touch(record.get("【Notion】ファーストタッチ")),
         "かつやさん": _parse_bool(record.get("かつやさん")),
         "問合せ": _parse_bool(record.get("問合せ")),

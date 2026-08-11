@@ -145,6 +145,19 @@ def test_transform_zoho_project_maps_expected_fields() -> None:
     }
 
 
+def test_transform_zoho_project_splits_comma_separated_site_controller() -> None:
+    """本番移行実データ確認済み（2026-08-11）: 「サイトコントローラー」はMULTI_SELECT型だが
+    Zoho側の実データには"なし, リンカーン"のようなカンマ区切りの複数値が829件中6件存在し、
+    以前は分割せず1要素リストへ丸ごと包んでいたため、Notion APIから
+    `HTTP 400: Invalid multi_select option, commas not allowed`で拒否される事故が発生した。
+    """
+    record = {"データID": "zcrm_999", "案件名": "テスト案件", "サイトコントローラー": "なし, リンカーン"}
+
+    result = transform_zoho_project(record)
+
+    assert result["サイトコントローラー"] == ["なし", "リンカーン"]
+
+
 def test_transform_zoho_project_does_not_include_readonly_formula_or_rollup_properties() -> None:
     """粗利・個人粗利・契約スピード・失注経過日数・初期フィー・フィー率・経過日数
     (FORMULA型)、予算組のタイミング・アクション日・決算月・チェーン本社・アクションログ
