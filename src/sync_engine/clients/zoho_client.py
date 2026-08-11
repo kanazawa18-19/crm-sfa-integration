@@ -1,9 +1,16 @@
-"""Zoho CRM API (`https://www.zohoapis.com/crm/v2/`) へ実HTTP通信を行う `ZohoClient` Protocol実装。
+"""Zoho CRM APIへ実HTTP通信を行う `ZohoClient` Protocol実装。
 
 `src/sync_engine/sync_targets/zoho_sync.py` の `ZohoClient` Protocolを満たす。
 認証はOAuth2アクセストークン。`ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN`から
-アクセストークンをリフレッシュ（`https://accounts.zoho.com/oauth/v2/token`）し、
-有効期限内はメモリ内にキャッシュして毎回リフレッシュしないようにする。
+アクセストークンをリフレッシュし、有効期限内はメモリ内にキャッシュして毎回リフレッシュしない
+ようにする。
+
+Zohoのアカウント・APIのベースURLは、そのZoho org（会社アカウント）がどのデータセンターに
+所属しているかによって異なる（.com/.eu/.in/.jp/.com.cn/.com.auの6リージョンが存在する）。
+デフォルトは`.com`（`accounts.zoho.com`/`www.zohoapis.com/crm/v2`）だが、`.com`以外の
+データセンターに所属するorgと連携する場合は、`accounts_base_url`/`api_base_url`引数
+（`src/sync_engine/production_wiring.py`経由では`ZOHO_ACCOUNTS_BASE_URL`/`ZOHO_API_BASE_URL`
+環境変数）で対象orgの所属データセンターに合わせたURLを指定する必要がある。
 
 Zoho APIのレスポンスは`{"data": [...]}`形式でラップされているため、本モジュールで
 1件目（`data[0]`）の取り出しを吸収する。

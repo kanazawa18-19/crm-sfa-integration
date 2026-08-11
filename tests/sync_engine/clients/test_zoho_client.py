@@ -245,6 +245,35 @@ def test_update_record_raises_zoho_api_error_when_code_not_success(
 # --- タイムアウト・リトライ ------------------------------------------------------------------
 
 
+# --- カスタムaccounts_base_url/api_base_url（データセンター別対応） -----------------------------
+
+
+def test_custom_base_urls_are_used_for_token_refresh_and_api_calls(requests_mock) -> None:
+    """accounts_base_url/api_base_url引数を指定した場合、既定の`.com`ではなく指定した
+    ベースURL（例: `.jp`データセンター）へ実際にリクエストが送られること。"""
+    jp_client = HttpZohoClient(
+        client_id="cid",
+        client_secret="csecret",
+        refresh_token="rtoken",
+        accounts_base_url="https://accounts.zoho.jp",
+        api_base_url="https://www.zohoapis.jp/crm/v2",
+    )
+    requests_mock.post(
+        "https://accounts.zoho.jp/oauth/v2/token",
+        json={"access_token": "jp-access-token", "expires_in": 3600},
+    )
+    requests_mock.get(
+        "https://www.zohoapis.jp/crm/v2/Deals/12345",
+        json={"data": [{"id": "12345", "Deal_Name": "サンプル案件"}]},
+    )
+
+    record = jp_client.get_record("Deals", "12345")
+
+    assert record == {"id": "12345", "Deal_Name": "サンプル案件"}
+    assert not any(req.url.startswith(TOKEN_URL) for req in requests_mock.request_history)
+    assert not any(req.url == RECORD_URL for req in requests_mock.request_history)
+
+
 def test_get_record_retries_on_429_then_succeeds(
     requests_mock, client: HttpZohoClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

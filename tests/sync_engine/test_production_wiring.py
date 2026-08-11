@@ -14,8 +14,10 @@ import pytest
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
+from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
+from src.sync_engine.notion_id_mapping import NotionIdMappingStore
 from src.sync_engine.production_wiring import (
     ProductionSyncWiring,
     SkipTrackingDispatcher,
@@ -132,6 +134,44 @@ def test_build_zoho_targets_by_db_builds_one_target_per_schema(
     targets = build_zoho_targets_by_db()
 
     assert set(targets.keys()) == {s.key for s in ALL_SCHEMAS}
+
+
+def test_build_zoho_targets_by_db_uses_default_com_base_urls_when_env_vars_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """データセンター指定用の環境変数が未設定の場合、既存の`.com`org向けの動作を
+    サイレントに壊さないよう、HttpZohoClient自身のクラスデフォルト（`.com`）が使われること。"""
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "id")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "refresh")
+    monkeypatch.delenv("ZOHO_ACCOUNTS_BASE_URL", raising=False)
+    monkeypatch.delenv("ZOHO_API_BASE_URL", raising=False)
+
+    targets = build_zoho_targets_by_db()
+
+    client = targets[ALL_SCHEMAS[0].key]._client  # noqa: SLF001 (テストのため内部状態を直接確認)
+    assert client._accounts_base_url == "https://accounts.zoho.com"  # noqa: SLF001
+    assert client._api_base_url == "https://www.zohoapis.com/crm/v2"  # noqa: SLF001
+
+
+def test_build_zoho_targets_by_db_uses_configured_data_center_base_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ZOHO_ACCOUNTS_BASE_URL/ZOHO_API_BASE_URLを設定した場合、当該データセンター
+    （例: .jp）向けのURLが構築されるHttpZohoClientへ実際に渡されること。"""
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "id")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "refresh")
+    monkeypatch.setenv("ZOHO_ACCOUNTS_BASE_URL", "https://accounts.zoho.jp")
+    monkeypatch.setenv("ZOHO_API_BASE_URL", "https://www.zohoapis.jp/crm/v2")
+
+    targets = build_zoho_targets_by_db()
+
+    client = targets[ALL_SCHEMAS[0].key]._client  # noqa: SLF001 (テストのため内部状態を直接確認)
+    assert client._accounts_base_url == "https://accounts.zoho.jp"  # noqa: SLF001
+    assert client._api_base_url == "https://www.zohoapis.jp/crm/v2"  # noqa: SLF001
 
 
 # --- build_spreadsheet_targets_by_db ---------------------------------------------------------
@@ -554,3 +594,58 @@ def test_build_id_mapping_store_warns_when_path_defaults_to_tmp(
     store.close()
 
     assert any("/tmp" in r.getMessage() for r in caplog.records)
+
+
+# --- build_id_mapping_store: SYNC_ID_MAPPING_BACKEND=notion ------------------------------------
+
+
+def test_build_id_mapping_store_returns_notion_backed_store_when_backend_is_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SYNC_ID_MAPPING_BACKEND", "notion")
+    monkeypatch.setenv("SYNC_ID_MAPPING_NOTION_API_KEY", "secret-mapping-key")
+
+    store = build_id_mapping_store()
+
+    assert isinstance(store, NotionIdMappingStore)
+
+
+def test_build_id_mapping_store_notion_backend_does_not_warn_about_persistence(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("SYNC_ID_MAPPING_BACKEND", "notion")
+    monkeypatch.setenv("SYNC_ID_MAPPING_NOTION_API_KEY", "secret-mapping-key")
+    monkeypatch.delenv("SYNC_ID_MAPPING_DB_PATH", raising=False)
+
+    with caplog.at_level("WARNING"):
+        build_id_mapping_store()
+
+    assert not any("/tmp" in r.getMessage() for r in caplog.records)
+
+
+def test_build_id_mapping_store_defaults_to_sqlite_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SYNC_ID_MAPPING_BACKEND", raising=False)
+    monkeypatch.setenv("SYNC_ID_MAPPING_DB_PATH", ":memory:")
+
+    store = build_id_mapping_store()
+    store.close()
+
+    assert isinstance(store, SQLiteIdMappingStore)
+
+
+def test_build_id_mapping_store_notion_backend_uses_interactive_rate_limit_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dispatcherの同期的なWebhook処理経路から呼ばれるため、バルク移行向けの
+    DEFAULT_MAX_RATE_LIMIT_RETRIES(30)ではなく、dashboard_service.py/task_service.pyと
+    同じINTERACTIVE_MAX_RATE_LIMIT_RETRIES(小さい方)を使うこと（shirokuma-secレビューBLOCKER対応）。
+    """
+    monkeypatch.setenv("SYNC_ID_MAPPING_BACKEND", "notion")
+    monkeypatch.setenv("SYNC_ID_MAPPING_NOTION_API_KEY", "secret-mapping-key")
+
+    store = build_id_mapping_store()
+
+    assert isinstance(store, NotionIdMappingStore)
+    assert store._max_rate_limit_retries == INTERACTIVE_MAX_RATE_LIMIT_RETRIES  # noqa: SLF001

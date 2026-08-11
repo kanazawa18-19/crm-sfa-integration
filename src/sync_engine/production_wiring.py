@@ -45,12 +45,14 @@ from typing import Any
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
+from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.kintone_client import HttpKintoneClient
 from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
 from src.sync_engine.clients.zoho_client import HttpZohoClient
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.id_mapping import IdMappingStore, SQLiteIdMappingStore
+from src.sync_engine.notion_id_mapping import NotionIdMappingStore
 from src.sync_engine.slack_notifier import WebhookSlackNotifier
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import get_sync_system_id
@@ -308,14 +310,35 @@ def _reset_persistence_warning_state() -> None:
     _persistence_warning_logged = False
 
 
-def build_id_mapping_store(db_path: str | None = None) -> SQLiteIdMappingStore:
+def build_id_mapping_store(db_path: str | None = None) -> IdMappingStore:
     """本番用のIdMappingStoreを構築する。
 
-    `SYNC_ID_MAPPING_DB_PATH`環境変数（未設定時は`/tmp/sync_id_mapping.db`）で
-    永続化先を指定する。":memory:"以外を指定した場合、親ディレクトリが無ければ作成する。
-    永続化先が非永続な場所（`/tmp`配下・`:memory:`）の場合は警告ログを出す
-    （`_warn_if_id_mapping_store_not_persistent`参照）。
+    `SYNC_ID_MAPPING_BACKEND`環境変数（未設定時は`"sqlite"`）でバックエンドを選択する。
+
+    - `"sqlite"`（既定）: `SYNC_ID_MAPPING_DB_PATH`環境変数（未設定時は`/tmp/sync_id_mapping.db`）で
+      永続化先を指定する。":memory:"以外を指定した場合、親ディレクトリが無ければ作成する。
+      永続化先が非永続な場所（`/tmp`配下・`:memory:`）の場合は警告ログを出す
+      （`_warn_if_id_mapping_store_not_persistent`参照）。
+    - `"notion"`: `NotionIdMappingStore`を構築する（GCP/AWS側の永続DBを契約するまでの暫定
+      ブリッジ。Notion自体は永続的なため、`_warn_if_id_mapping_store_not_persistent`の警告は
+      対象外。詳細はdocs/id_mapping_persistence_note.md参照）。`db_path`引数はこのバックエンドでは
+      使われない。`Dispatcher`のWebhook同期リクエストパス（`_resolve_mapping()`・
+      `update_last_synced_at()`）から同期的に呼ばれるため、`max_rate_limit_retries`は
+      バルク移行向けの既定値（`DEFAULT_MAX_RATE_LIMIT_RETRIES`）ではなく、
+      `src/api/dashboard_service.py`/`src/api/task_service.py`と同じ
+      `INTERACTIVE_MAX_RATE_LIMIT_RETRIES`（小さい方）を明示的に渡す。
+
+      注意: このバックエンドを選択すると、返された`IdMappingStore`の呼び出し元
+      （`Dispatcher`等）は、`SQLiteIdMappingStore`が送出する契約上の例外
+      （`ConflictError`/`DuplicateExternalIdError`/`KeyError`）に加えて、Notion API呼び出し
+      失敗に起因する`NotionIdMappingStoreApiError`（タイムアウト・5xx・レート制限枯渇・
+      認証失敗等）も受け取りうる。`Dispatcher.dispatch()`はこれを個別にcatchしないため、
+      Webhookハンドラ層の広い`except Exception:`まで伝播する。
     """
+    backend = os.environ.get("SYNC_ID_MAPPING_BACKEND", "sqlite").strip().lower()
+    if backend == "notion":
+        return NotionIdMappingStore(max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES)
+
     path = db_path or os.environ.get("SYNC_ID_MAPPING_DB_PATH") or _DEFAULT_ID_MAPPING_DB_PATH
     _warn_if_id_mapping_store_not_persistent(path)
     if path != ":memory:":
@@ -369,11 +392,25 @@ def build_kintone_targets_by_db() -> dict[str, KintoneSyncTarget]:
 
 
 def build_zoho_targets_by_db() -> dict[str, ZohoSyncTarget]:
-    """db_key単位のZohoSyncTargetを組み立てる（`ENABLE_ZOHO=False`時は空辞書）。"""
+    """db_key単位のZohoSyncTargetを組み立てる（`ENABLE_ZOHO=False`時は空辞書）。
+
+    `ZOHO_ACCOUNTS_BASE_URL`/`ZOHO_API_BASE_URL`環境変数が設定されている場合、
+    `HttpZohoClient`へ明示的に渡す（Zohoはアカウントの所属データセンター
+    （.com/.eu/.in/.jp/.com.cn/.com.au）ごとにベースURLが異なるため）。未設定の場合は
+    キーワード引数自体を渡さず、`HttpZohoClient`側のクラスデフォルト（`.com`）に委ねる
+    （本モジュールで`.com`をデフォルト値として重複定義しないため）。
+    """
     if not is_zoho_enabled():
         return {}
+    zoho_kwargs: dict[str, str] = {}
+    accounts_base_url = os.environ.get("ZOHO_ACCOUNTS_BASE_URL")
+    if accounts_base_url:
+        zoho_kwargs["accounts_base_url"] = accounts_base_url
+    api_base_url = os.environ.get("ZOHO_API_BASE_URL")
+    if api_base_url:
+        zoho_kwargs["api_base_url"] = api_base_url
     try:
-        client = HttpZohoClient()
+        client = HttpZohoClient(**zoho_kwargs)
     except ValueError:
         logger.warning("Zoho認証情報が未設定のため、Zoho向け同期は無効化されます")
         return {}
