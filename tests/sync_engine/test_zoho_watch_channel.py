@@ -52,7 +52,17 @@ def test_renew_watch_channel_puts_using_explicit_channel_id_and_notify_url(
     requests_mock, client: HttpZohoClient
 ) -> None:
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     result = renew_zoho_watch_channel(
         client,
@@ -79,7 +89,17 @@ def test_renew_watch_channel_falls_back_to_env_var_channel_id(
 ) -> None:
     monkeypatch.setenv("ZOHO_WATCH_CHANNEL_ID", "999")
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "999", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "999"}]},
+                }
+            ]
+        },
+    )
 
     result = renew_zoho_watch_channel(
         client,
@@ -97,7 +117,17 @@ def test_renew_watch_channel_builds_notify_url_from_base_url_env_var(
 ) -> None:
     monkeypatch.setenv("ZOHO_WEBHOOK_BASE_URL", "https://crm-sfa-integration.vercel.app")
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     renew_zoho_watch_channel(client, channel_id="123", watch_api_base_url=WATCH_API_BASE_URL)
 
@@ -120,7 +150,17 @@ def test_renew_watch_channel_default_expiry_requests_less_than_full_day_margin(
     （＝24hとの差＝安全マージンが確保されていること）を、送信ペイロードの実際の値で検証する。
     """
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     before = datetime.now(timezone.utc)
     result = renew_zoho_watch_channel(
@@ -150,7 +190,17 @@ def test_renew_watch_channel_explicit_expiry_days_overrides_cron_default(
     renew_zoho_watch_channel()を利用するケースなど）は、cron既定の21hマージンではなく
     指定した値がそのまま使われること。"""
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     before = datetime.now(timezone.utc)
     renew_zoho_watch_channel(

@@ -164,6 +164,32 @@ def redact_watch_entry_token(entry: Any) -> Any:
     return redacted
 
 
+def _confirmed_channel_ids(entry: Any) -> set[str]:
+    """`watch`応答の1エントリから、実際に確認されたchannel_idの集合を取り出す。
+
+    2026-08-12、本番Zoho API（.jpデータセンター）への実登録・実延長で確認した実際の
+    レスポンス形状: 成功エントリのchannel_idはエントリ直下（`entry["channel_id"]`）には
+    存在せず、`entry["details"]["events"][*]["channel_id"]`にネストされている
+    （Zoho公式ドキュメントの例には無い実挙動。事前に別のchannel_id直下チェックのみで
+    実装し、本番延長が常に`did not confirm the requested channel_id`で失敗する不具合と
+    なったため、実際のAPIレスポンスを直接確認した上で修正した）。
+    形状が想定と異なる場合（dictでない・キー欠落等）はクラッシュせず空集合を返す。
+    """
+    if not isinstance(entry, dict):
+        return set()
+    details = entry.get("details")
+    if not isinstance(details, dict):
+        return set()
+    events = details.get("events")
+    if not isinstance(events, list):
+        return set()
+    return {
+        event["channel_id"]
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("channel_id"), str)
+    }
+
+
 def register_or_renew_watch(
     client: HttpZohoClient,
     *,
@@ -224,7 +250,7 @@ def register_or_renew_watch(
             )
         if entry.get("status") != "success":
             raise ZohoApiError(response.status_code, str(redact_watch_entry_token(entry)))
-        if requested_channel_id is None or entry.get("channel_id") == requested_channel_id:
+        if requested_channel_id is None or requested_channel_id in _confirmed_channel_ids(entry):
             confirmed = True
 
     if not confirmed:

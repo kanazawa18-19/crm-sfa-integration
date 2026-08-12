@@ -130,7 +130,15 @@ def test_parse_args_with_channel_id_for_renewal() -> None:
 
 def test_register_or_renew_watch_posts_for_fresh_registration(requests_mock) -> None:
     _mock_token(requests_mock)
-    requests_mock.post(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    mock_response = {
+        "watch": [
+            {
+                "status": "success",
+                "details": {"events": [{"channel_id": "123"}]},
+            }
+        ]
+    }
+    requests_mock.post(WATCH_URL, json=mock_response)
     client = HttpZohoClient()
     payload = build_watch_payload(
         channel_id="123",
@@ -144,7 +152,7 @@ def test_register_or_renew_watch_posts_for_fresh_registration(requests_mock) -> 
         client, watch_api_base_url=WATCH_API_BASE_URL, payload=payload, is_renewal=False
     )
 
-    assert result == {"watch": [{"channel_id": "123", "status": "success"}]}
+    assert result == mock_response
     watch_calls = [req for req in requests_mock.request_history if req.url == WATCH_URL]
     assert len(watch_calls) == 1
     assert watch_calls[0].method == "POST"
@@ -153,7 +161,17 @@ def test_register_or_renew_watch_posts_for_fresh_registration(requests_mock) -> 
 
 def test_register_or_renew_watch_puts_for_renewal(requests_mock) -> None:
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
     client = HttpZohoClient()
     payload = build_watch_payload(
         channel_id="123",
@@ -226,7 +244,17 @@ def test_main_without_yes_does_not_call_any_api(requests_mock, capsys: pytest.Ca
 
 def test_main_with_yes_calls_watch_api(requests_mock, capsys: pytest.CaptureFixture[str]) -> None:
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     main(
         [
@@ -259,7 +287,17 @@ def test_main_uses_zoho_webhook_secret_env_as_default_token(
 ) -> None:
     monkeypatch.setenv("ZOHO_WEBHOOK_SECRET", "env-secret")
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     main(
         [
@@ -307,7 +345,11 @@ def test_main_with_yes_never_prints_raw_token(
         WATCH_URL,
         json={
             "watch": [
-                {"channel_id": "123", "status": "success", "token": "super-secret-value"}
+                {
+                    "status": "success",
+                    "token": "super-secret-value",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
             ]
         },
     )
@@ -409,7 +451,17 @@ def test_main_with_yes_and_empty_token_refuses_without_calling_api(
 
 def test_main_with_yes_and_allow_empty_token_proceeds(requests_mock) -> None:
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     main(
         [
@@ -432,7 +484,17 @@ def test_main_with_yes_and_explicit_token_does_not_require_allow_empty_token(
     requests_mock,
 ) -> None:
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     main(
         [
@@ -462,7 +524,17 @@ def test_main_with_yes_persists_channel_state_and_prints_grepable_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
     state_path = tmp_path / ".zoho_watch_channel.json"
     monkeypatch.setattr(register_zoho_webhook, "_CHANNEL_STATE_PATH", state_path)
 
@@ -498,7 +570,17 @@ def test_main_without_channel_id_reads_persisted_channel_id_as_default(
     state_path.write_text(json.dumps({"channel_id": "999", "channel_expiry": "2026-08-19T00:00:00+00:00"}))
     monkeypatch.setattr(register_zoho_webhook, "_CHANNEL_STATE_PATH", state_path)
     _mock_token(requests_mock)
-    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "999", "status": "success"}]})
+    requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "999"}]},
+                }
+            ]
+        },
+    )
 
     main(
         [
@@ -527,7 +609,14 @@ def test_main_without_channel_id_generates_new_one_when_no_state_file(
 
     def _echo_channel_id(request, context):
         sent_channel_id = request.json()["watch"][0]["channel_id"]
-        return {"watch": [{"channel_id": sent_channel_id, "status": "success"}]}
+        return {
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": sent_channel_id}]},
+                }
+            ]
+        }
 
     # channel_idは自動生成（実行時のミリ秒epoch）のため固定値を返せない。BLOCKER2対応で
     # register_or_renew_watch()が「送信したchannel_idと一致するsuccessエントリ」を要求する
