@@ -238,11 +238,14 @@ def run_daily_batch() -> dict[str, Any]:
 
 @app.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])
 def run_zoho_webhook_renewal() -> dict[str, Any]:
-    """Vercel Cronから6時間毎に呼ばれる、Zoho CRM Notifications（watch）チャンネルの
+    """Vercel Cronから1日1回呼ばれる、Zoho CRM Notifications（watch）チャンネルの
     自動延長（`PUT /crm/v3/actions/watch`）エントリポイント。
 
     Zohoのwatchチャンネルは登録・延長時点から最大1日で失効し、放置すると`/api/webhooks/zoho`
-    への通知が無音で止まる（`docs/zoho_webhook_activation_note.md`参照）。実際の延長ロジック・
+    への通知が無音で止まる（`docs/zoho_webhook_activation_note.md`参照）。Vercel Hobbyプランの
+    制約でcronは1日1回しか実行できないため、`renew_zoho_watch_channel()`は毎回、Zoho上限の
+    24hではなく21h先のchannel_expiryを要求し、3時間分の安全マージンを確保する
+    （`expiry_days`未指定時の既定値`CRON_RENEWAL_EXPIRY_DAYS`）。実際の延長ロジック・
     channel_idの一次情報源（環境変数`ZOHO_WATCH_CHANNEL_ID`）の設計判断は
     `src/sync_engine/zoho_watch_channel.py`の`renew_zoho_watch_channel()`を参照。
 

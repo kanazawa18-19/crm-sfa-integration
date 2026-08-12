@@ -45,7 +45,7 @@
    3. 対応するNotionページが更新されたか確認する。
 
 6. 有効期限切れ前の定期的な延長は、以下の「自動延長（Vercel Cron）」節の通り
-   `GET /api/cron/zoho-webhook-renewal`が6時間毎に自動で行う。**新規登録直後（手順4）は
+   `GET /api/cron/zoho-webhook-renewal`が1日1回自動で行う。**新規登録直後（手順4）は
    必ずVercel本番環境変数`ZOHO_WATCH_CHANNEL_ID`へも同じchannel_idを設定すること**
    （自動延長がこの値を参照するため。詳細は下記節を参照）。
 
@@ -55,10 +55,32 @@
 
 Zohoのwatchチャンネルは登録・延長時点から**最大1日**で失効し、放置すると
 `/api/webhooks/zoho`への通知が無音で止まる（エラーが表面化しない）。これを防ぐため、
-`GET /api/cron/zoho-webhook-renewal`（`src/api/app.py`）をVercel Cronから**6時間毎**
-（`vercel.json`の`crons`、`0 */6 * * *`）に自動起動し、`PUT /crm/v3/actions/watch`で
-延長し続ける。1日の猶予に対して6時間毎という余裕を持たせているのは、1回の失敗・
-遅延だけではチャンネルが実際に失効しないようにするため。
+`GET /api/cron/zoho-webhook-renewal`（`src/api/app.py`）をVercel Cronから**1日1回**
+（`vercel.json`の`crons`、`0 20 * * *`＝毎日20:00 UTC）に自動起動し、`PUT /crm/v3/actions/watch`で
+延長し続ける。
+
+当初は6時間毎（`0 */6 * * *`）の実行を想定していたが、VercelのHobbyプランでは
+1日1回未満の頻度でしかCron Jobを実行できない制約があり（Pro以上へのアップグレードは
+コスト面から今回は見送り）、1日1回に変更した。
+
+### なぜ自動延長は毎回24h上限いっぱいを要求しないのか（安全マージンの設計判断）
+
+自動延長がcronの実行のたびにZoho上限いっぱいの24h先を`channel_expiry`として要求すると、
+cronの実行間隔（1日1回、約24h）と`channel_expiry`の上限（登録・延長時点から最大24h）が
+ほぼ一致してしまう。この場合、平常運転でも「次のcron実行タイミング」と「チャンネルの
+失効タイミング」がほぼ同時刻になり、安全マージンが実質ゼロになる。Vercel Cronの実行には
+多少のジッター・遅延がありうるため、1回のcron実行が少しでも遅れる／失敗すると、
+そのままチャンネルが失効して`/api/webhooks/zoho`への通知が無音で止まってしまう
+（誰かが気づいて手動で再登録するまで復旧しない）。
+
+これを避けるため、`renew_zoho_watch_channel()`（`src/sync_engine/zoho_watch_channel.py`）は
+cronからの自動延長時、既定で24h上限より短い**21時間**を`channel_expiry`として要求する
+（`CRON_RENEWAL_EXPIRY_DAYS`＝`CRON_RENEWAL_EXPIRY_HOURS`／24）。これにより、平常運転
+（遅延・失敗が無い場合）でも常に約3時間の安全マージンが残った状態を維持する。この
+挙動は自動延長（cron）専用であり、手動CLI（`scripts/register_zoho_webhook.py`）の
+`--expiry-days`既定値（`DEFAULT_EXPIRY_DAYS`＝1日＝上限いっぱい）は変更していない。
+手動延長は次にいつ人間が再度実行するか分からないため、猶予は長いほど安全という
+判断は変わらない。
 
 ### 仕組み
 

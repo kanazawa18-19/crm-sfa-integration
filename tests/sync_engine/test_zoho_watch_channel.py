@@ -8,10 +8,14 @@ notify_urlの解決・Zoho API呼び出し失敗時の伝播を検証する。�
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
 from src.sync_engine.zoho_watch_channel import (
+    CRON_RENEWAL_EXPIRY_HOURS,
+    DEFAULT_EXPIRY_DAYS,
     ZohoWatchChannelNotConfiguredError,
     renew_zoho_watch_channel,
 )
@@ -100,6 +104,66 @@ def test_renew_watch_channel_builds_notify_url_from_base_url_env_var(
     watch_calls = [req for req in requests_mock.request_history if req.url == WATCH_URL]
     sent = watch_calls[0].json()["watch"][0]
     assert sent["notify_url"] == "https://crm-sfa-integration.vercel.app/api/webhooks/zoho"
+
+
+# --- cron自動延長の安全マージン（既定expiry_days）----------------------------------------------
+# Vercel Hobbyプランではcronが1日1回しか実行されないため、renew_zoho_watch_channel()は
+# 既定でZoho上限の24hいっぱいではなく21h先のchannel_expiryを要求する（3時間の安全マージン）。
+# docs/zoho_webhook_activation_note.md参照。
+
+
+def test_renew_watch_channel_default_expiry_requests_less_than_full_day_margin(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """expiry_days未指定（cronの実運用と同じ呼び出し方）の場合、送信されるchannel_expiryが
+    Zoho上限の24hぴったりではなく、CRON_RENEWAL_EXPIRY_HOURS（21h）分だけ先の値になること
+    （＝24hとの差＝安全マージンが確保されていること）を、送信ペイロードの実際の値で検証する。
+    """
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+
+    before = datetime.now(timezone.utc)
+    result = renew_zoho_watch_channel(
+        client,
+        channel_id="123",
+        notify_url="https://example.com/api/webhooks/zoho",
+        watch_api_base_url=WATCH_API_BASE_URL,
+    )
+    after = datetime.now(timezone.utc)
+
+    watch_calls = [req for req in requests_mock.request_history if req.url == WATCH_URL]
+    sent_expiry = datetime.fromisoformat(watch_calls[0].json()["watch"][0]["channel_expiry"])
+    assert sent_expiry == datetime.fromisoformat(result["channel_expiry"])
+
+    # 上限（24h）いっぱいは要求しない（安全マージンが無いと、cronの遅延・失敗1回で
+    # チャンネルが失効しうる）。
+    assert sent_expiry < before + timedelta(days=1)
+    # CRON_RENEWAL_EXPIRY_HOURS（21h）分だけ先の値であること（実行時間のブレを許容して幅を持たせる）。
+    assert sent_expiry >= before + timedelta(hours=CRON_RENEWAL_EXPIRY_HOURS) - timedelta(seconds=5)
+    assert sent_expiry <= after + timedelta(hours=CRON_RENEWAL_EXPIRY_HOURS) + timedelta(seconds=5)
+
+
+def test_renew_watch_channel_explicit_expiry_days_overrides_cron_default(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """呼び出し側が明示的にexpiry_daysを指定した場合（CLI側が`channel_id`/`notify_url`を渡して
+    renew_zoho_watch_channel()を利用するケースなど）は、cron既定の21hマージンではなく
+    指定した値がそのまま使われること。"""
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, json={"watch": [{"channel_id": "123", "status": "success"}]})
+
+    before = datetime.now(timezone.utc)
+    renew_zoho_watch_channel(
+        client,
+        channel_id="123",
+        notify_url="https://example.com/api/webhooks/zoho",
+        expiry_days=DEFAULT_EXPIRY_DAYS,
+        watch_api_base_url=WATCH_API_BASE_URL,
+    )
+
+    watch_calls = [req for req in requests_mock.request_history if req.url == WATCH_URL]
+    sent_expiry = datetime.fromisoformat(watch_calls[0].json()["watch"][0]["channel_expiry"])
+    assert sent_expiry >= before + timedelta(hours=CRON_RENEWAL_EXPIRY_HOURS)
 
 
 # --- 異常系: channel_id/notify_urlが解決できない --------------------------------------------

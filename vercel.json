@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/zoho-webhook-renewal",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 20 * * *"
     }
   ]
 }

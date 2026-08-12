@@ -58,7 +58,19 @@ from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
 DEFAULT_MODULE = "Deals"
 # Zoho公式ドキュメント記載の制約: channel_expiryは登録・延長時点から最大1日先まで。
 MAX_EXPIRY_DAYS = 1
+# scripts/register_zoho_webhook.py（手動CLI）の既定値。新規登録・手動延長では上限いっぱいの
+# 1日を要求してよい（次にいつ人間が延長するか分からないため、猶予は長いほど安全）。
 DEFAULT_EXPIRY_DAYS = 1
+# `renew_zoho_watch_channel()`（Vercel Cronからの自動延長専用）の既定値。VercelがHobbyプランの
+# ため`GET /api/cron/zoho-webhook-renewal`は1日1回しか実行できない（vercel.jsonの
+# `zoho-webhook-renewal`スケジュール参照）。もしここでMAX_EXPIRY_DAYS（24h）いっぱいを
+# 要求すると、cronの実行間隔（約24h）とchannel_expiryの上限（24h）がほぼ一致してしまい、
+# 1回のcron実行が少しでも遅延・失敗すると安全マージンがゼロのままチャンネルが失効し、
+# `/api/webhooks/zoho`への通知が無音で止まる。そのため自動延長では上限より短い21時間
+# （24h上限に対し3時間の安全マージン）を要求する（詳細は
+# docs/zoho_webhook_activation_note.md参照）。
+CRON_RENEWAL_EXPIRY_HOURS = 21
+CRON_RENEWAL_EXPIRY_DAYS = CRON_RENEWAL_EXPIRY_HOURS / 24
 # 本番Zoho orgは.jpデータセンター所属（ZOHO_ACCOUNTS_BASE_URL/ZOHO_API_BASE_URLと同じ理由）。
 # HttpZohoClientのCRUD用api_base_urlは`/crm/v2`固定だが、watch(Notifications) APIは`/crm/v3`。
 DEFAULT_WATCH_API_BASE_URL = "https://www.zohoapis.jp/crm/v3"
@@ -80,18 +92,21 @@ def generate_channel_id() -> str:
     return str(int(time.time() * 1000))
 
 
-def compute_channel_expiry(days: int, *, now: datetime | None = None) -> str:
+def compute_channel_expiry(days: int | float, *, now: datetime | None = None) -> str:
     """channel_expiryのISO8601文字列を計算する。
 
     Zoho公式ドキュメントによれば、channel_expiryは登録・延長時点から最大1日先までしか
     許容されない。呼び出し側は`MAX_EXPIRY_DAYS`超過を事前に`validate_expiry_days()`で
     拒否してからこの関数を呼ぶこと（この関数自体はクランプや検証を行わない）。
+
+    `days`は整数（CLIの`--expiry-days`）に加え、`CRON_RENEWAL_EXPIRY_DAYS`のような
+    端数日（時間単位の安全マージンを表現するため）も受け付ける。
     """
     base = now if now is not None else datetime.now(timezone.utc)
     return (base + timedelta(days=days)).isoformat(timespec="seconds")
 
 
-def validate_expiry_days(days: int) -> None:
+def validate_expiry_days(days: int | float) -> None:
     """`expiry_days`がZoho側の上限（`MAX_EXPIRY_DAYS`）を超えていないか検証する。
 
     超過している場合、本番Zoho APIへ送って`INVALID_DATA`で拒否される事故を繰り返さないよう、
@@ -244,7 +259,7 @@ def renew_zoho_watch_channel(
     module: str = DEFAULT_MODULE,
     notify_url: str | None = None,
     token: str | None = None,
-    expiry_days: int = DEFAULT_EXPIRY_DAYS,
+    expiry_days: int | float = CRON_RENEWAL_EXPIRY_DAYS,
     watch_api_base_url: str = DEFAULT_WATCH_API_BASE_URL,
 ) -> dict[str, Any]:
     """既存のZoho watchチャンネルをPUTで延長する（`GET /api/cron/zoho-webhook-renewal`から
@@ -255,6 +270,11 @@ def renew_zoho_watch_channel(
       （`{base_url}/api/webhooks/zoho`）。
     - どちらの解決にも失敗した場合は`ZohoWatchChannelNotConfiguredError`を送出する
       （Zoho APIへは到達しない。モジュールdocstring参照）。
+    - `expiry_days`の既定値は`DEFAULT_EXPIRY_DAYS`（1日=Zoho上限いっぱい）ではなく
+      `CRON_RENEWAL_EXPIRY_DAYS`（21時間）。Vercel Hobbyプランの制約により本関数の主要な
+      呼び出し元であるcronは1日1回しか実行されないため、上限いっぱいを要求すると
+      cronの実行間隔と失効タイミングがほぼ一致し安全マージンがゼロになる
+      （`CRON_RENEWAL_EXPIRY_HOURS`のコメント・docs/zoho_webhook_activation_note.md参照）。
     """
     resolved_channel_id = channel_id if channel_id is not None else os.environ.get(WATCH_CHANNEL_ID_ENV_VAR)
     if not resolved_channel_id:
