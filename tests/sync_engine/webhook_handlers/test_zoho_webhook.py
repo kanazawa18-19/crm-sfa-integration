@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -9,24 +9,50 @@ from src.db_schema.base import Tool
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.id_mapping import SQLiteIdMappingStore
 from src.sync_engine.sync_headers import HEADER_NAME
-from src.sync_engine.webhook_handlers.zoho_webhook import handler, zoho_payload_to_sync_event
+from src.sync_engine.webhook_handlers.zoho_webhook import handler, zoho_payload_to_sync_events
 
-MODULE_MAP = {"案件": "project"}
+# MODULE_MAPはmodule_to_db_keyを明示的に上書きする一部テスト用（実レジストリの内容に
+# 依存させないため）。moduleの値そのものは実際のZoho CRM APIモジュール名("Deals")と
+# 一致させてある。config/zoho_field_mapping.json（フィールドapi_name -> ラベル変換）は
+# db_key解決とは独立に、payload["module"]の値そのものを見るため、こうしておかないと
+# フィールド変換テストが実際のマッピングファイルの内容と噛み合わなくなる。
+MODULE_MAP = {"Deals": "project"}
+
+DEFAULT_RECORD_ID = "4876876000000488001"
+DEFAULT_SERVER_TIME_MS = 1754960400000
+DEFAULT_OCCURRED_AT = datetime.fromtimestamp(DEFAULT_SERVER_TIME_MS / 1000, tz=timezone.utc)
 
 
-def _payload(*, token: str | None = None) -> dict:
+def _payload(
+    *,
+    token: str | None = None,
+    module: str = "Deals",
+    operation: str = "update",
+    ids: list[str] | None = None,
+    affected_values: list[dict] | None = None,
+    server_time: int | None = DEFAULT_SERVER_TIME_MS,
+) -> dict:
     payload: dict = {
-        "module": "案件",
-        "operation": "update",
-        "data": [
-            {
-                "id": "4876876000000488001",
-                "Modified_Time": "2026-08-05T09:00:00+09:00",
-                "営業ステータス": "商談中(B)",
-                "初期費用": 500000,
-            }
-        ],
+        "server_time": server_time,
+        "module": module,
+        "operation": operation,
+        "ids": ids if ids is not None else [DEFAULT_RECORD_ID],
+        "affected_values": (
+            affected_values
+            if affected_values is not None
+            else [
+                {
+                    "record_id": DEFAULT_RECORD_ID,
+                    # field71/fieldは実際にconfig/zoho_field_mapping.jsonへ登録済みの
+                    # 実在するapi_name（それぞれ「営業ステータス」「初期費用」に対応）。
+                    "values": {"field71": "商談中(B)", "field": 500000},
+                }
+            ]
+        ),
+        "channel_id": "1000000068001",
     }
+    if server_time is None:
+        del payload["server_time"]
     if token is not None:
         payload["token"] = token
     return payload
@@ -43,67 +69,186 @@ class SpyDispatcher:
         return DispatchResult(skipped=False)
 
 
-def test_zoho_payload_to_sync_event_builds_expected_event() -> None:
-    event = zoho_payload_to_sync_event(_payload(), {}, module_to_db_key=MODULE_MAP)
+def test_zoho_payload_to_sync_events_builds_expected_event() -> None:
+    events = zoho_payload_to_sync_events(_payload(), {}, module_to_db_key=MODULE_MAP)
 
+    assert len(events) == 1
+    event = events[0]
     assert event.source_tool is Tool.ZOHO
     assert event.db_key == "project"
-    assert event.external_id == "4876876000000488001"
-    assert event.occurred_at == datetime(
-        2026, 8, 5, 9, 0, 0, tzinfo=timezone(timedelta(hours=9))
-    )
+    assert event.external_id == DEFAULT_RECORD_ID
+    assert event.occurred_at == DEFAULT_OCCURRED_AT
     assert event.properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
     assert event.sync_system_id is None
 
 
-def test_zoho_payload_to_sync_event_excludes_system_fields() -> None:
-    event = zoho_payload_to_sync_event(_payload(), {}, module_to_db_key=MODULE_MAP)
-
-    assert "id" not in event.properties
-    assert "Modified_Time" not in event.properties
-
-
-def test_zoho_payload_to_sync_event_reads_sync_system_id_header() -> None:
-    event = zoho_payload_to_sync_event(
+def test_zoho_payload_to_sync_events_reads_sync_system_id_header() -> None:
+    events = zoho_payload_to_sync_events(
         _payload(), {HEADER_NAME: "自社CRM-Engine"}, module_to_db_key=MODULE_MAP
     )
 
-    assert event.sync_system_id == "自社CRM-Engine"
+    assert events[0].sync_system_id == "自社CRM-Engine"
 
 
-def test_zoho_payload_to_sync_event_unknown_module_raises() -> None:
+def test_zoho_payload_to_sync_events_unknown_module_raises() -> None:
     with pytest.raises(ValueError):
-        zoho_payload_to_sync_event(_payload(), {}, module_to_db_key={})
+        zoho_payload_to_sync_events(_payload(), {}, module_to_db_key={})
 
 
-def test_zoho_payload_to_sync_event_uses_registry_zoho_api_module_by_default() -> None:
-    """BLOCKER4: 逆引きはzoho_key（表示ラベル）ではなくzoho_api_module（実際のAPI module値）で行う。"""
-    payload = _payload()
-    payload["module"] = "Deals"  # PROJECT_SCHEMA.zoho_api_module
+def test_zoho_payload_to_sync_events_uses_registry_zoho_api_module_by_default() -> None:
+    """BLOCKER4: 逆引きはzoho_key（表示ラベル）ではなくzoho_api_module（実際のAPI module値）で行う。
+    module_to_db_keyを省略し、実際のALL_SCHEMASレジストリでの解決を確認する。
+    """
+    events = zoho_payload_to_sync_events(_payload(), {})
 
-    event = zoho_payload_to_sync_event(payload, {})
-
-    assert event.db_key == "project"
+    assert events[0].db_key == "project"
 
 
-def test_zoho_payload_to_sync_event_display_label_is_not_a_valid_module_by_default() -> None:
+def test_zoho_payload_to_sync_events_display_label_is_not_a_valid_module_by_default() -> None:
     """BLOCKER4回帰確認: zoho_key（「案件」等の日本語ラベル）では逆引きできない。"""
+    payload = _payload()
+    payload["module"] = "案件"  # zoho_key（表示ラベル）であり実際のAPI module値ではない
+
     with pytest.raises(ValueError):
-        zoho_payload_to_sync_event(_payload(), {})  # module="案件"はzoho_keyでありAPI名ではない
+        zoho_payload_to_sync_events(payload, {})
 
 
-def test_zoho_payload_to_sync_event_ignores_unknown_property_with_warning(
+def test_zoho_payload_to_sync_events_end_to_end_with_real_registry_and_field_mapping() -> None:
+    """モックのMODULE_MAPを使わず、実際のALL_SCHEMAS（db_key解決）と実際の
+    config/zoho_field_mapping.json（field71 -> 営業ステータス等のapi_name -> ラベル変換）の
+    両方を通した変換チェーン全体を確認する（個々の部品だけでなく全体が噛み合っていることの確認）。
+    """
+    events = zoho_payload_to_sync_events(_payload(), {})
+
+    assert events[0].db_key == "project"
+    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
+
+
+def test_zoho_payload_to_sync_events_ignores_unknown_api_name_with_warning_without_blocking_others(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     payload = _payload()
-    payload["data"][0]["未定義プロパティ"] = "何かの値"
+    payload["affected_values"][0]["values"]["field_not_in_mapping_9999"] = "何かの値"
 
     with caplog.at_level("WARNING"):
-        event = zoho_payload_to_sync_event(payload, {}, module_to_db_key=MODULE_MAP)
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
 
-    assert "未定義プロパティ" not in event.properties
-    assert event.properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
-    assert any("未定義プロパティ" in record.getMessage() for record in caplog.records)
+    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
+    assert any(
+        "field_not_in_mapping_9999" in record.getMessage() for record in caplog.records
+    )
+
+
+def test_zoho_payload_to_sync_events_matches_affected_values_by_record_id_not_index() -> None:
+    """1通知にids/affected_valuesが複数件含まれる場合、先頭を無条件に使わずrecord_idで対応する
+    エントリを探す。"""
+    payload = _payload(
+        ids=["record-b"],
+        affected_values=[
+            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert len(events) == 1
+    assert events[0].external_id == "record-b"
+    assert events[0].properties == {"営業ステータス": "商談中(B)"}
+
+
+def test_zoho_payload_to_sync_events_batched_notification_converts_all_ids_not_just_first() -> None:
+    """BLOCKER回帰確認（2026-08-12）: 1通知に複数idが含まれる場合、ids[0]のみではなく
+    全件をそれぞれ独立したSyncEventへ変換する。これを怠ると、バッチ通知の2件目以降が
+    HTTP 200のまま黙って失われる（Zohoはリトライしないため恒久的なデータ消失になる）。"""
+    payload = _payload(
+        ids=["record-a", "record-b", "record-c"],
+        affected_values=[
+            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
+            {"record_id": "record-c", "values": {"field71": "受注(Won)", "field": 1000000}},
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert len(events) == 3
+    by_id = {e.external_id: e for e in events}
+    assert set(by_id) == {"record-a", "record-b", "record-c"}
+    assert by_id["record-a"].properties == {"営業ステータス": "見込み(A)"}
+    assert by_id["record-b"].properties == {"営業ステータス": "商談中(B)"}
+    assert by_id["record-c"].properties == {"営業ステータス": "受注(Won)", "初期費用": 1000000}
+    assert all(e.db_key == "project" for e in events)
+    assert all(e.source_tool is Tool.ZOHO for e in events)
+    # 通知全体共通のserver_timeを全イベントが共有する。
+    assert all(e.occurred_at == DEFAULT_OCCURRED_AT for e in events)
+
+
+def test_zoho_payload_to_sync_events_missing_affected_values_key_results_in_empty_properties() -> None:
+    """insert/delete等、フィールド単位の変更が無い通知はaffected_valuesが空/欠落しうる。"""
+    payload = _payload()
+    del payload["affected_values"]
+    payload["operation"] = "insert"
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {}
+
+
+def test_zoho_payload_to_sync_events_empty_affected_values_results_in_empty_properties() -> None:
+    payload = _payload(affected_values=[])
+    payload["operation"] = "delete"
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {}
+
+
+def test_zoho_payload_to_sync_events_no_matching_record_id_in_affected_values_results_in_empty_properties() -> None:
+    payload = _payload(
+        ids=["record-x"],
+        affected_values=[{"record_id": "record-y", "values": {"field71": "商談中(B)"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {}
+
+
+def test_zoho_payload_to_sync_events_converts_server_time_epoch_millis_to_utc_datetime() -> None:
+    payload = _payload(server_time=1718115953625)
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].occurred_at == datetime.fromtimestamp(1718115953625 / 1000, tz=timezone.utc)
+
+
+def test_zoho_payload_to_sync_events_falls_back_to_now_when_server_time_missing() -> None:
+    payload = _payload(server_time=None)
+
+    before = datetime.now(timezone.utc)
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+    after = datetime.now(timezone.utc)
+
+    assert before <= events[0].occurred_at <= after
+
+
+def test_zoho_payload_to_sync_events_missing_ids_raises() -> None:
+    payload = _payload()
+    payload["ids"] = []
+
+    with pytest.raises(ValueError):
+        zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+
+def test_zoho_payload_to_sync_events_absent_ids_key_raises_same_as_empty() -> None:
+    """"ids"が欠落している場合も空配列の場合と同じエラーになる（どちらも「対象レコードが
+    特定できない」という同じ結果のため、区別してレスポンスを変える意味が無い）。"""
+    payload = _payload()
+    del payload["ids"]
+
+    with pytest.raises(ValueError, match="no ids"):
+        zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
 
 
 def test_handler_dispatches_to_injected_dispatcher_when_zoho_enabled(
@@ -123,7 +268,93 @@ def test_handler_dispatches_to_injected_dispatcher_when_zoho_enabled(
 
     store.close()
     assert response["statusCode"] == 200
-    assert json.loads(response["body"]) == {"skipped": True}  # unknown_record
+    assert json.loads(response["body"]) == {
+        "results": [{"external_id": DEFAULT_RECORD_ID, "skipped": True}]  # unknown_record
+    }
+
+
+def test_handler_dispatches_all_events_for_a_batched_notification_with_multiple_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BLOCKER回帰確認（2026-08-12）: handler()は"ids"に複数件含まれる通知でも、全件を
+    dispatcherへ渡す（先頭のみで打ち切らない）。"""
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.zoho_webhook._default_module_to_db_key",
+        lambda: MODULE_MAP,
+    )
+    spy = SpyDispatcher()
+    payload = _payload(
+        ids=["record-a", "record-b"],
+        affected_values=[
+            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
+        ],
+    )
+    event = {"body": json.dumps(payload), "headers": {}}
+
+    response = handler(event, context=None, dispatcher=spy)  # type: ignore[arg-type]
+
+    assert response["statusCode"] == 200
+    dispatched_ids = [e.external_id for e in spy.dispatched]
+    assert dispatched_ids == ["record-a", "record-b"]
+    assert json.loads(response["body"]) == {
+        "results": [
+            {"external_id": "record-a", "skipped": False},
+            {"external_id": "record-b", "skipped": False},
+        ]
+    }
+
+
+class PartiallyFailingDispatcher:
+    """バッチ内の特定external_idのみdispatch時に想定外の例外を起こすテスト用スタブ。
+
+    それ以外のexternal_idについては正常にdispatchし、記録する
+    （「1件の失敗が他の独立したレコードの処理を止めない」ことを確認するため）。
+    """
+
+    def __init__(self, failing_external_id: str) -> None:
+        self._failing_external_id = failing_external_id
+        self.dispatched: list[object] = []
+
+    def dispatch(self, event: object) -> DispatchResult:
+        if getattr(event, "external_id", None) == self._failing_external_id:
+            raise RuntimeError("boom (simulated unexpected dispatch failure)")
+        self.dispatched.append(event)
+        return DispatchResult(skipped=False)
+
+
+def test_handler_continues_dispatching_remaining_batch_events_after_one_unexpectedly_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """バッチ内の1イベント（record-b）で想定外の例外が起きても、他の独立したレコード
+    （record-a, record-c）のdispatchは試みられる（all-or-nothingにしない）。
+    Dispatcher.dispatch()はstale_eventチェックにより同一SyncEventの再dispatchが冪等なため、
+    レスポンス全体としては500を返しZohoのリトライを促しても、既に成功したrecord-a/record-cの
+    分が二重処理される実害は無い。"""
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.zoho_webhook._default_module_to_db_key",
+        lambda: MODULE_MAP,
+    )
+    dispatcher = PartiallyFailingDispatcher(failing_external_id="record-b")
+    payload = _payload(
+        ids=["record-a", "record-b", "record-c"],
+        affected_values=[
+            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
+            {"record_id": "record-c", "values": {"field71": "受注(Won)"}},
+        ],
+    )
+    event = {"body": json.dumps(payload), "headers": {}}
+
+    response = handler(event, context=None, dispatcher=dispatcher)  # type: ignore[arg-type]
+
+    assert response["statusCode"] == 500
+    dispatched_ids = [e.external_id for e in dispatcher.dispatched]
+    assert dispatched_ids == ["record-a", "record-c"]
 
 
 def test_handler_skips_entirely_when_zoho_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,7 +398,7 @@ def test_handler_returns_400_for_syntactically_valid_json_that_is_not_an_object(
     assert response["statusCode"] == 400
 
 
-def test_handler_returns_400_for_missing_data_records(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handler_returns_400_for_missing_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENABLE_ZOHO", "True")
     monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
     monkeypatch.setattr(
@@ -175,7 +406,7 @@ def test_handler_returns_400_for_missing_data_records(monkeypatch: pytest.Monkey
         lambda: MODULE_MAP,
     )
     payload = _payload()
-    payload["data"] = []
+    payload["ids"] = []
     event = {"body": json.dumps(payload), "headers": {}}
 
     response = handler(event, context=None)
@@ -198,7 +429,7 @@ def test_handler_returns_400_for_unknown_module(monkeypatch: pytest.MonkeyPatch)
     assert response["statusCode"] == 400
 
 
-# --- BLOCKER7: 共有トークン検証（body内のtokenフィールド方式） --------------------------
+# --- BLOCKER7: 共有トークン検証(body内のtokenフィールド方式) --------------------------
 # Zoho Notifications（watch）APIは着信リクエストへ任意のHTTPヘッダーを付与できないため、
 # 他ハンドラのX-Webhook-Secretヘッダー方式ではなく、通知ペイロードbody内の"token"フィールドを
 # ZOHO_WEBHOOK_SECRETと照合するverify_webhook_body_token()を使う（zoho_webhook.py参照）。

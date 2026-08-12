@@ -202,13 +202,16 @@ def test_webhook_zoho_dispatches_via_injected_wiring(
     spy = _SpyDispatcher()
     _override_wiring(_FakeWiring(dispatcher=spy))
     payload = {
+        "server_time": 1754960400000,
         "module": "Deals",  # PROJECT_SCHEMA.zoho_api_module
         "operation": "update",
-        "data": [
+        "ids": ["zoho-1"],
+        "affected_values": [
             {
-                "id": "zoho-1",
-                "Modified_Time": "2026-08-05T09:00:00+09:00",
-                "営業ステータス": "商談中(B)",
+                "record_id": "zoho-1",
+                # field71は実際にconfig/zoho_field_mapping.jsonへ登録済みの実在するapi_name
+                # （「営業ステータス」に対応）。
+                "values": {"field71": "商談中(B)"},
             }
         ],
     }
