@@ -49,13 +49,26 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.sync_engine.clients._http import raise_for_error
 from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
 
-DEFAULT_MODULE = "Deals"
+# 2026-08-12、`ZOHO_LABEL_FIELD_MAPPINGS`（zoho_field_transforms.py）でフィールドマッピングの
+# カバレッジを6モジュール分揃えたことに合わせ、watchチャンネルの購読対象もこの6モジュール
+# 全てへ拡張する（Zoho Notifications APIは1つのwatchエントリの`events`配列に複数モジュールの
+# 操作を混在させられるため、モジュールごとに別チャンネルを作る必要はない）。
+# `renew_zoho_watch_channel()`（cron自動延長）の既定値として使う。
+DEFAULT_MODULES: list[str] = [
+    "Deals",  # project
+    "CustomModule3",  # chain
+    "CustomModule2",  # action
+    "Accounts",  # client_master
+    "Contacts",  # contact
+    "Products",  # product
+]
 # Zoho公式ドキュメント記載の制約: channel_expiryは登録・延長時点から最大1日先まで。
 MAX_EXPIRY_DAYS = 1
 # scripts/register_zoho_webhook.py（手動CLI）の既定値。新規登録・手動延長では上限いっぱいの
@@ -124,7 +137,7 @@ def validate_expiry_days(days: int | float) -> None:
 def build_watch_payload(
     *,
     channel_id: str,
-    module: str,
+    modules: Sequence[str],
     notify_url: str,
     channel_expiry: str,
     token: str | None,
@@ -133,11 +146,17 @@ def build_watch_payload(
 
     `events`はZoho公式ドキュメント記載のスキーマ通り、`"{モジュールAPI名}.{操作}"`形式の
     文字列を並べたフラットな配列で送る（オブジェクト配列ではない）。対象モジュールの
-    全操作を監視したいため`"{module}.all"`の1件のみを含める。
+    全操作を監視したいため各モジュールにつき`"{module}.all"`を1件ずつ含める。
+
+    Zoho公式ドキュメントの例（`"events": ["Solutions.create", "Price_Books.create",
+    "Contacts.create", "Solutions.edit"]`）が示す通り、1つのwatchエントリの`events`配列は
+    複数モジュールの操作を混在させられる。そのため`modules`に複数モジュールを渡した場合も
+    watchエントリ（`channel_id`/`notify_url`/`token`）は1件のまま、`events`配列だけが
+    モジュール数分伸びる（モジュールごとに別チャンネルを作る必要はない）。
     """
     entry: dict[str, Any] = {
         "channel_id": channel_id,
-        "events": [f"{module}.all"],
+        "events": [f"{m}.all" for m in modules],
         "channel_expiry": channel_expiry,
         "notify_url": notify_url,
     }
@@ -174,6 +193,12 @@ def _confirmed_channel_ids(entry: Any) -> set[str]:
     実装し、本番延長が常に`did not confirm the requested channel_id`で失敗する不具合と
     なったため、実際のAPIレスポンスを直接確認した上で修正した）。
     形状が想定と異なる場合（dictでない・キー欠落等）はクラッシュせず空集合を返す。
+
+    このchannel_id照合だけでは「要求した6モジュールのうち一部だけがレスポンスへ
+    含まれていても全体を成功扱いにしてしまう」抜け穴があるため（1つのwatchエントリの
+    `events`配列に複数モジュールをまとめている以上、channel_id自体は各要素で共通であり
+    channel_idの一致だけではモジュール単位の欠落を検出できない）、モジュール単位の
+    照合は別途`_confirmed_modules()`で行う（`register_or_renew_watch()`参照）。
     """
     if not isinstance(entry, dict):
         return set()
@@ -187,6 +212,72 @@ def _confirmed_channel_ids(entry: Any) -> set[str]:
         event["channel_id"]
         for event in events
         if isinstance(event, dict) and isinstance(event.get("channel_id"), str)
+    }
+
+
+# `_confirmed_modules()`が`details.events[*]`の各要素からモジュール名を読み取る際に試す
+# フィールド名の候補（優先順）。"module"は本モジュールの既存テスト
+# （test_confirms_channel_id_from_response_with_one_event_entry_per_module）が実際の
+# レスポンス形として想定してきたフィールド。"resource_name"/"api_name"は
+# scripts/register_zoho_webhook.pyのモジュールdocstringに記載の、Zoho公式ドキュメントの
+# watch詳細GETレスポンス例に現れるフィールド名（ただし同ドキュメントの記載はGET専用
+# エンドポイント向けであり、POST/PUT `/actions/watch`のレスポンスに同じフィールドが
+# 含まれるかどうかは、本番Zoho APIへ6モジュール分をまとめて登録・延長した実際の
+# レスポンスではまだ確認できていない。`_confirmed_channel_ids()`のchannel_idネストと
+# 違い、複数モジュール一括登録での実地検証はまだ済んでいない）。次回、実際に6モジュール
+# 分をまとめて本番登録・延長した際に実レスポンスのevents要素を確認し、想定と異なって
+# いればこの候補リストとdocstringを更新すること。
+_MODULE_FIELD_CANDIDATES: tuple[str, ...] = ("module", "resource_name", "api_name")
+
+
+def _confirmed_modules(entry: Any) -> set[str]:
+    """`watch`応答の1エントリから、`details.events[*]`の各要素に含まれるモジュール名
+    （`_MODULE_FIELD_CANDIDATES`のいずれかのフィールド）を読み取り、集合として返す。
+
+    レスポンスにモジュール識別用フィールドが一切含まれない場合（フィールド名が
+    未確認のため今のところ実際に起こりうる。上記`_MODULE_FIELD_CANDIDATES`の
+    コメント参照）は空集合を返す。`register_or_renew_watch()`はこの関数が空集合を
+    返した場合、モジュール単位の照合を行わない（後方互換のため。channel_id照合の
+    みで確認済みとする）。形状が想定と異なる場合（dictでない・キー欠落等）は
+    クラッシュせず空集合として扱う。
+    """
+    if not isinstance(entry, dict):
+        return set()
+    details = entry.get("details")
+    if not isinstance(details, dict):
+        return set()
+    events = details.get("events")
+    if not isinstance(events, list):
+        return set()
+    modules: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        for field in _MODULE_FIELD_CANDIDATES:
+            value = event.get(field)
+            if isinstance(value, str) and value:
+                modules.add(value)
+                break
+    return modules
+
+
+def _requested_modules_from_payload(payload: dict[str, Any]) -> set[str]:
+    """送信したpayloadの`watch[0]["events"]`（`"{module}.{action}"`形式の文字列配列。
+    `build_watch_payload()`参照）から、要求したモジュール名の集合を復元する。
+
+    モジュールAPI名自体にはドット（`.`）は含まれない（`DEFAULT_MODULES`参照）ため、
+    先頭のドットまでをモジュール名として切り出せば十分。
+    """
+    requested_watch = payload.get("watch")
+    if not (isinstance(requested_watch, list) and requested_watch and isinstance(requested_watch[0], dict)):
+        return set()
+    events_sent = requested_watch[0].get("events")
+    if not isinstance(events_sent, list):
+        return set()
+    return {
+        event_str.split(".", 1)[0]
+        for event_str in events_sent
+        if isinstance(event_str, str) and "." in event_str
     }
 
 
@@ -208,6 +299,14 @@ def register_or_renew_watch(
     - `watch`配列内のいずれかのエントリの`status`が`"success"`でない
     - 送信したpayloadのchannel_idと一致する`status: "success"`エントリが1件も無い
       （channel_idが送信payloadから判別できる場合のみこの照合を行う）
+    - 【WARN1対策】要求した`modules`（1つのwatchエントリの`events`配列にまとめて含めた
+      複数モジュール）のうち、レスポンスから確認できたモジュール（`_confirmed_modules()`
+      参照）に含まれていないものが1件でもある場合。channel_idの一致だけでは「6モジュール
+      要求したのに実際には5モジュール分しか登録されなかった」というような部分的な失敗を
+      検出できない（channel_id自体は`events`配列内の全要素で共通のため）。この照合は
+      レスポンスからモジュール名を1件も読み取れなかった場合（フィールド名が未確認・
+      レスポンス形状が想定外等）はスキップする（`_confirmed_modules()`のdocstring参照。
+      後方互換のため、channel_id照合のみで確認済みとする）。
 
     エラーメッセージへ含めるZoho応答エントリは、`token`フィールドをエコーバックしてくる
     可能性があるため、必ず`redact_watch_entry_token()`を通してから文字列化する。
@@ -233,6 +332,7 @@ def register_or_renew_watch(
     requested_watch = payload.get("watch")
     if isinstance(requested_watch, list) and requested_watch and isinstance(requested_watch[0], dict):
         requested_channel_id = requested_watch[0].get("channel_id")
+    requested_modules = _requested_modules_from_payload(payload)
 
     watch_entries = body.get("watch")
     if not watch_entries:
@@ -242,6 +342,7 @@ def register_or_renew_watch(
         )
 
     confirmed = False
+    confirmed_modules: set[str] = set()
     for entry in watch_entries:
         if not isinstance(entry, dict):
             raise ZohoApiError(
@@ -252,12 +353,27 @@ def register_or_renew_watch(
             raise ZohoApiError(response.status_code, str(redact_watch_entry_token(entry)))
         if requested_channel_id is None or requested_channel_id in _confirmed_channel_ids(entry):
             confirmed = True
+            confirmed_modules |= _confirmed_modules(entry)
 
     if not confirmed:
         raise ZohoApiError(
             response.status_code,
             "zoho watch api response did not confirm the requested channel_id",
         )
+
+    # 【WARN1対策】レスポンスからモジュール名を1件も読み取れた場合のみ、要求した全モジュールが
+    # 揃っているかを照合する（読み取れなかった場合はスキップ。docstring・_confirmed_modules()参照）。
+    if confirmed_modules:
+        missing_modules = requested_modules - confirmed_modules
+        if missing_modules:
+            raise ZohoApiError(
+                response.status_code,
+                "zoho watch api response confirmed the channel_id but did not confirm all "
+                f"requested modules; missing module(s): {', '.join(sorted(missing_modules))} "
+                "(live sync for this/these module(s) would silently stop working). "
+                f"confirmed module(s): {', '.join(sorted(confirmed_modules))}. "
+                f"response watch entries: {[redact_watch_entry_token(e) for e in watch_entries]}",
+            )
 
     return body
 
@@ -282,7 +398,7 @@ def renew_zoho_watch_channel(
     client: HttpZohoClient,
     *,
     channel_id: str | None = None,
-    module: str = DEFAULT_MODULE,
+    modules: Sequence[str] = DEFAULT_MODULES,
     notify_url: str | None = None,
     token: str | None = None,
     expiry_days: int | float = CRON_RENEWAL_EXPIRY_DAYS,
@@ -301,6 +417,13 @@ def renew_zoho_watch_channel(
       呼び出し元であるcronは1日1回しか実行されないため、上限いっぱいを要求すると
       cronの実行間隔と失効タイミングがほぼ一致し安全マージンがゼロになる
       （`CRON_RENEWAL_EXPIRY_HOURS`のコメント・docs/zoho_webhook_activation_note.md参照）。
+    - `modules`の既定値は`DEFAULT_MODULES`（フィールドマッピングでカバー済みの6モジュール
+      全て）。以前は`module: str`単数引数（既定`Deals`のみ）だったが、これを延長し忘れると
+      `Deals`以外のモジュール変更がwebhook経由でNotionへ反映されず気づきにくいため、
+      モジュール単位の環境変数オーバーライドは設けず、常に固定の6モジュール分をまとめて
+      延長する方針にした（従来`module`用の環境変数オーバーライドは存在しなかったため、
+      後方互換の考慮も不要）。個別モジュールのみ延長したいテスト・呼び出しは`modules`引数へ
+      明示的にリストを渡せばよい。
     """
     resolved_channel_id = channel_id if channel_id is not None else os.environ.get(WATCH_CHANNEL_ID_ENV_VAR)
     if not resolved_channel_id:
@@ -327,7 +450,7 @@ def renew_zoho_watch_channel(
     channel_expiry = compute_channel_expiry(expiry_days)
     payload = build_watch_payload(
         channel_id=resolved_channel_id,
-        module=module,
+        modules=modules,
         notify_url=resolved_notify_url,
         channel_expiry=channel_expiry,
         token=token,
@@ -337,7 +460,7 @@ def renew_zoho_watch_channel(
     )
     return {
         "channel_id": resolved_channel_id,
-        "module": module,
+        "modules": list(modules),
         "channel_expiry": channel_expiry,
         "notify_url": resolved_notify_url,
         "response": response,

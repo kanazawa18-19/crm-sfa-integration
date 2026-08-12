@@ -40,7 +40,9 @@
 
 5. 有効化後の動作確認チェックリスト。
 
-   1. Zoho CRMで対象モジュール（`Deals`）のレコードを1件編集する。
+   1. Zoho CRMで対象モジュール（既定は`Deals`/`CustomModule3`/`CustomModule2`/`Accounts`/
+      `Contacts`/`Products`の6モジュール全て。`scripts/register_zoho_webhook.py`の
+      `DEFAULT_MODULES`参照）のレコードを1件編集する。
    2. Vercelのfunction logsで `/api/webhooks/zoho` への200レスポンスを確認する。
    3. 対応するNotionページが更新されたか確認する。
 
@@ -130,6 +132,24 @@ channel_idを一切保存せずに毎回発見する」方式も検討したが�
 はずで、それ以降のcronによる延長ではchannel_id自体は変わらない（PUTは同じchannel_idを
 指定し続けるだけ）ため、一度反映すれば継続的な手動作業は不要になる。
 
+### 単一チャンネルへの集約によるトレードオフ（blast radius）
+
+2026-08-12、watchチャンネルの購読対象を`Deals`単体から6モジュール
+（`Deals`/`CustomModule3`/`CustomModule2`/`Accounts`/`Contacts`/`Products`）へ拡張した際、
+モジュールごとに別チャンネルを作らず、1つのwatchチャンネル（1つの`channel_id`、`events`
+配列だけがモジュール数分伸びる形）へ意図的にまとめた（Zoho Notifications APIの制約上、
+モジュール単位でチャンネルを分けても管理コストが増えるだけで得られるものが乏しいための
+設計判断。`src/sync_engine/zoho_watch_channel.py`の`build_watch_payload()`docstring参照）。
+
+これにより運用はシンプルになる一方、**チャンネルの延長失敗や破損（`ZOHO_WATCH_CHANNEL_ID`が
+指す既存チャンネルが失効・削除される等）が起きた場合の影響範囲が、従来の`Deals`単体
+（1モジュール分）から一気に6モジュール全てへ拡大する**（blast radiusが6倍になる）。
+以前であれば「案件（Deals）の変更だけがNotionへ同期されなくなる」で済んでいたが、
+現在の設計では1回の延長失敗・チャンネル破損で案件・チェーン・アクション・取引先・
+連絡先・商品の6モジュール全ての即時同期が同時に無音で止まる。障害対応時は、まず
+影響範囲を「6モジュール全て」と仮定して調査を始めること（一部モジュールだけ復旧すれば
+よい、と思い込んで対応が遅れないように）。
+
 ### 延長に失敗した場合
 
 - `ZOHO_WATCH_CHANNEL_ID`が未設定（一度も上記の反映を行っていない等）の場合、
@@ -170,8 +190,14 @@ channel_idを一切保存せずに毎回発見する」方式も検討したが�
    リポジトリ内に見当たらなかったため、他のトークンと同様のURL-safeなランダム値として実装した。
    `config/.env`書き込みや外部呼び出しは一切行わない（値は手動でVercel環境変数等へ設定する）。
 2. `scripts/register_zoho_webhook.py` — Zoho CRM Notifications（watch）APIへ
-   `Deals`モジュール（`PROJECT_SCHEMA.zoho_api_module`）の購読を新規登録／更新（延長）する
-   スクリプト。既存 `HttpZohoClient`（`src/sync_engine/clients/zoho_client.py`）のトークン
+   6モジュール（`Deals`/`CustomModule3`/`CustomModule2`/`Accounts`/`Contacts`/`Products`。
+   `src/sync_engine/zoho_watch_channel.py`の`DEFAULT_MODULES`、各`DatabaseSchema.zoho_api_module`
+   と一致）の購読を1つのwatchチャンネルにまとめて新規登録／更新（延長）するスクリプト。
+   Zoho Notifications APIは1つのwatchエントリの`events`配列に複数モジュールの操作を
+   混在させられるため（公式ドキュメントの例:
+   `"events": ["Solutions.create", "Price_Books.create", "Contacts.create", "Solutions.edit"]`）、
+   モジュールごとに別チャンネルを作る必要はない。`--module`を繰り返し指定すると対象モジュールを
+   絞り込める。既存 `HttpZohoClient`（`src/sync_engine/clients/zoho_client.py`）のトークン
    リフレッシュ・キャッシュ・リトライをそのまま再利用するよう、`HttpZohoClient.request()`
    （任意の絶対URLへ認証ヘッダー付きで送る汎用メソッド）を追加して実装した。
    常にdry-run表示（何を送るか。tokenは`***REDACTED***`に伏せて表示する）を先に出力し、
@@ -192,8 +218,10 @@ channel_idを一切保存せずに毎回発見する」方式も検討したが�
 で拒否された。Zoho公式ドキュメント記載のリクエストスキーマを確認し、以下のように修正済み。
 
 - `events`は`"{モジュールAPI名}.{create|delete|edit|all}"`形式の文字列を並べたフラットな
-  配列。本スクリプトは対象モジュール全体を監視したいため`["{module}.all"]`（既定なら
-  `["Deals.all"]`）を送る。
+  配列。本スクリプトは対象モジュール全体を監視したいため各モジュールにつき`"{module}.all"`を
+  送る（既定なら`["Deals.all", "CustomModule3.all", "CustomModule2.all", "Accounts.all",
+  "Contacts.all", "Products.all"]`）。1つのwatchエントリの`events`配列に複数モジュールの
+  操作を混在させられるため、モジュール数が増えてもチャンネル自体は1つのままでよい。
 - `channel_expiry`はZoho側の制約により登録・延長時点から**最大1日先まで**。それを超える
   `--expiry-days`を指定すると、実際にAPIへ送る前に明確なエラーで拒否する
   （`register_zoho_webhook.py`の`validate_expiry_days()`）。既定値も`7`日から`1`日に変更済み。

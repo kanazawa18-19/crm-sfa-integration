@@ -570,3 +570,36 @@ def test_cron_zoho_webhook_renewal_returns_clean_error_when_response_body_is_a_b
 
     assert response.status_code == 502
     assert "zoho api error" in response.json()["detail"]
+
+
+def test_cron_zoho_webhook_renewal_defaults_to_all_six_modules(
+    client: TestClient, requests_mock, _real_zoho_watch_env: None
+) -> None:
+    """`run_zoho_webhook_renewal()`は`modules`を明示的に渡していないため、
+    `renew_zoho_watch_channel()`の既定値（フィールドマッピングでカバー済みの6モジュール、
+    `DEFAULT_MODULES`）で延長する。実コードパス（`register_or_renew_watch`まで）を通し、
+    実際にZohoへ送るリクエストボディの`events`配列で確認する。"""
+    from src.sync_engine.zoho_watch_channel import DEFAULT_MODULES
+
+    _mock_zoho_token(requests_mock)
+    requests_mock.put(
+        _WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    watch_calls = [req for req in requests_mock.request_history if req.url == _WATCH_URL]
+    assert len(watch_calls) == 1
+    sent_events = watch_calls[0].json()["watch"][0]["events"]
+    assert sent_events == [f"{module}.all" for module in DEFAULT_MODULES]

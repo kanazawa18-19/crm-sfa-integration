@@ -20,9 +20,10 @@ CHAIN_SCHEMA = DatabaseSchema(
     id_prefix="HC-",
     kintone_key="本部名",
     zoho_key="チェーン",
-    # Zoho標準モジュールに「チェーン」に相当するものが無いため、カスタムモジュールの
-    # プレースホルダを割り当てる（実際のカスタムモジュールAPI名が確定次第、置き換えること）。
-    zoho_api_module="CustomModule1",
+    # 2026-08-12、Zoho本番API(GET /crm/v3/settings/modules)で実際のカスタムモジュール一覧を
+    # 確認し確定した値(plural_label="チェーン")。CustomModule1は別モジュール(plural_label=
+    # "商談1"、案件の亜種)であり、以前のプレースホルダ値のまま誤って使われていた。
+    zoho_api_module="CustomModule3",
     spreadsheet_sheet_name="チェーン",
     notion_database_id="d6cb6fe0-5667-416c-a416-ac321d2ea52a",
     properties=(

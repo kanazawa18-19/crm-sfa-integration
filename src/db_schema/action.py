@@ -37,8 +37,13 @@ ACTION_SCHEMA = DatabaseSchema(
     id_prefix="SA-AC-",
     kintone_key="アクション管理 レコード番号",
     zoho_key="アクション",
-    # Zoho標準モジュール（Tasks/Calls/Events等）はアクション履歴DBの粒度と一致しないため、
-    # カスタムモジュールのプレースホルダを割り当てる（確定次第、置き換えること）。
+    # 2026-08-12、CustomModule2の実フィールド一覧をZoho本番APIから取得し、
+    # transform_zoho_action()（src/migration/zoho_action.py）が実際に読んでいる列と
+    # 突き合わせて確認済み（Name→アクション名、Owner→アクションの担当者、
+    # field7→アクション種別が明確に対応）。chain.pyのCustomModule1誤りの件と同様、
+    # 未検証のまま放置すると同種の事故につながるため、Zoho標準モジュール
+    # （Tasks/Calls/Events等）ではなくCustomModule2が正しいアクション履歴用モジュールで
+    # あることを、この確認をもって確定値として扱う。
     zoho_api_module="CustomModule2",
     spreadsheet_sheet_name="アクション管理",
     notion_database_id="d1e4a612-560e-4eb9-8212-053f3901790a",

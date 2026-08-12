@@ -18,6 +18,14 @@ from src.sync_engine.webhook_handlers.zoho_webhook import handler, zoho_payload_
 # フィールド変換テストが実際のマッピングファイルの内容と噛み合わなくなる。
 MODULE_MAP = {"Deals": "project"}
 
+# 他5db_key用のmodule_to_db_key（実際のzoho_api_moduleの値と一致させてある）。
+ACTION_MODULE_MAP = {"CustomModule2": "action"}
+CLIENT_MASTER_MODULE_MAP = {"Accounts": "client_master"}
+CONTACT_MODULE_MAP = {"Contacts": "contact"}
+PRODUCT_MODULE_MAP = {"Products": "product"}
+CHAIN_MODULE_MAP = {"CustomModule3": "chain"}
+
+
 DEFAULT_RECORD_ID = "4876876000000488001"
 DEFAULT_SERVER_TIME_MS = 1754960400000
 DEFAULT_OCCURRED_AT = datetime.fromtimestamp(DEFAULT_SERVER_TIME_MS / 1000, tz=timezone.utc)
@@ -350,6 +358,324 @@ def test_zoho_payload_to_sync_events_transform_raising_skips_only_that_field(
 
     assert events[0].properties == {"初期費用": 500000.0}
     assert any("field2" in record.getMessage() for record in caplog.records)
+
+
+# --- chain（CustomModule3）のper-fieldマッピング ------------------------------------------
+# 2026-08-12、モジュール取り違えを調査・修正済み（zoho_field_transforms.pyのdocstring参照）。
+# CustomModule3が正しいチェーンモジュールで、実際のライブAPI（config/zoho_field_mapping.json）
+# のapi_name/ラベルをそのまま使う（project/action等の他db_keyと同じ書き方）。
+
+
+def test_zoho_payload_to_sync_events_chain_same_name_field_passthrough() -> None:
+    payload = _payload(
+        module="CustomModule3",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field5": "株式会社サンプル本社"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CHAIN_MODULE_MAP)
+
+    assert events[0].properties == {"本社": "株式会社サンプル本社"}
+
+
+def test_zoho_payload_to_sync_events_chain_renamed_field_url() -> None:
+    """「チェーンURL」（Zohoラベル、URL1）→「URL」（Notionプロパティ名）のリネームを確認する。"""
+    payload = _payload(
+        module="CustomModule3",
+        affected_values=[
+            {
+                "record_id": DEFAULT_RECORD_ID,
+                "values": {"URL1": "https://example.com/chain"},
+            }
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CHAIN_MODULE_MAP)
+
+    assert events[0].properties == {"URL": "https://example.com/chain"}
+
+
+def test_zoho_payload_to_sync_events_chain_approach_status_is_normalized() -> None:
+    """「アプローチ状況」（field12）はnormalize_approach_status()でCHAIN_SCHEMAの既存選択肢と
+    照合される（未知の値はNoneへフォールバック、zoho_chain.py参照）。"""
+    payload = _payload(
+        module="CustomModule3",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field12": "アポ確定済み"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CHAIN_MODULE_MAP)
+
+    assert events[0].properties == {"アプローチ状況": "アポ確定済み"}
+
+
+def test_zoho_payload_to_sync_events_chain_deliberately_excluded_field_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """「その他」（field）はCHAIN_SCHEMA上書き込み可能なTEXT型プロパティだが、
+    transform_zoho_chain()が一度も書き込んでいないため対象外（zoho_field_transforms.py参照）。"""
+    payload = _payload(
+        module="CustomModule3",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field": "リンカーン"}}
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CHAIN_MODULE_MAP)
+
+    assert events[0].properties == {}
+    assert any("label='その他'" in record.getMessage() for record in caplog.records)
+
+
+# --- action（CustomModule2）のper-fieldマッピング ------------------------------------------
+
+
+def test_zoho_payload_to_sync_events_action_same_name_field_passthrough() -> None:
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field": "架電済み"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert events[0].properties == {"履歴メモ": "架電済み"}
+
+
+def test_zoho_payload_to_sync_events_action_renamed_field_action_name_to_title() -> None:
+    """「アクション名」（Zohoラベル、Name）→「商談回数・電話回数・メール回数（何回目）」
+    （ACTION_SCHEMAのtitleプロパティ）のリネームを確認する。"""
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"Name": "【電話】4回目"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert events[0].properties == {"商談回数・電話回数・メール回数（何回目）": "【電話】4回目"}
+
+
+def test_zoho_payload_to_sync_events_action_date_field_is_normalized() -> None:
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field4": "2024年5月10日"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert events[0].properties == {"アクション日": "2024-05-10"}
+
+
+def test_zoho_payload_to_sync_events_action_deliberately_excluded_field_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """「アクション種別」（field7）はACTION_SCHEMA上書き込み可能なSELECT型だが、
+    transform_zoho_action()ではこの列を直接読まず「アクション名」から間接的に算出しており、
+    1ラベル→1プロパティ固定の本テーブルでは同時に2プロパティへ書き込めないため対象外
+    （zoho_field_transforms.py参照）。"""
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field7": "テレアポ"}}
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert events[0].properties == {}
+    assert any("field7" in record.getMessage() for record in caplog.records)
+
+
+# --- client_master（Accounts）のper-fieldマッピング -----------------------------------------
+
+
+def test_zoho_payload_to_sync_events_client_master_same_name_field_passthrough() -> None:
+    payload = _payload(
+        module="Accounts",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field11": "東京都渋谷区1-1-1"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(
+        payload, {}, module_to_db_key=CLIENT_MASTER_MODULE_MAP
+    )
+
+    assert events[0].properties == {"住所": "東京都渋谷区1-1-1"}
+
+
+def test_zoho_payload_to_sync_events_client_master_renamed_field_phone_to_tel() -> None:
+    """「電話番号」（Zohoラベル、Phone）→「TEL」のリネームを確認する。"""
+    payload = _payload(
+        module="Accounts",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"Phone": "03-1234-5678"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(
+        payload, {}, module_to_db_key=CLIENT_MASTER_MODULE_MAP
+    )
+
+    assert events[0].properties == {"TEL": "03-1234-5678"}
+
+
+def test_zoho_payload_to_sync_events_client_master_prefecture_is_normalized() -> None:
+    """「都道府県」はnormalize_prefecture()でCLIENT_MASTER_SCHEMAの既存選択肢と照合される。"""
+    payload = _payload(
+        module="Accounts",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field14": "東京都"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(
+        payload, {}, module_to_db_key=CLIENT_MASTER_MODULE_MAP
+    )
+
+    assert events[0].properties == {"都道府県": "東京都"}
+
+
+def test_zoho_payload_to_sync_events_client_master_deliberately_excluded_field_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """「施設名」（field10）はtransform_zoho_client_master()で一度も書き込まれていないため
+    対象外。"""
+    payload = _payload(
+        module="Accounts",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field10": "サンプルホテル"}}
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(
+            payload, {}, module_to_db_key=CLIENT_MASTER_MODULE_MAP
+        )
+
+    assert events[0].properties == {}
+    assert any("field10" in record.getMessage() for record in caplog.records)
+
+
+# --- contact（Contacts）のper-fieldマッピング ------------------------------------------------
+# contactはtransform_zoho_contact()自体が単純なpassthrough（normalize_date等の複雑な値変換が
+# 一つも無い）ため、「値変換」カテゴリの代わりに空文字列→Noneへの変換（`v or None`）を確認する。
+
+
+def test_zoho_payload_to_sync_events_contact_same_name_field_passthrough() -> None:
+    payload = _payload(
+        module="Contacts",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field2": "部長"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CONTACT_MODULE_MAP)
+
+    assert events[0].properties == {"役職": "部長"}
+
+
+def test_zoho_payload_to_sync_events_contact_renamed_field_department() -> None:
+    """「部署名」（Zohoラベル、field4）→「部署」のリネームを確認する。"""
+    payload = _payload(
+        module="Contacts",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field4": "営業部"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CONTACT_MODULE_MAP)
+
+    assert events[0].properties == {"部署": "営業部"}
+
+
+def test_zoho_payload_to_sync_events_contact_empty_string_becomes_none() -> None:
+    """transform_zoho_contact()が持つ唯一の値変換らしい変換（`v or None`による空文字列の
+    None化）を確認する。"""
+    payload = _payload(
+        module="Contacts",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field2": ""}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CONTACT_MODULE_MAP)
+
+    assert events[0].properties == {"役職": None}
+
+
+def test_zoho_payload_to_sync_events_contact_deliberately_excluded_field_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """「名刺交換日」（field6）はCONTACT_SCHEMA上`RequirementLevel.AUTO`かつEight連携専用の
+    プロパティで、今回のZoho連携では意図的に書き込まない（transform_zoho_contact()参照）。"""
+    payload = _payload(
+        module="Contacts",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field6": "2026-08-01"}}
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CONTACT_MODULE_MAP)
+
+    assert events[0].properties == {}
+    assert any("field6" in record.getMessage() for record in caplog.records)
+
+
+# --- product（Products）のper-fieldマッピング ------------------------------------------------
+# productは3フィールドとも全てZohoラベルとNotionプロパティ名が異なる（同名パススルーの
+# フィールドが1つも無い）ため、「同名・変換無し」カテゴリの代わりに全フィールドがリネームで
+# あることを示すテストとする。
+
+
+def test_zoho_payload_to_sync_events_product_renamed_field_name_to_title() -> None:
+    """「サービス・商品名」（Zohoラベル、Product_Name）→「名前」のリネームを確認する。"""
+    payload = _payload(
+        module="Products",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"Product_Name": "リンカーン"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=PRODUCT_MODULE_MAP)
+
+    assert events[0].properties == {"名前": "リンカーン"}
+
+
+def test_zoho_payload_to_sync_events_product_initial_fee_is_cast_to_float() -> None:
+    """「初期費用」（field）→「標準初期費用」はリネームかつfloatキャストの両方が必要。"""
+    payload = _payload(
+        module="Products",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field": "100000"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=PRODUCT_MODULE_MAP)
+
+    assert events[0].properties == {"標準初期費用": 100000.0}
+
+
+def test_zoho_payload_to_sync_events_product_deliberately_excluded_field_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """「サービス・商品カテゴリー」（Product_Category）はtransform_zoho_product()が一度も
+    書き込んでいないため対象外。「課金形態」もPRODUCT_SCHEMA上REQUIREDだがZoho側に対応する
+    列が存在せず常に固定の既定値のため同様に対象外（zoho_field_transforms.py参照）。"""
+    payload = _payload(
+        module="Products",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"Product_Category": "宿泊"}}
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=PRODUCT_MODULE_MAP)
+
+    assert events[0].properties == {}
+    assert any("Product_Category" in record.getMessage() for record in caplog.records)
 
 
 def test_zoho_payload_to_sync_events_converts_server_time_epoch_millis_to_utc_datetime() -> None:

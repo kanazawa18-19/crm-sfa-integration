@@ -3,10 +3,15 @@
 （`POST /api/webhooks/zoho`, `src/sync_engine/webhook_handlers/zoho_webhook.py`）を
 購読登録／更新（延長）するスクリプト。
 
-対象は `Deals` モジュール（`src/db_schema/project.py` の `PROJECT_SCHEMA.zoho_api_module`
-と一致させる）。認証は `src/sync_engine/clients/zoho_client.py` の `HttpZohoClient` を再利用し、
-`ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` からのトークンリフレッシュ・
-キャッシュをそのまま流用する（本スクリプト独自の認証パスは持たない）。
+既定では `Deals`（project）/`CustomModule3`（chain）/`CustomModule2`（action）/
+`Accounts`（client_master）/`Contacts`（contact）/`Products`（product）の6モジュール全てを
+1つのwatchチャンネルで購読登録する（`src/sync_engine/zoho_watch_channel.py`の
+`DEFAULT_MODULES`。各`DatabaseSchema.zoho_api_module`と一致させたもの）。Zoho Notifications
+APIは1つのwatchエントリの`events`配列に複数モジュールの操作を混在させられるため、
+モジュールごとに別チャンネルを作る必要はない。`--module`を明示指定（複数回指定可）すると
+対象モジュールを絞り込める。認証は `src/sync_engine/clients/zoho_client.py` の
+`HttpZohoClient` を再利用し、`ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` からの
+トークンリフレッシュ・キャッシュをそのまま流用する（本スクリプト独自の認証パスは持たない）。
 
 ■ Zoho通知の認証はbody内`token`フィールド方式（解決済み） -----------------------------------
 Zoho CRM Notifications（watch）APIのリクエストスキーマ（`POST /crm/v3/actions/watch`）は、
@@ -47,8 +52,11 @@ Zoho CRM Notifications（watch）APIのリクエストスキーマ（`POST /crm/
     }
 
 - `events`は`"{モジュールAPI名}.{create|delete|edit|all}"`形式の文字列を並べたフラットな配列。
-  本スクリプトは対象モジュール全体の変更を監視したいため`["{module}.all"]`を送る
-  （`module`は`--module`/既定`Deals`のそのままの値）。
+  本スクリプトは対象モジュール全体の変更を監視したいため`["{module}.all" for module in modules]`を
+  送る（`modules`は`--module`（複数回指定可）/既定`DEFAULT_MODULES`の6モジュール）。Zoho公式
+  ドキュメントの例（`"events": ["Solutions.create", "Price_Books.create", "Contacts.create",
+  "Solutions.edit"]`）通り、1つのwatchエントリの`events`配列に複数モジュールの操作を
+  混在させられるため、モジュール数が増えてもwatchエントリ自体は1件のままでよい。
 - `channel_expiry`は登録・延長時点から**最大1日先まで**（Zoho側の制約）。それを超える値を
   指定すると、以前と同様のINVALID_DATAで本番Zoho APIへ拒否される。本スクリプトは
   `--expiry-days`が`_MAX_EXPIRY_DAYS`（1日）を超える場合、実際にAPIへ送る前に明確な
@@ -57,8 +65,9 @@ Zoho CRM Notifications（watch）APIのリクエストスキーマ（`POST /crm/
   側にのみ現れるものであり、登録リクエストのペイロードには含めない。
 
 ■ このスクリプトが行うこと ---------------------------------------------------------------------
-1. `Deals` モジュール向けのwatchペイロード（channel_id/events/channel_expiry/notify_url/token）を
-   組み立てて表示する（常に実行される。dry-run表示）。
+1. 対象モジュール（既定は`DEFAULT_MODULES`の6モジュール、`--module`で絞り込み可）向けの
+   watchペイロード（channel_id/events/channel_expiry/notify_url/token）を組み立てて表示する
+   （常に実行される。dry-run表示）。
 2. `--channel-id` を指定した場合は既存チャンネルの更新（延長）としてPUT、指定しない場合は
    前回`--yes`成功時に保存された`.zoho_watch_channel.json`のchannel_idがあればそれを延長対象
    として使う（無ければ新規登録としてPOST、channel_idは自動生成する）。
@@ -88,12 +97,16 @@ Zohoのwatchチャンネルは最大1日で失効するため、本スクリプ�
 手動で反映すること（詳細は`docs/zoho_webhook_activation_note.md`参照）。
 
 使い方:
-    # dry-run（常定。何が送られるかを確認するだけ）
+    # dry-run（常定。何が送られるかを確認するだけ。--module省略時はDEFAULT_MODULESの6モジュール）
     python scripts/register_zoho_webhook.py --base-url https://crm-sfa-integration.vercel.app
 
     # 既存チャンネルの延長（channel_idは前回登録時のレスポンス/ログから取得したもの）
     python scripts/register_zoho_webhook.py --base-url https://crm-sfa-integration.vercel.app \\
         --channel-id 1000000026001
+
+    # 対象モジュールを絞り込みたい場合は--moduleを繰り返し指定する
+    python scripts/register_zoho_webhook.py --base-url https://crm-sfa-integration.vercel.app \\
+        --module Deals --module Contacts
 
     # 実際に登録/更新する（要 ZOHO_CLIENT_ID/ZOHO_CLIENT_SECRET/ZOHO_REFRESH_TOKEN、および
     # ローカルシェルでVercel本番と同じ値をexportしたZOHO_WEBHOOK_SECRET。BLOCKER3対策により、
@@ -116,7 +129,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.sync_engine.zoho_watch_channel import (
     DEFAULT_EXPIRY_DAYS as _DEFAULT_EXPIRY_DAYS,
-    DEFAULT_MODULE as _DEFAULT_MODULE,
+    DEFAULT_MODULES as _DEFAULT_MODULES,
     DEFAULT_WATCH_API_BASE_URL as _DEFAULT_WATCH_API_BASE_URL,
     MAX_EXPIRY_DAYS as _MAX_EXPIRY_DAYS,
     build_watch_payload,
@@ -187,7 +200,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="このデプロイのベースURL（例: https://crm-sfa-integration.vercel.app）。"
         "末尾に /api/webhooks/zoho を付けたURLをnotify_urlとして登録する。",
     )
-    parser.add_argument("--module", default=_DEFAULT_MODULE, help=f"対象Zohoモジュール（既定: {_DEFAULT_MODULE}）")
+    parser.add_argument(
+        "--module",
+        dest="modules",
+        action="append",
+        default=None,
+        help="対象Zohoモジュール。複数指定する場合は--moduleを繰り返す"
+        f"（例: --module Deals --module Contacts）。省略時は既定の{len(_DEFAULT_MODULES)}モジュール"
+        f"全て（{', '.join(_DEFAULT_MODULES)}）を対象とする。",
+    )
     parser.add_argument(
         "--channel-id",
         default=None,
@@ -226,7 +247,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "ZOHO_WEBHOOK_SECRETがVercel本番と食い違って（あるいは未設定のまま）実行し、"
         "『登録済みだが受信側で全通知401拒否される』状態に気づかず陥る事故を防ぐため。",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.modules is None:
+        args.modules = list(_DEFAULT_MODULES)
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -256,7 +280,7 @@ def main(argv: list[str] | None = None) -> None:
     channel_expiry = compute_channel_expiry(args.expiry_days)
     payload = build_watch_payload(
         channel_id=channel_id,
-        module=args.module,
+        modules=args.modules,
         notify_url=notify_url,
         channel_expiry=channel_expiry,
         token=args.token,
@@ -267,7 +291,7 @@ def main(argv: list[str] | None = None) -> None:
     print("=== Zoho Notifications(watch) 登録内容（dry-run表示） ===")
     print(f"  操作          : {'更新（延長）' if is_renewal else '新規登録'}")
     print(f"  method / url  : {method} {url}")
-    print(f"  module        : {args.module}")
+    print(f"  modules       : {', '.join(args.modules)}")
     print(f"  channel_id    : {channel_id}")
     print(f"  channel_expiry: {channel_expiry}")
     print(f"  notify_url    : {notify_url}")

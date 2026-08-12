@@ -245,7 +245,9 @@ def run_zoho_webhook_renewal() -> dict[str, Any]:
     への通知が無音で止まる（`docs/zoho_webhook_activation_note.md`参照）。Vercel Hobbyプランの
     制約でcronは1日1回しか実行できないため、`renew_zoho_watch_channel()`は毎回、Zoho上限の
     24hではなく21h先のchannel_expiryを要求し、3時間分の安全マージンを確保する
-    （`expiry_days`未指定時の既定値`CRON_RENEWAL_EXPIRY_DAYS`）。実際の延長ロジック・
+    （`expiry_days`未指定時の既定値`CRON_RENEWAL_EXPIRY_DAYS`）。対象モジュールも省略時は
+    `DEFAULT_MODULES`（`Deals`/`CustomModule3`/`CustomModule2`/`Accounts`/`Contacts`/`Products`
+    の6モジュール）全てを1つのwatchチャンネルでまとめて延長する。実際の延長ロジック・
     channel_idの一次情報源（環境変数`ZOHO_WATCH_CHANNEL_ID`）の設計判断は
     `src/sync_engine/zoho_watch_channel.py`の`renew_zoho_watch_channel()`を参照。
 

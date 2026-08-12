@@ -67,9 +67,10 @@ Notion「営業ステータス」プロパティが実データで100%空欄で�
 Zoho「ステージ」列にしか無いこと、および金沢さんの方針「Notionの営業ステータスを
 マスターにしたくない、Zohoの生の値をそのまま使いたい」という確認済みの製品判断のため
 （"賢い変換"へ直したくなっても、これはバグではないので注意）。
-project以外のdb_key（chain/contact/client_master/product/action、まだWebhookトラフィックが
-無い）はこの per-field マッピングテーブルが無いため、従来通りZohoラベルをそのまま
-プロパティキーとして扱う簡易挙動のまま。
+2026-08-12、残る5つのdb_key（chain/contact/client_master/product/action）についても
+同じ方式でper-fieldマッピングテーブルを整備した。将来db_keyが追加され対応する
+マッピングが未整備の場合は、従来通りZohoラベルをそのままプロパティキーとして扱う
+簡易挙動にフォールバックする。
 
 認証: Zoho Notifications（watch）APIは着信リクエストへ任意のHTTPヘッダーを付与させる仕組みを
 持たないため、他ハンドラのようなverify_webhook_secret()（X-Webhook-Secretヘッダー方式）は
@@ -152,8 +153,9 @@ def zoho_payload_to_sync_events(
     schema = get_schema(db_key)
     occurred_at = _server_time_to_datetime(payload)
     sync_system_id = get_header(headers, HEADER_NAME)
-    # 現状projectのみ整備済み（zoho_field_transforms.py参照）。project以外はNoneのままとなり、
-    # 下のループで従来通りの簡易挙動（Zohoラベル==プロパティキー）にフォールバックする。
+    # 2026-08-12時点で6db_key全て整備済み（zoho_field_transforms.py参照）。将来db_keyが
+    # 追加され対応するper-fieldマッピングが未整備の場合はNoneのままとなり、下のループで
+    # 従来通りの簡易挙動（Zohoラベル==プロパティキー）にフォールバックする。
     field_mapping = ZOHO_LABEL_FIELD_MAPPINGS.get(db_key)
 
     events: list[SyncEvent] = []
@@ -192,7 +194,7 @@ def zoho_payload_to_sync_events(
                 continue
 
             if field_mapping is not None:
-                # db_key専用のper-fieldマッピングテーブルがある場合（現状projectのみ）:
+                # db_key専用のper-fieldマッピングテーブル（ZOHO_LABEL_FIELD_MAPPINGS）がある場合:
                 # Zohoラベルをそのまま最終的なNotionプロパティ名として使わず、
                 # (Notionプロパティ名, 値変換関数)を引く。確度/例外スイッチ/FORMULA・ROLLUP型
                 # プロパティ等、意図的にマッピングから除外されているラベルはここで見つからず、
@@ -227,8 +229,9 @@ def zoho_payload_to_sync_events(
                 properties[notion_property] = transformed_value
                 continue
 
-            # field_mappingが未整備のdb_key（project以外、まだWebhookトラフィックが無い）は
-            # 従来通りZohoラベルをそのままプロパティキーとして使う簡易挙動を維持する。
+            # field_mappingが未整備のdb_key（ZOHO_LABEL_FIELD_MAPPINGSにエントリが無い場合。
+            # 将来db_keyが追加され対応が後回しになった場合等）は、従来通りZohoラベルを
+            # そのままプロパティキーとして使う簡易挙動を維持する。
             try:
                 schema.get_property(label)
             except KeyError:

@@ -23,6 +23,7 @@ from scripts.register_zoho_webhook import (
     validate_expiry_days,
 )
 from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
+from src.sync_engine.zoho_watch_channel import DEFAULT_MODULES
 
 TOKEN_URL = "https://accounts.zoho.com/oauth/v2/token"
 WATCH_API_BASE_URL = "https://www.zohoapis.mock/crm/v3"
@@ -73,10 +74,10 @@ def test_validate_expiry_days_rejects_value_exceeding_zoho_limit() -> None:
         validate_expiry_days(7)
 
 
-def test_build_watch_payload_includes_module_and_notify_url() -> None:
+def test_build_watch_payload_includes_modules_and_notify_url() -> None:
     payload = build_watch_payload(
         channel_id="123",
-        module="Deals",
+        modules=["Deals"],
         notify_url="https://example.com/api/webhooks/zoho",
         channel_expiry="2026-08-19T09:00:00+00:00",
         token="secret-token",
@@ -98,7 +99,7 @@ def test_build_watch_payload_includes_module_and_notify_url() -> None:
 def test_build_watch_payload_omits_token_when_not_provided() -> None:
     payload = build_watch_payload(
         channel_id="123",
-        module="Deals",
+        modules=["Deals"],
         notify_url="https://example.com/api/webhooks/zoho",
         channel_expiry="2026-08-19T09:00:00+00:00",
         token=None,
@@ -113,10 +114,33 @@ def test_build_watch_payload_omits_token_when_not_provided() -> None:
 def test_parse_args_defaults_to_fresh_registration() -> None:
     args = parse_args(["--base-url", "https://example.com"])
 
-    assert args.module == "Deals"
     assert args.channel_id is None
     assert args.expiry_days == 1
     assert args.yes is False
+
+
+def test_parse_args_defaults_modules_to_all_six_when_module_not_specified() -> None:
+    """`--module`省略時は、フィールドマッピングでカバー済みの6モジュール全て
+    （`DEFAULT_MODULES`）が対象になる。"""
+    args = parse_args(["--base-url", "https://example.com"])
+
+    assert args.modules == DEFAULT_MODULES
+
+
+def test_parse_args_module_is_repeatable_to_narrow_target_modules() -> None:
+    """`--module`を複数回指定すると、指定した順にそのモジュールだけへ絞り込まれる。"""
+    args = parse_args(
+        [
+            "--base-url",
+            "https://example.com",
+            "--module",
+            "Deals",
+            "--module",
+            "Contacts",
+        ]
+    )
+
+    assert args.modules == ["Deals", "Contacts"]
 
 
 def test_parse_args_with_channel_id_for_renewal() -> None:
@@ -142,7 +166,7 @@ def test_register_or_renew_watch_posts_for_fresh_registration(requests_mock) -> 
     client = HttpZohoClient()
     payload = build_watch_payload(
         channel_id="123",
-        module="Deals",
+        modules=["Deals"],
         notify_url="https://example.com/api/webhooks/zoho",
         channel_expiry="2026-08-19T09:00:00+00:00",
         token=None,
@@ -175,7 +199,7 @@ def test_register_or_renew_watch_puts_for_renewal(requests_mock) -> None:
     client = HttpZohoClient()
     payload = build_watch_payload(
         channel_id="123",
-        module="Deals",
+        modules=["Deals"],
         notify_url="https://example.com/api/webhooks/zoho",
         channel_expiry="2026-08-19T09:00:00+00:00",
         token=None,
@@ -199,7 +223,7 @@ def test_register_or_renew_watch_raises_on_non_success_entry(requests_mock) -> N
     client = HttpZohoClient()
     payload = build_watch_payload(
         channel_id="123",
-        module="Deals",
+        modules=["Deals"],
         notify_url="https://example.com/api/webhooks/zoho",
         channel_expiry="2026-08-19T09:00:00+00:00",
         token=None,
@@ -217,7 +241,7 @@ def test_register_or_renew_watch_raises_on_http_error(requests_mock) -> None:
     client = HttpZohoClient()
     payload = build_watch_payload(
         channel_id="123",
-        module="Deals",
+        modules=["Deals"],
         notify_url="https://example.com/api/webhooks/zoho",
         channel_expiry="2026-08-19T09:00:00+00:00",
         token=None,
