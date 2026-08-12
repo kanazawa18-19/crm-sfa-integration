@@ -52,6 +52,25 @@ DatabaseSchemaのプロパティ名として使う日本語ラベル（例: "営
 実際のZoho API から取得・更新する静的データ）を参照する
 src.sync_engine.zoho_field_mapping.resolve_zoho_field_label() に委譲する。
 
+さらに、api_name -> Zohoラベルの変換だけでは不十分（2026-08-12、実際のZoho本番編集が
+Notionへ反映されないBLOCKERとして発覚）。Zohoラベルは必ずしもNotionプロパティ名と一致しない
+（例: Zohoの「ステージ」列 → Notionの「営業ステータス」プロパティ）上、日付の正規化や
+文字列boolのbool化等の値変換が必要なプロパティもある。このため2段階目の変換として、
+db_key="project"（Zoho Dealsモジュール）に限り
+src.sync_engine.webhook_handlers.zoho_field_transforms.ZOHO_LABEL_FIELD_MAPPINGSで
+Zohoラベル -> (Notionプロパティ名, 値変換関数) を引く。このテーブルは新規に考案したもの
+ではなく、一括移行コード`src/migration/zoho_project.py`のtransform_zoho_project()で金沢さんの
+承認を得て既に確定させたフィールドごとの判断を、部分更新（1フィールド単位）向けに移植した
+もの（詳細はzoho_field_transforms.pyのdocstring参照）。
+「ステージ」→「営業ステータス」が値をそのまま書き込む（変換・圧縮しない）のは、
+Notion「営業ステータス」プロパティが実データで100%空欄で実質的なステータス情報が
+Zoho「ステージ」列にしか無いこと、および金沢さんの方針「Notionの営業ステータスを
+マスターにしたくない、Zohoの生の値をそのまま使いたい」という確認済みの製品判断のため
+（"賢い変換"へ直したくなっても、これはバグではないので注意）。
+project以外のdb_key（chain/contact/client_master/product/action、まだWebhookトラフィックが
+無い）はこの per-field マッピングテーブルが無いため、従来通りZohoラベルをそのまま
+プロパティキーとして扱う簡易挙動のまま。
+
 認証: Zoho Notifications（watch）APIは着信リクエストへ任意のHTTPヘッダーを付与させる仕組みを
 持たないため、他ハンドラのようなverify_webhook_secret()（X-Webhook-Secretヘッダー方式）は
 使えない。代わりに上記の通りbody内の"token"フィールドをZOHO_WEBHOOK_SECRETと照合する
@@ -78,6 +97,7 @@ from src.sync_engine.webhook_handlers._common import (
     unauthorized_response,
     verify_webhook_body_token,
 )
+from src.sync_engine.webhook_handlers.zoho_field_transforms import ZOHO_LABEL_FIELD_MAPPINGS
 from src.sync_engine.zoho_field_mapping import resolve_zoho_field_label
 
 
@@ -132,6 +152,9 @@ def zoho_payload_to_sync_events(
     schema = get_schema(db_key)
     occurred_at = _server_time_to_datetime(payload)
     sync_system_id = get_header(headers, HEADER_NAME)
+    # 現状projectのみ整備済み（zoho_field_transforms.py参照）。project以外はNoneのままとなり、
+    # 下のループで従来通りの簡易挙動（Zohoラベル==プロパティキー）にフォールバックする。
+    field_mapping = ZOHO_LABEL_FIELD_MAPPINGS.get(db_key)
 
     events: list[SyncEvent] = []
     for raw_id in ids:
@@ -154,18 +177,61 @@ def zoho_payload_to_sync_events(
         # notion_webhook.pyのような型ホワイトリストまでは設けない簡易対応）。
         properties: dict[str, Any] = {}
         for api_name, value in matched_values.items():
-            # api_name -> ラベルへ変換できない（マッピング未登録）場合と、変換できてもschema側に
-            # 該当プロパティが無い場合を、同じ「未知のフィールドとしてスキップ」の警告ログへ合流させる
-            # （呼び出し元にとってはどちらも「このフィールドは同期対象外」という同じ結果のため）。
-            # このスキップは当該レコード（イベント）のみに閉じており、バッチ内の他レコードの
-            # 処理には影響しない。
+            # api_name -> ラベルへ変換できない（マッピング未登録）場合と、ラベルは解決できても
+            # 後続のマッピングでNotionプロパティへ対応付けられない場合を、同じ「未知の
+            # フィールドとしてスキップ」の警告ログへ合流させる（呼び出し元にとってはどちらも
+            # 「このフィールドは同期対象外」という同じ結果のため）。このスキップは当該レコード
+            # （イベント）のみに閉じており、バッチ内の他レコードの処理には影響しない。
             label = resolve_zoho_field_label(module, api_name)
-            if label is not None:
-                try:
-                    schema.get_property(label)
-                except KeyError:
-                    label = None
             if label is None:
+                logger.warning(
+                    "ignoring unknown Zoho property api_name='%s' for db_key=%r (not in schema)",
+                    api_name,
+                    db_key,
+                )
+                continue
+
+            if field_mapping is not None:
+                # db_key専用のper-fieldマッピングテーブルがある場合（現状projectのみ）:
+                # Zohoラベルをそのまま最終的なNotionプロパティ名として使わず、
+                # (Notionプロパティ名, 値変換関数)を引く。確度/例外スイッチ/FORMULA・ROLLUP型
+                # プロパティ等、意図的にマッピングから除外されているラベルはここで見つからず、
+                # 上と同じ「未知のプロパティ」として警告ログを出しスキップする
+                # （こちらも想定内の挙動であり、エラーにはしない）。
+                mapped = field_mapping.get(label)
+                if mapped is None:
+                    logger.warning(
+                        "ignoring unknown Zoho property api_name='%s' (label=%r) for db_key=%r "
+                        "(not in per-field mapping; excluded on purpose or not yet covered)",
+                        api_name,
+                        label,
+                        db_key,
+                    )
+                    continue
+                notion_property, transform = mapped
+                try:
+                    transformed_value = transform(value)
+                except Exception:
+                    # 個別レコードの不正な値（例: どのフォーマットにも一致しない日付文字列）で
+                    # バッチ全体を落とさないよう、当該フィールドのみスキップする（2026-08-12の
+                    # バッチ処理修正と同じ「1件/1フィールド単位で失敗を閉じ込める」方針）。
+                    logger.warning(
+                        "failed to transform Zoho field value for api_name='%s' (label=%r) "
+                        "db_key=%r; skipping this field only",
+                        api_name,
+                        label,
+                        db_key,
+                        exc_info=True,
+                    )
+                    continue
+                properties[notion_property] = transformed_value
+                continue
+
+            # field_mappingが未整備のdb_key（project以外、まだWebhookトラフィックが無い）は
+            # 従来通りZohoラベルをそのままプロパティキーとして使う簡易挙動を維持する。
+            try:
+                schema.get_property(label)
+            except KeyError:
                 logger.warning(
                     "ignoring unknown Zoho property api_name='%s' for db_key=%r (not in schema)",
                     api_name,

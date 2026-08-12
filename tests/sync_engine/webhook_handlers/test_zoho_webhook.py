@@ -43,9 +43,11 @@ def _payload(
             else [
                 {
                     "record_id": DEFAULT_RECORD_ID,
-                    # field71/fieldは実際にconfig/zoho_field_mapping.jsonへ登録済みの
-                    # 実在するapi_name（それぞれ「営業ステータス」「初期費用」に対応）。
-                    "values": {"field71": "商談中(B)", "field": 500000},
+                    # Stage/fieldは実際にconfig/zoho_field_mapping.jsonへ登録済みの
+                    # 実在するapi_name（それぞれZohoラベル「ステージ」「初期費用」に対応。
+                    # 「ステージ」はzoho_field_transforms.pyのper-fieldマッピングで
+                    # Notionプロパティ「営業ステータス」へ生の値のまま変換される）。
+                    "values": {"Stage": "商談中(B)", "field": 500000},
                 }
             ]
         ),
@@ -78,7 +80,7 @@ def test_zoho_payload_to_sync_events_builds_expected_event() -> None:
     assert event.db_key == "project"
     assert event.external_id == DEFAULT_RECORD_ID
     assert event.occurred_at == DEFAULT_OCCURRED_AT
-    assert event.properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
+    assert event.properties == {"営業ステータス": "商談中(B)", "初期費用": 500000.0}
     assert event.sync_system_id is None
 
 
@@ -115,13 +117,13 @@ def test_zoho_payload_to_sync_events_display_label_is_not_a_valid_module_by_defa
 
 def test_zoho_payload_to_sync_events_end_to_end_with_real_registry_and_field_mapping() -> None:
     """モックのMODULE_MAPを使わず、実際のALL_SCHEMAS（db_key解決）と実際の
-    config/zoho_field_mapping.json（field71 -> 営業ステータス等のapi_name -> ラベル変換）の
+    config/zoho_field_mapping.json（Stage -> ステージ等のapi_name -> ラベル変換）の
     両方を通した変換チェーン全体を確認する（個々の部品だけでなく全体が噛み合っていることの確認）。
     """
     events = zoho_payload_to_sync_events(_payload(), {})
 
     assert events[0].db_key == "project"
-    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
+    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000.0}
 
 
 def test_zoho_payload_to_sync_events_ignores_unknown_api_name_with_warning_without_blocking_others(
@@ -133,7 +135,7 @@ def test_zoho_payload_to_sync_events_ignores_unknown_api_name_with_warning_witho
     with caplog.at_level("WARNING"):
         events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
 
-    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000}
+    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000.0}
     assert any(
         "field_not_in_mapping_9999" in record.getMessage() for record in caplog.records
     )
@@ -145,8 +147,8 @@ def test_zoho_payload_to_sync_events_matches_affected_values_by_record_id_not_in
     payload = _payload(
         ids=["record-b"],
         affected_values=[
-            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
-            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
+            {"record_id": "record-a", "values": {"Stage": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"Stage": "商談中(B)"}},
         ],
     )
 
@@ -164,9 +166,9 @@ def test_zoho_payload_to_sync_events_batched_notification_converts_all_ids_not_j
     payload = _payload(
         ids=["record-a", "record-b", "record-c"],
         affected_values=[
-            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
-            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
-            {"record_id": "record-c", "values": {"field71": "受注(Won)", "field": 1000000}},
+            {"record_id": "record-a", "values": {"Stage": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"Stage": "商談中(B)"}},
+            {"record_id": "record-c", "values": {"Stage": "受注(Won)", "field": 1000000}},
         ],
     )
 
@@ -177,7 +179,7 @@ def test_zoho_payload_to_sync_events_batched_notification_converts_all_ids_not_j
     assert set(by_id) == {"record-a", "record-b", "record-c"}
     assert by_id["record-a"].properties == {"営業ステータス": "見込み(A)"}
     assert by_id["record-b"].properties == {"営業ステータス": "商談中(B)"}
-    assert by_id["record-c"].properties == {"営業ステータス": "受注(Won)", "初期費用": 1000000}
+    assert by_id["record-c"].properties == {"営業ステータス": "受注(Won)", "初期費用": 1000000.0}
     assert all(e.db_key == "project" for e in events)
     assert all(e.source_tool is Tool.ZOHO for e in events)
     # 通知全体共通のserver_timeを全イベントが共有する。
@@ -207,12 +209,147 @@ def test_zoho_payload_to_sync_events_empty_affected_values_results_in_empty_prop
 def test_zoho_payload_to_sync_events_no_matching_record_id_in_affected_values_results_in_empty_properties() -> None:
     payload = _payload(
         ids=["record-x"],
-        affected_values=[{"record_id": "record-y", "values": {"field71": "商談中(B)"}}],
+        affected_values=[{"record_id": "record-y", "values": {"Stage": "商談中(B)"}}],
     )
 
     events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
 
     assert events[0].properties == {}
+
+
+# --- projectのper-fieldマッピング（zoho_field_transforms.py）------------------------------
+# 2026-08-12、実際のZoho本番編集（「ステージ」を「与件整理」→「口頭受注」へ変更）がHTTP 200で
+# 受理されたにもかかわらずNotionページへ反映されなかったBLOCKERの回帰確認。
+# 原因は「ステージ」というZohoラベルをそのまま`schema.get_property("ステージ")`のキーとして
+# 扱っていたため（実際のNotionプロパティ名は「営業ステータス」）、KeyErrorで無言スキップ
+# されていたこと。
+
+
+def test_zoho_payload_to_sync_events_stage_field_maps_to_eigyo_status_raw_passthrough() -> None:
+    """実際に本番で発生したバグの再現ケース。Stage（Zohoラベル「ステージ」）の値は
+    「営業ステータス」へ変換・圧縮せず生の値のまま書き込まれる
+    （zoho_field_transforms.py docstring: 金沢さんの「Zohoの生の値をそのまま使いたい」方針）。"""
+    payload = _payload(
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"Stage": "口頭受注"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"営業ステータス": "口頭受注"}
+
+
+def test_zoho_payload_to_sync_events_renamed_field_next_action() -> None:
+    """「【Notion】次回アクション」（field35）→「次回アクション」のようにZohoラベルと
+    Notionプロパティ名が異なるフィールドが正しくリネームされることを確認する。"""
+    payload = _payload(
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field35": "来週再訪問"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"次回アクション": "来週再訪問"}
+
+
+def test_zoho_payload_to_sync_events_renamed_field_decision_maker() -> None:
+    """「決裁者」（field8）→「決裁者名」のリネームを確認する。"""
+    payload = _payload(
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field8": "山田部長"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"決裁者名": "山田部長"}
+
+
+def test_zoho_payload_to_sync_events_date_field_is_normalized() -> None:
+    """「失注日」（field2）はnormalize_date()でZohoの漢字区切り日付をISO 8601へ正規化する。"""
+    payload = _payload(
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field2": "2024年5月10日"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"失注日": "2024-05-10"}
+
+
+def test_zoho_payload_to_sync_events_boolean_fields_are_parsed_from_string() -> None:
+    """「かつやさん」（field16）「問合せ」（field48）はCHECKBOX型で、Zoho側の
+    "true"/"false"文字列をbool値へ変換する（Python の bool("false") は True になるため、
+    _parse_bool()による明示的な文字列比較が必要）。"""
+    payload = _payload(
+        affected_values=[
+            {
+                "record_id": DEFAULT_RECORD_ID,
+                "values": {"field16": "true", "field48": "false"},
+            }
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"かつやさん": True, "問合せ": False}
+
+
+def test_zoho_payload_to_sync_events_multi_value_field_is_split() -> None:
+    """「サイトコントローラー」（field20）はMULTI_SELECT型でカンマ区切りの複数値がありうる
+    （2026-08-11の本番移行事故: "なし, リンカーン"のようなカンマ区切りをparse_multi_value()で
+    分割しないとNotion APIから拒否される）。"""
+    payload = _payload(
+        affected_values=[
+            {
+                "record_id": DEFAULT_RECORD_ID,
+                "values": {"field20": "なし, リンカーン"},
+            }
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"サイトコントローラー": ["なし", "リンカーン"]}
+
+
+def test_zoho_payload_to_sync_events_deliberately_excluded_field_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """「確度」（Probability）はNotionのA/B/C/D選択肢とZoho側の0〜100%値で尺度が異なり
+    意図的にマッピングしない（transform_zoho_project()のdocstring参照）。Zohoラベルへの
+    解決自体は成功するが、per-fieldマッピングに無いため警告ログを出しつつ静かにスキップされ、
+    書き込まれず、クラッシュもしない。"""
+    payload = _payload(
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"Probability": "50"}}],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {}
+    assert any("Probability" in record.getMessage() for record in caplog.records)
+
+
+def test_zoho_payload_to_sync_events_transform_raising_skips_only_that_field(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """値変換関数が例外を送出しても（例: normalize_date()へ文字列以外の壊れた値が渡り
+    AttributeErrorになる場合）、当該フィールドのみスキップし、バッチ全体を落とさない
+    （2026-08-12のバッチ処理修正と同じ「1件/1フィールド単位で失敗を閉じ込める」方針）。"""
+    payload = _payload(
+        affected_values=[
+            {
+                "record_id": DEFAULT_RECORD_ID,
+                "values": {"field2": 12345, "field": 500000},  # field2=失注日に不正な型
+            }
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"初期費用": 500000.0}
+    assert any("field2" in record.getMessage() for record in caplog.records)
 
 
 def test_zoho_payload_to_sync_events_converts_server_time_epoch_millis_to_utc_datetime() -> None:
@@ -288,8 +425,8 @@ def test_handler_dispatches_all_events_for_a_batched_notification_with_multiple_
     payload = _payload(
         ids=["record-a", "record-b"],
         affected_values=[
-            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
-            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
+            {"record_id": "record-a", "values": {"Stage": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"Stage": "商談中(B)"}},
         ],
     )
     event = {"body": json.dumps(payload), "headers": {}}
@@ -343,9 +480,9 @@ def test_handler_continues_dispatching_remaining_batch_events_after_one_unexpect
     payload = _payload(
         ids=["record-a", "record-b", "record-c"],
         affected_values=[
-            {"record_id": "record-a", "values": {"field71": "見込み(A)"}},
-            {"record_id": "record-b", "values": {"field71": "商談中(B)"}},
-            {"record_id": "record-c", "values": {"field71": "受注(Won)"}},
+            {"record_id": "record-a", "values": {"Stage": "見込み(A)"}},
+            {"record_id": "record-b", "values": {"Stage": "商談中(B)"}},
+            {"record_id": "record-c", "values": {"Stage": "受注(Won)"}},
         ],
     )
     event = {"body": json.dumps(payload), "headers": {}}
