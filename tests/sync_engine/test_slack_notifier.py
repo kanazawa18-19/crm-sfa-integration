@@ -15,6 +15,7 @@ REJECTED = RejectedData(
     record_id="MSA-PJ-001",
     property_name="営業ステータス",
     adopted_value="商談中(B)",
+    adopted_tool=Tool.NOTION,
     rejected_value="失注",
     rejected_tool=Tool.KINTONE,
     occurred_at=datetime(2026, 8, 5, 9, 0, 0, tzinfo=timezone.utc),
@@ -39,7 +40,8 @@ def test_notify_conflict_posts_to_configured_webhook_url(monkeypatch: pytest.Mon
     assert "営業ステータス" in text
     assert "商談中(B)" in text
     assert "失注" in text
-    assert "kintone" in text
+    assert "採用元: notion" in text
+    assert "却下元: kintone" in text
 
 
 def test_notify_conflict_uses_env_var_when_url_not_explicitly_given(

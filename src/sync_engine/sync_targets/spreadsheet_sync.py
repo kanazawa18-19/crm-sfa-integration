@@ -51,7 +51,8 @@ class SpreadsheetSyncTarget(SyncTarget):
     def append_conflict_log(self, rejected: RejectedData) -> str:
         """05_同期・競合制御「データ退避」：却下データを「同期ログ」タブへ追記する。
 
-        対象ID・項目名・採用値・却下値・発生日時（＋どのツールの値が却下されたか）を記録する。
+        対象ID・項目名・採用値・却下値・発生日時（＋どのツールの値が採用され、どのツールの値が
+        却下されたか）を記録する。
         """
         row = self._client.append_row(
             SYNC_LOG_SHEET_NAME,
@@ -59,6 +60,7 @@ class SpreadsheetSyncTarget(SyncTarget):
                 "対象ID": rejected.record_id,
                 "項目名": rejected.property_name,
                 "採用値": rejected.adopted_value,
+                "採用元ツール": rejected.adopted_tool.value,
                 "却下値": rejected.rejected_value,
                 "却下元ツール": rejected.rejected_tool.value,
                 "発生日時": rejected.occurred_at.isoformat(),

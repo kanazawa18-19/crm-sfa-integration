@@ -15,6 +15,7 @@ from src.db_schema.base import (
     SyncScope,
     Tool,
 )
+from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.conflict_resolver import RejectedData, ResolutionAction
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
@@ -238,7 +239,7 @@ def test_kintone_source_excludes_kintone_from_writes(
     store: SQLiteIdMappingStore, mapping: IdMapping
 ) -> None:
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "同じ名前", "updated_at": NOW - timedelta(hours=2)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "同じ名前", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}}
     )
     targets = _all_targets()
     targets[Tool.NOTION] = notion
@@ -321,7 +322,7 @@ def test_conflict_no_op_when_values_already_match(
     store: SQLiteIdMappingStore, mapping: IdMapping
 ) -> None:
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "同じ名前", "updated_at": NOW - timedelta(hours=2)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "同じ名前", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}}
     )
     targets = _all_targets()
     targets[Tool.NOTION] = notion
@@ -346,7 +347,7 @@ def test_conflict_propagates_value_from_source_to_notion_and_other_tools(
     store: SQLiteIdMappingStore, mapping: IdMapping
 ) -> None:
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "", "updated_at": NOW - timedelta(hours=5)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=5)}}
     )
     targets = _all_targets()
     targets[Tool.NOTION] = notion
@@ -373,7 +374,7 @@ def test_conflict_propagates_delete_from_source_to_notion_and_other_tools(
     store: SQLiteIdMappingStore, mapping: IdMapping
 ) -> None:
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "旧名称", "updated_at": NOW - timedelta(hours=5)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "旧名称", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=5)}}
     )
     targets = _all_targets()
     targets[Tool.NOTION] = notion
@@ -394,11 +395,19 @@ def test_conflict_propagates_delete_from_source_to_notion_and_other_tools(
     assert targets[Tool.KINTONE].upsert_calls == []  # 送信元(既に空欄)には書き戻さない
 
 
-def test_conflict_notion_override_corrects_all_other_tools_including_source(
+def test_conflict_source_wins_when_more_recent_than_notions_stale_value(
     store: SQLiteIdMappingStore, mapping: IdMapping
 ) -> None:
+    """2026-08本番障害の再現ケース: Notion側の値が古く（この例ではNOW-1h時点の値のまま）、
+    送信元ツールの編集がそれより新しい場合、Notionが無条件に勝つのではなく、より新しい
+    送信元側の値が採用されNotionへ書き戻される（最新編集優先ルール）。
+
+    以前はここでNOTION_OVERRIDEが無条件に発生し、Notionの古い値でkintone側の新しい
+    編集を強制的に上書きしてしまっていた（実際のZohoステージ変更が失われた本番障害と
+    同じ構造のバグ）。
+    """
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "Notion側の名前", "updated_at": NOW - timedelta(hours=1)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "Notion側の名前", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=1)}}
     )
     targets = _all_targets()
     targets[Tool.NOTION] = notion
@@ -407,21 +416,27 @@ def test_conflict_notion_override_corrects_all_other_tools_including_source(
         source_tool=Tool.KINTONE,
         db_key="client_master",
         external_id="1001",
-        occurred_at=NOW,
+        occurred_at=NOW,  # Notion側のupdated_at（NOW-1h）より新しい
         properties={"取引先名": "kintone側の名前"},
     )
 
     result = dispatcher.dispatch(event)
 
     prop = result.properties[0]
-    assert prop.resolution.action == ResolutionAction.NOTION_OVERRIDE
-    assert prop.resolution.resolved_value == "Notion側の名前"
+    assert prop.resolution.action == ResolutionAction.PROPAGATE_VALUE
+    assert prop.resolution.resolved_value == "kintone側の名前"
     assert len(prop.resolution.rejected) == 1
-    assert prop.resolution.rejected[0].rejected_value == "kintone側の名前"
-    assert notion.upsert_calls == []  # Notionは既に正しい値を保持
-    assert targets[Tool.KINTONE].upsert_calls == [("1001", {"取引先名": "Notion側の名前"})]
-    assert targets[Tool.ZOHO].upsert_calls == [("zoho-1", {"取引先名": "Notion側の名前"})]
-    assert targets[Tool.SPREADSHEET].upsert_calls == [("5", {"取引先名": "Notion側の名前"})]
+    assert prop.resolution.rejected[0].rejected_value == "Notion側の名前"
+    assert prop.resolution.rejected[0].rejected_tool == Tool.NOTION
+    assert notion.upsert_calls == [("CLI-001", {"取引先名": "kintone側の名前"})]  # Notionを是正
+    assert targets[Tool.KINTONE].upsert_calls == []  # 送信元は既に正しい値を保持
+    assert targets[Tool.ZOHO].upsert_calls == [("zoho-1", {"取引先名": "kintone側の名前"})]
+    assert targets[Tool.SPREADSHEET].upsert_calls == [("5", {"取引先名": "kintone側の名前"})]
+    # Tool.NOTIONが書き込み対象・成功対象の両方に含まれること（本番障害では
+    # written_tools=['zoho'], skipped_tools=['kintone','spreadsheet']で
+    # Notionがどちらにも現れず、Notionへの反映漏れに気づけなかった）。
+    assert Tool.NOTION in prop.written_tools
+    assert Tool.NOTION not in prop.skipped_tools
 
 
 # --- BLOCKER1: Notionレコード取得失敗時のデータ消失防止 ------------------------------------
@@ -463,7 +478,7 @@ def test_conflict_considers_all_sync_scope_tools_not_only_notion_and_source(
     コンフリクトとして検知できることを確認する（2者間比較のみだとNO_OPに埋もれてしまう）。
     """
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "A", "updated_at": NOW - timedelta(hours=2)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "A", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}}
     )
     zoho = FakeSyncTarget(
         Tool.ZOHO, records={"zoho-1": {"取引先名": "B", "updated_at": NOW - timedelta(hours=3)}}
@@ -483,7 +498,10 @@ def test_conflict_considers_all_sync_scope_tools_not_only_notion_and_source(
     result = dispatcher.dispatch(event)
 
     prop = result.properties[0]
-    assert prop.resolution.action == ResolutionAction.NOTION_OVERRIDE
+    # kintone（送信元、NOW時点）がNotion（NOW-2h）より新しいため、たまたま値がNotionと
+    # 同じ("A")であっても採用側はkintoneであり、action は PROPAGATE_VALUE になる
+    # （最新編集優先ルール。Notion自身の値が最新だったわけではない）。
+    assert prop.resolution.action == ResolutionAction.PROPAGATE_VALUE
     assert prop.resolution.resolved_value == "A"
     assert {r.rejected_tool for r in prop.resolution.rejected} == {Tool.ZOHO}
     assert targets[Tool.ZOHO].upsert_calls == [("zoho-1", {"取引先名": "A"})]
@@ -496,8 +514,8 @@ def test_conflict_considers_all_sync_scope_tools_not_only_notion_and_source(
 def test_conflict_rejected_data_logged_to_spreadsheet_regardless_of_importance(
     store: SQLiteIdMappingStore,
 ) -> None:
-    """NOTION_OVERRIDE時の却下データは、重要項目でなくても必ずスプレッドシート
-    「同期ログ」タブへ退避されることを確認する。"""
+    """コンフリクト自動解決時の却下データは、重要項目でなくても必ずスプレッドシート
+    「同期ログ」タブへ退避されることを確認する（採用側はNotionとは限らない）。"""
     m = IdMapping(
         notion_key="MSA-PJ-001",
         db_key="project",
@@ -509,7 +527,7 @@ def test_conflict_rejected_data_logged_to_spreadsheet_regardless_of_importance(
     store.upsert(m)
     notion = FakeSyncTarget(
         Tool.NOTION,
-        records={"MSA-PJ-001": {"案件名": "Notion側案件名", "updated_at": NOW - timedelta(hours=1)}},
+        records={"MSA-PJ-001": {"案件名": "Notion側案件名", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=1)}},
     )
     spreadsheet_client = FakeSpreadsheetClient()
     targets: dict[Tool, Any] = {
@@ -523,14 +541,14 @@ def test_conflict_rejected_data_logged_to_spreadsheet_regardless_of_importance(
         source_tool=Tool.KINTONE,
         db_key="project",
         external_id="2001",
-        occurred_at=NOW,
+        occurred_at=NOW,  # Notion側のupdated_at（NOW-1h）より新しいため、kintone側が採用される
         properties={"案件名": "kintone側案件名"},
     )
 
     result = dispatcher.dispatch(event)
 
     prop = result.properties[0]
-    assert prop.resolution.action == ResolutionAction.NOTION_OVERRIDE
+    assert prop.resolution.action == ResolutionAction.PROPAGATE_VALUE
     assert not prop.resolution.notify_slack  # 「案件名」は重要項目リストに無い
 
     logged_rows = spreadsheet_client.rows.get(SYNC_LOG_SHEET_NAME, {})
@@ -538,9 +556,9 @@ def test_conflict_rejected_data_logged_to_spreadsheet_regardless_of_importance(
     logged = next(iter(logged_rows.values()))
     assert logged["対象ID"] == "MSA-PJ-001"
     assert logged["項目名"] == "案件名"
-    assert logged["採用値"] == "Notion側案件名"
-    assert logged["却下値"] == "kintone側案件名"
-    assert logged["却下元ツール"] == "kintone"
+    assert logged["採用値"] == "kintone側案件名"
+    assert logged["却下値"] == "Notion側案件名"
+    assert logged["却下元ツール"] == "notion"
 
 
 # --- スキーマ未定義プロパティのスキップ（Dispatcher堅牢性向上） --------------------------
@@ -627,7 +645,7 @@ def test_conflict_notifies_slack_for_important_property(store: SQLiteIdMappingSt
     store.upsert(m)
     notion = FakeSyncTarget(
         Tool.NOTION,
-        records={"MSA-PJ-002": {"営業ステータス": "商談中(B)", "updated_at": NOW - timedelta(hours=1)}},
+        records={"MSA-PJ-002": {"営業ステータス": "商談中(B)", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=1)}},
     )
     targets: dict[Tool, Any] = {
         Tool.NOTION: notion,
@@ -641,7 +659,7 @@ def test_conflict_notifies_slack_for_important_property(store: SQLiteIdMappingSt
         source_tool=Tool.KINTONE,
         db_key="project",
         external_id="2002",
-        occurred_at=NOW,
+        occurred_at=NOW,  # Notion側のupdated_at（NOW-1h）より新しいため、kintone側が採用される
         properties={"営業ステータス": "失注"},
     )
 
@@ -650,8 +668,9 @@ def test_conflict_notifies_slack_for_important_property(store: SQLiteIdMappingSt
     prop = result.properties[0]
     assert prop.resolution.notify_slack is True
     assert len(notifier.notified) == 1
-    assert notifier.notified[0].rejected_value == "失注"
-    assert notifier.notified[0].adopted_value == "商談中(B)"
+    assert notifier.notified[0].rejected_value == "商談中(B)"
+    assert notifier.notified[0].rejected_tool == Tool.NOTION
+    assert notifier.notified[0].adopted_value == "失注"
 
 
 # --- skipped_tools伝播（obasan-quality/shirokuma-secレビュー: 「同期スキップが成功として
@@ -719,7 +738,7 @@ def test_conflict_resolution_reports_skipped_tool_when_target_declines_write(
 ) -> None:
     """コンフリクト解決経由の書き込みでも、skipped_toolsが正しく反映されること。"""
     notion = FakeSyncTarget(
-        Tool.NOTION, records={"CLI-001": {"取引先名": "", "updated_at": NOW - timedelta(hours=5)}}
+        Tool.NOTION, records={"CLI-001": {"取引先名": "", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=5)}}
     )
     targets = _all_targets()
     targets[Tool.NOTION] = notion
@@ -781,3 +800,64 @@ def test_write_skipped_because_target_not_configured_at_all_is_also_reported(
     prop = result.properties[0]
     assert prop.written_tools == frozenset({Tool.KINTONE, Tool.SPREADSHEET})
     assert prop.skipped_tools == frozenset({Tool.ZOHO})
+
+
+# --- 2026-08本番障害の再現（Zohoの案件ステージ変更がNotionへ反映されなかった事故） ----------
+
+
+def test_zoho_stage_change_newer_than_notion_reaches_notion_end_to_end(
+    store: SQLiteIdMappingStore,
+) -> None:
+    """実際の本番障害の再現テスト: Zohoで案件ステージを「与件整理」→「口頭受注」に変更した
+    イベントが、Notion側の古い「与件整理」（更新日時がZoho側の変更より古い）を正しく
+    上書きし、written_toolsにTool.NOTIONが含まれ、NotionのSyncTarget.upsert_record()が
+    実際に新しい値で呼ばれることを確認する。
+
+    以前は「双方に異なる値が存在する」場合、更新日時に関係なく無条件でNotionの値が
+    勝っていたため、この本番障害では written_tools=['zoho'], skipped_tools=['kintone',
+    'spreadsheet'] というログになり、Notionがどちらにも現れず変更が失われていた。
+    """
+    m = IdMapping(
+        notion_key="MSA-PJ-100",
+        db_key="project",
+        kintone_id="3001",
+        zoho_id="zoho-100",
+        spreadsheet_row=20,
+        last_synced_at=NOW - timedelta(days=1),
+    )
+    store.upsert(m)
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "MSA-PJ-100": {
+                "営業ステータス": "与件整理",
+                NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=3),
+            }
+        },
+    )
+    targets: dict[Tool, Any] = {
+        Tool.NOTION: notion,
+        Tool.KINTONE: FakeSyncTarget(Tool.KINTONE),
+        Tool.ZOHO: FakeSyncTarget(Tool.ZOHO),
+        Tool.SPREADSHEET: FakeSyncTarget(Tool.SPREADSHEET),
+    }
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="project",
+        external_id="zoho-100",
+        occurred_at=NOW,  # Notion側のupdated_at（NOW-3h）より新しい
+        properties={"営業ステータス": "口頭受注"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    prop = result.properties[0]
+    assert prop.resolution.action == ResolutionAction.PROPAGATE_VALUE
+    assert prop.resolution.resolved_value == "口頭受注"
+    assert Tool.NOTION in prop.written_tools
+    assert Tool.NOTION not in prop.skipped_tools
+    assert notion.upsert_calls == [("MSA-PJ-100", {"営業ステータス": "口頭受注"})]
+    assert targets[Tool.KINTONE].upsert_calls == [("3001", {"営業ステータス": "口頭受注"})]
+    assert targets[Tool.SPREADSHEET].upsert_calls == [("20", {"営業ステータス": "口頭受注"})]
+    assert targets[Tool.ZOHO].upsert_calls == []  # 送信元には書き戻さない

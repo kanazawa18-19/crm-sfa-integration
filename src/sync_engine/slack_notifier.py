@@ -45,7 +45,7 @@ class WebhookSlackNotifier:
             "[同期コンフリクト自動解決]\n"
             f"対象案件: {rejected.record_id}\n"
             f"変更項目: {rejected.property_name}\n"
-            f"採用データ: {rejected.adopted_value}\n"
+            f"採用データ: {rejected.adopted_value}（採用元: {rejected.adopted_tool.value}）\n"
             f"却下データ: {rejected.rejected_value}（却下元: {rejected.rejected_tool.value}）\n"
             f"発生日時: {rejected.occurred_at.isoformat()}"
         )

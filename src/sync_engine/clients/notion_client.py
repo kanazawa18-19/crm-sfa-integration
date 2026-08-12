@@ -30,6 +30,8 @@ from src.sync_engine.clients._http import (
     raise_for_error,
     request_with_retry,
 )
+from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
+from src.sync_engine.webhook_handlers._common import parse_iso_datetime
 from src.sync_engine.webhook_handlers.notion_webhook import (
     PARSEABLE_NOTION_PROPERTY_TYPES,
     parse_notion_property_value,
@@ -45,6 +47,9 @@ logger = logging.getLogger(__name__)
 # `PARSEABLE_NOTION_PROPERTY_TYPES`（parse_notion_property_value()が実際に対応する
 # Notion APIの生の型文字列の一覧。定義・重複防止の経緯は`notion_webhook.py`側の
 # コメントを参照）に無い未対応型は例外にせず読み飛ばす。
+#
+# NOTION_LAST_EDITED_TIME_KEY（get_page()がページの実際の最終更新日時を合成する際に
+# 使う予約キー）の定義・衝突回避の理由は`clients/_notion_keys.py`のコメントを参照。
 
 
 class NotionApiError(ApiError):
@@ -124,7 +129,9 @@ class HttpNotionClient:
 
     `db_key`（`src/db_schema/registry.py`のスキーマキー）と`database_id`（Notion側のDB ID）を
     それぞれ1つに固定してインスタンス化する。get_page()はNotionページの`properties`を
-    内部形式（プロパティ名→生の値のフラットな辞書）へ変換して返す。
+    内部形式（プロパティ名→生の値のフラットな辞書）へ変換して返す。加えて、ページの
+    実際の最終更新日時（生レスポンスの`last_edited_time`）を`NOTION_LAST_EDITED_TIME_KEY`
+    キーで合成して返す（コンフリクト判定でNotion側の`updated_at`として使われる）。
     """
 
     def __init__(
@@ -212,6 +219,9 @@ class HttpNotionClient:
                 )
                 continue
             result[name] = parse_notion_property_value(value)
+        last_edited_time = page.get("last_edited_time")
+        if last_edited_time:
+            result[NOTION_LAST_EDITED_TIME_KEY] = parse_iso_datetime(last_edited_time)
         return result
 
     def query_all_pages(self, *, page_size: int = 100) -> list[dict[str, Any]]:

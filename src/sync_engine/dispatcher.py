@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.conflict_resolver import (
     ConflictResolution,
     RejectedData,
@@ -168,6 +169,10 @@ class Dispatcher:
                 # ソース側に保存された値が「空欄化が新しい」と誤判定され全ツールへ
                 # Noneで伝播してしまう事故につながる。この場合はコンフリクト判定自体を
                 # スキップし、ソース側の値をそのまま各ツールへ最新化する（単純補完）。
+                # ここは「Notionページ自体が読めない」場合の話であり、下のNOTION_LAST_EDITED_TIME_KEY
+                # によるupdated_at取得（Notionページは読めるが値やタイムスタンプの比較が必要な
+                # ケース）とは別物。2026-08本番障害はこちらではなく、後者でupdated_atが常に
+                # フォールバックしていたことが原因（conflict_resolver.pyの修正で対応済み）。
                 intended = frozenset({Tool.NOTION}) | other_tools
                 written, skipped = self._write_values(intended, mapping, property_name, new_value)
                 results.append(
@@ -184,7 +189,11 @@ class Dispatcher:
                 ToolValue(
                     tool=Tool.NOTION,
                     value=notion_record.get(property_name),
-                    updated_at=notion_record.get("updated_at", event.occurred_at),
+                    # NotionSyncTarget.get_record() -> HttpNotionClient.get_page()が合成する
+                    # ページの実際の最終更新日時（NOTION_LAST_EDITED_TIME_KEY）。単純な
+                    # "updated_at"キーではないのは、当該キーがproduct/contact DBスキーマの
+                    # 実プロパティ名と衝突しうるため（notion_client.py参照）。
+                    updated_at=notion_record.get(NOTION_LAST_EDITED_TIME_KEY, event.occurred_at),
                 ),
                 ToolValue(tool=event.source_tool, value=new_value, updated_at=event.occurred_at),
             ]

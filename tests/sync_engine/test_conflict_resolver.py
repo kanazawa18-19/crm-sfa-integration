@@ -120,13 +120,42 @@ def test_propagate_delete_when_notion_side_is_the_one_that_emptied() -> None:
     assert result.target_tools == frozenset({Tool.KINTONE})
 
 
-# --- 2. 一方が空欄か？ -> NO: 双方に異なる値が存在（データ競合） -----------------------
+# --- 2. 双方に異なる値が存在（データ競合） -> 最新編集優先ルールで解決 ------------------
 
 
-def test_notion_override_when_both_values_differ() -> None:
+def test_more_recent_non_notion_edit_wins_over_notions_stale_value() -> None:
+    """実際の本番障害の再現ケース: Notionの値が古く、他ツール側の編集がそれより新しい場合、
+    Notionが無条件に勝つのではなく、より新しい編集を採用する（最新編集優先ルール）。"""
     candidates = [
         _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=0),
-        _tv(Tool.KINTONE, "失注", minutes_after_t0=10),  # 更新日時がNotionより新しくても関係ない
+        _tv(Tool.KINTONE, "失注", minutes_after_t0=10),  # Notionより更新日時が新しい
+    ]
+
+    result = resolve_conflict(
+        "MSA-PJ-001", "営業ステータス", candidates, db_key="project", detected_at=T0
+    )
+
+    assert result.action == ResolutionAction.PROPAGATE_VALUE
+    assert result.resolved_value == "失注"
+    assert result.target_tools == frozenset({Tool.NOTION})
+    assert len(result.rejected) == 1
+    rejected = result.rejected[0]
+    assert rejected.record_id == "MSA-PJ-001"
+    assert rejected.property_name == "営業ステータス"
+    assert rejected.adopted_value == "失注"
+    assert rejected.rejected_value == "商談中(B)"
+    assert rejected.rejected_tool == Tool.NOTION
+    assert rejected.adopted_tool == Tool.KINTONE
+    assert rejected.occurred_at == T0
+
+
+def test_notion_still_wins_when_notion_is_genuinely_the_most_recent_edit() -> None:
+    """Notion側の編集が実際に他ツールより新しい場合は、引き続きNotionの値が採用される
+    （最新編集優先ルールが正しく機能していること・今回の修正がこのケースを壊していないこと
+    の確認）。"""
+    candidates = [
+        _tv(Tool.KINTONE, "失注", minutes_after_t0=0),
+        _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=10),  # kintoneより更新日時が新しい
     ]
 
     result = resolve_conflict(
@@ -138,19 +167,77 @@ def test_notion_override_when_both_values_differ() -> None:
     assert result.target_tools == frozenset({Tool.KINTONE})
     assert len(result.rejected) == 1
     rejected = result.rejected[0]
-    assert rejected.record_id == "MSA-PJ-001"
-    assert rejected.property_name == "営業ステータス"
     assert rejected.adopted_value == "商談中(B)"
+    assert rejected.adopted_tool == Tool.NOTION
     assert rejected.rejected_value == "失注"
     assert rejected.rejected_tool == Tool.KINTONE
-    assert rejected.occurred_at == T0
+
+
+def test_notion_wins_tie_break_when_updated_at_exactly_ties() -> None:
+    """複数候補のupdated_atが完全に同時刻でタイした場合、_pick_tie_break_winner()が
+    Tool.NOTIONを明示的に優先することで、Notionがフォールバックのタイブレーク先として
+    採用されることを固定化する（意図的な保証であり、偶然のリスト順序に依存させないことを
+    ここで明示する）。"""
+    candidates = [
+        ToolValue(tool=Tool.NOTION, value="商談中(B)", updated_at=T0),
+        ToolValue(tool=Tool.KINTONE, value="失注", updated_at=T0),  # Notionと完全に同時刻
+    ]
+
+    result = resolve_conflict(
+        "MSA-PJ-001", "営業ステータス", candidates, db_key="project", detected_at=T0
+    )
+
+    assert result.action == ResolutionAction.NOTION_OVERRIDE
+    assert result.resolved_value == "商談中(B)"
+    assert result.target_tools == frozenset({Tool.KINTONE})
+
+
+def test_notion_wins_tie_break_even_when_notion_is_not_first_in_candidates_list() -> None:
+    """WARN2回帰テスト: Notion優先のタイブレークが、dispatcher.py側の「candidatesの先頭に
+    Tool.NOTIONを配置する」という呼び出し順序に暗黙に依存していないことを確認する
+    （Notionをリストの末尾に置いても結果が変わらないこと＝resolve_conflict自身が
+    Tool.NOTIONを明示的に判定していることの証明）。"""
+    candidates = [
+        ToolValue(tool=Tool.KINTONE, value="失注", updated_at=T0),
+        ToolValue(tool=Tool.NOTION, value="商談中(B)", updated_at=T0),  # あえて末尾に配置
+    ]
+
+    result = resolve_conflict(
+        "MSA-PJ-001", "営業ステータス", candidates, db_key="project", detected_at=T0
+    )
+
+    assert result.action == ResolutionAction.NOTION_OVERRIDE
+    assert result.resolved_value == "商談中(B)"
+    assert result.target_tools == frozenset({Tool.KINTONE})
+
+
+def test_tie_break_between_two_non_notion_tools_is_deterministic_regardless_of_list_order() -> None:
+    """WARN1回帰テスト: Notionを含まない2ツールがupdated_atで完全にタイし、値が異なる場合、
+    どちらが採用されるかはTool.value（文字列）の昇順という決定的なキーで決まり、
+    candidatesリストの構築順序（≒frozensetの非決定的なイテレーション順）には依存しない
+    ことを、入力順序を入れ替えた2パターンで確認する。"""
+    notion = ToolValue(tool=Tool.NOTION, value="商談中(B)", updated_at=T0 - timedelta(minutes=10))
+    kintone = ToolValue(tool=Tool.KINTONE, value="失注", updated_at=T0)
+    zoho = ToolValue(tool=Tool.ZOHO, value="契約済", updated_at=T0)  # kintoneと完全に同時刻
+
+    result_order_a = resolve_conflict(
+        "MSA-PJ-001", "営業ステータス", [notion, kintone, zoho], db_key="project", detected_at=T0
+    )
+    result_order_b = resolve_conflict(
+        "MSA-PJ-001", "営業ステータス", [notion, zoho, kintone], db_key="project", detected_at=T0
+    )
+
+    assert result_order_a.resolved_value == result_order_b.resolved_value
+    # kintone("kintone") < zoho("zoho") をTool.valueの昇順で比較するとkintoneが選ばれる。
+    assert result_order_a.resolved_value == "失注"
 
 
 def test_notion_override_rejects_all_non_notion_distinct_values() -> None:
+    """Notion自身の編集が最新の場合、他の非空の異なる値を持つツールは全て却下される。"""
     candidates = [
-        _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=0),
-        _tv(Tool.KINTONE, "失注", minutes_after_t0=10),
-        _tv(Tool.SPREADSHEET, "契約済", minutes_after_t0=20),
+        _tv(Tool.KINTONE, "失注", minutes_after_t0=0),
+        _tv(Tool.SPREADSHEET, "契約済", minutes_after_t0=5),
+        _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=20),  # 最新
     ]
 
     result = resolve_conflict(
@@ -161,26 +248,63 @@ def test_notion_override_rejects_all_non_notion_distinct_values() -> None:
     assert result.target_tools == frozenset({Tool.KINTONE, Tool.SPREADSHEET})
     assert {r.rejected_tool for r in result.rejected} == {Tool.KINTONE, Tool.SPREADSHEET}
     assert {r.rejected_value for r in result.rejected} == {"失注", "契約済"}
+    assert {r.adopted_tool for r in result.rejected} == {Tool.NOTION}
 
 
 def test_multiple_distinct_nonempty_values_with_one_empty_is_still_a_conflict() -> None:
-    """非空の値が2種類以上ある場合は、空欄が混ざっていても「片方空欄」ルールではなく競合として扱う。"""
+    """非空の値が2種類以上ある場合は、空欄が混ざっていても「片方空欄」ルールではなく競合として
+    扱い、その中でも最新編集優先ルールで解決する。"""
     candidates = [
         _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=0),
         _tv(Tool.KINTONE, "", minutes_after_t0=5),
-        _tv(Tool.SPREADSHEET, "失注", minutes_after_t0=10),
+        _tv(Tool.SPREADSHEET, "失注", minutes_after_t0=10),  # 最新かつ非空 → これが採用される
     ]
 
     result = resolve_conflict(
         "MSA-PJ-001", "営業ステータス", candidates, db_key="project", detected_at=T0
     )
 
-    assert result.action == ResolutionAction.NOTION_OVERRIDE
-    assert result.resolved_value == "商談中(B)"
+    assert result.action == ResolutionAction.PROPAGATE_VALUE
+    assert result.resolved_value == "失注"
     # 空欄だったkintoneはrejectedデータには含めない（却下すべき「値」が無いため）が、
-    # Notionの値へ補完する必要はあるためtarget_toolsには含める。
+    # 採用値へ補完する必要はあるためtarget_toolsには含める。
     assert Tool.KINTONE in result.target_tools
-    assert {r.rejected_tool for r in result.rejected} == {Tool.SPREADSHEET}
+    assert Tool.NOTION in result.target_tools
+    assert {r.rejected_tool for r in result.rejected} == {Tool.NOTION}
+    assert result.rejected[0].rejected_value == "商談中(B)"
+    assert result.rejected[0].adopted_tool == Tool.SPREADSHEET
+
+
+def test_rejected_and_notify_slack_fire_regardless_of_which_side_wins() -> None:
+    """rejected/notify_slackは、採用側がNotionであっても他ツールであっても、非空の値が
+    2種類以上存在した場合は同様に発生する（Notion固有のイベントではない）。"""
+    # ケース1: 採用側がNotion以外。
+    non_notion_wins = resolve_conflict(
+        "MSA-PJ-001",
+        "営業ステータス",
+        [
+            _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=0),
+            _tv(Tool.KINTONE, "失注", minutes_after_t0=10),
+        ],
+        db_key="project",
+        detected_at=T0,
+    )
+    assert len(non_notion_wins.rejected) == 1
+    assert non_notion_wins.notify_slack is True
+
+    # ケース2: 採用側がNotion。
+    notion_wins = resolve_conflict(
+        "MSA-PJ-001",
+        "営業ステータス",
+        [
+            _tv(Tool.KINTONE, "失注", minutes_after_t0=0),
+            _tv(Tool.NOTION, "商談中(B)", minutes_after_t0=10),
+        ],
+        db_key="project",
+        detected_at=T0,
+    )
+    assert len(notion_wins.rejected) == 1
+    assert notion_wins.notify_slack is True
 
 
 # --- アラート通知（重要項目） --------------------------------------------------------

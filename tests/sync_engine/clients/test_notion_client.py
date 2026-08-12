@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from src.db_schema.base import PropertyType
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.clients.notion_client import (
     HttpNotionClient,
     NotionApiError,
@@ -60,6 +63,47 @@ def test_get_page_returns_flat_properties_dict(requests_mock, client: HttpNotion
         "営業ステータス": "商談中",
         "チェーン": ["chain-1"],
     }
+
+
+def test_get_page_includes_parsed_updated_at_from_last_edited_time(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """05_同期・競合制御のコンフリクト判定がNotion側の実際の更新日時を参照できるよう、
+    生レスポンスのトップレベル`last_edited_time`（`properties`とは別物）を
+    `NOTION_LAST_EDITED_TIME_KEY`キーでdatetimeへ変換して合成することを確認する
+    （従来はここが常に欠落しており、dispatcher.pyの`.get("updated_at", event.occurred_at)`が
+    常にフォールバックへ落ちてしまっていたバグの回帰テスト）。
+    """
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        json={
+            "id": PAGE_ID,
+            "last_edited_time": "2026-08-11T00:49:00.000Z",
+            "properties": {
+                "取引先ID": {"type": "title", "title": [{"plain_text": "CLI-001"}]},
+            },
+        },
+    )
+
+    record = client.get_page(PAGE_ID)
+
+    assert record[NOTION_LAST_EDITED_TIME_KEY] == datetime(
+        2026, 8, 11, 0, 49, 0, tzinfo=timezone.utc
+    )
+    assert record["取引先ID"] == "CLI-001"
+
+
+def test_get_page_omits_updated_at_key_when_last_edited_time_missing(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        json={"id": PAGE_ID, "properties": {}},
+    )
+
+    record = client.get_page(PAGE_ID)
+
+    assert NOTION_LAST_EDITED_TIME_KEY not in record
 
 
 def test_get_page_skips_unparseable_property_types(
