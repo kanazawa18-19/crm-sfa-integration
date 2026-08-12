@@ -418,7 +418,16 @@ def build_zoho_targets_by_db() -> dict[str, ZohoSyncTarget]:
 
 
 def build_spreadsheet_targets_by_db() -> dict[str, SpreadsheetSyncTarget]:
-    """db_key単位のSpreadsheetSyncTargetを組み立てる。"""
+    """db_key単位のSpreadsheetSyncTargetを組み立てる。
+
+    `HttpSpreadsheetClient()`は`SPREADSHEET_ID`未設定時に加え、Google側の認証情報
+    （`GOOGLE_SERVICE_ACCOUNT_JSON`/`GOOGLE_ACCESS_TOKEN`）が丸ごと未設定の場合にも
+    構築時に`ValueError`を送出する（`HttpSpreadsheetClient.__init__`が構築時に一度
+    `get_google_access_token()`を呼びfail-fast検証する）。ここでcatchして空辞書を返し、
+    スプレッドシート同期を無効化する。以降のリクエストごとのトークン解決自体は
+    `HttpSpreadsheetClient._headers()`が`get_google_access_token()`を都度呼び出す
+    （サービスアカウント利用時の自動リフレッシュを活かすため）。
+    """
     try:
         client = HttpSpreadsheetClient()
     except ValueError:

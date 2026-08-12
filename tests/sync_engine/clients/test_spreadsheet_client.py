@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from src.sync_engine.clients.spreadsheet_client import (
@@ -30,11 +32,65 @@ def test_raises_value_error_when_spreadsheet_id_not_set(monkeypatch: pytest.Monk
         HttpSpreadsheetClient(access_token="secret-access-token")
 
 
-def test_raises_value_error_when_access_token_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+def test_construction_without_access_token_validates_credentials_are_resolvable(
+    requests_mock,
+) -> None:
+    """`access_token`未指定の場合、構築時に一度`get_google_access_token()`を呼び
+    有効な認証情報が解決できるか検証する（fail-fast）。以降のリクエストは
+    遅延解決のまま（`_headers()`で毎回呼び出す）。
+    """
+    with patch(
+        "src.sync_engine.clients.spreadsheet_client.get_google_access_token",
+        return_value="resolved-token",
+    ) as mock_get_token:
+        client = HttpSpreadsheetClient(SPREADSHEET_ID)
+        mock_get_token.assert_called_once()
 
-    with pytest.raises(ValueError, match="GOOGLE_ACCESS_TOKEN"):
+        requests_mock.get(f"{BASE}/values:batchGet", json={"valueRanges": []})
+        client.get_row(SHEET, 1)
+
+        assert mock_get_token.call_count == 2
+        assert requests_mock.last_request.headers["Authorization"] == "Bearer resolved-token"
+
+
+def test_construction_without_access_token_raises_when_no_google_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Google認証情報(GOOGLE_ACCESS_TOKEN/GOOGLE_SERVICE_ACCOUNT_JSON)が丸ごと
+    未設定の場合、構築時に`get_google_access_token()`由来の`ValueError`が
+    送出される（実際のディスパッチ時まで先送りしない）。
+    """
+    monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+
+    with pytest.raises(ValueError, match="GOOGLE_SERVICE_ACCOUNT_JSON"):
         HttpSpreadsheetClient(SPREADSHEET_ID)
+
+
+def test_construction_propagates_error_when_get_google_access_token_fails() -> None:
+    with patch(
+        "src.sync_engine.clients.spreadsheet_client.get_google_access_token",
+        side_effect=ValueError("no google credentials configured"),
+    ):
+        with pytest.raises(ValueError, match="no google credentials configured"):
+            HttpSpreadsheetClient(SPREADSHEET_ID)
+
+
+def test_request_propagates_error_when_get_google_access_token_fails_after_construction(
+    requests_mock,
+) -> None:
+    """構築時の検証を通過した後（＝有効な認証情報が一度は解決できた後）でも、
+    以降のリクエストは`_headers()`で毎回`get_google_access_token()`を再解決する
+    ため、その時点で失効・失敗すればエラーがそのまま伝播する。
+    """
+    with patch(
+        "src.sync_engine.clients.spreadsheet_client.get_google_access_token",
+        side_effect=["resolved-token", ValueError("token expired")],
+    ):
+        client = HttpSpreadsheetClient(SPREADSHEET_ID)
+
+        with pytest.raises(ValueError, match="token expired"):
+            client.get_row(SHEET, 1)
 
 
 # --- get_row ---------------------------------------------------------------------------

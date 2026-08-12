@@ -78,10 +78,11 @@ Phase 4（データ移行・総合テスト）→ Phase 5（本番移行）。
 で実装している。本来の一次返信時間等の実測にはNotion側への新規プロパティ追加が必要
 （[`docs/member_performance_note.md`](docs/member_performance_note.md) 参照）。
 
-■ Phase 2 実装ノート: Googleスプレッドシート連携（`HttpSpreadsheetClient`）は、サービス
-アカウントJWTからのトークン取得ではなく`GOOGLE_ACCESS_TOKEN`直接指定による簡略認証で
-実装している。本番運用にはサービスアカウントJWTからの自動トークン取得・リフレッシュ処理
-への置き換えが必要
+■ Phase 2 実装ノート: Googleスプレッドシート連携（`HttpSpreadsheetClient`）は、
+サービスアカウントJWTからの自動トークン取得・リフレッシュ処理
+（`src/document_generation/google_auth.py`の`get_google_access_token()`）で
+実装済み。`GOOGLE_ACCESS_TOKEN`直接指定はローカル動作確認向けのフォールバックとして
+残している
 （[`docs/spreadsheet_auth_note.md`](docs/spreadsheet_auth_note.md) 参照）。
 
 ■ Phase 1 実装ノート: Googleスプレッドシートのタブ構成（`gas/`配下）は、09節ロードマップの

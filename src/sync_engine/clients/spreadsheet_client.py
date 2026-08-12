@@ -5,10 +5,12 @@
 シート内の「行」は、1行目をプロパティ名の見出し行としたヘッダー行キーの列マッピングで表現する
 （例: 1行目 `["取引先ID", "取引先名", ...]`、2行目以降が各レコード）。
 
-認証について: サービスアカウントのJWT署名による本来のトークン取得は複雑なため、本実装では
-簡略化し、呼び出し元が有効なOAuth2アクセストークンを`GOOGLE_ACCESS_TOKEN`環境変数
-（または明示的な`access_token`引数）で用意している前提のBearerトークン認証のみを実装する。
-本番運用時は別途サービスアカウントJWTからのアクセストークン取得・リフレッシュ処理が必要。
+認証について: 既定では`src/document_generation/google_auth.py`の
+`get_google_access_token()`（サービスアカウント優先・自動リフレッシュ）でアクセストークンを
+リクエストごとに解決する。テスト・ローカル動作確認向けに、明示的な`access_token`引数で
+固定トークンを注入して上書きすることもできる。`access_token`未指定の場合、構築時に一度
+`get_google_access_token()`を呼び有効な認証情報が解決できるか検証する（fail-fast。
+戻り値そのものはリクエスト毎の解決を優先し保持しない）。
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Any
 
 import requests
 
+from src.document_generation.google_auth import get_google_access_token
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
@@ -77,26 +80,35 @@ class HttpSpreadsheetClient:
         self._spreadsheet_id = (
             spreadsheet_id if spreadsheet_id is not None else os.environ.get("SPREADSHEET_ID")
         )
-        self._access_token = (
-            access_token if access_token is not None else os.environ.get("GOOGLE_ACCESS_TOKEN")
-        )
         if not self._spreadsheet_id:
             raise ValueError(
                 "SPREADSHEET_ID environment variable (or spreadsheet_id argument) "
                 "is required but not set"
             )
-        if not self._access_token:
-            raise ValueError(
-                "GOOGLE_ACCESS_TOKEN environment variable (or access_token argument) "
-                "is required but not set"
-            )
+        # 明示的に固定トークンが渡された場合（テスト・ローカル動作確認）はそれを保持する。
+        # Noneの場合は構築時には値を保持せず、`_headers()`でリクエストの都度
+        # `get_google_access_token()`を呼び出す（本クライアントは常駐プロセスで
+        # 使い回されるため、構築時に一度だけ解決すると約1時間で失効するトークンを
+        # 使い続けてしまう。サービスアカウント利用時の自動リフレッシュを活かすため、
+        # 毎回解決する）。ただし認証情報が丸ごと未設定（サービスアカウントJSONも
+        # 手動トークンも無い）場合にそれを無視して構築を成功させてしまうと、
+        # `production_wiring.build_spreadsheet_targets_by_db()`のfail-fast
+        # （ValueErrorをcatchしてスプレッドシート同期を無効化する）が効かなくなり、
+        # 実際のディスパッチ時までエラーが先送りされてDispatcher全体を巻き込んで
+        # 落としかねない。そのため構築時に一度だけ`get_google_access_token()`を
+        # 呼び、有効な認証情報が解決できることのみ確認する（戻り値は使い捨てる。
+        # 毎回解決する方針自体は変えない）。
+        if access_token is None:
+            get_google_access_token()
+        self._access_token = access_token
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_base = backoff_base
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._access_token}"}
+        token = self._access_token if self._access_token is not None else get_google_access_token()
+        return {"Authorization": f"Bearer {token}"}
 
     def _request(
         self,

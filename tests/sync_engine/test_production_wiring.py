@@ -177,11 +177,27 @@ def test_build_zoho_targets_by_db_uses_configured_data_center_base_urls(
 # --- build_spreadsheet_targets_by_db ---------------------------------------------------------
 
 
-def test_build_spreadsheet_targets_by_db_returns_empty_when_credentials_missing(
+def test_build_spreadsheet_targets_by_db_returns_empty_when_spreadsheet_id_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("SPREADSHEET_ID", raising=False)
     monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+
+    assert build_spreadsheet_targets_by_db() == {}
+
+
+def test_build_spreadsheet_targets_by_db_returns_empty_when_google_credentials_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SPREADSHEET_IDは設定済みでも、Google側の認証情報
+    （GOOGLE_ACCESS_TOKEN/GOOGLE_SERVICE_ACCOUNT_JSON）が丸ごと未設定の場合は
+    `HttpSpreadsheetClient`構築時のfail-fast検証で`ValueError`が送出され、
+    それをcatchして空辞書を返す（ターゲットを構築してしまい実際のディスパッチ時に
+    エラーが伝播する、という回帰を防ぐ）。
+    """
+    monkeypatch.setenv("SPREADSHEET_ID", "sheet-id")
+    monkeypatch.delenv("GOOGLE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
 
     assert build_spreadsheet_targets_by_db() == {}
 

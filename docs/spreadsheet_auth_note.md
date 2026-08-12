@@ -1,53 +1,37 @@
 # Google スプレッドシート認証に関する申し送り（Phase 2 実装ノート）
 
-`src/sync_engine/clients/spreadsheet_client.py` の `HttpSpreadsheetClient` は、
-Google Sheets API v4 への認証を簡略化した方式で実装している。本ノートはその内容と、
-本番運用に向けて必要な置き換え作業を申し送るものである。
+`src/sync_engine/clients/spreadsheet_client.py` の `HttpSpreadsheetClient` の
+Google Sheets API v4 向け認証について、現行の実装内容を申し送るものである。
 
-## 現状の実装（簡略認証）
+## 現状の実装（サービスアカウント自動リフレッシュ）
 
-サービスアカウントのJWT署名によるアクセストークン取得は実装が複雑なため、本実装では
-呼び出し元が有効なOAuth2アクセストークンを`GOOGLE_ACCESS_TOKEN`環境変数
-（または明示的な`access_token`引数）で直接用意している前提の、Bearerトークン認証のみを
-実装している。
+アクセストークンの解決は`src/document_generation/google_auth.py`の
+`get_google_access_token()`に委譲している。サービスアカウント
+（`GOOGLE_SERVICE_ACCOUNT_JSON`環境変数、JSON文字列そのもの）を最優先で使い、
+JWTの組み立て・署名・トークン取得・キャッシュ・有効期限が近づいた際の自動リフレッシュを
+`google-auth`ライブラリ（`google.oauth2.service_account.Credentials`）が行う
+（複数スレッドからの同時アクセスに対しては`threading.Lock`による排他制御あり）。
+`HttpSpreadsheetClient`はリクエストの都度`get_google_access_token()`を呼び出し、
+常駐プロセスで使い回されても失効したトークンを使い続けることはない。
 
-- コンストラクタで`GOOGLE_ACCESS_TOKEN`（または`access_token`引数）・`SPREADSHEET_ID`
-  （または`spreadsheet_id`引数）のいずれかが未設定の場合、原因不明な401を避けるため
+- コンストラクタで`SPREADSHEET_ID`（または`spreadsheet_id`引数）が未設定の場合、
   `ValueError`で即座に失敗する。
-- トークンの自動リフレッシュは行わない。有効期限が切れた場合、`GOOGLE_ACCESS_TOKEN`を
-  手動で再取得・再設定するまで全リクエストが401で失敗し続ける。
+- `access_token`引数を明示指定しなかった場合、構築時に一度だけ
+  `get_google_access_token()`を呼び、有効な認証情報（サービスアカウントJSONまたは
+  手動トークン）が何かしら解決できることを検証する（fail-fast）。この時点で
+  `GOOGLE_SERVICE_ACCOUNT_JSON`・`GOOGLE_ACCESS_TOKEN`のいずれも未設定であれば
+  `ValueError`を送出する。この検証結果（トークン値そのもの）はキャッシュせず、
+  以降のリクエストは`_headers()`で毎回`get_google_access_token()`を再解決する
+  （構築時の一度きりのチェックは、あくまで「認証情報が丸ごと欠落している」場合に
+  実際のディスパッチ時ではなく起動時に検知するための健全性チェック）。
+- `production_wiring.build_spreadsheet_targets_by_db()`は上記`ValueError`を
+  catchし、スプレッドシート向け同期を無効化（空辞書を返す）した上でログに警告を出す。
 
-## 本番運用に必要な対応
+## ローカル開発向けの上書き
 
-本番投入前に、サービスアカウントのJWTからアクセストークンを取得・キャッシュし、
-有効期限が近づいたら自動的にリフレッシュする処理への置き換えが必要。実装イメージは
-`HttpZohoClient`（`src/sync_engine/clients/zoho_client.py`）のOAuth2トークンキャッシュ・
-リフレッシュ処理（`_get_access_token`/`_refresh_access_token`、`threading.Lock`による
-並行アクセス時の排他制御を含む）を参考にできる。
-
-必要な作業:
-
-1. `GOOGLE_SERVICE_ACCOUNT_JSON`（`config/.env.example`に既に項目あり）からサービス
-   アカウントの秘密鍵を読み込み、JWTを組み立てて署名する処理を追加する。
-2. Google OAuth2トークンエンドポイント（`https://oauth2.googleapis.com/token`）へJWTを
-   渡してアクセストークンを取得する処理を追加する。
-3. 取得したアクセストークンをメモリ内でキャッシュし、有効期限が切れるまで再利用する
-   （Zohoクライアントと同様の設計）。
-4. `HttpSpreadsheetClient`の`access_token`引数・`GOOGLE_ACCESS_TOKEN`環境変数への
-   依存を上記の自動取得処理へ差し替える。
-
-## トークン有効期限切れ時の暫定運用手順（本番切替までの間）
-
-サービスアカウントJWTからの自動取得に置き換えるまでの間、`GOOGLE_ACCESS_TOKEN`は
-Google発行のOAuth2アクセストークン（有効期限は通常1時間程度）を手動で払い出し、
-環境変数として設定する運用となる。有効期限切れによる同期停止を避けるため、以下の
-暫定手順を踏むこと。
-
-1. Google Cloud Console またはOAuth 2.0 Playground等で、対象スプレッドシートへの
-   アクセス権を持つアカウント（サービスアカウント推奨）のアクセストークンを再発行する。
-2. 再発行したトークンを`GOOGLE_ACCESS_TOKEN`環境変数へ設定し、同期エンジンの実行環境
-   （Lambda/Cloud Functions等）を再デプロイまたは環境変数を更新する。
-3. 有効期限切れの間に発生した同期失敗（401エラー）は、失敗イベントのリトライ・再送
-   の仕組み（未実装の場合は手動での再実行）で解消する。
-4. 恒常的な運用では有効期限切れが頻発するため、上記「本番運用に必要な対応」を優先度
-   高く実施すること。
+ローカル動作確認等でサービスアカウントを用意しない場合は、`GOOGLE_ACCESS_TOKEN`
+環境変数（または`HttpSpreadsheetClient`への明示的な`access_token`引数）に
+有効なOAuth2アクセストークン（通常1時間程度で失効）を直接設定することで代替できる
+（`get_google_access_token()`はサービスアカウントが未設定の場合のフォールバックとして
+これを参照する）。本番運用ではサービスアカウント自動リフレッシュを前提とし、
+`GOOGLE_ACCESS_TOKEN`は使用しない。
