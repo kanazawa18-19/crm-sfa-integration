@@ -85,6 +85,20 @@
    — `requests_mock`でZoho APIをモックし、実ネットワーク呼び出し無しでペイロード構築・
    新規登録(POST)/更新(PUT)の分岐・エラー処理・token非露出・空token拒否・状態永続化を検証。
 
+### 解決済み: events配列の形式とchannel_expiryの上限（本番Zohoへの実送信で発覚・修正済み）
+
+`--yes`を付けた実送信（dry-run+`--yes`）を本番Zohoへ試したところ、初回実装の`events`配列
+（`[{"channel_id": ..., "module": ...}]`というオブジェクト配列）が
+`HTTP 202: {'code': 'INVALID_DATA', 'details': {'api_name': 'events', 'json_path': '$.watch[0].events'}}`
+で拒否された。Zoho公式ドキュメント記載のリクエストスキーマを確認し、以下のように修正済み。
+
+- `events`は`"{モジュールAPI名}.{create|delete|edit|all}"`形式の文字列を並べたフラットな
+  配列。本スクリプトは対象モジュール全体を監視したいため`["{module}.all"]`（既定なら
+  `["Deals.all"]`）を送る。
+- `channel_expiry`はZoho側の制約により登録・延長時点から**最大1日先まで**。それを超える
+  `--expiry-days`を指定すると、実際にAPIへ送る前に明確なエラーで拒否する
+  （`register_zoho_webhook.py`の`validate_expiry_days()`）。既定値も`7`日から`1`日に変更済み。
+
 ### 解決済み: Zoho通知はHTTPヘッダーでの認証をサポートしないため、body内`token`方式で検証する
 
 Zoho CRM Notifications（watch）APIの登録リクエスト（`POST/PUT /crm/v3/actions/watch`）には、

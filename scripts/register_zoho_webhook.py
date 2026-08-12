@@ -27,6 +27,35 @@ Zoho CRM Notifications（watch）APIのリクエストスキーマ（`POST /crm/
     （https://www.zoho.com/crm/developer/docs/api/v3/notifications.html）
     で最新のリクエスト/レスポンス仕様を再確認すること。
 
+■ events配列の形式・channel_expiryの上限（解決済み） -------------------------------------------
+初回の実装では`events`を`[{"channel_id": ..., "module": ...}]`という形のオブジェクト配列と
+誤って組み立てており、実際に本番Zoho（dry-run+`--yes`）へ送ったところ
+`HTTP 202: {'code': 'INVALID_DATA', 'details': {'api_name': 'events', 'json_path': '$.watch[0].events'}}`
+で拒否された。Zoho公式ドキュメント記載のリクエストスキーマを確認した結果、正しい形は
+以下の通り。
+
+    {
+      "watch": [
+        {
+          "channel_id": "1000000068001",
+          "events": ["Deals.all"],
+          "channel_expiry": "2018-02-02T10:30:00+05:30",
+          "token": "...",
+          "notify_url": "https://..."
+        }
+      ]
+    }
+
+- `events`は`"{モジュールAPI名}.{create|delete|edit|all}"`形式の文字列を並べたフラットな配列。
+  本スクリプトは対象モジュール全体の変更を監視したいため`["{module}.all"]`を送る
+  （`module`は`--module`/既定`Deals`のそのままの値）。
+- `channel_expiry`は登録・延長時点から**最大1日先まで**（Zoho側の制約）。それを超える値を
+  指定すると、以前と同様のINVALID_DATAで本番Zoho APIへ拒否される。本スクリプトは
+  `--expiry-days`が`_MAX_EXPIRY_DAYS`（1日）を超える場合、実際にAPIへ送る前に明確な
+  エラーメッセージ付きで拒否する（dry-run表示前に検証する）。
+- `resource_uri`/`resource_name`/`module`といったフィールドは、Zohoのwatch詳細GETレスポンス
+  側にのみ現れるものであり、登録リクエストのペイロードには含めない。
+
 ■ このスクリプトが行うこと ---------------------------------------------------------------------
 1. `Deals` モジュール向けのwatchペイロード（channel_id/events/channel_expiry/notify_url/token）を
    組み立てて表示する（常に実行される。dry-run表示）。
@@ -81,7 +110,9 @@ from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
 from src.sync_engine.clients._http import raise_for_error
 
 _DEFAULT_MODULE = "Deals"
-_DEFAULT_EXPIRY_DAYS = 7
+# Zoho公式ドキュメント記載の制約: channel_expiryは登録・延長時点から最大1日先まで。
+_MAX_EXPIRY_DAYS = 1
+_DEFAULT_EXPIRY_DAYS = 1
 # 本番Zoho orgは.jpデータセンター所属（ZOHO_ACCOUNTS_BASE_URL/ZOHO_API_BASE_URLと同じ理由）。
 # HttpZohoClientのCRUD用api_base_urlは`/crm/v2`固定だが、watch(Notifications) APIは`/crm/v3`。
 _DEFAULT_WATCH_API_BASE_URL = "https://www.zohoapis.jp/crm/v3"
@@ -99,11 +130,27 @@ def _generate_channel_id() -> str:
 def compute_channel_expiry(days: int, *, now: datetime | None = None) -> str:
     """channel_expiryのISO8601文字列を計算する。
 
-    Zoho側で許容される最大有効期限はorgのライセンスにより異なり、本タスクでは実APIへの
-    到達確認ができないため未検証（超過分はZoho側でエラーまたは切り詰めになる想定）。
+    Zoho公式ドキュメントによれば、channel_expiryは登録・延長時点から最大1日先までしか
+    許容されない。呼び出し側（`main()`）は`_MAX_EXPIRY_DAYS`超過を事前に拒否してから
+    この関数を呼ぶこと（この関数自体はクランプや検証を行わない）。
     """
     base = now if now is not None else datetime.now(timezone.utc)
     return (base + timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def validate_expiry_days(days: int) -> None:
+    """`--expiry-days`がZoho側の上限（`_MAX_EXPIRY_DAYS`）を超えていないか検証する。
+
+    超過している場合、本番Zoho APIへ送って`INVALID_DATA`で拒否される事故を繰り返さないよう、
+    実際にAPIへ到達する前（dry-run表示より前）に明確なエラーメッセージ付きで拒否する。
+    """
+    if days > _MAX_EXPIRY_DAYS:
+        raise ValueError(
+            f"--expiry-days に {days} が指定されましたが、Zoho側の制約により"
+            f"channel_expiryは登録・延長時点から最大{_MAX_EXPIRY_DAYS}日先までしか許容されません"
+            "（超過した値を送るとINVALID_DATAで拒否されます）。"
+            f"{_MAX_EXPIRY_DAYS}以下の値を指定してください。"
+        )
 
 
 def build_watch_payload(
@@ -114,10 +161,15 @@ def build_watch_payload(
     channel_expiry: str,
     token: str | None,
 ) -> dict[str, Any]:
-    """`POST/PUT /crm/v3/actions/watch` のリクエストボディを組み立てる。"""
+    """`POST/PUT /crm/v3/actions/watch` のリクエストボディを組み立てる。
+
+    `events`はZoho公式ドキュメント記載のスキーマ通り、`"{モジュールAPI名}.{操作}"`形式の
+    文字列を並べたフラットな配列で送る（オブジェクト配列ではない）。対象モジュールの
+    全操作を監視したいため`"{module}.all"`の1件のみを含める。
+    """
     entry: dict[str, Any] = {
         "channel_id": channel_id,
-        "events": [{"channel_id": channel_id, "module": module}],
+        "events": [f"{module}.all"],
         "channel_expiry": channel_expiry,
         "notify_url": notify_url,
     }
@@ -220,7 +272,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "無ければ新規登録（POST）としてchannel_idを自動生成する。",
     )
     parser.add_argument(
-        "--expiry-days", type=int, default=_DEFAULT_EXPIRY_DAYS, help=f"channel_expiryまでの日数（既定: {_DEFAULT_EXPIRY_DAYS}）"
+        "--expiry-days",
+        type=int,
+        default=_DEFAULT_EXPIRY_DAYS,
+        help=f"channel_expiryまでの日数（既定: {_DEFAULT_EXPIRY_DAYS}）。Zoho側の制約により"
+        f"{_MAX_EXPIRY_DAYS}を超える値は登録前にエラーで拒否される。",
     )
     parser.add_argument(
         "--token",
@@ -251,6 +307,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    try:
+        validate_expiry_days(args.expiry_days)
+    except ValueError as exc:
+        print(f"\nエラー: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
     channel_id = args.channel_id
     loaded_channel_id_from_file = False

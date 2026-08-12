@@ -8,7 +8,7 @@ NoMockAddress例外となるため、dry-run（--yes無し）時にネットワ�
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from scripts.register_zoho_webhook import (
     main,
     parse_args,
     register_or_renew_watch,
+    validate_expiry_days,
 )
 from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
 
@@ -63,6 +64,15 @@ def test_compute_channel_expiry_adds_days() -> None:
     assert expiry == "2026-08-19T09:00:00+00:00"
 
 
+def test_validate_expiry_days_accepts_max_allowed_value() -> None:
+    validate_expiry_days(1)  # 例外が出ないこと
+
+
+def test_validate_expiry_days_rejects_value_exceeding_zoho_limit() -> None:
+    with pytest.raises(ValueError, match="最大1日先"):
+        validate_expiry_days(7)
+
+
 def test_build_watch_payload_includes_module_and_notify_url() -> None:
     payload = build_watch_payload(
         channel_id="123",
@@ -76,7 +86,7 @@ def test_build_watch_payload_includes_module_and_notify_url() -> None:
         "watch": [
             {
                 "channel_id": "123",
-                "events": [{"channel_id": "123", "module": "Deals"}],
+                "events": ["Deals.all"],
                 "channel_expiry": "2026-08-19T09:00:00+00:00",
                 "notify_url": "https://example.com/api/webhooks/zoho",
                 "token": "secret-token",
@@ -105,7 +115,7 @@ def test_parse_args_defaults_to_fresh_registration() -> None:
 
     assert args.module == "Deals"
     assert args.channel_id is None
-    assert args.expiry_days == 7
+    assert args.expiry_days == 1
     assert args.yes is False
 
 
@@ -238,7 +248,7 @@ def test_main_with_yes_calls_watch_api(requests_mock, capsys: pytest.CaptureFixt
     assert len(watch_calls) == 1
     sent_body = watch_calls[0].json()
     assert sent_body["watch"][0]["channel_id"] == "123"
-    assert sent_body["watch"][0]["events"] == [{"channel_id": "123", "module": "Deals"}]
+    assert sent_body["watch"][0]["events"] == ["Deals.all"]
     assert sent_body["watch"][0]["notify_url"] == "https://example.com/api/webhooks/zoho"
     captured = capsys.readouterr()
     assert "完了しました" in captured.out
@@ -318,6 +328,58 @@ def test_main_with_yes_never_prints_raw_token(
 
     captured = capsys.readouterr()
     assert "super-secret-value" not in captured.out
+
+
+# --- channel_expiryの上限（Zoho側は登録・延長時点から最大1日先まで） ------------------------
+
+
+def test_main_rejects_expiry_days_exceeding_zoho_limit_without_calling_api(
+    requests_mock, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--expiry-daysがZohoの上限(1日)を超える場合、dry-runの時点（--yes無し）でもAPI呼び出し
+    無しに明確なエラーで拒否されることを確認する（本番Zohoへの誤送信を再発させないため）。"""
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--base-url",
+                "https://example.com",
+                "--watch-api-base-url",
+                WATCH_API_BASE_URL,
+                "--expiry-days",
+                "7",
+            ]
+        )
+
+    assert exc_info.value.code != 0
+    captured = capsys.readouterr()
+    assert "最大1日先" in captured.err
+    assert len(requests_mock.request_history) == 0
+
+
+def test_main_dry_run_channel_expiry_never_exceeds_one_day_from_now(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """既定・上限いっぱいの--expiry-daysで実行した際、表示されるchannel_expiryが
+    「今」から1日先を超えないことを確認する。"""
+    before = datetime.now(timezone.utc)
+
+    main(
+        [
+            "--base-url",
+            "https://example.com",
+            "--watch-api-base-url",
+            WATCH_API_BASE_URL,
+            "--expiry-days",
+            "1",
+        ]
+    )
+
+    after = datetime.now(timezone.utc)
+    captured = capsys.readouterr()
+    expiry_line = next(line for line in captured.out.splitlines() if "channel_expiry:" in line)
+    expiry = datetime.fromisoformat(expiry_line.split(":", 1)[1].strip())
+    assert expiry <= before + timedelta(days=1, seconds=5)
+    assert expiry >= after - timedelta(seconds=5)
 
 
 # --- BLOCKER3: --yesで空tokenの登録を事故らせない --------------------------------------------
@@ -413,7 +475,7 @@ def test_main_with_yes_persists_channel_state_and_prints_grepable_line(
             "--channel-id",
             "123",
             "--expiry-days",
-            "7",
+            "1",
             "--token",
             "test-token",
             "--yes",
