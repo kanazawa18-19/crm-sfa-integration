@@ -44,10 +44,87 @@
    2. Vercelのfunction logsで `/api/webhooks/zoho` への200レスポンスを確認する。
    3. 対応するNotionページが更新されたか確認する。
 
-6. （本タスクのスコープ外・別フォローアップ）有効期限切れ前の定期的な再登録
-   （`--channel-id`指定なしでの延長）をcron等へ配線する。
+6. 有効期限切れ前の定期的な延長は、以下の「自動延長（Vercel Cron）」節の通り
+   `GET /api/cron/zoho-webhook-renewal`が6時間毎に自動で行う。**新規登録直後（手順4）は
+   必ずVercel本番環境変数`ZOHO_WATCH_CHANNEL_ID`へも同じchannel_idを設定すること**
+   （自動延長がこの値を参照するため。詳細は下記節を参照）。
 
 ---
+
+## 自動延長（Vercel Cron）
+
+Zohoのwatchチャンネルは登録・延長時点から**最大1日**で失効し、放置すると
+`/api/webhooks/zoho`への通知が無音で止まる（エラーが表面化しない）。これを防ぐため、
+`GET /api/cron/zoho-webhook-renewal`（`src/api/app.py`）をVercel Cronから**6時間毎**
+（`vercel.json`の`crons`、`0 */6 * * *`）に自動起動し、`PUT /crm/v3/actions/watch`で
+延長し続ける。1日の猶予に対して6時間毎という余裕を持たせているのは、1回の失敗・
+遅延だけではチャンネルが実際に失効しないようにするため。
+
+### 仕組み
+
+- 認証は`/api/cron/daily-batch`と全く同じパターン（`src/api/auth.py`の
+  `verify_cron_secret`、`Authorization: Bearer $CRON_SECRET`のfail-closed検証、
+  VercelがCron Job実行時に自動付与する）。
+- 実際の延長ロジックは`src/sync_engine/zoho_watch_channel.py`の
+  `renew_zoho_watch_channel()`に切り出してあり、`scripts/register_zoho_webhook.py`
+  （手動CLI）とpayload組み立て・API呼び出し（`build_watch_payload`/
+  `register_or_renew_watch`）を共有する（重複実装を避けるための共通化。
+  本タスクで`scripts/register_zoho_webhook.py`側の同名関数はこのモジュールへ移設し、
+  スクリプト側はインポートして使うだけになっている）。
+- `run_zoho_webhook_renewal()`（`src/api/app.py`）は`renew_zoho_watch_channel()`を
+  呼び、結果をJSONで返す（`{"status": "success", "channel_id": ..., "channel_expiry": ...}`）。
+
+### channel_idの取得元（設計判断）
+
+`.zoho_watch_channel.json`（`scripts/register_zoho_webhook.py --yes`実行時に
+channel_id/channel_expiryを保存するローカルファイル、リポジトリ直下、`.gitignore`対象）は、
+手動CLIをローカルシェルで実行した際の**ローカルファイルシステム上にしか存在しない**。
+Vercelのサーバーレス関数（`/api/cron/zoho-webhook-renewal`）はデプロイのたびに作り直される
+別のファイルシステム上で動作するため、このファイルへは一切アクセスできない
+（`NotionIdMappingStore`がIDマッピングの永続化にNotionページを使っているのと同種の制約。
+このセッションで既に対応済みの問題と同じクラス）。
+
+このため、自動延長は`.zoho_watch_channel.json`に頼らず、**Vercel本番環境変数
+`ZOHO_WATCH_CHANNEL_ID`をchannel_idの一次情報源とする**（`renew_zoho_watch_channel()`が
+`channel_id`引数省略時にこの環境変数を読む）。同様にnotify_url組み立て用のデプロイ
+ベースURLも環境変数`ZOHO_WEBHOOK_BASE_URL`（例:
+`https://crm-sfa-integration.vercel.app`）から取得する。
+
+代替案として「Zoho側に登録済みチャンネルの一覧を問い合わせるGET APIを使い、
+channel_idを一切保存せずに毎回発見する」方式も検討したが、Zoho CRM Notifications API v3の
+公式ドキュメントには、既知のchannel_idを指定せずに一覧取得できるGETエンドポイントの
+記載が見当たらず（`GET /crm/v3/actions/watch`は特定channel_idの詳細取得用と見られる）、
+本タスクは実際の本番Zoho APIへ新たに到達して仕様を確認すること自体がスコープ外だった
+ため、未検証のままこの方式を採用することは避けた。環境変数方式は追加のAPI呼び出しが
+不要な上、`scripts/register_zoho_webhook.py`が新規登録成功時に既に出力している
+`ZOHO_WATCH_CHANNEL_ID=... ZOHO_WATCH_EXPIRY=...`という1行をそのままVercel環境変数へ
+反映するだけでよく、既存の運用フローと自然に噛み合う。
+
+**運用上必ず守ること**: `scripts/register_zoho_webhook.py --yes`で**新規登録**（`--channel-id`
+指定なし・`.zoho_watch_channel.json`も存在しない状態での実行）を行うたびに、出力される
+`ZOHO_WATCH_CHANNEL_ID=...`の値を、Vercel本番環境変数`ZOHO_WATCH_CHANNEL_ID`へも
+手動で反映すること（`vercel env add ZOHO_WATCH_CHANNEL_ID`。本タスクでは自動化していない
+＝実行していない。反映は別途ユーザー側で確認・実施する）。新規登録は通常一度きりの
+はずで、それ以降のcronによる延長ではchannel_id自体は変わらない（PUTは同じchannel_idを
+指定し続けるだけ）ため、一度反映すれば継続的な手動作業は不要になる。
+
+### 延長に失敗した場合
+
+- `ZOHO_WATCH_CHANNEL_ID`が未設定（一度も上記の反映を行っていない等）の場合、
+  `run_zoho_webhook_renewal()`はZoho APIへは到達せず、HTTP 500
+  （`ZohoWatchChannelNotConfiguredError`、レスポンスボディの`detail`に原因を明記）を返す。
+  「成功したように見えるno-op」にはならない。
+- Zoho API呼び出し自体が失敗した場合（トークン失効・INVALID_DATA等）はHTTP 502
+  （`ZohoApiError`）を返す。
+- いずれの場合もVercelのCron Job実行結果は非2xxレスポンスとして失敗扱いになり、
+  Vercelダッシュボードの当該プロジェクト → Cron Jobs（または Deployments → Functions
+  のログ）で実行履歴・エラー内容を確認できる。
+- 復旧手順: まず`ZOHO_WATCH_CHANNEL_ID`/`ZOHO_WEBHOOK_BASE_URL`/`ZOHO_WEBHOOK_SECRET`等の
+  Vercel環境変数が正しく設定されているか確認する。channel_id自体が失効・削除されて
+  しまっている疑いがある場合は、ローカルから`scripts/register_zoho_webhook.py --yes`を
+  （必要なら`--channel-id`を明示して、または省略して新規登録として）手動実行し、
+  新しいchannel_idが発行された場合は上記「運用上必ず守ること」に従って
+  `ZOHO_WATCH_CHANNEL_ID`を更新する。
 
 ## 背景・設計メモ（prep-onlyタスクの記録）
 

@@ -75,7 +75,17 @@ Zoho CRM Notifications（watch）APIのリクエストスキーマ（`POST /crm/
    （リポジトリ直下、.gitignore対象）へ保存し、`ZOHO_WATCH_CHANNEL_ID=... ZOHO_WATCH_EXPIRY=...`
    という1行もあわせて出力する（ターミナル出力が失われても次回実行時に延長対象を復元できるように）。
 
-■ cron等への配線は本タスクのスコープ外。activation確認後の別タスクで対応する。
+■ 有効期限切れ前の自動延長について
+Zohoのwatchチャンネルは最大1日で失効するため、本スクリプトの手動実行だけに頼らず、
+`GET /api/cron/zoho-webhook-renewal`（`src/api/app.py`、Vercel Cronで6時間毎に自動起動）が
+定期的に延長（PUT）する。自動延長のロジックは`src/sync_engine/zoho_watch_channel.py`の
+`renew_zoho_watch_channel()`に切り出してあり、本スクリプトの`build_watch_payload`/
+`register_or_renew_watch`等と共通化している。ただし自動延長はVercel環境変数
+`ZOHO_WATCH_CHANNEL_ID`をchannel_idの一次情報源とする（本スクリプトが使う
+`.zoho_watch_channel.json`はVercelのサーバーレス関数からは参照できないローカルファイルの
+ため）。新規登録（本スクリプトを`--channel-id`無しで初回`--yes`実行した場合）の直後は、
+出力される`ZOHO_WATCH_CHANNEL_ID=...`をVercel本番環境変数`ZOHO_WATCH_CHANNEL_ID`へも
+手動で反映すること（詳細は`docs/zoho_webhook_activation_note.md`参照）。
 
 使い方:
     # dry-run（常定。何が送られるかを確認するだけ）
@@ -99,98 +109,47 @@ import copy
 import json
 import os
 import sys
-import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
-from src.sync_engine.clients._http import raise_for_error
+from src.sync_engine.zoho_watch_channel import (
+    DEFAULT_EXPIRY_DAYS as _DEFAULT_EXPIRY_DAYS,
+    DEFAULT_MODULE as _DEFAULT_MODULE,
+    DEFAULT_WATCH_API_BASE_URL as _DEFAULT_WATCH_API_BASE_URL,
+    MAX_EXPIRY_DAYS as _MAX_EXPIRY_DAYS,
+    build_watch_payload,
+    build_zoho_client_from_env as _build_zoho_client,
+    compute_channel_expiry,
+    generate_channel_id as _generate_channel_id,
+    redact_watch_entry_token,
+    register_or_renew_watch,
+    validate_expiry_days,
+)
 
-_DEFAULT_MODULE = "Deals"
-# Zoho公式ドキュメント記載の制約: channel_expiryは登録・延長時点から最大1日先まで。
-_MAX_EXPIRY_DAYS = 1
-_DEFAULT_EXPIRY_DAYS = 1
-# 本番Zoho orgは.jpデータセンター所属（ZOHO_ACCOUNTS_BASE_URL/ZOHO_API_BASE_URLと同じ理由）。
-# HttpZohoClientのCRUD用api_base_urlは`/crm/v2`固定だが、watch(Notifications) APIは`/crm/v3`。
-_DEFAULT_WATCH_API_BASE_URL = "https://www.zohoapis.jp/crm/v3"
 # WARN4: 登録成功時のchannel_id/channel_expiryを控えておくローカルファイル（リポジトリ直下）。
 # 次回実行時に--channel-id省略時のデフォルト（延長対象）として読み戻す。PIIは含まないが
 # 運用メタ情報のためリポジトリにはコミットしない（.gitignore参照）。
+#
+# 本ファイルはローカルシェルでの手動CLI実行専用の永続化先である点に注意。Vercel Cronから
+# 呼ばれる自動延長（`GET /api/cron/zoho-webhook-renewal`、`src/sync_engine/zoho_watch_channel.py`
+# の`renew_zoho_watch_channel()`）はこのファイルを一切参照しない
+# （Vercelのサーバーレス関数はこのファイルへアクセスできないため。詳細は
+# `zoho_watch_channel.py`のモジュールdocstring参照）。
 _CHANNEL_STATE_PATH = Path(__file__).resolve().parent.parent / ".zoho_watch_channel.json"
-
-
-def _generate_channel_id() -> str:
-    """新規登録時のchannel_id未指定時に使う簡易な一意ID（ミリ秒epoch）。"""
-    return str(int(time.time() * 1000))
-
-
-def compute_channel_expiry(days: int, *, now: datetime | None = None) -> str:
-    """channel_expiryのISO8601文字列を計算する。
-
-    Zoho公式ドキュメントによれば、channel_expiryは登録・延長時点から最大1日先までしか
-    許容されない。呼び出し側（`main()`）は`_MAX_EXPIRY_DAYS`超過を事前に拒否してから
-    この関数を呼ぶこと（この関数自体はクランプや検証を行わない）。
-    """
-    base = now if now is not None else datetime.now(timezone.utc)
-    return (base + timedelta(days=days)).isoformat(timespec="seconds")
-
-
-def validate_expiry_days(days: int) -> None:
-    """`--expiry-days`がZoho側の上限（`_MAX_EXPIRY_DAYS`）を超えていないか検証する。
-
-    超過している場合、本番Zoho APIへ送って`INVALID_DATA`で拒否される事故を繰り返さないよう、
-    実際にAPIへ到達する前（dry-run表示より前）に明確なエラーメッセージ付きで拒否する。
-    """
-    if days > _MAX_EXPIRY_DAYS:
-        raise ValueError(
-            f"--expiry-days に {days} が指定されましたが、Zoho側の制約により"
-            f"channel_expiryは登録・延長時点から最大{_MAX_EXPIRY_DAYS}日先までしか許容されません"
-            "（超過した値を送るとINVALID_DATAで拒否されます）。"
-            f"{_MAX_EXPIRY_DAYS}以下の値を指定してください。"
-        )
-
-
-def build_watch_payload(
-    *,
-    channel_id: str,
-    module: str,
-    notify_url: str,
-    channel_expiry: str,
-    token: str | None,
-) -> dict[str, Any]:
-    """`POST/PUT /crm/v3/actions/watch` のリクエストボディを組み立てる。
-
-    `events`はZoho公式ドキュメント記載のスキーマ通り、`"{モジュールAPI名}.{操作}"`形式の
-    文字列を並べたフラットな配列で送る（オブジェクト配列ではない）。対象モジュールの
-    全操作を監視したいため`"{module}.all"`の1件のみを含める。
-    """
-    entry: dict[str, Any] = {
-        "channel_id": channel_id,
-        "events": [f"{module}.all"],
-        "channel_expiry": channel_expiry,
-        "notify_url": notify_url,
-    }
-    if token:
-        # 上記docstring参照: このtokenはHTTPヘッダーではなく通知bodyのtokenフィールドとして
-        # 返ってくる。受信側はverify_webhook_body_token()（_common.py）でこの値を
-        # ZOHO_WEBHOOK_SECRETと照合する。
-        entry["token"] = token
-    return {"watch": [entry]}
 
 
 def _redact_watch_token_for_display(data: dict[str, Any]) -> dict[str, Any]:
     """BLOCKER1: 標準出力への表示専用に、`watch`エントリ内のtokenフィールドの値を伏せた
     コピーを返す。実際にAPIへ送信するpayload/APIから受け取ったresultそのものは変更しない
     （呼び出し側は表示にのみこの戻り値を使うこと）。ZOHO_WEBHOOK_SECRETの実値がstdout・
-    ターミナル履歴に平文で残ることを防ぐ。
+    ターミナル履歴に平文で残ることを防ぐ。エントリ単位の実際の伏せ処理は
+    `zoho_watch_channel.redact_watch_entry_token()`（`register_or_renew_watch()`の
+    エラーメッセージ生成でも使う共有ロジック）を再利用する。
     """
     redacted = copy.deepcopy(data)
-    for entry in redacted.get("watch") or []:
-        if isinstance(entry, dict) and "token" in entry:
-            entry["token"] = "***REDACTED***"
+    redacted["watch"] = [redact_watch_entry_token(entry) for entry in redacted.get("watch") or []]
     return redacted
 
 
@@ -216,41 +175,6 @@ def _persist_channel_state(
         json.dumps({"channel_id": channel_id, "channel_expiry": channel_expiry}, ensure_ascii=False, indent=2)
         + "\n"
     )
-
-
-def _build_zoho_client() -> HttpZohoClient:
-    """`production_wiring.build_zoho_targets_by_db`と同じ方針で、ZOHO_ACCOUNTS_BASE_URL/
-    ZOHO_API_BASE_URLが設定されていれば明示的に渡す（未設定時はHttpZohoClient既定の`.com`
-    ではなくこのスクリプトの`.jp`前提の呼び出し元がwatch用URLを別途組み立てるため、
-    トークンリフレッシュ用のaccounts_base_urlのみここで扱う）。
-    """
-    kwargs: dict[str, str] = {}
-    accounts_base_url = os.environ.get("ZOHO_ACCOUNTS_BASE_URL")
-    if accounts_base_url:
-        kwargs["accounts_base_url"] = accounts_base_url
-    api_base_url = os.environ.get("ZOHO_API_BASE_URL")
-    if api_base_url:
-        kwargs["api_base_url"] = api_base_url
-    return HttpZohoClient(**kwargs)
-
-
-def register_or_renew_watch(
-    client: HttpZohoClient,
-    *,
-    watch_api_base_url: str,
-    payload: dict[str, Any],
-    is_renewal: bool,
-) -> dict[str, Any]:
-    """実際にwatch APIを呼び出す。新規登録はPOST、延長更新はPUT。"""
-    method = "PUT" if is_renewal else "POST"
-    url = f"{watch_api_base_url.rstrip('/')}/actions/watch"
-    response = client.request(method, url, json_body=payload, idempotent=False)
-    raise_for_error(response, ZohoApiError)
-    body: dict[str, Any] = response.json()
-    for entry in body.get("watch") or []:
-        if entry.get("status") != "success":
-            raise ZohoApiError(response.status_code, str(entry))
-    return body
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

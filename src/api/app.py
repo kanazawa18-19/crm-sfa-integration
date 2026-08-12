@@ -36,6 +36,7 @@ from src.document_generation.contract_generator import generate_contract
 from src.document_generation.quote_generator import generate_quote
 from src.reports.batch import run_report_batch
 from src.sync_engine.clients.notion_client import NotionApiError
+from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.production_wiring import ProductionSyncWiring, get_production_wiring
 from src.sync_engine.webhook_handlers.kintone_webhook import handler as kintone_webhook_handler
 from src.sync_engine.webhook_handlers.notion_webhook import (
@@ -45,6 +46,11 @@ from src.sync_engine.webhook_handlers.spreadsheet_webhook import (
     handler as spreadsheet_webhook_handler,
 )
 from src.sync_engine.webhook_handlers.zoho_webhook import handler as zoho_webhook_handler
+from src.sync_engine.zoho_watch_channel import (
+    ZohoWatchChannelNotConfiguredError,
+    build_zoho_client_from_env,
+    renew_zoho_watch_channel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +234,52 @@ def run_daily_batch() -> dict[str, Any]:
     日報は毎日、週報は金曜日のみ配信する（`src.reports.batch.run_report_batch`参照）。
     """
     return run_report_batch()
+
+
+@app.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])
+def run_zoho_webhook_renewal() -> dict[str, Any]:
+    """Vercel Cronから6時間毎に呼ばれる、Zoho CRM Notifications（watch）チャンネルの
+    自動延長（`PUT /crm/v3/actions/watch`）エントリポイント。
+
+    Zohoのwatchチャンネルは登録・延長時点から最大1日で失効し、放置すると`/api/webhooks/zoho`
+    への通知が無音で止まる（`docs/zoho_webhook_activation_note.md`参照）。実際の延長ロジック・
+    channel_idの一次情報源（環境変数`ZOHO_WATCH_CHANNEL_ID`）の設計判断は
+    `src/sync_engine/zoho_watch_channel.py`の`renew_zoho_watch_channel()`を参照。
+
+    延長対象のchannel_idが未設定、またはZoho API呼び出し自体が失敗した場合は、
+    成功したように見えるno-opにせず、明確な500エラー（Vercel Cronからは失敗実行として
+    検知される）として表面化させる。
+    """
+    try:
+        client = build_zoho_client_from_env()
+        result = renew_zoho_watch_channel(client, token=os.environ.get("ZOHO_WEBHOOK_SECRET"))
+    except ZohoWatchChannelNotConfiguredError as exc:
+        logger.error("zoho watch channel renewal failed (not configured): %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ZohoApiError as exc:
+        logger.error("zoho watch channel renewal failed (zoho api error): %s", exc)
+        raise HTTPException(status_code=502, detail=f"zoho api error: {exc}") from exc
+    except Exception:
+        # 上記2種類以外の想定外の例外（Zohoレスポンスの形が想定外だった場合の取りこぼし等）が
+        # 生のトレースバック形状のままHTTP層へ漏れないようにする。
+        # src/sync_engine/webhook_handlers/zoho_webhook.py の handler() の
+        # `except Exception: logger.exception(...)` パターンと同じ方針（本エンドポイントには
+        # 同種のガードが無かったため、後追いで揃える）。
+        logger.exception("zoho watch channel renewal failed (unexpected error)")
+        raise HTTPException(
+            status_code=500, detail="internal error during zoho webhook renewal"
+        ) from None
+
+    logger.info(
+        "zoho watch channel renewed: channel_id=%s channel_expiry=%s",
+        result["channel_id"],
+        result["channel_expiry"],
+    )
+    return {
+        "status": "success",
+        "channel_id": result["channel_id"],
+        "channel_expiry": result["channel_expiry"],
+    }
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])

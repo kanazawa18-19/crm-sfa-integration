@@ -524,7 +524,15 @@ def test_main_without_channel_id_generates_new_one_when_no_state_file(
     """状態ファイルが存在しない場合は従来どおり新規登録（POST）になる。"""
     monkeypatch.setattr(register_zoho_webhook, "_CHANNEL_STATE_PATH", tmp_path / "does_not_exist.json")
     _mock_token(requests_mock)
-    requests_mock.post(WATCH_URL, json={"watch": [{"channel_id": "new", "status": "success"}]})
+
+    def _echo_channel_id(request, context):
+        sent_channel_id = request.json()["watch"][0]["channel_id"]
+        return {"watch": [{"channel_id": sent_channel_id, "status": "success"}]}
+
+    # channel_idは自動生成（実行時のミリ秒epoch）のため固定値を返せない。BLOCKER2対応で
+    # register_or_renew_watch()が「送信したchannel_idと一致するsuccessエントリ」を要求する
+    # ようになったため、実際のZoho同様にリクエストの値をそのままエコーバックする。
+    requests_mock.post(WATCH_URL, json=_echo_channel_id)
 
     main(
         [

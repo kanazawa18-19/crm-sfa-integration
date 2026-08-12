@@ -356,3 +356,214 @@ def test_cron_daily_batch_runs_batch_when_secret_matches(
         "daily_report_sent": True,
         "weekly_report_sent": False,
     }
+
+
+# --- /api/cron/zoho-webhook-renewal ---------------------------------------------------------
+
+
+def test_cron_zoho_webhook_renewal_returns_401_without_secret_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+
+    response = client.get("/api/cron/zoho-webhook-renewal")
+
+    assert response.status_code == 401
+
+
+def test_cron_zoho_webhook_renewal_returns_401_with_wrong_secret(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer wrong-secret"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_cron_zoho_webhook_renewal_succeeds_when_secret_matches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setattr(
+        "src.api.app.build_zoho_client_from_env", lambda: object()
+    )
+    monkeypatch.setattr(
+        "src.api.app.renew_zoho_watch_channel",
+        lambda client, **kwargs: {"channel_id": "123", "channel_expiry": "2026-08-13T00:00:00+00:00"},
+    )
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "channel_id": "123",
+        "channel_expiry": "2026-08-13T00:00:00+00:00",
+    }
+
+
+def test_cron_zoho_webhook_renewal_returns_500_when_channel_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """channel_idが未設定（ZOHO_WATCH_CHANNEL_IDも引数も無い）場合、成功したように見える
+    no-opにせず明確なエラーとして表面化させることを確認する。"""
+    from src.sync_engine.zoho_watch_channel import ZohoWatchChannelNotConfiguredError
+
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise ZohoWatchChannelNotConfiguredError("channel_id not configured")
+
+    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 500
+    assert "channel_id not configured" in response.json()["detail"]
+
+
+def test_cron_zoho_webhook_renewal_returns_502_on_zoho_api_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zoho API呼び出し自体が失敗した場合も、スキップせず明確なエラーとして表面化させる。"""
+    from src.sync_engine.clients.zoho_client import ZohoApiError
+
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise ZohoApiError(400, "invalid channel_id")
+
+    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 502
+    assert "invalid channel_id" in response.json()["detail"]
+
+
+def test_cron_zoho_webhook_renewal_502_body_never_contains_raw_secret_from_zoho_response(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER1: Zoho応答のwatchエントリがtokenをエコーバックしてきても、502のHTTPレスポンス
+    ボディ（Vercel Cronのダッシュボード/ログから見える箇所）に生のシークレット値が
+    含まれないこと。"""
+    from src.sync_engine.clients.zoho_client import ZohoApiError
+    from src.sync_engine.zoho_watch_channel import redact_watch_entry_token
+
+    real_secret = "super-secret-webhook-token-value"
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        entry = {"status": "error", "code": "INVALID_DATA", "token": real_secret}
+        raise ZohoApiError(200, str(redact_watch_entry_token(entry)))
+
+    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 502
+    assert real_secret not in response.text
+
+
+def test_cron_zoho_webhook_renewal_returns_clean_500_on_unexpected_exception(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER3: ZohoWatchChannelNotConfiguredError/ZohoApiError以外の想定外の例外も、
+    未処理のまま生のトレースバック形状で漏れず、ログに記録した上で綺麗な500を返すこと。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise AttributeError("'str' object has no attribute 'get'")
+
+    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal error during zoho webhook renewal"}
+
+
+# --- BLOCKER3: 実際のZoho watch API呼び出し経路を通した、想定外レスポンス形の endpoint-level 検証
+# （下のregister_or_renew_watch()自体は差し替えず、requests_mockで実際のHTTP応答を偽装する。
+#   src.api.app.renew_zoho_watch_channelをmonkeypatchで丸ごと差し替える上のテスト群と異なり、
+#   ここではrun_zoho_webhook_renewal → renew_zoho_watch_channel → register_or_renew_watch の
+#   実コードパスを丸ごと通す）。
+
+
+_TOKEN_URL = "https://accounts.zoho.com/oauth/v2/token"
+_WATCH_URL = "https://www.zohoapis.jp/crm/v3/actions/watch"
+
+
+@pytest.fixture
+def _real_zoho_watch_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "cid")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "csecret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "rtoken")
+    monkeypatch.setenv("ZOHO_WATCH_CHANNEL_ID", "123")
+    monkeypatch.setenv("ZOHO_WEBHOOK_BASE_URL", "https://crm-sfa-integration.vercel.app")
+    monkeypatch.delenv("ZOHO_ACCOUNTS_BASE_URL", raising=False)
+    monkeypatch.delenv("ZOHO_API_BASE_URL", raising=False)
+
+
+def _mock_zoho_token(requests_mock) -> None:
+    requests_mock.post(_TOKEN_URL, json={"access_token": "access-token-1", "expires_in": 3600})
+
+
+def test_cron_zoho_webhook_renewal_returns_clean_error_when_watch_entry_is_not_a_dict(
+    client: TestClient, requests_mock, _real_zoho_watch_env: None
+) -> None:
+    _mock_zoho_token(requests_mock)
+    requests_mock.put(_WATCH_URL, json={"watch": ["not-a-dict"]})
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 502
+    assert "zoho api error" in response.json()["detail"]
+
+
+def test_cron_zoho_webhook_renewal_returns_clean_error_when_response_body_is_not_json(
+    client: TestClient, requests_mock, _real_zoho_watch_env: None
+) -> None:
+    _mock_zoho_token(requests_mock)
+    requests_mock.put(_WATCH_URL, status_code=200, text="this is not json")
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 502
+    assert "zoho api error" in response.json()["detail"]
+
+
+def test_cron_zoho_webhook_renewal_returns_clean_error_when_response_body_is_a_bare_array(
+    client: TestClient, requests_mock, _real_zoho_watch_env: None
+) -> None:
+    _mock_zoho_token(requests_mock)
+    requests_mock.put(_WATCH_URL, json=["unexpected", "shape"])
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 502
+    assert "zoho api error" in response.json()["detail"]
