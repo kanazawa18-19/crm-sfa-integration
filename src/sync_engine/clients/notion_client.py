@@ -30,12 +30,21 @@ from src.sync_engine.clients._http import (
     raise_for_error,
     request_with_retry,
 )
-from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
+from src.sync_engine.webhook_handlers.notion_webhook import (
+    PARSEABLE_NOTION_PROPERTY_TYPES,
+    parse_notion_property_value,
+)
 
 _NOTION_VERSION = "2022-06-28"
 _BASE_URL = "https://api.notion.com/v1"
 
 logger = logging.getLogger(__name__)
+
+# get_page()は同期の書き込み対象かどうかに関わらず「今ページに存在する値」を読むだけの
+# 用途（マージ判定用の現在値取得）なので、formula/rollup/files/created_time等の
+# `PARSEABLE_NOTION_PROPERTY_TYPES`（parse_notion_property_value()が実際に対応する
+# Notion APIの生の型文字列の一覧。定義・重複防止の経緯は`notion_webhook.py`側の
+# コメントを参照）に無い未対応型は例外にせず読み飛ばす。
 
 
 class NotionApiError(ApiError):
@@ -182,10 +191,28 @@ class HttpNotionClient:
             return None
         raise_for_error(response, NotionApiError)
         page = response.json()
-        return {
-            name: parse_notion_property_value(value)
-            for name, value in (page.get("properties") or {}).items()
-        }
+        result: dict[str, Any] = {}
+        for name, value in (page.get("properties") or {}).items():
+            prop_type = value.get("type")
+            if prop_type not in PARSEABLE_NOTION_PROPERTY_TYPES:
+                # formula/rollup/files/created_time等、parse_notion_property_value()が
+                # 未対応の型はページ取得全体を落とさず読み飛ばす（実運用で案件管理DBの
+                # 粗利/契約スピード等のFORMULA型プロパティに対して発生した
+                # `ValueError: unsupported Notion property type: 'formula'`の修正）。
+                # スキーマ/実データの型が乖離しているケース（=今回の本番障害の原因そのもの）を
+                # 見逃さないよう、`notion_webhook.py`の同種のケース（未知プロパティのスキップ、
+                # 「ignoring unknown Notion property」）と同様にwarningレベルで残す。
+                logger.warning(
+                    "ignoring unparseable Notion property '%s' (type=%s) for db_key=%r, "
+                    "page_id=%s (not in PARSEABLE_NOTION_PROPERTY_TYPES)",
+                    name,
+                    prop_type,
+                    self._db_key,
+                    page_id,
+                )
+                continue
+            result[name] = parse_notion_property_value(value)
+        return result
 
     def query_all_pages(self, *, page_size: int = 100) -> list[dict[str, Any]]:
         """Notion API `POST /v1/databases/{database_id}/query` で当DBの全ページを取得する。

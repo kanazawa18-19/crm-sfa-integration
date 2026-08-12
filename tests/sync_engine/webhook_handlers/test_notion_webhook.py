@@ -15,6 +15,7 @@ from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.webhook_handlers._common import WEBHOOK_SECRET_HEADER
 from src.sync_engine.webhook_handlers.notion_webhook import (
     NotionPageClient,
+    PARSEABLE_NOTION_PROPERTY_TYPES,
     _default_db_id_to_db_key,
     fetch_and_normalize_notion_page,
     handler,
@@ -89,6 +90,56 @@ def test_parse_notion_property_value(prop: dict, expected: object) -> None:
 def test_parse_notion_property_value_unsupported_type_raises() -> None:
     with pytest.raises(ValueError):
         parse_notion_property_value({"type": "files", "files": []})
+
+
+def test_parseable_notion_property_types_matches_parse_notion_property_value_branches() -> None:
+    """`PARSEABLE_NOTION_PROPERTY_TYPES`とparse_notion_property_value()の実装がズレていないことを
+    保証する回帰テスト。
+
+    以前は`src/sync_engine/clients/notion_client.py`側にも同じ内容の型リストが重複定義
+    されており、parse_notion_property_value()が対応する型を増減した際に片方だけ更新漏れが
+    起きるとクラッシュ（whitelistが狭すぎる）または元のバグ（whitelistが広すぎて未対応型を
+    渡してしまう）が再発する恐れがあった。今は`notion_client.py`がこの定数を直接importして
+    単一の情報源にしているが、それでも「定数」と「parse_notion_property_value()のif分岐の
+    実装」自体がズレる可能性は残るため、期待する型集合をハードコードし固定化する。
+    """
+    expected_types = {
+        "title",
+        "rich_text",
+        "select",
+        "status",
+        "multi_select",
+        "number",
+        "checkbox",
+        "date",
+        "email",
+        "phone_number",
+        "url",
+        "relation",
+        "people",
+    }
+    assert PARSEABLE_NOTION_PROPERTY_TYPES == expected_types
+
+    # 定数に型を足しただけで対応する分岐を実装し忘れる（またはその逆）ケースを検知するため、
+    # 各型を実際にparse_notion_property_value()へ通して例外にならないことも確認する。
+    minimal_props: dict[str, dict] = {
+        "title": {"type": "title", "title": []},
+        "rich_text": {"type": "rich_text", "rich_text": []},
+        "select": {"type": "select", "select": None},
+        "status": {"type": "status", "status": None},
+        "multi_select": {"type": "multi_select", "multi_select": []},
+        "number": {"type": "number", "number": None},
+        "checkbox": {"type": "checkbox", "checkbox": False},
+        "date": {"type": "date", "date": None},
+        "email": {"type": "email", "email": None},
+        "phone_number": {"type": "phone_number", "phone_number": None},
+        "url": {"type": "url", "url": None},
+        "relation": {"type": "relation", "relation": []},
+        "people": {"type": "people", "people": []},
+    }
+    assert set(minimal_props) == expected_types
+    for prop_type, prop in minimal_props.items():
+        parse_notion_property_value(prop)  # 未対応の型であればValueErrorが送出される
 
 
 # --- notion_payload_to_sync_event -------------------------------------------------------

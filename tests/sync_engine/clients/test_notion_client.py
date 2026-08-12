@@ -62,6 +62,59 @@ def test_get_page_returns_flat_properties_dict(requests_mock, client: HttpNotion
     }
 
 
+def test_get_page_skips_unparseable_property_types(
+    requests_mock, client: HttpNotionClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """実運用で発生した`ValueError: unsupported Notion property type: 'formula'`の回帰テスト。
+
+    案件管理DBの粗利/契約スピード等（FORMULA型）・添付ファイル（FILES型）のような
+    parse_notion_property_value()未対応のプロパティが混在しても、get_page()全体は
+    失敗せず、それらのプロパティだけが結果から単純に欠落する（キー自体が無い）。
+    スキーマ/実データの型乖離（本番障害の原因）を見逃さないよう、warningレベルで
+    ログに残ることも確認する（shirokuma-secレビューWARN対応: 以前はdebugレベルで
+    実質見えなくなっていた）。
+    """
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        json={
+            "id": PAGE_ID,
+            "properties": {
+                "取引先ID": {"type": "title", "title": [{"plain_text": "CLI-001"}]},
+                "顧客種別": {"type": "select", "select": {"name": "ホテル・旅館"}},
+                "初期費用（イニシャル）": {"type": "number", "number": 500000},
+                "粗利": {"type": "formula", "formula": {"type": "number", "number": 123456}},
+                "契約スピード": {
+                    "type": "rollup",
+                    "rollup": {"type": "number", "number": 7},
+                },
+                "見積書": {
+                    "type": "files",
+                    "files": [{"name": "見積書.pdf", "type": "external"}],
+                },
+                "作成日時": {"type": "created_time", "created_time": "2026-08-05T09:00:00.000Z"},
+            },
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        record = client.get_page(PAGE_ID)
+
+    assert record == {
+        "取引先ID": "CLI-001",
+        "顧客種別": "ホテル・旅館",
+        "初期費用（イニシャル）": 500000,
+    }
+    assert "粗利" not in record
+    assert "契約スピード" not in record
+    assert "見積書" not in record
+    assert "作成日時" not in record
+    for skipped_property in ("粗利", "契約スピード", "見積書", "作成日時"):
+        assert any(
+            log_record.levelname == "WARNING" and skipped_property in log_record.getMessage()
+            for log_record in caplog.records
+        )
+
+
 def test_get_page_returns_none_on_404(requests_mock, client: HttpNotionClient) -> None:
     requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}", status_code=404)
 

@@ -98,6 +98,38 @@ _SYNCABLE_PROPERTY_TYPES: frozenset[PropertyType] = frozenset(
 )
 
 
+# parse_notion_property_value()が実際にif分岐でswitchしているNotion API上の生の
+# プロパティ型文字列（`type`フィールドの値）の一覧。`_SYNCABLE_PROPERTY_TYPES`
+# （このコードベース独自のPropertyType Enum値）とは1対1で対応しない
+# （例: PropertyType.TEXT="text"だがNotion APIの生の型文字列は"rich_text"）ため、
+# 別に定義する。以前は`src/sync_engine/clients/notion_client.py`側にも同じ内容を
+# 重複定義していたが、parse_notion_property_value()が対応する型が増減した際に
+# 片方だけ更新漏れが起きるとクラッシュ(whitelistが狭すぎる)または元のバグ
+# (whitelistが広すぎて未対応型を渡してしまう)が再発するため、ここを唯一の
+# 情報源とし`notion_client.py`側からimportして使う。値を変更する場合は
+# 必ず下記のif分岐（parse_notion_property_value()）も合わせて更新すること
+# （`tests/sync_engine/webhook_handlers/test_notion_webhook.py`の
+# `test_parseable_notion_property_types_matches_parse_notion_property_value_branches`
+# がこの2つのズレを検知する）。
+PARSEABLE_NOTION_PROPERTY_TYPES: frozenset[str] = frozenset(
+    {
+        "title",
+        "rich_text",
+        "select",
+        "status",
+        "multi_select",
+        "number",
+        "checkbox",
+        "date",
+        "email",
+        "phone_number",
+        "url",
+        "relation",
+        "people",
+    }
+)
+
+
 def parse_notion_property_value(prop: Mapping[str, Any]) -> Any:
     """Notion APIのプロパティ値オブジェクトを素のPython値へ変換する。"""
     prop_type = prop.get("type")
