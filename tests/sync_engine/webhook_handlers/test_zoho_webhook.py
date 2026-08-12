@@ -284,6 +284,21 @@ def test_zoho_payload_to_sync_events_date_field_is_normalized() -> None:
     assert events[0].properties == {"失注日": "2024-05-10"}
 
 
+def test_zoho_payload_to_sync_events_closing_date_maps_to_same_property_as_contract_date() -> None:
+    """Zoho標準フィールド「完了予定日」（Closing_Date）は、カスタムフィールド
+    「契約日 / 予想契約日」（field50）と同じNotionプロパティへ同期する
+    （2026-08-12、金沢さん確認済みの方針）。"""
+    payload = _payload(
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"Closing_Date": "2026-08-21"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+
+    assert events[0].properties == {"契約日 / 予想契約日": "2026-08-21"}
+
+
 def test_zoho_payload_to_sync_events_boolean_fields_are_parsed_from_string() -> None:
     """「かつやさん」（field16）「問合せ」（field48）はCHECKBOX型で、Zoho側の
     "true"/"false"文字列をbool値へ変換する（Python の bool("false") は True になるため、
