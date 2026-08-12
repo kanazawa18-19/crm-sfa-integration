@@ -169,3 +169,37 @@ export interface TasksResponse {
 export function getTasks(): Promise<TasksResponse> {
   return fetchBackend<TasksResponse>("/api/tasks");
 }
+
+export interface ManagerAlertEntry {
+  notion_page_id: string;
+  project_name: string;
+  assignee: string;
+  status: string;
+  confidence: string;
+  next_action_date: string | null;
+  reason: string;
+  is_proxy: boolean;
+}
+
+export interface ManagerAlertsResponse {
+  as_of: string;
+  alerts: {
+    lost: ManagerAlertEntry[];
+    lost_candidate: ManagerAlertEntry[];
+    stalled: ManagerAlertEntry[];
+    won: ManagerAlertEntry[];
+  };
+  counts: {
+    lost: number;
+    lost_candidate: number;
+    stalled: number;
+    won: number;
+  };
+  stalled_days_threshold: number;
+  notes: string[];
+}
+
+export function getManagerAlerts(asOf?: string): Promise<ManagerAlertsResponse> {
+  const query = asOf ? `?as_of=${encodeURIComponent(asOf)}` : "";
+  return fetchBackend<ManagerAlertsResponse>(`/api/alerts/manager${query}`);
+}
