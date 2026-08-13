@@ -142,6 +142,50 @@ def test_handler_posts_approval_request_when_project_matches(monkeypatch: pytest
     assert calls[0].rep_email == "sales@cnctor.jp"
     # sales@cnctor.jp（社内ドメイン）はattendee_displayに含まれない
     assert "sales@cnctor.jp" not in calls[0].attendee_display
+    assert calls[0].document_url is None
+
+
+def test_handler_passes_document_url_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.web_engagement_meeting_webhook.post_approval_request",
+        lambda candidate: calls.append(candidate) or True,
+    )
+    contact = FakeContactClient(
+        {"yamada@example.com": _contact_page("contact-1", "yamada@example.com", ["client-1"])}
+    )
+    project = FakeProjectClient(
+        {"client-1": [_project_page("project-1", "口頭受注")]},
+        pages_by_id={"project-1": _project_page("project-1", "口頭受注")},
+    )
+    payload = _payload(document_url="https://docs.google.com/document/d/xxxx")
+
+    handler(_event(payload), context=None, contact_client=contact, project_client=project)
+
+    assert calls[0].document_url == "https://docs.google.com/document/d/xxxx"
+
+
+@pytest.mark.parametrize("bad_document_url", ["", "   ", 12345, []])
+def test_handler_falls_back_to_none_for_invalid_document_url(
+    monkeypatch: pytest.MonkeyPatch, bad_document_url: Any
+) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.web_engagement_meeting_webhook.post_approval_request",
+        lambda candidate: calls.append(candidate) or True,
+    )
+    contact = FakeContactClient(
+        {"yamada@example.com": _contact_page("contact-1", "yamada@example.com", ["client-1"])}
+    )
+    project = FakeProjectClient(
+        {"client-1": [_project_page("project-1", "口頭受注")]},
+        pages_by_id={"project-1": _project_page("project-1", "口頭受注")},
+    )
+    payload = _payload(document_url=bad_document_url)
+
+    handler(_event(payload), context=None, contact_client=contact, project_client=project)
+
+    assert calls[0].document_url is None
 
 
 def test_handler_does_not_post_when_no_unique_project_match(monkeypatch: pytest.MonkeyPatch) -> None:

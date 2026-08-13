@@ -20,8 +20,13 @@ DMで送る（`src/meeting_sync/slack_approval.py`のdocstring参照）。
   "starts_at": "2026-08-12T10:00:00+09:00",
   "attendee_emails": ["yamada@example.com", "sales@cnctor.jp"],
   "meet_link": "https://meet.google.com/xxx-xxxx-xxx",
-  "rep_email": "sales@cnctor.jp"
+  "rep_email": "sales@cnctor.jp",
+  "document_url": "https://docs.google.com/document/d/xxxx"
 }
+
+`document_url`はGeminiの議事録・録画リンク（省略可、無ければNone）。承認時にNotionの
+「議事録・録画リンク」プロパティへそのまま書き込む（`src/meeting_sync/slack_approval.py`の
+`_build_action_properties()`参照）。
 """
 
 from __future__ import annotations
@@ -120,6 +125,7 @@ def handler(
         if not isinstance(rep_email, str) or not rep_email.strip():
             raise ValueError("payload.rep_email is required and must be a non-empty string")
         meet_link = payload.get("meet_link")
+        document_url = payload.get("document_url")
     except json.JSONDecodeError as exc:
         return bad_request_response(f"invalid JSON payload: {exc}")
     except ValueError as exc:
@@ -155,6 +161,7 @@ def handler(
             # DM送信先解決時にpost_approval_request()内で実際の値へ差し替えられる
             # （src/meeting_sync/slack_approval.pyのMeetingCandidate docstring参照）。
             rep_slack_user_id="",
+            document_url=document_url if isinstance(document_url, str) and document_url.strip() else None,
         )
         # obasan-qualityレビューBLOCKER対応（2026-08-13）: 以前は呼んだだけで結果を
         # 見ずに`posted: True`を返していた（Slack送信が実際に失敗しても気づけなかった）。

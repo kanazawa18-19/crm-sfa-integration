@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -92,6 +93,38 @@ def test_post_approval_request_sends_dm_to_resolved_user(requests_mock) -> None:
     assert MeetingCandidate.from_button_value(button_value).rep_slack_user_id == "U123"
 
 
+def test_post_approval_request_dm_shows_document_url_when_present(requests_mock) -> None:
+    requests_mock.get(
+        f"{_SLACK_API}/users.lookupByEmail", json={"ok": True, "user": {"id": "U123"}}
+    )
+    requests_mock.post(
+        f"{_SLACK_API}/conversations.open", json={"ok": True, "channel": {"id": "D123"}}
+    )
+    post_message = requests_mock.post(f"{_SLACK_API}/chat.postMessage", json={"ok": True})
+
+    post_approval_request(_candidate(document_url="https://docs.google.com/document/d/xxxx"))
+
+    summary_text = post_message.last_request.json()["blocks"][0]["text"]["text"]
+    assert "https://docs.google.com/document/d/xxxx" in summary_text
+
+
+def test_post_approval_request_dm_shows_not_yet_arrived_when_document_url_absent(
+    requests_mock,
+) -> None:
+    requests_mock.get(
+        f"{_SLACK_API}/users.lookupByEmail", json={"ok": True, "user": {"id": "U123"}}
+    )
+    requests_mock.post(
+        f"{_SLACK_API}/conversations.open", json={"ok": True, "channel": {"id": "D123"}}
+    )
+    post_message = requests_mock.post(f"{_SLACK_API}/chat.postMessage", json={"ok": True})
+
+    post_approval_request(_candidate())
+
+    summary_text = post_message.last_request.json()["blocks"][0]["text"]["text"]
+    assert "まだ届いていません" in summary_text
+
+
 def test_post_approval_request_skips_when_user_lookup_fails(requests_mock) -> None:
     requests_mock.get(
         f"{_SLACK_API}/users.lookupByEmail",
@@ -149,6 +182,52 @@ def test_handle_interaction_approve_creates_action_page(requests_mock) -> None:
     assert properties["Googleカレンダーイベントid"] == "event-1"
     assert properties["案件名"] == ["project-1"]
     assert properties["アクション種別"] == "訪問商談"
+    assert "議事録・録画リンク" not in properties
+
+
+def test_handle_interaction_approve_includes_document_url_when_present(requests_mock) -> None:
+    requests_mock.post("https://hooks.slack.com/actions/T000/000/xxx", json={})
+    client = FakeActionClient(existing_pages=[])
+    candidate = _candidate(document_url="https://docs.google.com/document/d/xxxx")
+
+    handle_interaction(_interaction_payload(APPROVE_ACTION_ID, candidate), client)
+
+    assert client.created[0]["議事録・録画リンク"] == "https://docs.google.com/document/d/xxxx"
+
+
+def test_handle_interaction_approve_drops_non_http_document_url(requests_mock) -> None:
+    # _build_action_properties()側のdefense-in-depthチェックの確認。to_button_value()を
+    # 経由しない形（例えば直接構築されたMeetingCandidate）で不正なdocument_urlが渡っても
+    # Notionへは書き込まれない。
+    requests_mock.post("https://hooks.slack.com/actions/T000/000/xxx", json={})
+    client = FakeActionClient(existing_pages=[])
+    candidate = _candidate(document_url="not-a-url")
+
+    handle_interaction(_interaction_payload(APPROVE_ACTION_ID, candidate), client)
+
+    assert "議事録・録画リンク" not in client.created[0]
+
+
+def test_to_button_value_drops_document_url_when_too_long() -> None:
+    from src.meeting_sync.slack_approval import _MAX_DOCUMENT_URL_LEN
+
+    long_url = "https://docs.google.com/document/d/" + "x" * _MAX_DOCUMENT_URL_LEN
+    candidate = _candidate(document_url=long_url)
+
+    restored = MeetingCandidate.from_button_value(candidate.to_button_value())
+
+    assert restored.document_url is None
+
+
+def test_meeting_candidate_from_button_value_defaults_document_url_when_absent() -> None:
+    # デプロイ前に投稿済みのSlackメッセージ（button valueにdocument_urlを含まない）を
+    # 承認してもKeyErrorにならないことの確認。
+    payload = json.loads(_candidate().to_button_value())
+    del payload["document_url"]
+    stale_value = json.dumps(payload)
+
+    restored = MeetingCandidate.from_button_value(stale_value)
+    assert restored.document_url is None
 
 
 def test_handle_interaction_approve_skips_when_already_registered(requests_mock) -> None:

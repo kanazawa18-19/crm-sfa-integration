@@ -20,8 +20,17 @@ web-engagement-tool側のcron（`calendarMeetingSync.ts`、AppSettings.calendarM
 直近イベントの生データをそのままPOSTする。crm-sfa-integration側で連絡先DB→取引先→
 「進行中」案件へのマッチングを行い、1件に絞れた場合のみ担当営業（`rep_email`）へSlack DM
 で承認依頼を送る。DMの承認ボタンが押されたときのみ、実際にNotionアクション履歴DBへ
-新規ページを作成する（即時登録はしない）。Notta連携・Gemini議事録取込みは未実装（前者は
-APIキー未取得、後者は別タスクとして着手予定）。
+新規ページを作成する（即時登録はしない）。
+
+**Phase 2（Gemini議事録取込み、2026-08-14実装完了）**: Googleカレンダーイベントの
+`attachments`フィールド（Geminiが会議後に議事録・録画を添付する）から`document_url`を
+拾い、承認時にNotionの「議事録・録画リンク」プロパティへ書き込む。追加のOAuthスコープ・
+再連携は不要（Calendar APIに添付ファイル専用のスコープは存在しない、2026-08-14に
+Googleの公式スコープ一覧で確認済み）。web-engagement-tool側`extractDocumentUrl()`が
+http(s)形式の検証と複数attachment時の警告ログを行い、crm-sfa-integration側
+`slack_approval.py`も長さ上限・URL形式の二重チェックを行う（Notion書き込み失敗で
+案件登録全体が失敗し続ける事故を防ぐため）。**Notta連携（Phase 3）は引き続き未実装**
+（APIキー未取得のため保留）。
 
 系統1・2は同じ設計パターン（クライアントクラス + `notion_webhook.handler_with_proxy`への
 callable注入）、系統3は`kintone_webhook.py`/`zoho_webhook.py`と同じraw Lambda風ハンドラの
@@ -110,6 +119,14 @@ callable注入）、系統3は`kintone_webhook.py`/`zoho_webhook.py`と同じraw
   を追加して修正済み。今後この構成（DB直接アクセス不可のため手書きマイグレーション）の
   プロジェクトでスキーマ変更を行う際は、このbuildスクリプトが継続してマイグレーションを
   適用する前提を崩さないこと。
+- **Phase 2で議事録リンクが早期承認だと反映されないケースがある**（2026-08-14、
+  obasan-qualityレビューWARN指摘）。会議終了直後にDMが届き、Geminiが議事録を
+  attachmentsへ反映する前に営業担当が承認してしまうと、Notionページは
+  `議事録・録画リンク`無しで作成される。`handle_interaction()`は既存ページが
+  見つかった場合は「登録済み」として何もしない設計（重複作成防止）のため、後日の
+  cronで同じイベントが`document_url`付きで再送されても、既存ページへの反映は行われない
+  （手動でNotion側に追記する必要がある）。低頻度（cronは日次1回）だが、既知の制約として
+  記録しておく。
 - **承認は担当営業本人へのSlack DMで行い、Notionの確認フローは無い**（2026-08-13、
   金沢さん要望でチェックボックス方式からDM承認方式へ変更）。DM送信の成否は
   `post_approval_request()`が戻り値で返し、失敗時は`SLACK_WEBHOOK_URL_ALERT`

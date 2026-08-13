@@ -40,6 +40,7 @@ _ACTION_DATE_PROPERTY = "アクション日"
 _MEMO_PROPERTY = "履歴メモ"
 _PROJECT_PROPERTY = "案件名"
 _CONTACT_PERSON_PROPERTY = "先方担当者"
+_DOCUMENT_URL_PROPERTY = "議事録・録画リンク"
 
 APPROVE_ACTION_ID = "approve_meeting_action"
 REJECT_ACTION_ID = "reject_meeting_action"
@@ -52,6 +53,12 @@ REJECT_ACTION_ID = "reject_meeting_action"
 _MAX_BUTTON_VALUE_LEN = 2000
 _MAX_TITLE_LEN = 150
 _MAX_ATTENDEE_DISPLAY_LEN = 300
+# shirokuma-secレビューWARN対応（2026-08-14、Phase 2）: document_urlは
+# web-engagement-tool側でhttp(s)形式であることは検証済みだが、長さは無検証のまま
+# ここまで届く。title/attendee_displayと違い、URLは切り詰めると壊れたリンクになって
+# 意味が無くなるため、切り詰めではなく「長すぎたら諦めてNoneにする」方式にする
+# （議事録リンクが無いだけで案件登録自体は成功させる、という既存の設計思想に合わせる）。
+_MAX_DOCUMENT_URL_LEN = 500
 
 
 def _truncate(value: str, max_len: int) -> str:
@@ -84,11 +91,18 @@ class MeetingCandidate:
     # DM送信先として解決した本人と一致するかの多層防御に使う（DMの機密性のみに依存しない）。
     # `_resolve_dm_channel()`でメールアドレス解決時に得たIDをそのまま埋め込む。
     rep_slack_user_id: str
+    # Phase 2（T-20 (2)、2026-08-14）: Geminiの議事録・録画URL（web-engagement-tool側が
+    # カレンダーイベントのattachmentsから拾ったもの）。無ければNone。デフォルト値ありと
+    # するのは、この変更のデプロイ前に投稿済みのSlackメッセージ（button valueにこの
+    # フィールドを含まない）を承認しても`from_button_value()`がKeyErrorで落ちないようにするため。
+    document_url: str | None = None
 
     def to_button_value(self) -> str:
         payload = asdict(self)
         payload["title"] = _truncate(self.title, _MAX_TITLE_LEN)
         payload["attendee_display"] = _truncate(self.attendee_display, _MAX_ATTENDEE_DISPLAY_LEN)
+        if payload["document_url"] and len(payload["document_url"]) > _MAX_DOCUMENT_URL_LEN:
+            payload["document_url"] = None
         value = json.dumps(payload, ensure_ascii=False)
         if len(value) > _MAX_BUTTON_VALUE_LEN:
             # 切り詰め後もなお超える場合（参加者表示が非常に長い等）は、承認処理に必須の
@@ -193,6 +207,14 @@ def post_approval_request(candidate: MeetingCandidate) -> bool:
     channel, user_id = resolved
     candidate = replace(candidate, rep_slack_user_id=user_id)
 
+    # obasan-qualityレビューWARN対応（2026-08-14、Phase 2）: 議事録リンクの有無が承認DM上に
+    # 出ないと、営業担当は承認する時点でそれを判断材料にできない（承認後にNotionを開いて
+    # 初めて分かる）。
+    document_line = (
+        f"議事録・録画: {candidate.document_url}\n"
+        if candidate.document_url
+        else "議事録・録画: まだ届いていません（後日Notionでご確認ください）\n"
+    )
     summary_text = (
         f"*Googleカレンダー予定から商談アイテムを検知しました*\n"
         f"案件: {candidate.project_name}\n"
@@ -200,6 +222,7 @@ def post_approval_request(candidate: MeetingCandidate) -> bool:
         f"アクション種別: {candidate.action_type}\n"
         f"先方: {candidate.attendee_display}\n"
         f"予定タイトル: {candidate.title}\n"
+        f"{document_line}"
         f"\n"
         f"_「対象外」にした場合も、この予定が次回以降のカレンダー同期で再度検知されると"
         f"改めて承認依頼が届くことがあります。_"
@@ -264,7 +287,7 @@ def _update_original_message(response_url: str, text: str) -> None:
 
 
 def _build_action_properties(candidate: MeetingCandidate) -> dict[str, Any]:
-    return {
+    properties: dict[str, Any] = {
         _TITLE_PROPERTY: candidate.title,
         _ACTION_TYPE_PROPERTY: candidate.action_type,
         _ACTION_DATE_PROPERTY: candidate.action_date,
@@ -273,6 +296,14 @@ def _build_action_properties(candidate: MeetingCandidate) -> dict[str, Any]:
         _CONTACT_PERSON_PROPERTY: candidate.attendee_display,
         _EVENT_ID_PROPERTY: candidate.event_id,
     }
+    # shirokuma-secレビューWARN対応（2026-08-14）: document_urlはweb-engagement-tool側で
+    # 検証済みのはずだが、ここでも軽く検証してから書き込む（defense in depth）。ここで
+    # 弾かずにNotion側の`URL`型バリデーションに任せると、`create_page()`が例外を送出し
+    # `handle_interaction()`がそれを捕捉しないため、案件登録全体（他の正常なフィールドも
+    # 含めて）が失敗し、承認ボタンを何度押しても同じ理由で失敗し続ける事故になりうる。
+    if candidate.document_url and candidate.document_url.startswith(("http://", "https://")):
+        properties[_DOCUMENT_URL_PROPERTY] = candidate.document_url
+    return properties
 
 
 def handle_interaction(payload: Mapping[str, Any], action_client: ActionNotionClient) -> None:
