@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from src.api.auth import verify_cron_secret, verify_dashboard_api_token
 from src.api.dashboard_service import (
@@ -35,6 +37,17 @@ from src.document_generation.common import (
 from src.document_generation.contract_generator import generate_contract
 from src.document_generation.quote_generator import generate_quote
 from src.reports.batch import run_report_batch
+from src.reports.revenue_target_settings import (
+    RevenueTargetSettingsStore,
+    build_revenue_target_settings_store,
+)
+from src.reports.revenue_target_sheet import (
+    RevenueTargetSheetFormatError,
+    RevenueTargetSheetPointer,
+    fetch_mrr_targets,
+    fetch_unit_count_targets,
+)
+from src.sync_engine.clients._http import ApiError
 from src.sync_engine.clients.notion_client import NotionApiError
 from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.production_wiring import ProductionSyncWiring, get_production_wiring
@@ -85,7 +98,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET"],
+    # POSTは/api/settings/revenue-target-sheet（事業計画スプレッドシート連携設定の保存）
+    # 向けに追加。他エンドポイントは全てGETのまま。
+    allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
     # ブラウザ側のfetch（dashboard/）から/api/documents/generateのカスタムヘッダーを
     # 読めるようにする（未指定だとContent-Dispositionを含め非単純ヘッダーは既定で見えない）。
@@ -378,3 +393,161 @@ def generate_document(notion_project_id: str, category: str) -> Response:
             "X-Document-Notes": encoded_notes,
         },
     )
+
+
+# --- 事業計画スプレッドシート連携設定（/api/settings/revenue-target-sheet） -----------------------
+# 目標値の永続化方針（値そのものはNotionに複製せず、スプレッドシートへのポインタのみ保持する）は
+# src/reports/revenue_target_sheet.py・src/reports/revenue_target_settings.pyのモジュール
+# docstring参照。
+
+
+_SPREADSHEET_URL_ID_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
+
+# 実際のGoogle スプレッドシートIDの形はこのレンジに収まる（英数字・アンダースコア・ハイフンのみ、
+# 概ね40〜50文字程度）。ここでは多少の余裕を持たせつつ、`/`・`.`・空白等を含む値は一律拒否する。
+# この値は`RevenueTargetSheetSettingsStore`経由でNotionへ永続化され、以後のバッチ実行のたびに
+# `revenue_target_sheet.py`のリクエストURLへ直接埋め込まれるため、ここで弾かないと
+# `../../drive/v3/files`のようなパストラバーサル的な値が保存・再利用され続けてしまう
+# （shirokuma-secレビュー: WARN。confused deputy的な脆弱性）。
+_SPREADSHEET_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{20,60}$")
+
+
+def _extract_spreadsheet_id(value: str) -> str:
+    """Google スプレッドシートのURL（`https://docs.google.com/spreadsheets/d/{ID}/edit?gid=...`）
+    またはIDそのものから、スプレッドシートIDを取り出す。URL形式でなければ、入力全体を
+    トリムしたものをIDそのものとみなす。
+
+    どちらの経路で取り出した値も`_SPREADSHEET_ID_PATTERN`で検証し、実在しうるスプレッドシートID
+    の形をしていなければ422を返す（`_parse_date_param`等、本ファイルの他の入力検証と同様、
+    ここで直接`HTTPException`を送出する）。
+    """
+    stripped = value.strip()
+    match = _SPREADSHEET_URL_ID_PATTERN.search(stripped)
+    candidate = match.group(1) if match else stripped
+    if not _SPREADSHEET_ID_PATTERN.match(candidate):
+        raise HTTPException(
+            status_code=422,
+            detail="スプレッドシートのURLまたはIDの形式が正しくありません",
+        )
+    return candidate
+
+
+def _pointer_to_dict(pointer: RevenueTargetSheetPointer) -> dict[str, Any]:
+    return {
+        "spreadsheet_id": pointer.spreadsheet_id,
+        "mrr_sheet_name": pointer.mrr_sheet_name,
+        "unit_count_sheet_name": pointer.unit_count_sheet_name,
+    }
+
+
+class RevenueTargetSheetSettingsRequest(BaseModel):
+    """`POST /api/settings/revenue-target-sheet`のリクエストボディ。
+
+    スプレッドシートURLをそのまま貼り付ける想定のUIのため、フルURL・裸のIDのどちらでも
+    受け付ける（`_extract_spreadsheet_id`参照）。mrr_sheet_name／unit_count_sheet_nameは
+    どちらか一方だけの運用を許容するため任意（`RevenueTargetSheetPointer`と同じ）。
+    """
+
+    spreadsheet_url_or_id: str
+    mrr_sheet_name: str | None = None
+    unit_count_sheet_name: str | None = None
+
+
+@app.get(
+    "/api/settings/revenue-target-sheet", dependencies=[Depends(verify_dashboard_api_token)]
+)
+def get_revenue_target_sheet_settings() -> dict[str, Any]:
+    """現在設定されている事業計画スプレッドシートへのポインタを返す（未設定ならNone）。"""
+    store = build_revenue_target_settings_store()
+    if store is None:
+        return {"configured": False, "pointer": None, "updated_at": None}
+
+    try:
+        record = store.get()
+    except ApiError as exc:
+        raise HTTPException(status_code=502, detail=f"notion api error: {exc}") from exc
+
+    if record is None:
+        return {"configured": False, "pointer": None, "updated_at": None}
+    return {
+        "configured": True,
+        "pointer": _pointer_to_dict(record.pointer),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+@app.post(
+    "/api/settings/revenue-target-sheet", dependencies=[Depends(verify_dashboard_api_token)]
+)
+def save_revenue_target_sheet_settings(
+    payload: RevenueTargetSheetSettingsRequest,
+) -> dict[str, Any]:
+    """ポインタを保存した上で、即座に`fetch_all_targets()`を1回試し、シートの形式が正しく
+    読めるかを検証する（保存とテストを1リクエストにまとめ、設定画面が別途「テスト」ボタンで
+    往復する必要をなくす）。
+
+    検証（シート読み取り）が失敗しても保存自体は取り消さない。事業計画スプレッドシートは
+    人手で日常的に編集されるため、保存時点では正しくても後から一時的にレイアウトが崩れる
+    ケースがあり得る一方、それを理由に保存そのものを失敗させると「ポインタは合っているが
+    シートが一時的に壊れている」状態を設定できなくなる（`src.reports.batch`側は目標値解決時に
+    同じエラーへ環境変数フォールバックで対応するため、保存だけ先に済ませておける方が運用上
+    都合が良い）。
+    """
+    if not payload.spreadsheet_url_or_id.strip():
+        raise HTTPException(status_code=422, detail="spreadsheet_url_or_id is empty")
+    spreadsheet_id = _extract_spreadsheet_id(payload.spreadsheet_url_or_id)
+
+    try:
+        store = RevenueTargetSettingsStore()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    pointer = RevenueTargetSheetPointer(
+        spreadsheet_id=spreadsheet_id,
+        mrr_sheet_name=payload.mrr_sheet_name or None,
+        unit_count_sheet_name=payload.unit_count_sheet_name or None,
+    )
+
+    try:
+        record = store.upsert(pointer)
+    except ApiError as exc:
+        raise HTTPException(status_code=502, detail=f"notion api error: {exc}") from exc
+
+    validation_success = True
+    validation_error: str | None = None
+    # mrr_month_count/unit_count_month_countは、対応するsheet_nameが未設定の場合は必ずNoneの
+    # ままにする（=「このソースでは追跡しない」）。以前は`fetch_all_targets()`を呼び、
+    # 未設定側は空dict（`len()==0`）が返ってくる仕様を利用してそのままlen()を代入していたため、
+    # 「未設定」と「設定済みだが0ヶ月分しか読めなかった」が両方0として区別不能になっていた
+    # （BLOCKER: finding #2。`RevenueTargetSheetPointer`のdocstring・`fetch_all_targets`の
+    # docstring「mrr_sheet_name／unit_count_sheet_nameが未設定の場合、対応する辞書は空のまま
+    # 返す」参照）。設定されている方だけ個別に`fetch_mrr_targets`/`fetch_unit_count_targets`を
+    # 呼ぶことで、Noneと0件を意味的に分離する。
+    mrr_month_count: int | None = None
+    unit_count_month_count: int | None = None
+    try:
+        if pointer.mrr_sheet_name:
+            mrr_month_count = len(
+                fetch_mrr_targets(pointer.spreadsheet_id, pointer.mrr_sheet_name)
+            )
+        if pointer.unit_count_sheet_name:
+            unit_count_month_count = len(
+                fetch_unit_count_targets(pointer.spreadsheet_id, pointer.unit_count_sheet_name)
+            )
+    except (RevenueTargetSheetFormatError, ApiError, ValueError, RuntimeError) as exc:
+        # ValueError/RuntimeErrorは、Google認証情報が未設定の場合に
+        # get_google_access_token()（src/document_generation/google_auth.py）が送出しうる
+        # エラーも含む。RevenueTargetSheetFormatErrorはValueErrorのサブクラスだが、
+        # どちらの経路で来ても「テスト結果としてエラーメッセージを表示する」という
+        # 扱いは同じため個別のフォールバック処理はしない。
+        validation_success = False
+        validation_error = str(exc)
+
+    return {
+        "pointer": _pointer_to_dict(record.pointer),
+        "updated_at": record.updated_at.isoformat(),
+        "validation_success": validation_success,
+        "validation_error": validation_error,
+        "mrr_month_count": mrr_month_count,
+        "unit_count_month_count": unit_count_month_count,
+    }

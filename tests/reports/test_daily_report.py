@@ -327,6 +327,38 @@ def test_progress_rate_is_computed_from_confirmed_projects_within_period() -> No
     assert data.quarterly_progress.initial_fee_progress_rate == 50.0
 
 
+def test_unit_count_progress_rate_is_computed_when_target_unit_count_is_set() -> None:
+    confirmed_projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),  # 当月・当クオーター内
+        ),
+    ]
+
+    data = build_daily_report_data(
+        report_date=REPORT_DATE,
+        actions=[],
+        projects=[],
+        confirmed_projects=confirmed_projects,
+        monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0, unit_count=2),
+        quarter_target=RevenueTarget(initial_fee=0.0, mrr=0.0),
+        month_start=MONTH_START,
+        month_end=MONTH_END,
+        quarter_start=QUARTER_START,
+        quarter_end=QUARTER_END,
+    )
+
+    assert data.monthly_progress.actual_unit_count == 1
+    assert data.monthly_progress.unit_count_progress_rate == 50.0
+    # quarter_targetはunit_count未設定（None）のため、実績件数は数えても進捗率はNoneのまま
+    assert data.quarterly_progress.unit_count_progress_rate is None
+
+
 def test_progress_rate_warns_when_confirmed_project_contract_date_is_out_of_quarter(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -496,6 +528,65 @@ def test_generate_daily_report_text_renders_placeholder_when_all_sections_are_em
     assert "目標未設定" in text
     assert "未確定（受注実績なし）" in text
     assert "サンプル数が十分な勝ちパターンはありません" in text
+    assert "販売件数" not in text
+
+
+def test_generate_daily_report_text_includes_unit_count_line_when_target_unit_count_is_set() -> None:
+    confirmed_projects = [
+        WeeklyProjectRecord(
+            project_id="P4",
+            client_name="株式会社D",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),
+        ),
+    ]
+
+    data = build_daily_report_data(
+        report_date=REPORT_DATE,
+        actions=[],
+        projects=[],
+        confirmed_projects=confirmed_projects,
+        monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0, unit_count=2),
+        quarter_target=RevenueTarget(initial_fee=0.0, mrr=0.0),
+        month_start=MONTH_START,
+        month_end=MONTH_END,
+        quarter_start=QUARTER_START,
+        quarter_end=QUARTER_END,
+    )
+    text = generate_daily_report_text(data)
+    lines = text.splitlines()
+
+    unit_count_line = next(line for line in lines if "月次目標（販売件数）" in line)
+    assert "実績1件" in unit_count_line
+    assert "目標2件" in unit_count_line
+    assert "進捗率 50.0%" in unit_count_line
+    assert not any("クオーター目標（販売件数）" in line for line in lines)
+
+
+def test_generate_daily_report_text_omits_initial_fee_target_note_when_not_set() -> None:
+    """initial_fee_target_note未指定（環境変数フォールバック等）の場合、注記行を出力しない
+    （finding #4。weekly_report.pyと同じ仕様）。"""
+    data = build_daily_report_data(report_date=REPORT_DATE, actions=[], projects=[])
+
+    text = generate_daily_report_text(data)
+
+    assert "初期費用の目標は現在の連携シートでは取得できない" not in text
+
+
+def test_generate_daily_report_text_includes_initial_fee_target_note_when_set() -> None:
+    """事業計画スプレッドシート由来の目標を使った場合のみ渡される注記が表示されること
+    （finding #4）。"""
+    note = "※初期費用の目標は現在の連携シートでは取得できないため、目標0円として扱われています"
+    data = build_daily_report_data(
+        report_date=REPORT_DATE, actions=[], projects=[], initial_fee_target_note=note
+    )
+
+    text = generate_daily_report_text(data)
+
+    assert note in text
 
 
 def test_generate_daily_report_text_raises_readable_error_on_broken_template(

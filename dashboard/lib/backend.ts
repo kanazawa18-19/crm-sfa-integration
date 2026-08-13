@@ -19,7 +19,10 @@ export function getErrorMessage(error: unknown): string {
   return "不明なエラーが発生しました";
 }
 
-async function fetchBackend<T>(path: string): Promise<T> {
+async function fetchBackend<T>(
+  path: string,
+  options?: { method?: "GET" | "POST"; body?: unknown }
+): Promise<T> {
   const baseUrl = process.env.BACKEND_API_URL;
   if (!baseUrl) {
     throw new BackendApiError("BACKEND_API_URL が設定されていません");
@@ -29,7 +32,12 @@ async function fetchBackend<T>(path: string): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      method: options?.method ?? "GET",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
       cache: "no-store",
     });
   } catch (error) {
@@ -227,4 +235,47 @@ export interface ManagerAlertsResponse {
 export function getManagerAlerts(asOf?: string): Promise<ManagerAlertsResponse> {
   const query = asOf ? `?as_of=${encodeURIComponent(asOf)}` : "";
   return fetchBackend<ManagerAlertsResponse>(`/api/alerts/manager${query}`);
+}
+
+// 事業計画スプレッドシート連携設定（値そのものはNotion側に複製せず、スプレッドシートへの
+// ポインタのみを保存する。src/reports/revenue_target_sheet.py・
+// src/reports/revenue_target_settings.py のモジュールdocstring参照）。
+export interface RevenueTargetSheetPointer {
+  spreadsheet_id: string;
+  mrr_sheet_name: string | null;
+  unit_count_sheet_name: string | null;
+}
+
+export interface RevenueTargetSheetSettings {
+  configured: boolean;
+  pointer: RevenueTargetSheetPointer | null;
+  updated_at: string | null;
+}
+
+export function getRevenueTargetSheetSettings(): Promise<RevenueTargetSheetSettings> {
+  return fetchBackend<RevenueTargetSheetSettings>("/api/settings/revenue-target-sheet");
+}
+
+export interface SaveRevenueTargetSheetSettingsRequest {
+  spreadsheet_url_or_id: string;
+  mrr_sheet_name: string | null;
+  unit_count_sheet_name: string | null;
+}
+
+export interface SaveRevenueTargetSheetSettingsResponse {
+  pointer: RevenueTargetSheetPointer;
+  updated_at: string;
+  validation_success: boolean;
+  validation_error: string | null;
+  mrr_month_count: number | null;
+  unit_count_month_count: number | null;
+}
+
+export function saveRevenueTargetSheetSettings(
+  payload: SaveRevenueTargetSheetSettingsRequest
+): Promise<SaveRevenueTargetSheetSettingsResponse> {
+  return fetchBackend<SaveRevenueTargetSheetSettingsResponse>("/api/settings/revenue-target-sheet", {
+    method: "POST",
+    body: payload,
+  });
 }

@@ -6,18 +6,26 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
+import pytest
+
 from src.analytics.fiscal_calendar import fiscal_quarter_range
+from src.reports import batch
 from src.reports.batch import (
     _month_range,
+    _resolve_revenue_targets,
     _revenue_target_from_env,
+    _target_from_sheet_values,
     _week_range,
     run_daily_report,
     run_report_batch,
     run_weekly_report,
 )
+from src.reports.revenue_target_sheet import RevenueTargetSheetFormatError, RevenueTargetSheetPointer
+from src.reports.revenue_target_settings import RevenueTargetSettingsRecord
+from src.sync_engine.clients._http import ApiError
 
 
 class FakeDataSource:
@@ -156,6 +164,255 @@ def test_revenue_target_from_env_falls_back_to_zero_on_invalid_value(monkeypatch
     target = _revenue_target_from_env("MONTHLY")
 
     assert target.initial_fee == 0.0
+
+
+# --- _target_from_sheet_values ------------------------------------------------------------------
+
+
+def test_target_from_sheet_values_sums_matching_months_and_zeroes_initial_fee() -> None:
+    mrr_targets = {
+        date(2026, 6, 1): 1_000_000.0,
+        date(2026, 7, 1): 1_100_000.0,
+        date(2026, 8, 1): 1_200_000.0,
+        date(2026, 9, 1): 999_999.0,  # クオーター外なので合算されないこと
+    }
+    unit_count_targets = {
+        date(2026, 6, 1): 10,
+        date(2026, 7, 1): 11,
+        date(2026, 8, 1): 12,
+        date(2026, 9, 1): 999,
+    }
+
+    target = _target_from_sheet_values(
+        date(2026, 6, 1), date(2026, 8, 31), mrr_targets, unit_count_targets
+    )
+
+    assert target.initial_fee == 0.0  # 事業計画シートに存在しない項目（モジュールdocstring参照）
+    assert target.mrr == 3_300_000.0
+    assert target.unit_count == 33
+
+
+def test_target_from_sheet_values_unit_count_is_none_when_unit_count_targets_empty() -> None:
+    """販売数目標シートが未設定（unit_count_targetsが空辞書）の場合、unit_count=0ではなく
+    None（この目標ソースでは追跡していない）とする（RevenueTarget.unit_countのdocstring参照）。"""
+    target = _target_from_sheet_values(
+        date(2026, 8, 1), date(2026, 8, 31), {date(2026, 8, 1): 500_000.0}, {}
+    )
+
+    assert target.unit_count is None
+
+
+# --- _resolve_revenue_targets ------------------------------------------------------------------
+
+
+class FakeSettingsStore:
+    def __init__(self, record: RevenueTargetSettingsRecord | None) -> None:
+        self._record = record
+
+    def get(self) -> RevenueTargetSettingsRecord | None:
+        return self._record
+
+
+_MONTH_START = date(2026, 8, 1)
+_MONTH_END = date(2026, 8, 31)
+_QUARTER_START = date(2026, 6, 1)
+_QUARTER_END = date(2026, 8, 31)
+
+
+@pytest.fixture(autouse=True)
+def _reset_target_sheet_cache():
+    """`_resolve_revenue_targets`のTTLキャッシュがテスト間で汚染されないようにする。"""
+    batch.reset_target_sheet_cache()
+    yield
+    batch.reset_target_sheet_cache()
+
+
+def test_resolve_revenue_targets_falls_back_to_env_when_no_pointer_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: None)
+    monkeypatch.setenv("MONTHLY_TARGET_INITIAL_FEE", "1000000")
+    monkeypatch.setenv("MONTHLY_TARGET_MRR", "200000")
+
+    monthly_target, _, note = _resolve_revenue_targets(
+        _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+    )
+
+    assert monthly_target.initial_fee == 1000000.0
+    assert monthly_target.mrr == 200000.0
+    assert monthly_target.unit_count is None
+    assert note is None  # 環境変数由来は初期費用目標を保持できるため注記不要
+
+
+def test_resolve_revenue_targets_falls_back_to_env_when_settings_record_not_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """設定ストアは構成されている（環境変数あり）が、まだレコードを保存していない
+    （store.get()がNone）場合も、未構成と同じく環境変数へフォールバックすること。"""
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(None))
+    monkeypatch.delenv("MONTHLY_TARGET_MRR", raising=False)
+
+    monthly_target, _, note = _resolve_revenue_targets(
+        _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+    )
+
+    assert monthly_target.mrr == 0.0
+    assert note is None
+
+
+def test_resolve_revenue_targets_uses_sheet_values_when_pointer_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pointer = RevenueTargetSheetPointer(
+        spreadsheet_id="sheet-abc", mrr_sheet_name="MRRシート", unit_count_sheet_name="販売数シート"
+    )
+    record = RevenueTargetSettingsRecord(pointer=pointer, updated_at=datetime(2026, 8, 1))
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(record))
+
+    mrr_targets = {
+        date(2026, 6, 1): 1_000_000.0,
+        date(2026, 7, 1): 1_100_000.0,
+        date(2026, 8, 1): 1_200_000.0,
+    }
+    unit_count_targets = {date(2026, 6, 1): 10, date(2026, 7, 1): 11, date(2026, 8, 1): 12}
+    monkeypatch.setattr(batch, "fetch_all_targets", lambda p, **kw: (mrr_targets, unit_count_targets))
+
+    monthly_target, quarter_target, note = _resolve_revenue_targets(
+        _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+    )
+
+    assert monthly_target.initial_fee == 0.0
+    assert monthly_target.mrr == 1_200_000.0
+    assert monthly_target.unit_count == 12
+    assert quarter_target.mrr == 3_300_000.0
+    assert quarter_target.unit_count == 33
+    # 事業計画スプレッドシート由来の場合のみ、初期費用が構造的に未追跡である旨の注記を返す
+    # （目標「未設定」との混同を避けるため。finding #4）。
+    assert note is not None
+    assert "初期費用" in note
+
+
+def test_resolve_revenue_targets_falls_back_to_env_on_sheet_format_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """シートの見出し構造が想定外（RevenueTargetSheetFormatError）でも、日報・週報の
+    生成自体は止めず環境変数へフォールバックすること（モジュールdocstring参照）。"""
+    pointer = RevenueTargetSheetPointer(spreadsheet_id="sheet-broken", mrr_sheet_name="MRRシート")
+    record = RevenueTargetSettingsRecord(pointer=pointer, updated_at=datetime(2026, 8, 1))
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(record))
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise RevenueTargetSheetFormatError("見出しが見つかりませんでした")
+
+    monkeypatch.setattr(batch, "fetch_all_targets", _raise)
+    monkeypatch.setenv("MONTHLY_TARGET_MRR", "300000")
+
+    with caplog.at_level("WARNING"):
+        monthly_target, _, note = _resolve_revenue_targets(
+            _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+        )
+
+    assert monthly_target.mrr == 300000.0
+    assert any("フォールバック" in r.getMessage() for r in caplog.records)
+    assert note is None
+
+
+def test_resolve_revenue_targets_falls_back_to_env_on_api_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Google Sheets API呼び出し自体の失敗（ApiError）でも同様にフォールバックすること
+    （ネットワーク障害・認証切れ等で日報・週報配信が止まらないようにする）。"""
+    pointer = RevenueTargetSheetPointer(spreadsheet_id="sheet-unreachable", mrr_sheet_name="MRRシート")
+    record = RevenueTargetSettingsRecord(pointer=pointer, updated_at=datetime(2026, 8, 1))
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(record))
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise ApiError(503, "service unavailable")
+
+    monkeypatch.setattr(batch, "fetch_all_targets", _raise)
+    monkeypatch.setenv("MONTHLY_TARGET_MRR", "400000")
+
+    with caplog.at_level("WARNING"):
+        monthly_target, _, note = _resolve_revenue_targets(
+            _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+        )
+
+    assert monthly_target.mrr == 400000.0
+    assert note is None
+
+
+def test_resolve_revenue_targets_falls_back_to_env_on_missing_google_credentials(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`get_google_access_token()`（`src.document_generation.google_auth`）はGoogle認証情報が
+    未設定の場合`ValueError`を送出するが、HTTPレスポンスが返る前段階の失敗のため`ApiError`の
+    サブクラスにはならない。この例外がバッチ全体をクラッシュさせず、環境変数へフォールバック
+    できることを確認する（BLOCKER: finding #1。`src.api.app.save_revenue_target_sheet_settings`が
+    既に同じ例外タプルでこの問題に対処済みで、batch.py側は漏れていた）。"""
+    pointer = RevenueTargetSheetPointer(spreadsheet_id="sheet-no-credentials", mrr_sheet_name="MRRシート")
+    record = RevenueTargetSettingsRecord(pointer=pointer, updated_at=datetime(2026, 8, 1))
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(record))
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON等のGoogle認証情報が設定されていません")
+
+    monkeypatch.setattr(batch, "fetch_all_targets", _raise)
+    monkeypatch.setenv("MONTHLY_TARGET_MRR", "500000")
+
+    with caplog.at_level("WARNING"):
+        monthly_target, _, note = _resolve_revenue_targets(
+            _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+        )
+
+    assert monthly_target.mrr == 500000.0
+    assert note is None
+    assert any("フォールバック" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_revenue_targets_falls_back_to_env_on_google_token_refresh_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`get_google_access_token()`はトークンリフレッシュ失敗時に`RuntimeError`を送出しうる
+    （認証情報のローテーション中・サービスアカウント無効化等）。こちらも同様にフォールバック
+    すること（finding #1）。"""
+    pointer = RevenueTargetSheetPointer(spreadsheet_id="sheet-refresh-failed", mrr_sheet_name="MRRシート")
+    record = RevenueTargetSettingsRecord(pointer=pointer, updated_at=datetime(2026, 8, 1))
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(record))
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("Googleサービスアカウントのトークンリフレッシュに失敗しました")
+
+    monkeypatch.setattr(batch, "fetch_all_targets", _raise)
+    monkeypatch.setenv("MONTHLY_TARGET_MRR", "600000")
+
+    with caplog.at_level("WARNING"):
+        monthly_target, _, note = _resolve_revenue_targets(
+            _MONTH_START, _MONTH_END, _QUARTER_START, _QUARTER_END
+        )
+
+    assert monthly_target.mrr == 600000.0
+    assert note is None
+    assert any("フォールバック" in r.getMessage() for r in caplog.records)
+
+
+def test_run_daily_report_falls_back_to_env_when_sheet_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_daily_report全体を通しても、シート読み取り失敗時に例外を伝播させず、環境変数の
+    目標値でレポート生成を継続できること。"""
+    pointer = RevenueTargetSheetPointer(spreadsheet_id="sheet-broken", mrr_sheet_name="MRRシート")
+    record = RevenueTargetSettingsRecord(pointer=pointer, updated_at=datetime(2026, 8, 1))
+    monkeypatch.setattr(batch, "build_revenue_target_settings_store", lambda: FakeSettingsStore(record))
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise RevenueTargetSheetFormatError("見出しが見つかりませんでした")
+
+    monkeypatch.setattr(batch, "fetch_all_targets", _raise)
+    monkeypatch.setenv("MONTHLY_TARGET_MRR", "500000")
+
+    text = run_daily_report(date(2026, 8, 5), data_source=FakeDataSource(), notifier=FakeNotifier())
+
+    assert "500,000円" in text
 
 
 # --- run_daily_report -------------------------------------------------------------------------

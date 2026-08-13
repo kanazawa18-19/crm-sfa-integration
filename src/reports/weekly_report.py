@@ -33,7 +33,6 @@ from src.analytics.condition import (
     judge_condition,
 )
 from src.analytics.forecast import (
-    ForecastAmount,
     ForecastProject,
     QuarterForecast,
     forecast_quarter,
@@ -51,6 +50,20 @@ from src.analytics.win_rate import ProjectOutcome, average_won_contact_count
 # import構成が変わってもここが追従不要になるようにするため）。
 from src.db_schema.project import ACTIVE_STATUSES, CONFIRMED_STATUSES
 
+# RevenueTarget/RevenueProgress、進捗率算出ロジックは日報（daily_report.py）と共通のため
+# `_revenue_progress.py`へ切り出している（同モジュールdocstring参照。以前はここに実装があり
+# daily_report.py側へバイト単位で複製されていた）。RevenueTarget/RevenueProgressはこのモジュール
+# から`from src.reports.weekly_report import RevenueTarget`として参照している既存コード
+# （`src/reports/batch.py`・テスト等）との互換性のため、ここでもそのまま公開し続ける。
+from src.reports._revenue_progress import (
+    RevenueProgress,
+    RevenueTarget,
+    _confirmed_amount_in_period,
+    _format_initial_fee_target_note_line,
+    _format_progress_lines,
+    _revenue_progress,
+)
+
 
 @dataclass(frozen=True)
 class WeeklyProjectRecord:
@@ -67,28 +80,6 @@ class WeeklyProjectRecord:
     total_contact_count: int = 0
     last_action_date: date | None = None
     next_action_date: date | None = None
-
-
-@dataclass(frozen=True)
-class RevenueTarget:
-    """月次・クオーター目標値（初期費用・MRR）。
-
-    Q-05が未確定であるため、集計単位（全社／チーム／個人）解決済みの合算値を
-    呼び出し側から渡すこと（モジュールdocstring参照）。
-    """
-
-    initial_fee: float
-    mrr: float
-
-
-@dataclass(frozen=True)
-class RevenueProgress:
-    """実績・目標・進捗率(%)。目標が0の項目は進捗率をNoneとする（ゼロ除算回避）。"""
-
-    actual: ForecastAmount
-    target: RevenueTarget
-    initial_fee_progress_rate: float | None
-    mrr_progress_rate: float | None
 
 
 @dataclass(frozen=True)
@@ -116,44 +107,11 @@ class WeeklyReportData:
     member_performances: tuple[MemberPerformance, ...]
     quarter_forecast: QuarterForecast
     stagnation_risk_projects: tuple[StagnationRiskProject, ...]
-
-
-def _progress_rate(actual: float, target: float) -> float | None:
-    if target <= 0:
-        return None
-    return actual / target * 100
-
-
-def _confirmed_amount_in_period(
-    confirmed_projects: Sequence[WeeklyProjectRecord],
-    period_start: date,
-    period_end: date,
-) -> ForecastAmount:
-    """契約日がperiod_start〜period_end（両端含む）の確定売上・MRRを合算する。"""
-    in_period = [
-        p
-        for p in confirmed_projects
-        if p.contract_date is not None and period_start <= p.contract_date <= period_end
-    ]
-    return ForecastAmount(
-        initial_fee=sum(p.initial_fee for p in in_period),
-        mrr=sum(p.monthly_fee for p in in_period),
-    )
-
-
-def _revenue_progress(
-    confirmed_projects: Sequence[WeeklyProjectRecord],
-    period_start: date,
-    period_end: date,
-    target: RevenueTarget,
-) -> RevenueProgress:
-    actual = _confirmed_amount_in_period(confirmed_projects, period_start, period_end)
-    return RevenueProgress(
-        actual=actual,
-        target=target,
-        initial_fee_progress_rate=_progress_rate(actual.initial_fee, target.initial_fee),
-        mrr_progress_rate=_progress_rate(actual.mrr, target.mrr),
-    )
+    # 初期費用の目標を構造的に持たない目標ソース（事業計画スプレッドシート）を使っている場合のみ
+    # `src.reports.batch._resolve_revenue_targets`が文言をセットする注記。目標未設定と混同
+    # されないよう`_format_initial_fee_target_note_line`で進捗率セクション直後に表示する
+    # （`_revenue_progress.py`モジュールdocstring参照）。
+    initial_fee_target_note: str | None = None
 
 
 def build_weekly_report_data(
@@ -174,6 +132,7 @@ def build_weekly_report_data(
     condition_thresholds: ConditionThresholds | None = None,
     min_win_pattern_sample_size: int = 3,
     as_of: date | None = None,
+    initial_fee_target_note: str | None = None,
 ) -> WeeklyReportData:
     """案件管理DBの現況・過去の決着済み案件データから週報用データを組み立てる。
 
@@ -199,6 +158,9 @@ def build_weekly_report_data(
       空のため、`member_deadline_compliance_rates`のフォールバックにより、次回アクション
       期限判定対象の案件があるメンバーについてはスピードが確定した悪い実績（0%）ではなく
       未確定（None）として扱われる（ボリュームは引き続き全メンバー0件）。
+    - initial_fee_target_note: 呼び出し側（`src.reports.batch._resolve_revenue_targets`）が、
+      初期費用目標を構造的に持たない目標ソースを使ったと判定した場合にのみ渡す注記文言。
+      省略時（None）は付与しない（`WeeklyReportData.initial_fee_target_note`docstring参照）。
     """
     confirmed_projects = [p for p in active_projects if p.status in CONFIRMED_STATUSES]
 
@@ -287,28 +249,12 @@ def build_weekly_report_data(
         member_performances=member_performances,
         quarter_forecast=quarter_forecast,
         stagnation_risk_projects=stagnation_risk_projects,
+        initial_fee_target_note=initial_fee_target_note,
     )
 
 
 # src/reports/weekly_report.py から見て、src/reports/templates/weekly_report.txt を指す。
 DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "weekly_report.txt"
-
-
-def _format_progress_lines(label: str, progress: RevenueProgress) -> str:
-    """初期費用とMRRの進捗を、Slack/Teams等の狭い画面でも読めるよう別々の行に分けて返す。"""
-
-    def _rate_text(rate: float | None) -> str:
-        return f"{rate:.1f}%" if rate is not None else "目標未設定"
-
-    initial_fee_line = (
-        f"{label}（初期費用）: 実績{progress.actual.initial_fee:,.0f}円 / "
-        f"目標{progress.target.initial_fee:,.0f}円（進捗率 {_rate_text(progress.initial_fee_progress_rate)}）"
-    )
-    mrr_line = (
-        f"{label}（MRR）: 実績{progress.actual.mrr:,.0f}円 / "
-        f"目標{progress.target.mrr:,.0f}円（進捗率 {_rate_text(progress.mrr_progress_rate)}）"
-    )
-    return f"{initial_fee_line}\n{mrr_line}"
 
 
 def _format_win_pattern_lines(patterns: Sequence[WinPattern]) -> str:
@@ -384,6 +330,9 @@ def generate_weekly_report_text(data: WeeklyReportData, *, template_path: Path |
             weekly_confirmed_mrr=f"{data.weekly_confirmed_mrr:,.0f}",
             monthly_progress_lines=_format_progress_lines("月次目標", data.monthly_progress),
             quarterly_progress_lines=_format_progress_lines("クオーター目標", data.quarterly_progress),
+            initial_fee_target_note_line=_format_initial_fee_target_note_line(
+                data.initial_fee_target_note
+            ),
             average_won_contact_count_line=average_contacts_text,
             win_pattern_lines=_format_win_pattern_lines(data.win_patterns),
             member_performance_lines=_format_member_performance_lines(data.member_performances),

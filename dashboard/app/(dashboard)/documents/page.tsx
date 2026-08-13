@@ -11,10 +11,9 @@ import {
   parseFilenameFromContentDisposition,
   splitDocumentNotes,
 } from "@/lib/documents";
+import { isSessionExpiredResponse, SESSION_EXPIRED_MESSAGE } from "@/lib/sessionCheck";
 
 const SEARCH_DEBOUNCE_MS = 300;
-const SESSION_EXPIRED_MESSAGE =
-  "セッションの有効期限が切れている可能性があります。再度ログインしてください。";
 
 export default function DocumentsPage() {
   const [query, setQuery] = useState("");
@@ -68,7 +67,7 @@ export default function DocumentsPage() {
           // 指定時はopaqueredirectとして観測される（デフォルトのfollowだとログインページの
           // HTMLをそのまま正常レスポンスとして扱ってしまう。生成側の同種の問題は
           // shirokuma-secレビューで検出、検索側も念のため揃えて対処）。
-          if (response.type === "opaqueredirect" || response.status === 0) {
+          if (isSessionExpiredResponse(response)) {
             throw new Error(SESSION_EXPIRED_MESSAGE);
           }
           if (!response.ok) {
@@ -146,7 +145,7 @@ export default function DocumentsPage() {
       // セッション切れ時に/loginのHTMLがそのまま「見積書.pdf」等としてダウンロード
       // されてしまっていた（shirokuma-secレビューで検出）。redirect:"manual"で
       // リダイレクトをopaqueredirectとして検知し、明示的にエラー扱いにする。
-      if (response.type === "opaqueredirect" || response.status === 0) {
+      if (isSessionExpiredResponse(response)) {
         throw new Error(SESSION_EXPIRED_MESSAGE);
       }
 

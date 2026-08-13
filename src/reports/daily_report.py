@@ -15,12 +15,12 @@
 これらは元々`src.reports.weekly_report`（チーム週報）にのみ実装されていたが、日報にも
 同じ内容が欲しいという要望を受けて追加した。`RevenueTarget`/`RevenueProgress`/
 `WinPattern`はweekly_report.pyのものをそのままimportして再利用する（型を分裂させない
-ため）。一方、進捗率算出そのもの（`_progress_rate`/`_confirmed_amount_in_period`/
-`_revenue_progress`相当のロジック）は、weekly_report.py側でアンダースコア始まりの
-非公開関数として定義されており、本コードベースでは非公開関数をモジュールをまたいで
-importする前例が無い（`src/reports/batch.py`もweekly_report.pyから公開のクラス・関数
-のみをimportしている）ため、この規約に合わせてトリビアルな算出ロジックのみ本モジュール側に
-複製する。メンバー別パフォーマンス（`member_performances`）は今回の要望のスコープ外
+ため）。進捗率算出そのもの（`_progress_rate`/`_confirmed_amount_in_period`/
+`_revenue_progress`/`_format_progress_lines`）は、以前はweekly_report.py側に非公開関数として
+定義されており本モジュール側へバイト単位で複製していたが、`src.reports._revenue_progress`
+（日報・週報共通の内部実装モジュール）へ切り出し、両モジュールから同じ実装をimportする形に
+変更した（同モジュールdocstring参照。2箇所の手動同期が必要な状態を解消するため）。
+メンバー別パフォーマンス（`member_performances`）は今回の要望のスコープ外
 （別途「メンバー実績」機能として扱う）のため日報には追加しない。
 
 ■ メンバー別アクション件数サマリーの集計対象について
@@ -43,10 +43,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Sequence
 
-from src.analytics.forecast import ForecastAmount
 from src.analytics.win_pattern import ProposalRecord, WinPattern, analyze_win_patterns
 from src.analytics.win_rate import ProjectOutcome, average_won_contact_count
-from src.reports.weekly_report import RevenueProgress, RevenueTarget, WeeklyProjectRecord
+from src.reports._revenue_progress import (
+    RevenueProgress,
+    RevenueTarget,
+    _format_initial_fee_target_note_line,
+    _format_progress_lines,
+    _revenue_progress,
+)
+from src.reports.weekly_report import WeeklyProjectRecord
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +153,9 @@ class DailyReportData:
     quarterly_progress: RevenueProgress
     average_won_contact_count: float | None
     win_patterns: tuple[WinPattern, ...]
+    # weekly_report.WeeklyReportData.initial_fee_target_noteと同じ意図（同dataclassの
+    # docstring・`_revenue_progress.py`モジュールdocstring参照）。
+    initial_fee_target_note: str | None = None
 
 
 def next_business_day(as_of: date) -> date:
@@ -195,48 +204,6 @@ def _build_member_summaries(
     )
 
 
-def _progress_rate(actual: float, target: float) -> float | None:
-    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照。非公開関数の
-    モジュール横断importの前例がないため複製している）。"""
-    if target <= 0:
-        return None
-    return actual / target * 100
-
-
-def _confirmed_amount_in_period(
-    confirmed_projects: Sequence[WeeklyProjectRecord],
-    period_start: date,
-    period_end: date,
-) -> ForecastAmount:
-    """契約日がperiod_start〜period_end（両端含む）の確定売上・MRRを合算する
-    （weekly_report.py内の同名関数と同一ロジック。モジュールdocstring参照）。"""
-    in_period = [
-        p
-        for p in confirmed_projects
-        if p.contract_date is not None and period_start <= p.contract_date <= period_end
-    ]
-    return ForecastAmount(
-        initial_fee=sum(p.initial_fee for p in in_period),
-        mrr=sum(p.monthly_fee for p in in_period),
-    )
-
-
-def _revenue_progress(
-    confirmed_projects: Sequence[WeeklyProjectRecord],
-    period_start: date,
-    period_end: date,
-    target: RevenueTarget,
-) -> RevenueProgress:
-    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照）。"""
-    actual = _confirmed_amount_in_period(confirmed_projects, period_start, period_end)
-    return RevenueProgress(
-        actual=actual,
-        target=target,
-        initial_fee_progress_rate=_progress_rate(actual.initial_fee, target.initial_fee),
-        mrr_progress_rate=_progress_rate(actual.mrr, target.mrr),
-    )
-
-
 def build_daily_report_data(
     *,
     report_date: date,
@@ -252,6 +219,7 @@ def build_daily_report_data(
     quarter_start: date | None = None,
     quarter_end: date | None = None,
     min_win_pattern_sample_size: int = 3,
+    initial_fee_target_note: str | None = None,
 ) -> DailyReportData:
     """アクション管理DB・案件管理DBの当日分レコードから日報用データを組み立てる。
 
@@ -266,6 +234,9 @@ def build_daily_report_data(
       省略した場合、当該期間は実績0円・進捗率は目標次第（目標も未設定なら`None`）となる。
     - 営業パフォーマンス分析: `historical_outcomes`（決着済み案件）から全社平均受注接触回数を、
       `proposal_records`から勝ちパターンを算出する（いずれもweekly_report.pyと同じ関数を使う）。
+    - initial_fee_target_note: 呼び出し側（`src.reports.batch._resolve_revenue_targets`）が、
+      初期費用目標を構造的に持たない目標ソースを使ったと判定した場合にのみ渡す注記文言。
+      省略時（None）は付与しない（`DailyReportData.initial_fee_target_note`docstring参照）。
     """
     member_summaries = _build_member_summaries(actions, report_date)
 
@@ -353,6 +324,7 @@ def build_daily_report_data(
         quarterly_progress=quarterly_progress,
         average_won_contact_count=average_contacts,
         win_patterns=win_patterns,
+        initial_fee_target_note=initial_fee_target_note,
     )
 
 
@@ -399,24 +371,6 @@ def _format_status_change_lines(changes: Sequence[StatusChangeSummary]) -> str:
     return "\n".join(lines)
 
 
-def _format_progress_lines(label: str, progress: RevenueProgress) -> str:
-    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照。非公開関数の
-    モジュール横断importの前例がないため複製している）。"""
-
-    def _rate_text(rate: float | None) -> str:
-        return f"{rate:.1f}%" if rate is not None else "目標未設定"
-
-    initial_fee_line = (
-        f"{label}（初期費用）: 実績{progress.actual.initial_fee:,.0f}円 / "
-        f"目標{progress.target.initial_fee:,.0f}円（進捗率 {_rate_text(progress.initial_fee_progress_rate)}）"
-    )
-    mrr_line = (
-        f"{label}（MRR）: 実績{progress.actual.mrr:,.0f}円 / "
-        f"目標{progress.target.mrr:,.0f}円（進捗率 {_rate_text(progress.mrr_progress_rate)}）"
-    )
-    return f"{initial_fee_line}\n{mrr_line}"
-
-
 def _format_win_pattern_lines(patterns: Sequence[WinPattern]) -> str:
     """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照）。"""
     if not patterns:
@@ -461,6 +415,9 @@ def generate_daily_report_text(data: DailyReportData, *, template_path: Path | N
             upcoming_action_lines=_format_upcoming_action_lines(data.upcoming_actions),
             monthly_progress_lines=_format_progress_lines("月次目標", data.monthly_progress),
             quarterly_progress_lines=_format_progress_lines("クオーター目標", data.quarterly_progress),
+            initial_fee_target_note_line=_format_initial_fee_target_note_line(
+                data.initial_fee_target_note
+            ),
             average_won_contact_count_line=average_contacts_text,
             win_pattern_lines=_format_win_pattern_lines(data.win_patterns),
         )

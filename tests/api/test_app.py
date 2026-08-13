@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,6 +11,8 @@ from src.document_generation.common import (
     DocumentResult,
     TemplateNotFoundError,
 )
+from src.reports.revenue_target_settings import RevenueTargetSettingsRecord
+from src.reports.revenue_target_sheet import RevenueTargetSheetFormatError, RevenueTargetSheetPointer
 from src.sync_engine.clients.notion_client import NotionApiError
 
 
@@ -511,3 +515,302 @@ def test_generate_document_exposes_notes_via_response_header(
     assert "x-document-notes" in response.headers
     decoded_notes = json.loads(unquote(response.headers["x-document-notes"]))
     assert decoded_notes == expected_notes
+
+
+# --- /api/settings/revenue-target-sheet -------------------------------------------------------
+
+
+def test_get_revenue_target_sheet_settings_returns_401_when_token_not_set(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_DASHBOARD_API", raising=False)
+
+    response = client.get("/api/settings/revenue-target-sheet")
+
+    assert response.status_code == 401
+
+
+def test_get_revenue_target_sheet_settings_returns_unconfigured_when_store_not_built(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    monkeypatch.setattr("src.api.app.build_revenue_target_settings_store", lambda: None)
+
+    response = client.get(
+        "/api/settings/revenue-target-sheet", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"configured": False, "pointer": None, "updated_at": None}
+
+
+def test_get_revenue_target_sheet_settings_returns_pointer_when_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    record = RevenueTargetSettingsRecord(
+        pointer=RevenueTargetSheetPointer(
+            spreadsheet_id="sheet-abc",
+            mrr_sheet_name="MRRシート",
+            unit_count_sheet_name="販売数シート",
+        ),
+        updated_at=datetime(2026, 8, 13, 9, 0, 0),
+    )
+
+    class FakeStore:
+        def get(self):
+            return record
+
+    monkeypatch.setattr("src.api.app.build_revenue_target_settings_store", lambda: FakeStore())
+
+    response = client.get(
+        "/api/settings/revenue-target-sheet", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured"] is True
+    assert body["pointer"] == {
+        "spreadsheet_id": "sheet-abc",
+        "mrr_sheet_name": "MRRシート",
+        "unit_count_sheet_name": "販売数シート",
+    }
+    assert body["updated_at"] == "2026-08-13T09:00:00"
+
+
+def test_post_revenue_target_sheet_settings_returns_401_when_token_not_set(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_DASHBOARD_API", raising=False)
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet", json={"spreadsheet_url_or_id": "sheet-abc"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_post_revenue_target_sheet_settings_returns_500_when_store_unconfigured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def _raise():
+        raise ValueError("REVENUE_TARGET_SETTINGS_NOTION_DATABASE_ID environment variable is required")
+
+    monkeypatch.setattr("src.api.app.RevenueTargetSettingsStore", _raise)
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={"spreadsheet_url_or_id": "sheet-abc-1234567890abcdef"},
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 500
+
+
+def test_post_revenue_target_sheet_settings_extracts_id_from_full_url_and_validates_success(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def upsert(self, pointer):
+            captured["pointer"] = pointer
+            return RevenueTargetSettingsRecord(
+                pointer=pointer, updated_at=datetime(2026, 8, 13, 10, 0, 0)
+            )
+
+    monkeypatch.setattr("src.api.app.RevenueTargetSettingsStore", lambda: FakeStore())
+    monkeypatch.setattr(
+        "src.api.app.fetch_mrr_targets",
+        lambda spreadsheet_id, sheet_name, **kwargs: {
+            date(2026, 6, 1): 100.0,
+            date(2026, 7, 1): 200.0,
+        },
+    )
+    monkeypatch.setattr(
+        "src.api.app.fetch_unit_count_targets",
+        lambda spreadsheet_id, sheet_name, **kwargs: {date(2026, 6, 1): 1},
+    )
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={
+            "spreadsheet_url_or_id": (
+                "https://docs.google.com/spreadsheets/d/sheet-xyz-1234567890abcdef/edit?gid=0"
+            ),
+            "mrr_sheet_name": "MRRシート",
+            "unit_count_sheet_name": "販売数シート",
+        },
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pointer"]["spreadsheet_id"] == "sheet-xyz-1234567890abcdef"
+    assert body["validation_success"] is True
+    assert body["validation_error"] is None
+    assert body["mrr_month_count"] == 2
+    assert body["unit_count_month_count"] == 1
+    assert captured["pointer"].spreadsheet_id == "sheet-xyz-1234567890abcdef"  # noqa: SLF001
+
+
+def test_post_revenue_target_sheet_settings_accepts_bare_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    class FakeStore:
+        def upsert(self, pointer):
+            return RevenueTargetSettingsRecord(
+                pointer=pointer, updated_at=datetime(2026, 8, 13, 10, 0, 0)
+            )
+
+    monkeypatch.setattr("src.api.app.RevenueTargetSettingsStore", lambda: FakeStore())
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={"spreadsheet_url_or_id": "  bare-sheet-id-1234567890abcdef  "},
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pointer"]["spreadsheet_id"] == "bare-sheet-id-1234567890abcdef"
+    # mrr_sheet_name/unit_count_sheet_nameがどちらも未指定のため、「0ヶ月分」ではなく
+    # 「このソースでは追跡しない」を表すNoneのままであること（BLOCKER回帰確認: finding #2。
+    # 以前はfetch_all_targets()の戻り値（空dict）からlen()を取っていたため、未設定なのに
+    # 誤って0（=「設定済みだが0ヶ月分」）が返っていた）。
+    assert body["mrr_month_count"] is None
+    assert body["unit_count_month_count"] is None
+    assert body["validation_success"] is True
+
+
+def test_post_revenue_target_sheet_settings_leaves_unit_count_month_count_none_when_unit_sheet_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mrr_sheet_nameのみ設定し、unit_count_sheet_nameを未設定のまま保存した場合、
+    mrr_month_countは実際に読み込んだ月数、unit_count_month_countはNone
+    （「未設定」）のままになること（finding #2の核心となるケース）。"""
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    class FakeStore:
+        def upsert(self, pointer):
+            return RevenueTargetSettingsRecord(
+                pointer=pointer, updated_at=datetime(2026, 8, 13, 10, 0, 0)
+            )
+
+    monkeypatch.setattr("src.api.app.RevenueTargetSettingsStore", lambda: FakeStore())
+    monkeypatch.setattr(
+        "src.api.app.fetch_mrr_targets",
+        lambda spreadsheet_id, sheet_name, **kwargs: {date(2026, 6, 1): 100.0},
+    )
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("unit_count_sheet_name未設定時にfetch_unit_count_targetsを呼ぶべきではない")
+
+    monkeypatch.setattr("src.api.app.fetch_unit_count_targets", _fail_if_called)
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={
+            "spreadsheet_url_or_id": "sheet-mrr-only-1234567890abcdef",
+            "mrr_sheet_name": "MRRシート",
+        },
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mrr_month_count"] == 1
+    assert body["unit_count_month_count"] is None
+
+
+def test_post_revenue_target_sheet_settings_returns_422_for_blank_spreadsheet_input(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={"spreadsheet_url_or_id": "   "},
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_post_revenue_target_sheet_settings_returns_422_for_malformed_spreadsheet_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_extract_spreadsheet_id`の許可リスト検証（WARN: finding #3）。パストラバーサル的な
+    値（`../../drive/v3/files`）や短すぎる値は、Notionへ永続化されリクエストURLへ埋め込まれる
+    前にここで拒否されること。"""
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={"spreadsheet_url_or_id": "../../drive/v3/files"},
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 422
+    assert "形式が正しくありません" in response.json()["detail"]
+
+
+def test_post_revenue_target_sheet_settings_returns_422_for_too_short_spreadsheet_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={"spreadsheet_url_or_id": "too-short-id"},
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_post_revenue_target_sheet_settings_saves_even_when_validation_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """シート形式エラーでも保存自体は成功として扱い、validation_error にメッセージを
+    含めて返すこと（設定画面の❌表示用。POSTハンドラのdocstring参照）。"""
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    class FakeStore:
+        def upsert(self, pointer):
+            return RevenueTargetSettingsRecord(
+                pointer=pointer, updated_at=datetime(2026, 8, 13, 10, 0, 0)
+            )
+
+    def _raise(spreadsheet_id, sheet_name, **kwargs):
+        raise RevenueTargetSheetFormatError("見出しが見つかりませんでした")
+
+    monkeypatch.setattr("src.api.app.RevenueTargetSettingsStore", lambda: FakeStore())
+    monkeypatch.setattr("src.api.app.fetch_mrr_targets", _raise)
+
+    response = client.post(
+        "/api/settings/revenue-target-sheet",
+        json={
+            "spreadsheet_url_or_id": "sheet-broken-1234567890abcdef",
+            "mrr_sheet_name": "MRRシート",
+        },
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_success"] is False
+    assert "見出しが見つかりませんでした" in body["validation_error"]
+    assert body["pointer"]["spreadsheet_id"] == "sheet-broken-1234567890abcdef"
+    # 保存自体は成功しているため、月数フィールドは「例外発生前に読み込めた分」の状態のまま
+    # （このテストではmrr側で例外なのでmrr_month_countはNoneのまま、unit_countは未設定のためNone）。
+    assert body["mrr_month_count"] is None
+    assert body["unit_count_month_count"] is None

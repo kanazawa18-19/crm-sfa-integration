@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BackendApiError, getDashboardSummary, getManagerAlerts } from "@/lib/backend";
+import {
+  BackendApiError,
+  getDashboardSummary,
+  getManagerAlerts,
+  getRevenueTargetSheetSettings,
+  saveRevenueTargetSheetSettings,
+} from "@/lib/backend";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -157,5 +163,85 @@ describe("getManagerAlerts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getManagerAlerts()).rejects.toBeInstanceOf(BackendApiError);
+  });
+});
+
+describe("revenue target sheet settings", () => {
+  beforeEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    process.env.BACKEND_API_URL = "http://localhost:8000";
+    process.env.BACKEND_API_TOKEN = "test-token";
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.unstubAllGlobals();
+  });
+
+  it("getRevenueTargetSheetSettings: GETでバックエンドの設定をそのまま返す", async () => {
+    const body = { configured: false, pointer: null, updated_at: null };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getRevenueTargetSheetSettings();
+
+    expect(result).toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/settings/revenue-target-sheet",
+      expect.objectContaining({
+        method: "GET",
+        headers: { Authorization: "Bearer test-token" },
+      })
+    );
+  });
+
+  it("saveRevenueTargetSheetSettings: POSTでJSONボディを送信する", async () => {
+    const responseBody = {
+      pointer: { spreadsheet_id: "sheet-abc", mrr_sheet_name: "MRRシート", unit_count_sheet_name: null },
+      updated_at: "2026-08-13T09:00:00",
+      validation_success: true,
+      validation_error: null,
+      mrr_month_count: 12,
+      unit_count_month_count: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(responseBody), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload = {
+      spreadsheet_url_or_id: "https://docs.google.com/spreadsheets/d/sheet-abc/edit",
+      mrr_sheet_name: "MRRシート",
+      unit_count_sheet_name: null,
+    };
+    const result = await saveRevenueTargetSheetSettings(payload);
+
+    expect(result).toEqual(responseBody);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/settings/revenue-target-sheet",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      })
+    );
+  });
+
+  it("saveRevenueTargetSheetSettings: 非2xxレスポンスでBackendApiErrorが投げられる", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "invalid" }), { status: 422 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      saveRevenueTargetSheetSettings({
+        spreadsheet_url_or_id: "",
+        mrr_sheet_name: null,
+        unit_count_sheet_name: null,
+      })
+    ).rejects.toMatchObject({ status: 422 });
   });
 });

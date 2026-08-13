@@ -6,7 +6,7 @@
 
 ■ 月次・クオーター目標に対する進捗率
 {monthly_progress_lines}
-{quarterly_progress_lines}
+{quarterly_progress_lines}{initial_fee_target_note_line}
 
 ■ 営業パフォーマンス分析
 全社平均受注接触回数: {average_won_contact_count_line}

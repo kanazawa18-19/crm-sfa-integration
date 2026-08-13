@@ -37,6 +37,7 @@ def _build(
     monthly_target=NO_TARGET,
     quarter_target=NO_TARGET,
     as_of=None,
+    initial_fee_target_note=None,
 ):
     return build_weekly_report_data(
         week_start=WEEK_START,
@@ -52,6 +53,7 @@ def _build(
         monthly_target=monthly_target,
         quarter_target=quarter_target,
         as_of=as_of,
+        initial_fee_target_note=initial_fee_target_note,
     )
 
 
@@ -208,6 +210,58 @@ def test_progress_rate_is_computed_against_target() -> None:
 
     assert data.monthly_progress.initial_fee_progress_rate == 50.0
     assert data.monthly_progress.mrr_progress_rate == 50.0
+
+
+def test_unit_count_progress_rate_is_none_when_target_unit_count_is_none() -> None:
+    """target.unit_countがNone（未追跡）の場合、実績件数の集計自体は行うが進捗率はNoneとする
+    （0件目標との区別。RevenueTarget.unit_countのdocstring参照）。"""
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),
+        ),
+    ]
+
+    data = _build(active_projects=projects, monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0))
+
+    assert data.monthly_progress.actual_unit_count == 1
+    assert data.monthly_progress.unit_count_progress_rate is None
+
+
+def test_unit_count_progress_rate_is_computed_against_target() -> None:
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),
+        ),
+        WeeklyProjectRecord(
+            project_id="P2",
+            client_name="株式会社B",
+            assignee="鈴木",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 6),
+        ),
+    ]
+
+    data = _build(
+        active_projects=projects,
+        monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0, unit_count=4),
+    )
+
+    assert data.monthly_progress.actual_unit_count == 2
+    assert data.monthly_progress.unit_count_progress_rate == 50.0
 
 
 # --- 営業パフォーマンス分析 ---
@@ -498,6 +552,61 @@ def test_generate_weekly_report_text_splits_initial_fee_and_mrr_progress_into_se
     assert initial_fee_line != mrr_line
     assert "MRR" not in initial_fee_line
     assert "初期費用" not in mrr_line
+
+
+def test_generate_weekly_report_text_omits_unit_count_line_when_target_unit_count_is_none() -> None:
+    """target.unit_countがNoneの目標では、販売件数の行自体を出力しない（0件のゴースト行を
+    出さない。_format_progress_linesのdocstring参照）。"""
+    data = _build(monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0), as_of=WEEK_END)
+    text = generate_weekly_report_text(data)
+
+    assert "販売件数" not in text
+
+
+def test_generate_weekly_report_text_includes_unit_count_line_when_target_unit_count_is_set() -> None:
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),
+        ),
+    ]
+
+    data = _build(
+        active_projects=projects,
+        monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0, unit_count=2),
+        as_of=WEEK_END,
+    )
+    text = generate_weekly_report_text(data)
+    lines = text.splitlines()
+
+    unit_count_line = next(line for line in lines if "月次目標（販売件数）" in line)
+    assert "実績1件" in unit_count_line
+    assert "目標2件" in unit_count_line
+    assert "進捗率 50.0%" in unit_count_line
+
+
+def test_generate_weekly_report_text_omits_initial_fee_target_note_when_not_set() -> None:
+    """initial_fee_target_note未指定（環境変数フォールバック等）の場合、注記行を出力しない
+    （finding #4。空行等の余計な出力も残さないこと）。"""
+    data = _build(as_of=WEEK_END)
+    text = generate_weekly_report_text(data)
+
+    assert "初期費用の目標は現在の連携シートでは取得できない" not in text
+
+
+def test_generate_weekly_report_text_includes_initial_fee_target_note_when_set() -> None:
+    """事業計画スプレッドシート由来の目標を使った場合のみ渡される注記が、進捗率セクションに
+    表示されること（finding #4: 「目標0円」と「目標未設定」の混同を避けるための注記）。"""
+    note = "※初期費用の目標は現在の連携シートでは取得できないため、目標0円として扱われています"
+    data = _build(as_of=WEEK_END, initial_fee_target_note=note)
+    text = generate_weekly_report_text(data)
+
+    assert note in text
 
 
 def test_generate_weekly_report_text_renders_placeholder_when_all_sections_are_empty() -> None:
