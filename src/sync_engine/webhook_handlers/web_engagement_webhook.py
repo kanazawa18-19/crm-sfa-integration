@@ -42,7 +42,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
 from src.db_schema.registry import get_schema
-from src.sync_engine.clients.notion_client import HttpNotionClient, parse_notion_property_value
+from src.sync_engine.clients.notion_client import HttpNotionClient
+from src.sync_engine.clients.notion_lookup import find_page_id_by_email
 from src.sync_engine.webhook_handlers._common import (
     bad_request_response,
     internal_error_response,
@@ -67,8 +68,8 @@ class ContactNotionClient(Protocol):
 
     `query_all_pages()`の`filter`は省略可（`HttpNotionClient.query_all_pages()`のNotion
     Query Database APIフィルタ対応、WARN7対応）。テスト用Fakeが`filter`を受け取らず
-    無視しても、`_find_contact_page_id_by_email()`側のクライアント側フィルタで最終的な
-    突合結果は変わらないため後方互換。
+    無視しても、`notion_lookup.find_page_id_by_email()`側のクライアント側フィルタで
+    最終的な突合結果は変わらないため後方互換。
     """
 
     def query_all_pages(self, *, filter: dict[str, Any] | None = None) -> list[dict[str, Any]]: ...
@@ -81,31 +82,6 @@ class ContactNotionClient(Protocol):
 def _default_notion_client() -> ContactNotionClient:
     schema = get_schema(_DB_KEY)
     return HttpNotionClient(_DB_KEY, schema.notion_database_id)
-
-
-def _find_contact_page_id_by_email(client: ContactNotionClient, email: str) -> str | None:
-    """`メールアドレス`が一致する連絡先ページを1件返す（無ければNone）。
-
-    WARN7対応: 連絡先DB全件をクライアント側で走査していた従来実装から、Notion Query
-    Database APIの`filter`（`{"property": "メールアドレス", "email": {"equals": ...}}`）で
-    Notion API側に絞り込ませる形に変更し、DB件数が増えても1件あたりの検索コストが
-    線形に増えないようにした。ただしNotionの`email`フィルタの大文字小文字の扱いを
-    仕様として保証できないため、`.lower()`での再比較（WARN1対応）はクライアント側にも
-    念のため残す（`src/migration/notion_dedupe.py`のクライアント側フィルタのパターンを
-    フィルタ結果の絞り込みにも踏襲する）。
-    """
-    normalized = email.strip().lower()
-    candidates = client.query_all_pages(
-        filter={"property": _EMAIL_PROPERTY, "email": {"equals": email.strip()}}
-    )
-    for page in candidates:
-        props = page.get("properties") or {}
-        if _EMAIL_PROPERTY not in props:
-            continue
-        value = parse_notion_property_value(props[_EMAIL_PROPERTY])
-        if isinstance(value, str) and value.strip().lower() == normalized:
-            return page["id"]
-    return None
 
 
 def _build_display_name(payload: Mapping[str, Any], email: str) -> str:
@@ -153,7 +129,7 @@ def handler(
 
     try:
         client = notion_client if notion_client is not None else _default_notion_client()
-        existing_page_id = _find_contact_page_id_by_email(client, email)
+        existing_page_id = find_page_id_by_email(client, _EMAIL_PROPERTY, email)
 
         properties: dict[str, Any] = {}
         score = payload.get("score")

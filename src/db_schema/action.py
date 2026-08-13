@@ -132,6 +132,18 @@ ACTION_SCHEMA = DatabaseSchema(
             description="プロパティ名は案件名だが実体はrelation（案件管理DBへの紐付け）",
             relation_target="project",
         ),
+        # 2026-08-13、Googleカレンダー予定からのアクション履歴自動作成連携
+        # （web-engagement-tool側のカレンダー検知 → Slack承認 → 本DBへの自動作成、
+        # src/sync_engine/webhook_handlers/web_engagement_meeting_webhook.py・
+        # src/meeting_sync/で実装）に向けて追加。同一カレンダーイベントからの重複作成
+        # 防止キーとしてのみ使う内部プロパティのためNOTION_ONLY。
+        PropertyDefinition(
+            name="Googleカレンダーイベントid",
+            property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="重複作成防止キー。作成前にquery_all_pagesのfilterで存在確認する",
+        ),
         PropertyDefinition(
             name="👯‍♀️ チェーンリスト",
             property_type=PropertyType.RELATION,

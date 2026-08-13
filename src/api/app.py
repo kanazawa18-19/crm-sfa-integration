@@ -55,8 +55,14 @@ from src.sync_engine.webhook_handlers.kintone_webhook import handler as kintone_
 from src.sync_engine.webhook_handlers.notion_webhook import (
     handler_with_proxy as notion_webhook_handler_with_proxy,
 )
+from src.sync_engine.webhook_handlers.slack_interaction_webhook import (
+    handler as slack_interaction_webhook_handler,
+)
 from src.sync_engine.webhook_handlers.spreadsheet_webhook import (
     handler as spreadsheet_webhook_handler,
+)
+from src.sync_engine.webhook_handlers.web_engagement_meeting_webhook import (
+    handler as web_engagement_meeting_webhook_handler,
 )
 from src.sync_engine.webhook_handlers.web_engagement_webhook import (
     handler as web_engagement_webhook_handler,
@@ -253,6 +259,32 @@ async def webhook_web_engagement(request: Request) -> Response:
     """
     event = await _lambda_event_from_request(request)
     result = web_engagement_webhook_handler(event, context=None)
+    return _lambda_result_to_response(result)
+
+
+@app.post("/api/webhooks/web-engagement-meeting")
+async def webhook_web_engagement_meeting(request: Request) -> Response:
+    """web-engagement-tool（別リポジトリ）からのGoogleカレンダー商談イベント通知の受信。
+
+    `Dispatcher`/`IdMappingStore`は経由しない設計（`web_engagement_meeting_webhook.handler`の
+    docstring参照）のため、`_wiring_dependency`（Dispatcher一式）には依存しない。マッチした
+    案件があればSlackへ承認依頼を投稿するのみで、この時点ではまだNotionへ書き込まない。
+    """
+    event = await _lambda_event_from_request(request)
+    result = web_engagement_meeting_webhook_handler(event, context=None)
+    return _lambda_result_to_response(result)
+
+
+@app.post("/api/webhooks/slack-interactions")
+async def webhook_slack_interactions(request: Request) -> Response:
+    """Slack interactivity（承認/対象外ボタンの押下）の受信。
+
+    `webhook_web_engagement_meeting`がSlackへ投稿した承認依頼メッセージへのコールバック。
+    署名検証は共有トークン方式ではなくSlack標準の署名方式（`slack_interaction_webhook`
+    内で実施）。承認時のみNotionアクション履歴DBへ実際に書き込む。
+    """
+    event = await _lambda_event_from_request(request)
+    result = slack_interaction_webhook_handler(event, context=None)
     return _lambda_result_to_response(result)
 
 
