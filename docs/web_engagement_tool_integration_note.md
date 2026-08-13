@@ -96,7 +96,20 @@ callable注入）、系統3は`kintone_webhook.py`/`zoho_webhook.py`と同じraw
 - **Slack App側の手動設定が前提**。Interactivity & Shortcuts の Request URL 設定、
   Signing Secret の取得、Bot Token への`chat:write`/`users:read.email`/`im:write`
   スコープ付与は Slack管理画面（api.slack.com/apps）でユーザー自身が行う必要がある
-  （コードでは自動化不可）。
+  （コードでは自動化不可）。**2026-08-14、既存アプリ「sales-crm-sfa」で全項目設定完了**
+  （Socket Modeが有効だとRequest URL欄が出ないため、先にSocket Modeを無効化する必要が
+  あった。既存Incoming Webhookのチャンネル`#sales-log`を維持したまま再インストール済み）。
+- **web-engagement-tool側の手動セットアップ（Notion プロパティ追加・両リポジトリの
+  Vercel環境変数・管理画面トグル）も2026-08-14に完了**。系統4は本番で稼働中。
+- **手書きPrismaマイグレーションはbuildスクリプトに`prisma migrate deploy`を組み込む
+  までは本番DBに反映されない**（2026-08-14、実際にこれが原因でweb-engagement-tool側が
+  全ルート500エラーになる障害を起こした。`calendarMeetingSyncEnabled`カラム追加の
+  マイグレーションファイルをリポジトリに置いただけでデプロイし、middlewareの
+  AppSettings参照が本番DBに存在しないカラムをSELECTして失敗した）。
+  `web-engagement-tool/package.json`の`build`スクリプトに`prisma migrate deploy && next build`
+  を追加して修正済み。今後この構成（DB直接アクセス不可のため手書きマイグレーション）の
+  プロジェクトでスキーマ変更を行う際は、このbuildスクリプトが継続してマイグレーションを
+  適用する前提を崩さないこと。
 - **承認は担当営業本人へのSlack DMで行い、Notionの確認フローは無い**（2026-08-13、
   金沢さん要望でチェックボックス方式からDM承認方式へ変更）。DM送信の成否は
   `post_approval_request()`が戻り値で返し、失敗時は`SLACK_WEBHOOK_URL_ALERT`
