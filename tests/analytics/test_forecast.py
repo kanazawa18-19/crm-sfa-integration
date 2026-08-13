@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 from pathlib import Path
@@ -59,23 +58,53 @@ def test_forecast_quarter_confirmed_statuses_include_both_facility_contract_and_
     assert result.min == ForecastAmount(initial_fee=300, mrr=30)
 
 
-def test_forecast_quarter_max_includes_only_pending_a_rank() -> None:
-    # B・C・Dの金額は、加重後のExpectedがMaxの単純合計(Aランクのみ=100)を超えない範囲に
-    # 抑えている（Expected側がMaxを超えるケースはBLOCKER2の不変条件テストで別途検証する）。
+def test_forecast_quarter_max_includes_pending_with_a_or_b_yomi_status() -> None:
+    """Max（楽観）は営業ステータスが「Aヨミ」「Bヨミ」の未契約案件のみを全額計上する
+    （2026-08-14、確度ではなく営業ステータスの値ベースに変更）。確度は無関係。"""
     projects = [
-        ForecastProject(project_id="P1", confidence="A", status="アポ", initial_fee=100, monthly_fee=10),
-        ForecastProject(project_id="P2", confidence="B", status="リスケ", initial_fee=10, monthly_fee=1),
-        ForecastProject(project_id="P3", confidence="C", status="Cヨミ", initial_fee=10, monthly_fee=1),
-        ForecastProject(project_id="P4", confidence="D", status="Dヨミ", initial_fee=10, monthly_fee=1),
+        ForecastProject(project_id="P1", confidence=None, status="Aヨミ", initial_fee=100, monthly_fee=10),
+        ForecastProject(project_id="P2", confidence=None, status="Bヨミ", initial_fee=50, monthly_fee=5),
+        ForecastProject(project_id="P3", confidence="A", status="Cヨミ", initial_fee=10, monthly_fee=1),
+        ForecastProject(project_id="P4", confidence="A", status="Dヨミ", initial_fee=10, monthly_fee=1),
+        ForecastProject(project_id="P5", confidence="A", status="アポ", initial_fee=10, monthly_fee=1),
     ]
 
-    result = forecast_quarter(projects)
+    result = forecast_quarter(projects, confidence_win_rates={"A": 0.1})
 
-    assert result.max == ForecastAmount(initial_fee=100, mrr=10)
+    # 確度Aだが営業ステータスがCヨミ/Dヨミ/アポのP3〜P5はMaxに加算されない
+    # （AヨミでもBヨミでもないため）。P1(Aヨミ)+P2(Bヨミ)=150/15のみ。
+    assert result.max == ForecastAmount(initial_fee=150, mrr=15)
 
 
-def test_forecast_quarter_min_includes_no_pending_projects() -> None:
-    """MIN_SCENARIO_RANKSは空集合のため、Aランクの未契約案件も含めずMin＝契約確定分のみ。"""
+def test_forecast_quarter_min_includes_a_yomi_kotou_juchu_and_trial_regardless_of_confidence() -> None:
+    """Min（悲観）は営業ステータスが「Aヨミ」「口頭受注」「トライアル」の未契約案件を
+    確度を問わず全額計上する（2026-08-14方針変更、金沢さん確認済み）。"""
+    projects = [
+        ForecastProject(project_id="P1", confidence=None, status="Aヨミ", initial_fee=100, monthly_fee=10),
+        ForecastProject(project_id="P2", confidence="D", status="口頭受注", initial_fee=50, monthly_fee=5),
+        ForecastProject(project_id="P3", confidence=None, status="トライアル", initial_fee=20, monthly_fee=2),
+    ]
+
+    result = forecast_quarter(projects, confidence_win_rates={})
+
+    assert result.min == ForecastAmount(initial_fee=170, mrr=17)
+
+
+def test_forecast_quarter_min_excludes_b_yomi_and_other_active_statuses() -> None:
+    """MinはBヨミ・その他の営業ステータスは含めない（Aヨミ・口頭受注・トライアルのみ）。"""
+    projects = [
+        ForecastProject(project_id="P1", confidence="A", status="Bヨミ", initial_fee=100, monthly_fee=10),
+        ForecastProject(project_id="P2", confidence="A", status="アポ", initial_fee=1000, monthly_fee=100),
+        ForecastProject(project_id="P3", confidence="A", status="リスケ", initial_fee=1000, monthly_fee=100),
+    ]
+
+    result = forecast_quarter(projects, confidence_win_rates={"A": 0.01})
+
+    assert result.min == ForecastAmount(initial_fee=0, mrr=0)
+
+
+def test_forecast_quarter_min_includes_no_pending_projects_when_none_qualify() -> None:
+    """営業ステータスがMIN_SCENARIO_STATUSES対象外の未契約案件しか無ければMin＝契約確定分のみ。"""
     projects = [
         ForecastProject(project_id="P1", confidence="A", status="アポ", initial_fee=100, monthly_fee=10),
         ForecastProject(project_id="P2", confidence="B", status="リスケ", initial_fee=1000, monthly_fee=100),
@@ -183,54 +212,26 @@ def test_forecast_quarter_lost_and_cancelled_do_not_affect_active_projects_amoun
         ),
     ]
 
-    # confidence_win_rates={"A": 1.0}を指定し、Max側のExpectedキャップ補正
-    # （BLOCKER2）の影響を受けずに「失注・解約が計上されないこと」だけを検証する。
-    # Min（MIN_SCENARIO_RANKSは空集合）は契約確定分のみで、P0の契約確定分(100/10)によって
-    # 失注・解約案件(99999/9999)が漏れ込んでいないことを検証できる。
+    # confidence_win_rates={"A": 1.0}を指定するが、Max/Minはもはや確度に影響されない
+    # （営業ステータス値ベースのため）。「失注・解約が計上されないこと」だけを検証する。
+    # P1(アポ)はMAX_SCENARIO_STATUSES対象外のためMaxには含まれない。
     result = forecast_quarter(projects, confidence_win_rates={"A": 1.0})
 
-    assert result.max == ForecastAmount(initial_fee=200, mrr=20)
+    assert result.max == ForecastAmount(initial_fee=100, mrr=10)
     assert result.min == ForecastAmount(initial_fee=100, mrr=10)
 
 
-# --- BLOCKER2: Max ≧ Expected ≧ Min の不変条件 ---
+# --- Max/Expected/Minが互いに独立していることの確認 ---
+# （2026-08-14、金沢さんの判断でMax ≧ Expected ≧ Minの不変条件キャップを撤廃した。
+# 以前はMaxがExpectedを下回れば引き上げ、MinがExpectedを上回れば引き下げていたが、
+# 現在は3者とも自身の算出ロジックの結果をそのまま返す。Min > ExpectedやMax < Expected
+# が起こり得ることを、以下のテストで明示的に固定化する。）
 
 
-def test_forecast_quarter_max_is_raised_to_expected_when_expected_would_exceed_it() -> None:
-    """B/C/Dランクが多いパイプラインでは、Expectedの加重合計がMaxの単純合計(Aランクのみ)を
-    上回りうる。この場合Maxが「最大値」であることを保証するため引き上げられる。"""
-    projects = (
-        [ForecastProject(project_id="A1", confidence="A", status="アポ", initial_fee=10, monthly_fee=1)]
-        + [ForecastProject(project_id="B1", confidence="B", status="アポ", initial_fee=10, monthly_fee=1)]
-        + [
-            ForecastProject(project_id=f"C{i}", confidence="C", status="アポ", initial_fee=10, monthly_fee=1)
-            for i in range(5)
-        ]
-        + [
-            ForecastProject(project_id=f"D{i}", confidence="D", status="アポ", initial_fee=10, monthly_fee=1)
-            for i in range(10)
-        ]
-    )
-
-    result = forecast_quarter(projects, confidence_win_rates={"A": 0.8, "B": 0.5, "C": 0.2, "D": 0.05})
-
-    # naiveなMax(Aランクのみ)=10だが、Expected = 10*0.8+10*0.5+50*0.2+100*0.05 = 28 の方が大きいため
-    # Maxは28まで引き上げられる。
-    assert result.expected.initial_fee == 28.0
-    assert result.max.initial_fee == 28.0
-    assert result.max.initial_fee >= result.expected.initial_fee
-
-
-# --- BLOCKER3: MIN_SCENARIO_RANKSが空集合になったことの回帰テスト ---
-# （MAX_SCENARIO_RANKSとMIN_SCENARIO_RANKSが両方{"A"}だった旧実装では、後処理の
-# キャップ処理max(R, E)/min(R, E)によりMaxまたはMinのどちらかが必ずExpectedと
-# 完全一致してしまい、3段階シミュレーションが退化していた。）
-
-
-def test_forecast_quarter_min_never_equals_expected_for_a_rank_only_pipeline() -> None:
-    """Aランクのみ・B/C/D不在のパイプラインでは、旧実装ではMin=Expectedに完全一致して
-    いた（Aランク受注率が1.0未満のため）。MIN_SCENARIO_RANKSを空集合にしたことで、
-    Minは契約確定分のみとなりExpectedより明確に低くなる。"""
+def test_forecast_quarter_max_can_be_lower_than_expected_when_no_a_or_b_yomi_pending() -> None:
+    """Aヨミ・Bヨミの未契約案件が無いパイプラインでは、Max（契約確定分のみ）が
+    Expected（確度による加重）を下回ることがある。以前はExpectedまで引き上げる
+    キャップがあったが、現在はキャップせずそのまま返す。"""
     projects = [
         ForecastProject(
             project_id="P1", confidence="A", status="アポ", initial_fee=1500, monthly_fee=150
@@ -239,58 +240,59 @@ def test_forecast_quarter_min_never_equals_expected_for_a_rank_only_pipeline() -
 
     result = forecast_quarter(projects, confidence_win_rates={"A": 0.8})
 
-    assert result.max == ForecastAmount(initial_fee=1500.0, mrr=150.0)
     assert result.expected == ForecastAmount(initial_fee=1200.0, mrr=120.0)
-    assert result.min == ForecastAmount(initial_fee=0.0, mrr=0.0)
-    assert result.min.initial_fee != result.expected.initial_fee
-    assert result.min.mrr != result.expected.mrr
+    assert result.max == ForecastAmount(initial_fee=0.0, mrr=0.0)
+    assert result.max.initial_fee < result.expected.initial_fee
 
 
-def test_forecast_quarter_max_equals_expected_when_a_rank_absent_but_min_stays_distinct() -> None:
-    """B/Cランクのみ・Aランク不在のパイプラインでは、max_pendingが空になるため
-    Max算出値（契約確定分のみ）はExpectedを下回り、後処理でExpectedまで引き上げ
-    られてMax=Expectedとなる（これはA不在時の妥当な挙動であり、退化ではない）。
-    一方Minは契約確定分のみ（=0）でExpectedとは明確に異なることを確認する。"""
+def test_forecast_quarter_min_can_exceed_expected_when_a_yomi_confidence_is_low() -> None:
+    """Aヨミ案件はMinには確度を問わず全額計上されるが、Expectedへの寄与は確度による
+    加重（ここではD、win_rate=0.05）のみ。そのためMinがExpectedを上回ることがある。
+    以前はExpectedまで引き下げるキャップがあったが、現在はキャップせずそのまま返す。"""
     projects = [
         ForecastProject(
-            project_id="P1", confidence="B", status="アポ", initial_fee=1000, monthly_fee=100
-        ),
-        ForecastProject(
-            project_id="P2", confidence="C", status="Cヨミ", initial_fee=1000, monthly_fee=100
+            project_id="P1", confidence="D", status="Aヨミ", initial_fee=1000, monthly_fee=100
         ),
     ]
 
-    result = forecast_quarter(projects, confidence_win_rates={"B": 0.5, "C": 0.1})
+    result = forecast_quarter(projects, confidence_win_rates={"D": 0.05})
 
-    assert result.expected == ForecastAmount(initial_fee=600.0, mrr=60.0)
-    assert result.max == ForecastAmount(initial_fee=600.0, mrr=60.0)
-    assert result.min == ForecastAmount(initial_fee=0.0, mrr=0.0)
-    assert result.min.initial_fee != result.expected.initial_fee
+    assert result.expected == ForecastAmount(initial_fee=50.0, mrr=5.0)
+    assert result.min == ForecastAmount(initial_fee=1000.0, mrr=100.0)
+    assert result.min.initial_fee > result.expected.initial_fee
 
 
-def test_forecast_quarter_invariant_max_gte_expected_gte_min_across_many_combinations() -> None:
-    """確度・件数・金額の様々な組み合わせでMax ≧ Expected ≧ Minが常に成立することを検証する。"""
+def test_forecast_quarter_max_min_and_expected_are_computed_independently_across_combinations() -> None:
+    """営業ステータス（Max/Minの判定基準）・確度（Expectedの判定基準）の様々な組み合わせで、
+    forecast_quarter()が例外を送出せず、各シナリオがそれぞれの定義通りに算出されることを
+    確認する（Max ≧ Expected ≧ Minの大小関係は保証しないため、ここでは検証しない）。"""
+    statuses = ["Aヨミ", "Bヨミ", "Cヨミ", "口頭受注", "トライアル", "アポ"]
     confidences = ["A", "B", "C", "D", None]
     win_rates = {"A": 0.8, "B": 0.5, "C": 0.2, "D": 0.05}
 
-    for counts in itertools.product([0, 1, 3], repeat=len(confidences)):
-        projects = []
-        for confidence, count in zip(confidences, counts):
-            for i in range(count):
-                projects.append(
+    for status in statuses:
+        for confidence in confidences:
+            for count in (0, 1, 3):
+                projects = [
                     ForecastProject(
-                        project_id=f"{confidence}-{i}",
+                        project_id=f"{status}-{confidence}-{i}",
                         confidence=confidence,
-                        status="アポ",
+                        status=status,
                         initial_fee=100.0,
                         monthly_fee=10.0,
                     )
-                )
+                    for i in range(count)
+                ]
 
-        result = forecast_quarter(projects, confidence_win_rates=win_rates)
+                result = forecast_quarter(projects, confidence_win_rates=win_rates)
 
-        assert result.max.initial_fee >= result.expected.initial_fee >= result.min.initial_fee
-        assert result.max.mrr >= result.expected.mrr >= result.min.mrr
+                expected_max = 100.0 * count if status in {"Aヨミ", "Bヨミ"} else 0.0
+                expected_min = 100.0 * count if status in {"Aヨミ", "口頭受注", "トライアル"} else 0.0
+                expected_expected = 100.0 * count * win_rates.get(confidence, 0.0)
+
+                assert result.max.initial_fee == expected_max
+                assert result.min.initial_fee == expected_min
+                assert result.expected.initial_fee == expected_expected
 
 
 # --- 未知の確度値の検知 ---

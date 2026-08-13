@@ -292,4 +292,5 @@ Q-10 | 体制 | 開発の実施体制（内製メンバー／外部委託）と�
 2026-08-13 | データ整合性 | （未記載の新規論点） | 取引先マスター（client_master）のkintone⇔Zoho IDマッピングが移行時から欠落していたことが判明、32,059件を再構築して解消 | docs/client_master_id_mapping_note.md
 2026-08-12 | 07節・レポート機能 | （未記載の新規論点） | マネージャー通知（失注/失注候補/停滞案件/契約成立）画面をダッシュボードへ追加 | docs/dashboard_note.md
 2026-08-06/13 | 09節・スプレッドシートタブ構成 | 「全5タブ＋同期ログタブ」 | 6業務タブ＋同期ログタブの計7タブとして実装・本番適用（分析・クロスセル対象リストの2タブはPython側書き込みコード未実装のためタブのみ未作成）。GAS onEditトリガーの本番設置状況は未確認 | docs/spreadsheet_tabs_design.md、docs/client_master_id_mapping_note.md
+2026-08-14 | 06節・クオーター着地予測 | 「Max＝S・Aランク案件が全受注」「Min＝契約確定およびSランクのみ」（確度ベース、Max≧Expected≧Minを保証） | 確度（任意入力、実データで入力率が極端に低い）ではなく、必須入力の「営業ステータス」の値（Aヨミ・Bヨミ・口頭受注・トライアル等）で判定する方式に変更。Max≧Expected≧Minのキャップ処理も撤廃し、3者は独立算出（Min>Maxが起こりうる） | docs/dashboard_note.md、src/analytics/forecast.py
 

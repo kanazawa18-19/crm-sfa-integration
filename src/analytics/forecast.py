@@ -1,37 +1,51 @@
 """クオーター着地予測（06_営業分析ロジック）。
 
-実データの確度は A（最高）/ B / C / D（最低）の4段階（Sランクは存在しない）。
-仕様書のS/A/B/Cを1段階シフトしたものとして扱う（S→A、A→B、B→C、C→D）。
+Max（楽観）・Min（悲観）とExpected（見込み）は、それぞれ独立した別の判定基準で算出する
+（2026-08-14、金沢さん方針変更）。3者の間に大小関係の保証（不変条件）は無く、
+各シナリオの定義に従って算出した値をそのまま返す。
 
-- Max（楽観）＝Aランク案件が全受注した場合の最大値
-- Expected（見込み）＝確度別の過去受注率で加重平均した標準値
-- Min（悲観）＝契約確定のみで算出した最小値（実データの確度体系には仕様書上の
-  Sランクに相当するものが存在しないため、未契約案件は一切見込まない最も
-  保守的な値とする）
+- Max（楽観）＝営業ステータスが「Aヨミ」または「Bヨミ」の未契約案件を全額計上した
+  場合の最大値
+- Expected（見込み）＝別プロパティ「確度」（A（最高）〜D（最低）、RequirementLevel.
+  OPTIONAL）別の過去受注率で加重平均した標準値
+- Min（悲観）＝営業ステータスが「Aヨミ」、または「口頭受注」「トライアル」の
+  未契約案件のみを全額計上した最小値
+
+（obasan-qualityレビューWARN対応、2026-08-14: 「Bヨミ以上」のような順序を含意する
+表現は、Aヨミ〜Dヨミが確度（CONFIDENCE_LEVELSのような明示的な順序を持つ別プロパティ）
+と同種の格付けであるかのような誤読を招くため避ける。営業ステータスの値は単なる
+文字列の集合（whitelist）判定であり、順序関係は実装上定義されていない。
+また、MinとMaxの両方に「Aヨミ」が含まれるのは意図的な重複であり、コピペミスではない
+——Aヨミは楽観・悲観どちらのシナリオの根拠にもなり得るほど確度が高いステータス、
+という業務判断による。）
+
+Max/Minを「確度」ではなく営業ステータスの値（Xヨミ等）で判定するのは、営業ステータス
+自体はRequirementLevel.REQUIREDで実データの入力率が高い一方、「確度」は任意入力で
+入力率が低く、Max/Minの判定材料としては実質機能しにくかったため（2026-08-13の
+ダッシュボード確認で、Min=Expected=Maxに退化する実例が見つかったことがきっかけ）。
+Expectedは従来通り「確度」を使う（金沢さん確認済み。営業ステータスのXヨミ値と
+「確度」プロパティは別物であり、混同しないよう注意）。
 
 いずれも「契約済（契約確定）」の案件は3シナリオ共通で実現済みとして加算する。
 「失注」「解約」は既に決着した死んだ案件であり、3シナリオいずれにも寄与させない
 （案件管理DB「営業ステータス」の選択肢のうち、契約済・失注・解約を除いた
 ACTIVE_STATUSESのみをpending＝今後決着しうるアクティブな案件として扱う）。
 未契約（アクティブ）案件の扱いはシナリオごとに異なる：
-- Max: 確度がAの未契約案件は全て受注すると仮定して加算（B・C・D案件は加算しない）
+- Max: 営業ステータスがMAX_SCENARIO_STATUSES（Aヨミ・Bヨミ）の未契約案件は
+  全て受注すると仮定して加算（それ以外は加算しない）
 - Expected: 未契約案件それぞれに確度別の過去受注率を乗じて加重平均
-- Min: 未契約案件は一切加算しない（MIN_SCENARIO_RANKSは空集合）
+- Min: 営業ステータスがMIN_SCENARIO_STATUSES（Aヨミ・口頭受注・トライアル）の
+  未契約案件のみ全額計上する（それ以外は加算しない）
 
-Max ≧ Expected ≧ Min は常に成立すべき不変条件だが、素朴な算出方法のままでは
-以下のように崩れるケースがある。
-- Max: B・C・Dランクの案件が多いパイプライン構成では、Expected側の加重合計（多数の
-  B・C・Dの積み上げ）がMax側の単純合計（Aのみ）を上回ることがある。
-- Min: MIN_SCENARIO_RANKSが空集合のため、min_pendingの単純合計は常に0で
-  min_initial（min_mrr）は契約確定分と一致し、金額・過去受注率が非負である限り
-  Expected（契約確定分＋非負の加重合計）を上回ることはない。ただし将来の
-  仕様変更（負の金額・MIN_SCENARIO_RANKSへのランク追加等）に備えた安全網として、
-  Max側と対称的にキャップ処理は残している。
-この不変条件（Max ≧ Expected ≧ Min）を保証するため、Max算出値がExpected算出値を
-下回る場合はExpected算出値まで引き上げ、Min算出値がExpected算出値を上回る場合は
-Expected算出値まで引き下げる後処理を行う（下記(a)方針。Max/Min算出ロジック自体を
-複雑化する(b)方針より変更が小さく、既存のMax/Minの定義「Aランク全受注時の
-最大着地」「契約確定のみの最小着地」の意味をそのまま保てるため採用）。
+旧実装ではMax ≧ Expected ≧ Minを常に成立させる不変条件として、MaxがExpectedを
+下回る場合はExpectedまで引き上げ、MinがExpectedを上回る場合はExpectedまで
+引き下げる後処理（キャップ）を行っていた。2026-08-14、Max/Minの判定基準が
+「確度」から独立した「営業ステータスの値」に変わったことで、このキャップが
+新しいMinの意図（Aヨミ・口頭受注・トライアル案件を確度に関係なく全額見せたい）と
+衝突するようになった（例: Aヨミ案件の確度による加重額よりMinの全額計上の方が
+大きい場合、キャップによりMin=Expectedにまで引き下げられ、意図した「全額」が
+表示されなくなる）。この問題を受け、金沢さんの判断でキャップ処理自体を撤廃した
+（Min > ExpectedやMax < Expectedが起こり得ることを許容する）。
 
 初期費用（スポット売上）と月額費用（MRR・ストック売上）は分けて算出する。
 確度別の過去受注率は10_保留・要確認事項Q-04の通り初期値であり、
@@ -55,13 +69,27 @@ DEFAULT_THRESHOLDS_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "analytics_thresholds.json"
 )
 
-# 06節「クオーター着地予測」Max/Minの対象ランク。
-MAX_SCENARIO_RANKS = frozenset({"A"})
-# 実データにはAより上のランクが存在しないため、仕様書のSランク相当の対象は
-# 空集合（＝未契約案件は一切見込まない、最も保守的な悲観シナリオ）。
-MIN_SCENARIO_RANKS: frozenset[str] = frozenset()
+# 06節「クオーター着地予測」Max/Minの対象（2026-08-14、営業ステータスの値ベースに変更。
+# モジュールdocstring参照）。
+MAX_SCENARIO_STATUSES = frozenset({"Aヨミ", "Bヨミ"})
+MIN_SCENARIO_STATUSES = frozenset({"Aヨミ", "口頭受注", "トライアル"})
 
-# forecast_quarterが認識できる確度値。これ以外（未知の値）は受注率0として扱われる。
+# obasan-qualityレビューWARN対応（2026-08-14）: MAX/MIN_SCENARIO_STATUSESはこのモジュール
+# 内に文字列リテラルで直書きしているため、案件管理DB側で営業ステータスの選択肢が
+# リネームされても実行時エラーにはならず、単に「該当0件」として静かに縮退してしまう
+# （まさに今回の変更のきっかけとなった「確度の入力率低下でMax/Minが機能しなくなって
+# いた」のと同種のサイレント劣化パターン）。せめてACTIVE_STATUSESの部分集合である
+# ことだけでもモジュール読み込み時に検証し、選択肢が丸ごと削除された場合に
+# 気づけるようにする（個別のtypoまでは検知できないが、無いよりはまし）。
+assert MAX_SCENARIO_STATUSES <= ACTIVE_STATUSES, (
+    "MAX_SCENARIO_STATUSES contains a value not in ACTIVE_STATUSES"
+)
+assert MIN_SCENARIO_STATUSES <= ACTIVE_STATUSES, (
+    "MIN_SCENARIO_STATUSES contains a value not in ACTIVE_STATUSES"
+)
+
+# forecast_quarterが認識できる確度値（Expected算出用）。これ以外（未知の値）は
+# 受注率0として扱われる。
 KNOWN_CONFIDENCE_RANKS = frozenset({"A", "B", "C", "D"})
 
 DEFAULT_CONFIDENCE_WIN_RATES: dict[str, float] = {
@@ -121,18 +149,19 @@ def forecast_quarter(
 ) -> QuarterForecast:
     """Max（楽観）/Expected（見込み）/Min（悲観）の3段階でクオーター着地を予測する。
 
-    confidence_win_ratesを省略した場合はconfig/analytics_thresholds.jsonの値
-    （無ければDEFAULT_CONFIDENCE_WIN_RATES）を使う。未知の確度・未設定（None）の
-    確度は受注率0として扱う（Expectedへの寄与なし、Max/Minの対象ランクにも含まれない）。
+    Max/Minは営業ステータスの値（MAX_SCENARIO_STATUSES/MIN_SCENARIO_STATUSES）で、
+    Expectedは別プロパティ「確度」（confidence_win_rates）で判定する（両者は別物。
+    モジュールdocstring参照）。confidence_win_ratesを省略した場合は
+    config/analytics_thresholds.jsonの値（無ければDEFAULT_CONFIDENCE_WIN_RATES）を
+    使う。未知の確度・未設定（None）の確度は受注率0として扱う（Expectedへの寄与なし）。
     未知の確度値（A/B/C/D以外）を検知した場合はloggingで警告する。
 
     「失注」「解約」ステータスの案件はACTIVE_STATUSESに含まれないため、いずれの
     シナリオにも計上されない（契約済でも失注・解約でもない、今後決着しうる
     アクティブな案件のみがpendingとして扱われる）。
 
-    Max ≧ Expected ≧ Min の不変条件を保証するため、Max算出値がExpected算出値を
-    下回る場合はExpected算出値まで引き上げ、Min算出値がExpected算出値を上回る場合は
-    Expected算出値まで引き下げる（詳細はモジュールdocstring参照）。
+    Max/Expected/Minは互いに独立した基準で算出され、大小関係は保証しない
+    （Min > ExpectedやMax < Expectedが起こり得る。モジュールdocstring参照）。
     """
     win_rates = (
         dict(confidence_win_rates)
@@ -157,9 +186,11 @@ def forecast_quarter(
     confirmed_initial = sum(p.initial_fee for p in confirmed)
     confirmed_mrr = sum(p.monthly_fee for p in confirmed)
 
-    max_pending = [p for p in pending if p.confidence in MAX_SCENARIO_RANKS]
-    max_initial = confirmed_initial + sum(p.initial_fee for p in max_pending)
-    max_mrr = confirmed_mrr + sum(p.monthly_fee for p in max_pending)
+    max_pending = [p for p in pending if p.status in MAX_SCENARIO_STATUSES]
+    max_amount = ForecastAmount(
+        initial_fee=confirmed_initial + sum(p.initial_fee for p in max_pending),
+        mrr=confirmed_mrr + sum(p.monthly_fee for p in max_pending),
+    )
 
     expected_amount = ForecastAmount(
         initial_fee=confirmed_initial
@@ -168,24 +199,10 @@ def forecast_quarter(
         + sum(p.monthly_fee * win_rates.get(p.confidence, 0.0) for p in pending),
     )
 
-    # Maxが「最大値」であることを保証する後処理（モジュールdocstring参照）。
-    max_amount = ForecastAmount(
-        initial_fee=max(max_initial, expected_amount.initial_fee),
-        mrr=max(max_mrr, expected_amount.mrr),
-    )
-
-    # MIN_SCENARIO_RANKSは空集合のため、min_pendingは常に空リストになり、
-    # min_initial（min_mrr）は契約確定分のみと一致する（モジュールdocstring参照）。
-    min_pending = [p for p in pending if p.confidence in MIN_SCENARIO_RANKS]
-    min_initial = confirmed_initial + sum(p.initial_fee for p in min_pending)
-    min_mrr = confirmed_mrr + sum(p.monthly_fee for p in min_pending)
-
-    # Minが「最小値」であることを保証する後処理（モジュールdocstring参照）。
-    # 通常は契約確定分のみのmin_initial/min_mrrがExpectedを上回ることはないが、
-    # Max側と対称的に安全網としてキャップ処理を残す。
+    min_pending = [p for p in pending if p.status in MIN_SCENARIO_STATUSES]
     min_amount = ForecastAmount(
-        initial_fee=min(min_initial, expected_amount.initial_fee),
-        mrr=min(min_mrr, expected_amount.mrr),
+        initial_fee=confirmed_initial + sum(p.initial_fee for p in min_pending),
+        mrr=confirmed_mrr + sum(p.monthly_fee for p in min_pending),
     )
 
     return QuarterForecast(max=max_amount, expected=expected_amount, min=min_amount)

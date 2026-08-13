@@ -40,6 +40,24 @@ kintone側（`src/migration/action_mapping.py`関連の移行データ）には�
 （Notion Integration設定の "Read user information including email addresses" 相当）が
 必要であり、この権限が無効なままだと`GET /v1/users`がエラーになる可能性がある。
 
+## クオーター着地予測のMax/Min判定基準変更（2026-08-14）
+
+`src/analytics/forecast.py`のMax（楽観）/Min（悲観）シナリオの判定基準を、別プロパティ
+「確度」（A〜D、RequirementLevel.OPTIONAL）から、必須入力の「営業ステータス」の値
+（Aヨミ・Bヨミ・口頭受注・トライアル等）ベースに変更した。仕様書v2.0（06節）は旧仕様
+（S・Aランクベース、実データに存在しないSランクを含む）のまま。詳細な経緯は
+`src/analytics/forecast.py`のモジュールdocstringを参照。
+
+- 変更前: ダッシュボードのMin/Expected/Maxが常に同じ数字になる不具合があった。原因は
+  「確度」プロパティの実データ入力率が極端に低く（進行中案件の大半で未入力）、
+  Max/Minがほぼ機能していなかったため。
+- 変更後: Max＝営業ステータスが「Aヨミ」または「Bヨミ」の未契約案件を全額計上。
+  Min＝営業ステータスが「Aヨミ」「口頭受注」「トライアル」の未契約案件を確度を
+  問わず全額計上。Expectedは変更なし（引き続き「確度」による加重平均）。
+- 旧実装にあった「Max≧Expected≧Minを常に保証するキャップ処理」も撤廃した（金沢さん
+  判断）。そのため**Minの方がMaxより大きく表示される等、直感に反する場合がある**
+  （ダッシュボードAPIの`notes`にもその旨の注記を追加済み、`src/api/dashboard_service.py`）。
+
 ## マネージャー通知（2026-08-12追加、`/alerts`）
 
 案件管理DBを「失注」「失注候補」「停滞案件」「契約成立」の4区分に分けて一覧するAPI・画面。

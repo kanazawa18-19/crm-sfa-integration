@@ -125,10 +125,12 @@ def test_build_dashboard_summary_forecast_scopes_confirmed_projects_by_contract_
 
 
 def test_build_dashboard_summary_forecast_scopes_active_projects_by_expected_contract_date() -> None:
+    # 営業ステータスは「Aヨミ」（forecast_quarter()のMAX_SCENARIO_STATUSES対象、
+    # 2026-08-14の判定基準変更後もMaxへ計上されるようにするため）。
     projects = [
         _project(
             notion_page_id="p_in_quarter",
-            営業ステータス="アポ",
+            営業ステータス="Aヨミ",
             確度="A",
             初期費用=100000,
             月額費用=10000,
@@ -136,7 +138,7 @@ def test_build_dashboard_summary_forecast_scopes_active_projects_by_expected_con
         ),
         _project(
             notion_page_id="p_in_half_only",
-            営業ステータス="アポ",
+            営業ステータス="Aヨミ",
             確度="A",
             初期費用=200000,
             月額費用=20000,

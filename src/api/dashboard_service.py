@@ -366,6 +366,13 @@ def build_dashboard_summary(
     notes = [
         f"予想契約日が未入力の進行中案件が{unscheduled_active_count}件あり、"
         "上記の着地予測には含まれていません。",
+        # obasan-qualityレビューBLOCKER対応（2026-08-14）: Max/Expected/Minは
+        # それぞれ独立した基準（営業ステータスの値・確度）で算出するため、大小関係を
+        # 保証しない（forecast.pyのキャップ撤廃、モジュールdocstring参照）。この注記が
+        # 無いと、Minの方がMaxより大きい表示を見た営業マネージャーが「バグでは」と
+        # 誤解しかねない。
+        "Max（楽観）・Expected（見込み）・Min（悲観）はそれぞれ別の判定基準で算出して"
+        "いるため、Minの方がMaxより大きく表示される等、直感に反する場合があります。",
     ]
     if unscheduled_confirmed_count:
         notes.append(
