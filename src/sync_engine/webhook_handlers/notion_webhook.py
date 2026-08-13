@@ -293,6 +293,7 @@ def handler_with_proxy(
     notion_client: NotionPageClient,
     dispatcher: Dispatcher | None = None,
     calendar_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
+    lead_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
 ) -> dict[str, Any]:
     """Lambda/Cloud Functions エントリポイント（実際のNotion API Webhooksの軽量ペイロードを
     受け取る想定。API Gateway形式のHTTPイベントを想定）。実運用ではこちらを使う。
@@ -314,9 +315,15 @@ def handler_with_proxy(
     SyncEventについて`calendar_sync(sync_event.properties, sync_event.external_id)`を呼び、
     「次回アクション日」変更をGoogle Calendarへ同期する
     （`src.calendar_sync.service.sync_next_action_date_to_calendar`を想定）。
-    `dispatcher.dispatch()`の同期処理とは独立した副作用であり、`calendar_sync`が例外を
-    送出してもWebhook全体としては既存の200レスポンスをそのまま返す
-    （メインの同期処理を絶対に壊さないため）。
+
+    `lead_sync`（省略可、既定`None`）を注入すると、db_key="contact"（連絡先DB）の
+    SyncEventについて`lead_sync(sync_event.properties, sync_event.external_id)`を呼び、
+    連絡先レコードをweb-engagement-tool側のLeadシステムへ同期する
+    （`src.lead_sync.service.sync_contact_to_lead`を想定）。
+
+    いずれも`dispatcher.dispatch()`の同期処理とは独立した副作用であり、例外を送出しても
+    Webhook全体としては既存の200レスポンスをそのまま返す（メインの同期処理を絶対に
+    壊さないため）。
     """
     headers = event.get("headers") or {}
     if not verify_webhook_secret(headers, "NOTION_WEBHOOK_SECRET"):
@@ -373,6 +380,31 @@ def handler_with_proxy(
                 "unexpected error while syncing calendar event (non-fatal, "
                 "webhook still returns 200): page_id=%s",
                 sync_event.external_id,
+            )
+
+    if lead_sync is not None and sync_event.db_key == "contact":
+        try:
+            lead_sync(sync_event.properties, sync_event.external_id)
+        except Exception as exc:
+            # shirokuma-secレビューWARN対応（2026-08-13）: logger.exception()は例外メッセージ
+            # 全文をログへ記録するが、LeadSyncApiError（`extract_error_message()`経由で
+            # web-engagement-tool側のHTTPエラーレスポンス本文を最大200文字まで含みうる）の
+            # 場合、相手先が不正な入力値をエラーメッセージへエコーバックする一般的なAPI
+            # パターン（例: "invalid email: foo@bar"）により、連絡先のPII（メールアドレス等）が
+            # このアプリの標準ログへ漏れる恐れがある（docs/migration_pipeline_note.md
+            # 「6. PIIの取り扱い」の方針同様、PIIはリポジトリ管理下の専用出力先以外に出さない）。
+            # 例外の型名・（ApiErrorサブクラスであれば）status_code・notion page_id
+            # （内部識別子でありPIIではない）のみを記録し、メッセージ本文は記録しない。
+            #
+            # calendar_syncの同等の失敗ログ（上のブロック）は同じ理由で見直していない
+            # （担当メンバーの社内メールアドレスしか扱わず、顧客の連絡先PIIを含まないため
+            # 影響範囲が小さいと判断した。lead_syncのみを対象とする）。
+            logger.error(
+                "unexpected error while syncing lead (non-fatal, "
+                "webhook still returns 200): page_id=%s exc_type=%s status_code=%s",
+                sync_event.external_id,
+                type(exc).__name__,
+                getattr(exc, "status_code", None),
             )
 
     return {

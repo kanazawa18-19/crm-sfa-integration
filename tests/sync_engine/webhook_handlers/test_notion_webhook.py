@@ -7,6 +7,7 @@ import pytest
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
+from src.lead_sync.web_engagement_tool_client import LeadSyncApiError
 from src.sync_engine.clients.notion_client import HttpNotionClient, NotionApiError
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.id_mapping import SQLiteIdMappingStore
@@ -830,6 +831,164 @@ def test_handler_with_proxy_without_calendar_sync_behaves_as_before(
     )
     client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
     event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(event, context=None, notion_client=client)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+
+
+# --- lead_sync フック -----------------------------------------------------------------------
+
+_CONTACT_DB_ID = "3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae"
+DB_ID_MAP_WITH_CONTACT = {**DB_ID_MAP, _CONTACT_DB_ID: "contact"}
+
+
+def _contact_lightweight_payload() -> dict:
+    return {
+        "id": "evt_yyy",
+        "timestamp": "2026-08-05T09:00:00.000Z",
+        "workspace_id": "ws_xxx",
+        "type": "page.properties_updated",
+        "entity": {"id": "cnt-0000-0000-0000-000000000000", "type": "page"},
+        "data": {
+            "parent": {"id": _CONTACT_DB_ID, "type": "database"},
+            "updated_properties": ["title"],
+        },
+    }
+
+
+def _raw_contact_page() -> dict:
+    return {
+        "id": "cnt-0000-0000-0000-000000000000",
+        "parent": {"type": "database_id", "database_id": _CONTACT_DB_ID},
+        "last_edited_time": "2026-08-05T09:00:00.000Z",
+        "properties": {
+            "名前": {"type": "title", "title": [{"plain_text": "山田太郎"}]},
+            "メールアドレス": {"type": "email", "email": "yamada@example.com"},
+        },
+    }
+
+
+def test_handler_with_proxy_calls_lead_sync_when_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP_WITH_CONTACT,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_contact_page())
+    calls: list[tuple[dict, str]] = []
+
+    def _lead_sync(properties: dict, page_id: str) -> None:
+        calls.append((dict(properties), page_id))
+
+    event = {"body": json.dumps(_contact_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(
+        event, context=None, notion_client=client, lead_sync=_lead_sync
+    )
+
+    assert response["statusCode"] == 200
+    assert len(calls) == 1
+    called_properties, called_page_id = calls[0]
+    assert called_page_id == "cnt-0000-0000-0000-000000000000"
+    assert called_properties == {"名前": "山田太郎", "メールアドレス": "yamada@example.com"}
+
+
+def test_handler_with_proxy_does_not_call_lead_sync_for_project_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """lead_syncはdb_key="contact"のイベントのみ発火し、"project"では呼ばれないことを確認する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP_WITH_CONTACT,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    calls: list[tuple[dict, str]] = []
+
+    def _lead_sync(properties: dict, page_id: str) -> None:
+        calls.append((dict(properties), page_id))
+
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(
+        event, context=None, notion_client=client, lead_sync=_lead_sync
+    )
+
+    assert response["statusCode"] == 200
+    assert calls == []
+
+
+def test_handler_with_proxy_returns_200_even_when_lead_sync_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP_WITH_CONTACT,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_contact_page())
+
+    def _failing_lead_sync(properties: dict, page_id: str) -> None:
+        raise RuntimeError("lead sync boom")
+
+    event = {"body": json.dumps(_contact_lightweight_payload()), "headers": {}}
+
+    with caplog.at_level("ERROR"):
+        response = handler_with_proxy(
+            event, context=None, notion_client=client, lead_sync=_failing_lead_sync
+        )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+    assert any("lead" in record.getMessage() for record in caplog.records)
+
+
+def test_handler_with_proxy_lead_sync_failure_log_does_not_leak_contact_pii(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """shirokuma-secレビューWARN対応: LeadSyncApiErrorのメッセージ（web-engagement-tool側の
+    HTTPエラーレスポンス本文由来、連絡先のメールアドレス等を含みうる）が、失敗時のログ出力へ
+    そのまま記録されない（例外の型名・status_code・page_idのみが記録される）ことを検証する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP_WITH_CONTACT,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_contact_page())
+    leaked_email = "yamada-pii-leak-check@example.com"
+
+    def _failing_lead_sync(properties: dict, page_id: str) -> None:
+        raise LeadSyncApiError(400, f"invalid email: {leaked_email}")
+
+    event = {"body": json.dumps(_contact_lightweight_payload()), "headers": {}}
+
+    with caplog.at_level("ERROR"):
+        response = handler_with_proxy(
+            event, context=None, notion_client=client, lead_sync=_failing_lead_sync
+        )
+
+    assert response["statusCode"] == 200
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert leaked_email not in log_text
+    assert "LeadSyncApiError" in log_text
+    assert "400" in log_text
+
+
+def test_handler_with_proxy_without_lead_sync_behaves_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """lead_sync未注入時は既存の挙動と変わらないことを確認する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP_WITH_CONTACT,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_contact_page())
+    event = {"body": json.dumps(_contact_lightweight_payload()), "headers": {}}
 
     response = handler_with_proxy(event, context=None, notion_client=client)
 

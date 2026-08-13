@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import _wiring_dependency, app
 from src.db_schema.base import Tool
+from src.db_schema.contact import CONTACT_SCHEMA
 from src.db_schema.project import PROJECT_SCHEMA
 from src.sync_engine.dispatcher import DispatchResult, PropertyDispatchResult
 from src.sync_engine.webhook_handlers._common import WEBHOOK_SECRET_HEADER
@@ -44,10 +45,17 @@ class _FakeNotionPageClient:
 
 class _FakeWiring:
     def __init__(
-        self, *, dispatcher: _SpyDispatcher | None = None, notion_page_client: Any = None
+        self,
+        *,
+        dispatcher: _SpyDispatcher | None = None,
+        notion_page_client: Any = None,
+        calendar_sync_callable: Any = None,
+        lead_sync_callable: Any = None,
     ) -> None:
         self.dispatcher = dispatcher or _SpyDispatcher()
         self.notion_page_client = notion_page_client
+        self.calendar_sync_callable = calendar_sync_callable
+        self.lead_sync_callable = lead_sync_callable
         self.id_mapping_store = None
 
 
@@ -298,6 +306,97 @@ def test_webhook_notion_dispatches_via_injected_wiring(
     assert len(spy.dispatched) == 1
     assert spy.dispatched[0].db_key == "project"
     assert spy.dispatched[0].external_id == "page-1"
+
+
+def test_webhook_notion_invokes_calendar_sync_callable_for_project_event(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part A回帰確認: 本番エンドポイント（webhook_notion）がwiring.calendar_sync_callable
+    を実際にhandler_with_proxyへ渡し、db_key="project"のイベントで呼び出されることを確認する
+    （このテスト追加以前は、calendar_sync/service.pyのフックが存在しても
+    webhook_notionから一切配線されておらず、本番で発火することがなかった）。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    raw_page = {
+        "id": "page-1",
+        "parent": {"type": "database_id", "database_id": PROJECT_SCHEMA.notion_database_id},
+        "last_edited_time": "2026-08-05T09:00:00.000Z",
+        "properties": {
+            "案件名": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
+        },
+    }
+    calendar_sync_calls: list[tuple[dict, str]] = []
+
+    def _calendar_sync(properties: dict, page_id: str) -> None:
+        calendar_sync_calls.append((dict(properties), page_id))
+
+    _override_wiring(
+        _FakeWiring(
+            notion_page_client=_FakeNotionPageClient(raw_page),
+            calendar_sync_callable=_calendar_sync,
+        )
+    )
+
+    response = client.post(
+        "/api/webhooks/notion",
+        json={
+            "id": "evt_xxx",
+            "timestamp": "2026-08-05T09:00:00.000Z",
+            "type": "page.properties_updated",
+            "entity": {"id": "page-1", "type": "page"},
+            "data": {},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(calendar_sync_calls) == 1
+    called_properties, called_page_id = calendar_sync_calls[0]
+    assert called_page_id == "page-1"
+    assert called_properties == {"案件名": "MSA-PJ-001"}
+
+
+def test_webhook_notion_invokes_lead_sync_callable_for_contact_event(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part B確認: 本番エンドポイント（webhook_notion）がwiring.lead_sync_callableを実際に
+    handler_with_proxyへ渡し、db_key="contact"のイベントで呼び出されることを確認する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    raw_page = {
+        "id": "page-2",
+        "parent": {"type": "database_id", "database_id": CONTACT_SCHEMA.notion_database_id},
+        "last_edited_time": "2026-08-05T09:00:00.000Z",
+        "properties": {
+            "名前": {"type": "title", "title": [{"plain_text": "山田太郎"}]},
+            "メールアドレス": {"type": "email", "email": "yamada@example.com"},
+        },
+    }
+    lead_sync_calls: list[tuple[dict, str]] = []
+
+    def _lead_sync(properties: dict, page_id: str) -> None:
+        lead_sync_calls.append((dict(properties), page_id))
+
+    _override_wiring(
+        _FakeWiring(
+            notion_page_client=_FakeNotionPageClient(raw_page),
+            lead_sync_callable=_lead_sync,
+        )
+    )
+
+    response = client.post(
+        "/api/webhooks/notion",
+        json={
+            "id": "evt_yyy",
+            "timestamp": "2026-08-05T09:00:00.000Z",
+            "type": "page.properties_updated",
+            "entity": {"id": "page-2", "type": "page"},
+            "data": {},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(lead_sync_calls) == 1
+    called_properties, called_page_id = lead_sync_calls[0]
+    assert called_page_id == "page-2"
+    assert called_properties == {"名前": "山田太郎", "メールアドレス": "yamada@example.com"}
 
 
 def test_webhook_notion_returns_401_when_secret_mismatches(

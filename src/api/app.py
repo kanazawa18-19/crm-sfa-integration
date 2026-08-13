@@ -208,6 +208,8 @@ async def webhook_notion(
         context=None,
         notion_client=wiring.notion_page_client,
         dispatcher=wiring.dispatcher,
+        calendar_sync=wiring.calendar_sync_callable,
+        lead_sync=wiring.lead_sync_callable,
     )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 

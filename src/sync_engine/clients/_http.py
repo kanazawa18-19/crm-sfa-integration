@@ -51,6 +51,22 @@ _MAX_RATE_LIMIT_BACKOFF_SECONDS = 30.0
 # 4xx（400/401/403/404等）はリトライしても解消しないため即座に呼び出し元へ返す。
 _RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
+# shirokuma-secレビューWARN対応（2026-08-13）: calendar_sync/lead_sync
+# （`src/sync_engine/webhook_handlers/notion_webhook.py`の`handler_with_proxy()`が
+# `dispatcher.dispatch()`の"後"に同期的に呼ぶ副次的な外部API連携フック）向けの、
+# 既定値より短いタイムアウト・リトライ予算。DEFAULT_TIMEOUT_SECONDS(10.0秒)/
+# DEFAULT_MAX_RETRIES(3)をそのまま使うと、web-engagement-tool側が「落ちている」の
+# ではなく「遅い」だけの状態（コネクションはハングするがタイムアウトはする）の場合、
+# 最悪10秒×最大4試行 ≒ 40秒webhookレスポンスを遅延させてしまう。これがNotion側の
+# Webhook配信タイムアウトやホスティング基盤の実行時間上限を超えると、Notionが
+# 配信失敗とみなして再送し、既に完了済みのdispatcher.dispatch()（メインの同期処理）が
+# 同一イベントに対して再度実行される恐れがある（各SyncTargetの冪等性に完全に依存する
+# ことになるため避けたい）。本フックはあくまで副次的な連携であり、メインのwebhook
+# レスポンスを数十秒規模で遅延させてよい理由が無いため、一桁秒規模の予算に絞る
+# （タイムアウト3秒×最大2試行＋バックオフ0.5秒 ≒ 最悪6.5秒）。
+HOOK_TIMEOUT_SECONDS = 3.0
+HOOK_MAX_RETRIES = 1
+
 
 class ApiError(Exception):
     """各ツールAPIエラーの共通基底クラス。ツールごとのサブクラスは各clientモジュールで定義する。"""

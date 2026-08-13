@@ -14,7 +14,11 @@ import pytest
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
-from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+from src.sync_engine.clients._http import (
+    HOOK_MAX_RETRIES,
+    HOOK_TIMEOUT_SECONDS,
+    INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+)
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 from src.sync_engine.notion_id_mapping import NotionIdMappingStore
@@ -24,8 +28,10 @@ from src.sync_engine.production_wiring import (
     _MultiDbKintoneSyncTarget,
     _MultiDbNotionSyncTarget,
     _warn_if_id_mapping_store_not_persistent,
+    build_calendar_sync_callable,
     build_id_mapping_store,
     build_kintone_targets_by_db,
+    build_lead_sync_callable,
     build_notion_clients_by_db,
     build_production_dispatcher,
     build_spreadsheet_targets_by_db,
@@ -211,6 +217,140 @@ def test_build_spreadsheet_targets_by_db_builds_one_target_per_schema(
     targets = build_spreadsheet_targets_by_db()
 
     assert set(targets.keys()) == {s.key for s in ALL_SCHEMAS}
+
+
+# --- build_calendar_sync_callable / build_lead_sync_callable -----------------------------------
+
+
+class _FakeNotionPageClientForWiring:
+    def get_raw_page(self, page_id: str) -> dict[str, Any]:
+        return {"id": page_id, "properties": {}}
+
+
+def test_build_calendar_sync_callable_returns_none_when_env_vars_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WEB_ENGAGEMENT_TOOL_URL", raising=False)
+    monkeypatch.delenv("CALENDAR_SYNC_API_TOKEN", raising=False)
+
+    assert build_calendar_sync_callable() is None
+
+
+def test_build_calendar_sync_callable_returns_callable_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CALENDAR_SYNC_API_TOKEN", "secret-calendar-token")
+
+    calendar_sync = build_calendar_sync_callable()
+
+    assert calendar_sync is not None
+    assert callable(calendar_sync)
+
+
+def test_build_lead_sync_callable_returns_none_when_notion_client_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CRM_SFA_SYNC_API_TOKEN", "secret-lead-token")
+
+    assert build_lead_sync_callable(None) is None
+
+
+def test_build_lead_sync_callable_returns_none_when_env_vars_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WEB_ENGAGEMENT_TOOL_URL", raising=False)
+    monkeypatch.delenv("CRM_SFA_SYNC_API_TOKEN", raising=False)
+
+    assert build_lead_sync_callable(_FakeNotionPageClientForWiring()) is None
+
+
+def test_build_lead_sync_callable_returns_callable_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CRM_SFA_SYNC_API_TOKEN", "secret-lead-token")
+
+    lead_sync = build_lead_sync_callable(_FakeNotionPageClientForWiring())
+
+    assert lead_sync is not None
+    assert callable(lead_sync)
+
+
+def test_build_calendar_sync_callable_uses_hook_timeout_and_retries_not_client_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shirokuma-secレビューWARN対応: このフックはdispatcher.dispatch()の後に同期的に
+    呼ばれるため、クライアントの既定タイムアウト/リトライ予算（DEFAULT_TIMEOUT_SECONDS/
+    DEFAULT_MAX_RETRIES）ではなく、短いHOOK_TIMEOUT_SECONDS/HOOK_MAX_RETRIESが実際に
+    渡されていることを確認する。"""
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CALENDAR_SYNC_API_TOKEN", "secret-calendar-token")
+
+    calendar_sync = build_calendar_sync_callable()
+
+    assert calendar_sync is not None
+    calendar_client = calendar_sync.keywords["calendar_client"]  # type: ignore[attr-defined]
+    assert calendar_client._timeout == HOOK_TIMEOUT_SECONDS  # noqa: SLF001
+    assert calendar_client._max_retries == HOOK_MAX_RETRIES  # noqa: SLF001
+
+
+def test_build_lead_sync_callable_uses_hook_timeout_and_retries_not_client_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shirokuma-secレビューWARN対応: build_calendar_sync_callableと同じ理由で、
+    HOOK_TIMEOUT_SECONDS/HOOK_MAX_RETRIESが実際に渡されていることを確認する。"""
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CRM_SFA_SYNC_API_TOKEN", "secret-lead-token")
+
+    lead_sync = build_lead_sync_callable(_FakeNotionPageClientForWiring())
+
+    assert lead_sync is not None
+    lead_sync_client = lead_sync.keywords["lead_sync_client"]  # type: ignore[attr-defined]
+    assert lead_sync_client._timeout == HOOK_TIMEOUT_SECONDS  # noqa: SLF001
+    assert lead_sync_client._max_retries == HOOK_MAX_RETRIES  # noqa: SLF001
+
+
+def test_production_sync_wiring_calendar_sync_callable_is_none_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    monkeypatch.delenv("WEB_ENGAGEMENT_TOOL_URL", raising=False)
+    monkeypatch.delenv("CALENDAR_SYNC_API_TOKEN", raising=False)
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.calendar_sync_callable is None
+
+
+def test_production_sync_wiring_lead_sync_callable_is_none_without_notion_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notion同期自体が無効(NOTION_API_KEY未設定)の場合、会社名解決にNotion APIが使えず
+    Lead同期も同様に無効化されることを確認する。"""
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CRM_SFA_SYNC_API_TOKEN", "secret-lead-token")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.lead_sync_callable is None
+
+
+def test_production_sync_wiring_lead_sync_callable_is_set_when_fully_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    monkeypatch.setenv("WEB_ENGAGEMENT_TOOL_URL", "http://localhost:3001")
+    monkeypatch.setenv("CRM_SFA_SYNC_API_TOKEN", "secret-lead-token")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.lead_sync_callable is not None
 
 
 # --- build_production_dispatcher ---------------------------------------------------------------

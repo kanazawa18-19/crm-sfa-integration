@@ -38,14 +38,23 @@ Notion/kintone/Zoho/スプレッドシートAPIクライアントを組み立て
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
+from src.calendar_sync.service import sync_next_action_date_to_calendar
+from src.calendar_sync.web_engagement_tool_client import WebEngagementToolCalendarClient
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
-from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+from src.lead_sync.service import sync_contact_to_lead
+from src.lead_sync.web_engagement_tool_client import WebEngagementToolLeadSyncClient
+from src.sync_engine.clients._http import (
+    HOOK_MAX_RETRIES,
+    HOOK_TIMEOUT_SECONDS,
+    INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+)
 from src.sync_engine.clients.kintone_client import HttpKintoneClient
 from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
@@ -60,6 +69,7 @@ from src.sync_engine.sync_targets.base import SyncTarget
 from src.sync_engine.sync_targets.kintone_sync import KintoneSyncTarget
 from src.sync_engine.sync_targets.spreadsheet_sync import SpreadsheetSyncTarget
 from src.sync_engine.sync_targets.zoho_sync import ZohoSyncTarget, is_zoho_enabled
+from src.sync_engine.webhook_handlers.notion_webhook import NotionPageClient
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +449,77 @@ def build_spreadsheet_targets_by_db() -> dict[str, SpreadsheetSyncTarget]:
     }
 
 
+def build_calendar_sync_callable() -> Callable[[Mapping[str, Any], str], Any] | None:
+    """`notion_webhook.handler_with_proxy`の`calendar_sync`引数へそのまま渡せる
+    `Callable[[Mapping[str, Any], str], Any]`を組み立てる（案件管理DBの「次回アクション日」
+    変更をweb-engagement-tool側のGoogle Calendar連携APIへ同期する
+    `src.calendar_sync.service.sync_next_action_date_to_calendar`をベースにする）。
+
+    `WebEngagementToolCalendarClient()`は`WEB_ENGAGEMENT_TOOL_URL`/`CALENDAR_SYNC_API_TOKEN`が
+    未設定の場合に構築時`ValueError`を送出するため、ここでcatchして`None`を返し、Calendar同期
+    を無効化する（`build_spreadsheet_targets_by_db`等、他の任意連携と同じ「未設定なら無効化」
+    パターン）。
+
+    `timeout`/`max_retries`はクライアントの既定値（`DEFAULT_TIMEOUT_SECONDS`/
+    `DEFAULT_MAX_RETRIES`）ではなく、明示的に`HOOK_TIMEOUT_SECONDS`/`HOOK_MAX_RETRIES`を渡す
+    （shirokuma-secレビューWARN対応。このフックは`handler_with_proxy()`の中で
+    `dispatcher.dispatch()`の後に同期的に呼ばれるため、既定値のままだと最悪ケースでwebhook
+    レスポンスを数十秒遅延させうる。詳細は`_http.py`の該当定数のコメント参照）。
+    """
+    try:
+        calendar_client = WebEngagementToolCalendarClient(
+            timeout=HOOK_TIMEOUT_SECONDS, max_retries=HOOK_MAX_RETRIES
+        )
+    except ValueError:
+        logger.info(
+            "WEB_ENGAGEMENT_TOOL_URL/CALENDAR_SYNC_API_TOKENが未設定のため、Notion次回アクション日"
+            "のGoogle Calendar同期は無効化されます"
+        )
+        return None
+    return functools.partial(sync_next_action_date_to_calendar, calendar_client=calendar_client)
+
+
+def build_lead_sync_callable(
+    notion_client: NotionPageClient | None,
+) -> Callable[[Mapping[str, Any], str], Any] | None:
+    """`notion_webhook.handler_with_proxy`の`lead_sync`引数へそのまま渡せる
+    `Callable[[Mapping[str, Any], str], Any]`を組み立てる（連絡先DBのレコードを
+    web-engagement-tool側のLeadシステムへ同期する`src.lead_sync.service.sync_contact_to_lead`
+    をベースにする）。
+
+    `notion_client`（`ProductionSyncWiring.notion_page_client`を想定）が`None`の場合
+    （`NOTION_API_KEY`未設定でNotion同期自体が無効化されている場合）、会社名解決
+    （`sync_contact_to_lead`が「取引先マスター」relationの参照先ページを追加取得するために
+    Notion APIを呼ぶ）ができないため、同様に無効化し`None`を返す。
+
+    `WebEngagementToolLeadSyncClient()`は`WEB_ENGAGEMENT_TOOL_URL`/`CRM_SFA_SYNC_API_TOKEN`が
+    未設定の場合に構築時`ValueError`を送出するため、ここでcatchして`None`を返す
+    （`build_calendar_sync_callable`と同じパターン）。
+
+    `timeout`/`max_retries`は`build_calendar_sync_callable`と同じ理由・値
+    （`HOOK_TIMEOUT_SECONDS`/`HOOK_MAX_RETRIES`）を明示的に渡す（shirokuma-secレビューWARN
+    対応）。
+    """
+    if notion_client is None:
+        logger.info(
+            "NOTION_API_KEYが未設定のため、Notion連絡先DBのLead同期は無効化されます"
+        )
+        return None
+    try:
+        lead_sync_client = WebEngagementToolLeadSyncClient(
+            timeout=HOOK_TIMEOUT_SECONDS, max_retries=HOOK_MAX_RETRIES
+        )
+    except ValueError:
+        logger.info(
+            "WEB_ENGAGEMENT_TOOL_URL/CRM_SFA_SYNC_API_TOKENが未設定のため、Notion連絡先DBのLead"
+            "同期は無効化されます"
+        )
+        return None
+    return functools.partial(
+        sync_contact_to_lead, notion_client=notion_client, lead_sync_client=lead_sync_client
+    )
+
+
 def build_production_dispatcher(*, id_mapping_store: IdMappingStore | None = None) -> Dispatcher:
     """本番用のDispatcher（4ツール分のSyncTarget＋IdMappingStore）を組み立てる。
 
@@ -521,6 +602,12 @@ class ProductionSyncWiring:
 
     `dispatcher`は`SkipTrackingDispatcher`でラップされており、部分的な同期スキップが
     発生した場合にwarningログを出す（上記docstring参照）。
+
+    `calendar_sync_callable`/`lead_sync_callable`は、それぞれ`notion_webhook.handler_with_proxy`
+    の`calendar_sync`/`lead_sync`引数へそのまま渡せる`Callable[[Mapping[str, Any], str], Any]`
+    （`build_calendar_sync_callable`/`build_lead_sync_callable`参照）。対応する連携先の環境変数が
+    未設定の場合は`None`になる（Webhookエンドポイント側は`None`の場合当該フックを渡さない
+    想定であり、アプリ起動・Webhookリクエスト処理自体はいずれも失敗しない）。
     """
 
     def __init__(self) -> None:
@@ -535,6 +622,12 @@ class ProductionSyncWiring:
         # build_production_dispatcher()内で改めてNotionクライアント一式を構築しており
         # 二重にはなるが、Webhook受信のたびに毎回構築するわけではない（モジュールレベルで
         # 1回だけ構築してプロセス内で使い回す。get_production_wiring()参照）ため許容する。
+        self.calendar_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
+            build_calendar_sync_callable()
+        )
+        self.lead_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
+            build_lead_sync_callable(self.notion_page_client)
+        )
 
 
 _wiring_singleton: ProductionSyncWiring | None = None
@@ -568,8 +661,10 @@ def reset_production_wiring() -> None:
 __all__ = [
     "ProductionSyncWiring",
     "SkipTrackingDispatcher",
+    "build_calendar_sync_callable",
     "build_id_mapping_store",
     "build_kintone_targets_by_db",
+    "build_lead_sync_callable",
     "build_notion_clients_by_db",
     "build_production_dispatcher",
     "build_spreadsheet_targets_by_db",
