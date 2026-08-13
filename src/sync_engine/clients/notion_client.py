@@ -224,17 +224,27 @@ class HttpNotionClient:
             result[NOTION_LAST_EDITED_TIME_KEY] = parse_iso_datetime(last_edited_time)
         return result
 
-    def query_all_pages(self, *, page_size: int = 100) -> list[dict[str, Any]]:
-        """Notion API `POST /v1/databases/{database_id}/query` で当DBの全ページを取得する。
+    def query_all_pages(
+        self, *, page_size: int = 100, filter: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Notion API `POST /v1/databases/{database_id}/query` で当DBのページを取得する。
 
         `start_cursor`/`has_more`でページングしながら全件取得し、Notion APIの生ページ
         オブジェクト（`id`, `properties`等を含む。`get_raw_page`と同じ「生JSON」方針）の
         リストをそのまま返す。読み取り専用の冪等操作のためidempotent=True（既定）で呼ぶ。
+
+        `filter`（省略可）にNotion Query Database APIのフィルタオブジェクト
+        （例: `{"property": "メールアドレス", "email": {"equals": "..."}}`）を渡すと、
+        クライアント側で全件取得してから絞り込むのではなく、Notion API側で絞り込んだ
+        結果のみを取得できる（呼び出し元がDB全件をクライアント側でフィルタしている箇所を、
+        件数が多いDBで軽量化する用途を想定）。省略時は従来通り当DB全件を返す。
         """
         pages: list[dict[str, Any]] = []
         start_cursor: str | None = None
         while True:
             body: dict[str, Any] = {"page_size": page_size}
+            if filter is not None:
+                body["filter"] = filter
             if start_cursor is not None:
                 body["start_cursor"] = start_cursor
             response = self._request(

@@ -95,6 +95,31 @@ def test_query_all_pages_sends_page_size(requests_mock, client: HttpNotionClient
     assert requests_mock.last_request.json()["page_size"] == 50
 
 
+def test_query_all_pages_sends_filter_when_given(requests_mock, client: HttpNotionClient) -> None:
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+        json={"results": [], "has_more": False, "next_cursor": None},
+    )
+    filter_body = {"property": "メールアドレス", "email": {"equals": "yamada@example.com"}}
+
+    client.query_all_pages(filter=filter_body)
+
+    assert requests_mock.last_request.json()["filter"] == filter_body
+
+
+def test_query_all_pages_omits_filter_key_when_not_given(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+        json={"results": [], "has_more": False, "next_cursor": None},
+    )
+
+    client.query_all_pages()
+
+    assert "filter" not in requests_mock.last_request.json()
+
+
 def test_query_all_pages_sends_bearer_token_and_notion_version_header(
     requests_mock, client: HttpNotionClient
 ) -> None:

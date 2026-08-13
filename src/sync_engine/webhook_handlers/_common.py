@@ -58,7 +58,13 @@ def verify_webhook_secret(headers: Mapping[str, str], env_var: str) -> bool:
     """
     expected = os.environ.get(env_var)
     if expected:
-        return get_header(headers, WEBHOOK_SECRET_HEADER) == expected
+        actual = get_header(headers, WEBHOOK_SECRET_HEADER)
+        if not isinstance(actual, str):
+            return False
+        # shirokuma-secレビューWARN対応（2026-08-13）: verify_webhook_body_token()と同様、
+        # タイミングサイドチャネルによるトークン漏洩を防ぐためhmac.compare_digest()を使う
+        # （単純な==比較は文字列長・一致文字数に応じて比較時間が変わり得るため避ける）。
+        return hmac.compare_digest(actual, expected)
     return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
 
 

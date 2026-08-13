@@ -58,6 +58,9 @@ from src.sync_engine.webhook_handlers.notion_webhook import (
 from src.sync_engine.webhook_handlers.spreadsheet_webhook import (
     handler as spreadsheet_webhook_handler,
 )
+from src.sync_engine.webhook_handlers.web_engagement_webhook import (
+    handler as web_engagement_webhook_handler,
+)
 from src.sync_engine.webhook_handlers.zoho_webhook import handler as zoho_webhook_handler
 from src.sync_engine.zoho_watch_channel import (
     ZohoWatchChannelNotConfiguredError,
@@ -239,6 +242,18 @@ async def webhook_spreadsheet(
     event = await _lambda_event_from_request(request)
     result = spreadsheet_webhook_handler(event, context=None, dispatcher=wiring.dispatcher)
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
+
+
+@app.post("/api/webhooks/web-engagement")
+async def webhook_web_engagement(request: Request) -> Response:
+    """web-engagement-tool（別リポジトリ）からのリードのホットリード化・新規識別通知の受信。
+
+    `Dispatcher`/`IdMappingStore`は経由しない設計（`web_engagement_webhook.handler`の
+    docstring参照）のため、`_wiring_dependency`（Dispatcher一式）には依存しない。
+    """
+    event = await _lambda_event_from_request(request)
+    result = web_engagement_webhook_handler(event, context=None)
+    return _lambda_result_to_response(result)
 
 
 # --- 定期実行バッチ（日報・週報） -----------------------------------------------------------

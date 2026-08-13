@@ -414,6 +414,68 @@ def test_webhook_notion_returns_401_when_secret_mismatches(
     assert response.status_code == 401
 
 
+# --- /api/webhooks/web-engagement ------------------------------------------------------------
+
+
+class _FakeContactNotionClient:
+    """`web_engagement_webhook.ContactNotionClient`を満たすテスト用フェイク。"""
+
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    def query_all_pages(self, *, filter: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return []
+
+    def create_page(self, properties: dict[str, Any]) -> str:
+        self.created.append(properties)
+        return "new-page-1"
+
+    def update_page(self, page_id: str, properties: dict[str, Any]) -> None:  # pragma: no cover
+        raise AssertionError("update_page should not be called when no existing page found")
+
+
+def test_webhook_web_engagement_returns_401_when_secret_mismatches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WEB_ENGAGEMENT_WEBHOOK_SECRET", "correct-secret")
+
+    response = client.post(
+        "/api/webhooks/web-engagement",
+        json={"event_type": "hot_lead", "email": "yamada@example.com"},
+        headers={WEBHOOK_SECRET_HEADER: "wrong-secret"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_webhook_web_engagement_creates_contact_via_injected_notion_client(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    fake_client = _FakeContactNotionClient()
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.web_engagement_webhook._default_notion_client",
+        lambda: fake_client,
+    )
+
+    response = client.post(
+        "/api/webhooks/web-engagement",
+        json={
+            "event_type": "hot_lead",
+            "lead_id": "lead_123",
+            "email": "yamada@example.com",
+            "company": "株式会社サンプル",
+            "score": 90,
+            "portal_url": "https://web-engagement-tool.example.com/leads/lead_123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"page_id": "new-page-1", "created": True}
+    assert len(fake_client.created) == 1
+    assert fake_client.created[0]["メールアドレス"] == "yamada@example.com"
+
+
 # --- /api/cron/daily-batch -----------------------------------------------------------------
 
 

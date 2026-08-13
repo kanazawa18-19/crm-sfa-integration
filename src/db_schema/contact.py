@@ -135,6 +135,32 @@ CONTACT_SCHEMA = DatabaseSchema(
             sync_scope=SyncScope.NOTION_ONLY,
             description="Eightで部署・役職の変更を検知した際にON",
         ),
+        # 2026-08-13、web-engagement-tool（オンサイトエンゲージメントツール）との
+        # CRM-SFA連携に向けて追加。リードのホットリード化をNotion側に反映するための
+        # 受け皿（実際の同期ロジックは`src/sync_engine/webhook_handlers/web_engagement_webhook.py`
+        # で実装済み。outbound方向の連携は`src/lead_sync/`を参照。全体像は
+        # `docs/web_engagement_tool_integration_note.md`参照）。
+        PropertyDefinition(
+            name="リードスコア",
+            property_type=PropertyType.NUMBER,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="web-engagement-tool側のリードスコア（0〜100程度の整数）",
+        ),
+        PropertyDefinition(
+            name="ホットリード化日時",
+            property_type=PropertyType.DATETIME,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="スコアが閾値を超えてホットリード化した日時",
+        ),
+        PropertyDefinition(
+            name="Web接客ツールURL",
+            property_type=PropertyType.URL,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="web-engagement-tool側のリード詳細画面へのリンク",
+        ),
         *common_internal_properties(),
     ),
 )
