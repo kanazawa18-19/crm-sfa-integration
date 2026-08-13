@@ -398,6 +398,7 @@ def _build_weekly_project_records(
                 total_contact_count=contact_counts.get(project_id, 0),
                 last_action_date=max(dates) if dates else None,
                 next_action_date=_parse_date(p.get(PROP_次回アクション日)),
+                proposed_services=tuple(p.get(PROP_提案サービス) or ()),
             )
         )
     return records

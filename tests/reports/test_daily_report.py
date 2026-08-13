@@ -337,6 +337,7 @@ def test_unit_count_progress_rate_is_computed_when_target_unit_count_is_set() ->
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),  # 当月・当クオーター内
+            proposed_services=("リピッテ",),
         ),
     ]
 
@@ -541,6 +542,7 @@ def test_generate_daily_report_text_includes_unit_count_line_when_target_unit_co
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),
+            proposed_services=("リピッテ",),
         ),
     ]
 

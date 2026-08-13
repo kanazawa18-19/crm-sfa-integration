@@ -80,6 +80,11 @@ class WeeklyProjectRecord:
     total_contact_count: int = 0
     last_action_date: date | None = None
     next_action_date: date | None = None
+    proposed_services: tuple[str, ...] = ()
+    """販売件数の実績集計に使う（`_revenue_progress._confirmed_count_in_period`参照）。
+    「1案件＝1販売」ではなく「1サービス＝1販売」（金沢さん確認済み、2026-08-13）:
+    1案件に複数サービスが紐づく場合、サービス数の分だけ販売件数としてカウントする。
+    """
 
 
 @dataclass(frozen=True)

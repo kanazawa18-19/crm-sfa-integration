@@ -224,6 +224,7 @@ def test_unit_count_progress_rate_is_none_when_target_unit_count_is_none() -> No
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),
+            proposed_services=("リピッテ",),
         ),
     ]
 
@@ -243,6 +244,7 @@ def test_unit_count_progress_rate_is_computed_against_target() -> None:
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),
+            proposed_services=("リピッテ",),
         ),
         WeeklyProjectRecord(
             project_id="P2",
@@ -252,6 +254,7 @@ def test_unit_count_progress_rate_is_computed_against_target() -> None:
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 6),
+            proposed_services=("メイリー",),
         ),
     ]
 
@@ -262,6 +265,37 @@ def test_unit_count_progress_rate_is_computed_against_target() -> None:
 
     assert data.monthly_progress.actual_unit_count == 2
     assert data.monthly_progress.unit_count_progress_rate == 50.0
+
+
+def test_unit_count_counts_one_per_service_not_per_project() -> None:
+    """「1案件＝1販売」ではなく「1サービス＝1販売」でカウントする（金沢さん確認済み、
+    2026-08-13）。1案件に2サービスが紐づく場合は2件、サービスが紐づかない案件は0件として
+    数える。"""
+    projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A（2サービス契約）",
+            assignee="佐藤",
+            status="契約",
+            contract_date=date(2026, 8, 5),
+            proposed_services=("リピッテ", "メイリー"),
+        ),
+        WeeklyProjectRecord(
+            project_id="P2",
+            client_name="株式会社B（サービス未設定）",
+            assignee="鈴木",
+            status="契約",
+            contract_date=date(2026, 8, 6),
+            proposed_services=(),
+        ),
+    ]
+
+    data = _build(
+        active_projects=projects,
+        monthly_target=RevenueTarget(initial_fee=0.0, mrr=0.0, unit_count=10),
+    )
+
+    assert data.monthly_progress.actual_unit_count == 2
 
 
 # --- 営業パフォーマンス分析 ---
@@ -573,6 +607,7 @@ def test_generate_weekly_report_text_includes_unit_count_line_when_target_unit_c
             initial_fee=500000,
             monthly_fee=50000,
             contract_date=date(2026, 8, 5),
+            proposed_services=("リピッテ",),
         ),
     ]
 

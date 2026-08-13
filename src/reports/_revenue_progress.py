@@ -97,10 +97,17 @@ def _confirmed_count_in_period(
     period_start: date,
     period_end: date,
 ) -> int:
-    """契約日がperiod_start〜period_end（両端含む）の確定案件の件数を数える
-    （`_confirmed_amount_in_period`と同じ絞り込み条件だが、金額の合算ではなく件数）。"""
+    """契約日がperiod_start〜period_end（両端含む）の確定案件について、販売件数を数える
+    （`_confirmed_amount_in_period`と同じ絞り込み条件だが、金額の合算ではなく件数）。
+
+    「1案件＝1販売」ではなく「1サービス＝1販売」でカウントする（金沢さん確認済み、
+    2026-08-13）: 1案件に複数サービスが紐づく場合はサービス数の分だけ販売件数に計上する
+    （例: 1案件にサービスA・Bが紐づいていれば2件と数える）。`proposed_services`が空の
+    案件（データ不備等）は0件として扱う（1件への切り上げはしない。実績を過大に見せない
+    ため）。
+    """
     return sum(
-        1
+        len(p.proposed_services)
         for p in confirmed_projects
         if p.contract_date is not None and period_start <= p.contract_date <= period_end
     )
