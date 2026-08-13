@@ -8,7 +8,7 @@ Notion 6DBのうち案件管理DB・アクション履歴DBから対象データ
 日報は毎日、週報は週次（`_WEEKLY_REPORT_WEEKDAY`＝金曜日判定）で分岐する
 （`run_report_batch()`がその分岐を担う。Vercel Cronからは1日1回この関数を呼べば良い）。
 
-■ 実装していない項目について
+■ 実装していない項目について（`run_daily_report`・`run_weekly_report`共通）
 - 勝ちパターン分析（`ProposalRecord`）: アクション履歴DBのtitle自由記述からは
   「何回目の商談で・どのサービス構成を提案したか」を確度高く復元できない
   （`src/api/action_classifier.py`のヒューリスティックはaction_typeの推定のみで
@@ -169,14 +169,47 @@ def run_daily_report(
     data_source: NotionDataSource | None = None,
     notifier: ReportNotifier | None = None,
 ) -> str:
-    """日報を生成し配信する。生成したテキストを返す（呼び出し側でのログ・テスト用）。"""
+    """日報を生成し配信する。生成したテキストを返す（呼び出し側でのログ・テスト用）。
+
+    月次・クオーター目標進捗率、営業パフォーマンス分析（全社平均受注接触回数・勝ちパターン）は
+    週報（`run_weekly_report`）と同じ組み立て方をする。クオーターは暦四半期ではなく会計四半期
+    （`src.analytics.fiscal_calendar.fiscal_quarter_range`参照）。勝ちパターン分析の
+    `proposal_records`を空のまま渡す既知の制約は週報と同じ（モジュールdocstring参照）。
+    """
     source = data_source or NotionDataSource()
     projects = source.get_projects()
     actions = source.get_actions()
 
     action_records, project_records = _build_daily_records(projects, actions)
+
+    month_start, month_end = _month_range(report_date)
+    quarter_start, quarter_end = fiscal_quarter_range(report_date)
+
+    weekly_style_records = _build_weekly_project_records(projects, actions)
+    confirmed_projects = [r for r in weekly_style_records if r.status in CONFIRMED_STATUSES]
+    historical_outcomes = [
+        ProjectOutcome(
+            project_id=r.project_id,
+            total_contact_count=r.total_contact_count,
+            is_won=r.status in CONFIRMED_STATUSES,
+        )
+        for r in weekly_style_records
+        if r.status in CONFIRMED_STATUSES or r.status in LOST_STATUSES
+    ]
+
     data = build_daily_report_data(
-        report_date=report_date, actions=action_records, projects=project_records
+        report_date=report_date,
+        actions=action_records,
+        projects=project_records,
+        confirmed_projects=confirmed_projects,
+        historical_outcomes=historical_outcomes,
+        proposal_records=(),  # weekly_report.pyと同じ理由（モジュールdocstring参照）
+        monthly_target=_revenue_target_from_env("MONTHLY"),
+        quarter_target=_revenue_target_from_env("QUARTER"),
+        month_start=month_start,
+        month_end=month_end,
+        quarter_start=quarter_start,
+        quarter_end=quarter_end,
     )
     text = generate_daily_report_text(data)
     (notifier or WebhookSlackReportNotifier()).send_report(text)

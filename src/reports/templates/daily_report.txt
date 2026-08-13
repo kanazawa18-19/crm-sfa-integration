@@ -11,3 +11,12 @@
 
 ■ 翌営業日（{next_business_day}）の次回アクション予定
 {upcoming_action_lines}
+
+■ 月次・クオーター目標に対する進捗率
+{monthly_progress_lines}
+{quarterly_progress_lines}
+
+■ 営業パフォーマンス分析（全社平均受注接触回数・勝ちパターン）
+全社平均受注接触回数: {average_won_contact_count_line}
+勝ちパターン（商談回数 × サービス構成別の受注率）:
+{win_pattern_lines}

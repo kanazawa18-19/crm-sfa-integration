@@ -187,6 +187,45 @@ def test_run_daily_report_skips_projects_without_status_or_created_date() -> Non
     assert "本日の新規獲得案件はありません" in text
 
 
+def test_run_daily_report_includes_target_progress_and_performance_sections() -> None:
+    text = run_daily_report(date(2026, 8, 5), data_source=FakeDataSource(), notifier=FakeNotifier())
+
+    assert "月次・クオーター目標に対する進捗率" in text
+    assert "営業パフォーマンス分析" in text
+
+
+def test_run_daily_report_uses_fiscal_quarter_not_calendar_quarter_for_progress() -> None:
+    """run_weekly_reportと同じfiscal_quarter_range()を使っていることの回帰確認
+    （暦四半期の7-9月ではなく会計四半期のQ3=6-8月であること）。"""
+    # 作成日時をreport_dateからずらし、「本日の新規獲得案件」セクションへ金額が
+    # 混入して進捗率セクションの検証と紛れないようにする。
+    projects = [
+        _project(
+            notion_page_id="p_this_quarter",
+            営業ステータス="契約",
+            初期費用=500000,
+            月額費用=50000,
+            作成日時="2026-07-01T09:00:00.000Z",
+            **{"契約日 / 予想契約日": "2026-08-05"},  # 会計Q3内
+        ),
+        _project(
+            notion_page_id="p_next_fiscal_quarter",
+            営業ステータス="契約",
+            初期費用=999999999,
+            月額費用=999999999,
+            作成日時="2026-07-01T09:00:00.000Z",
+            **{"契約日 / 予想契約日": "2026-09-01"},  # 暦四半期なら同じ7-9月だが会計Q4
+        ),
+    ]
+    source = FakeDataSource(projects=projects, actions=[])
+    notifier = FakeNotifier()
+
+    text = run_daily_report(date(2026, 8, 5), data_source=source, notifier=notifier)
+
+    assert "999,999,999円" not in text
+    assert "500,000円" in text
+
+
 # --- run_weekly_report -------------------------------------------------------------------------
 
 

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from src.analytics.win_pattern import ProposalRecord
+from src.analytics.win_rate import ProjectOutcome
 from src.reports.daily_report import (
     DailyActionRecord,
     DailyProjectRecord,
@@ -15,8 +17,13 @@ from src.reports.daily_report import (
     generate_daily_report_text,
     next_business_day,
 )
+from src.reports.weekly_report import RevenueTarget, WeeklyProjectRecord
 
 REPORT_DATE = date(2026, 8, 5)  # 2026-08-05は水曜日
+MONTH_START = date(2026, 8, 1)
+MONTH_END = date(2026, 8, 31)
+QUARTER_START = date(2026, 6, 1)
+QUARTER_END = date(2026, 8, 31)
 
 
 # --- next_business_day ---
@@ -266,6 +273,133 @@ def test_upcoming_actions_is_empty_when_none_scheduled() -> None:
     assert data.upcoming_actions == ()
 
 
+# --- build_daily_report_data: 月次・クオーター目標に対する進捗率 ---
+
+
+def test_progress_rate_is_none_when_target_is_zero() -> None:
+    data = build_daily_report_data(report_date=REPORT_DATE, actions=[], projects=[])
+
+    assert data.monthly_progress.initial_fee_progress_rate is None
+    assert data.monthly_progress.mrr_progress_rate is None
+    assert data.quarterly_progress.initial_fee_progress_rate is None
+    assert data.quarterly_progress.mrr_progress_rate is None
+
+
+def test_progress_rate_is_computed_from_confirmed_projects_within_period() -> None:
+    confirmed_projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),  # 当月・当クオーター内
+        ),
+        WeeklyProjectRecord(
+            project_id="P2",
+            client_name="株式会社B",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=999999999,
+            monthly_fee=999999999,
+            contract_date=date(2026, 5, 1),  # 当月・当クオーター外
+        ),
+    ]
+
+    data = build_daily_report_data(
+        report_date=REPORT_DATE,
+        actions=[],
+        projects=[],
+        confirmed_projects=confirmed_projects,
+        monthly_target=RevenueTarget(initial_fee=1000000, mrr=100000),
+        quarter_target=RevenueTarget(initial_fee=1000000, mrr=100000),
+        month_start=MONTH_START,
+        month_end=MONTH_END,
+        quarter_start=QUARTER_START,
+        quarter_end=QUARTER_END,
+    )
+
+    assert data.monthly_progress.actual.initial_fee == 500000
+    assert data.monthly_progress.initial_fee_progress_rate == 50.0
+    assert data.monthly_progress.mrr_progress_rate == 50.0
+    assert data.quarterly_progress.actual.initial_fee == 500000
+    assert data.quarterly_progress.initial_fee_progress_rate == 50.0
+
+
+def test_progress_rate_warns_when_confirmed_project_contract_date_is_out_of_quarter(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    confirmed_projects = [
+        WeeklyProjectRecord(
+            project_id="P1",
+            client_name="株式会社A",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=100000,
+            monthly_fee=10000,
+            contract_date=date(2026, 4, 1),  # 当クオーター外
+        ),
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        data = build_daily_report_data(
+            report_date=REPORT_DATE,
+            actions=[],
+            projects=[],
+            confirmed_projects=confirmed_projects,
+            quarter_start=QUARTER_START,
+            quarter_end=QUARTER_END,
+        )
+
+    assert any("P1" in record.message for record in caplog.records)
+    # 警告は出すが除外はしない（weekly_report.build_weekly_report_dataと同じ挙動）
+    assert data.quarterly_progress.actual.initial_fee == 0
+
+
+# --- build_daily_report_data: 営業パフォーマンス分析 ---
+
+
+def test_average_won_contact_count_is_none_when_no_historical_outcomes() -> None:
+    data = build_daily_report_data(report_date=REPORT_DATE, actions=[], projects=[])
+
+    assert data.average_won_contact_count is None
+
+
+def test_average_won_contact_count_is_wired_through_from_historical_outcomes() -> None:
+    outcomes = [
+        ProjectOutcome(project_id="H1", total_contact_count=4, is_won=True),
+        ProjectOutcome(project_id="H2", total_contact_count=6, is_won=True),
+        ProjectOutcome(project_id="H3", total_contact_count=100, is_won=False),
+    ]
+
+    data = build_daily_report_data(
+        report_date=REPORT_DATE, actions=[], projects=[], historical_outcomes=outcomes
+    )
+
+    assert data.average_won_contact_count == 5.0
+
+
+def test_win_patterns_is_empty_when_no_proposal_records() -> None:
+    data = build_daily_report_data(report_date=REPORT_DATE, actions=[], projects=[])
+
+    assert data.win_patterns == ()
+
+
+def test_win_patterns_is_wired_through_from_proposal_records() -> None:
+    proposals = [
+        ProposalRecord(project_id=f"P{i}", meeting_number=1, services=frozenset({"サービスX"}), is_won=True)
+        for i in range(3)
+    ]
+
+    data = build_daily_report_data(
+        report_date=REPORT_DATE, actions=[], projects=[], proposal_records=proposals
+    )
+
+    assert len(data.win_patterns) == 1
+    assert data.win_patterns[0].meeting_number == 1
+
+
 # --- generate_daily_report_text ---
 
 
@@ -304,7 +438,37 @@ def test_generate_daily_report_text_renders_all_sections() -> None:
         ),
     ]
 
-    data = build_daily_report_data(report_date=REPORT_DATE, actions=actions, projects=projects)
+    confirmed_projects = [
+        WeeklyProjectRecord(
+            project_id="P4",
+            client_name="株式会社D",
+            assignee="佐藤",
+            status="契約",
+            initial_fee=500000,
+            monthly_fee=50000,
+            contract_date=date(2026, 8, 5),
+        ),
+    ]
+    proposals = [
+        ProposalRecord(project_id=f"H{i}", meeting_number=1, services=frozenset({"サービスX"}), is_won=True)
+        for i in range(3)
+    ]
+    outcomes = [ProjectOutcome(project_id="H1", total_contact_count=4, is_won=True)]
+
+    data = build_daily_report_data(
+        report_date=REPORT_DATE,
+        actions=actions,
+        projects=projects,
+        confirmed_projects=confirmed_projects,
+        historical_outcomes=outcomes,
+        proposal_records=proposals,
+        monthly_target=RevenueTarget(initial_fee=1000000, mrr=100000),
+        quarter_target=RevenueTarget(initial_fee=1000000, mrr=100000),
+        month_start=MONTH_START,
+        month_end=MONTH_END,
+        quarter_start=QUARTER_START,
+        quarter_end=QUARTER_END,
+    )
     text = generate_daily_report_text(data)
 
     assert "2026-08-05" in text
@@ -315,6 +479,9 @@ def test_generate_daily_report_text_renders_all_sections() -> None:
     assert "初回接触 → 提案中" in text
     assert "株式会社C" in text
     assert "2026-08-06" in text
+    assert "進捗率 50.0%" in text
+    assert "全社平均受注接触回数: 4.0回" in text
+    assert "1回目商談" in text
 
 
 def test_generate_daily_report_text_renders_placeholder_when_all_sections_are_empty() -> None:
@@ -326,6 +493,9 @@ def test_generate_daily_report_text_renders_placeholder_when_all_sections_are_em
     assert "本日の新規獲得案件はありません" in text
     assert "本日ステータスが変更された案件はありません" in text
     assert "翌営業日に予定されている次回アクションはありません" in text
+    assert "目標未設定" in text
+    assert "未確定（受注実績なし）" in text
+    assert "サンプル数が十分な勝ちパターンはありません" in text
 
 
 def test_generate_daily_report_text_raises_readable_error_on_broken_template(

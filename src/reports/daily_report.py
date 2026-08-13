@@ -5,9 +5,23 @@
 2. 本日の新規獲得案件リスト（取引先・提案サービス・想定金額・担当者）
 3. ステータス変更のあった案件一覧（変更前 → 変更後・確度）
 4. 翌営業日の次回アクション予定一覧
+5. 月次・クオーター目標に対する進捗率（%）
+6. 営業パフォーマンス分析（全社平均受注接触回数との比較、勝ちパターン）
 
 レポートの生成（`build_daily_report_data`によるデータ集計）と配信（`src.reports.dispatch`）は
 分離しており、本モジュールは配信を一切行わない純粋関数のみで構成する。
+
+■ 5・6（目標進捗率・営業パフォーマンス分析）について
+これらは元々`src.reports.weekly_report`（チーム週報）にのみ実装されていたが、日報にも
+同じ内容が欲しいという要望を受けて追加した。`RevenueTarget`/`RevenueProgress`/
+`WinPattern`はweekly_report.pyのものをそのままimportして再利用する（型を分裂させない
+ため）。一方、進捗率算出そのもの（`_progress_rate`/`_confirmed_amount_in_period`/
+`_revenue_progress`相当のロジック）は、weekly_report.py側でアンダースコア始まりの
+非公開関数として定義されており、本コードベースでは非公開関数をモジュールをまたいで
+importする前例が無い（`src/reports/batch.py`もweekly_report.pyから公開のクラス・関数
+のみをimportしている）ため、この規約に合わせてトリビアルな算出ロジックのみ本モジュール側に
+複製する。メンバー別パフォーマンス（`member_performances`）は今回の要望のスコープ外
+（別途「メンバー実績」機能として扱う）のため日報には追加しない。
 
 ■ メンバー別アクション件数サマリーの集計対象について
 `src.analytics.contact_count.count_by_channel`は06節「総接触回数の自動カウント」用に
@@ -28,6 +42,11 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Sequence
+
+from src.analytics.forecast import ForecastAmount
+from src.analytics.win_pattern import ProposalRecord, WinPattern, analyze_win_patterns
+from src.analytics.win_rate import ProjectOutcome, average_won_contact_count
+from src.reports.weekly_report import RevenueProgress, RevenueTarget, WeeklyProjectRecord
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +143,10 @@ class DailyReportData:
     new_projects: tuple[NewProjectSummary, ...]
     status_changes: tuple[StatusChangeSummary, ...]
     upcoming_actions: tuple[UpcomingActionSummary, ...]
+    monthly_progress: RevenueProgress
+    quarterly_progress: RevenueProgress
+    average_won_contact_count: float | None
+    win_patterns: tuple[WinPattern, ...]
 
 
 def next_business_day(as_of: date) -> date:
@@ -172,11 +195,63 @@ def _build_member_summaries(
     )
 
 
+def _progress_rate(actual: float, target: float) -> float | None:
+    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照。非公開関数の
+    モジュール横断importの前例がないため複製している）。"""
+    if target <= 0:
+        return None
+    return actual / target * 100
+
+
+def _confirmed_amount_in_period(
+    confirmed_projects: Sequence[WeeklyProjectRecord],
+    period_start: date,
+    period_end: date,
+) -> ForecastAmount:
+    """契約日がperiod_start〜period_end（両端含む）の確定売上・MRRを合算する
+    （weekly_report.py内の同名関数と同一ロジック。モジュールdocstring参照）。"""
+    in_period = [
+        p
+        for p in confirmed_projects
+        if p.contract_date is not None and period_start <= p.contract_date <= period_end
+    ]
+    return ForecastAmount(
+        initial_fee=sum(p.initial_fee for p in in_period),
+        mrr=sum(p.monthly_fee for p in in_period),
+    )
+
+
+def _revenue_progress(
+    confirmed_projects: Sequence[WeeklyProjectRecord],
+    period_start: date,
+    period_end: date,
+    target: RevenueTarget,
+) -> RevenueProgress:
+    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照）。"""
+    actual = _confirmed_amount_in_period(confirmed_projects, period_start, period_end)
+    return RevenueProgress(
+        actual=actual,
+        target=target,
+        initial_fee_progress_rate=_progress_rate(actual.initial_fee, target.initial_fee),
+        mrr_progress_rate=_progress_rate(actual.mrr, target.mrr),
+    )
+
+
 def build_daily_report_data(
     *,
     report_date: date,
     actions: Sequence[DailyActionRecord],
     projects: Sequence[DailyProjectRecord],
+    confirmed_projects: Sequence[WeeklyProjectRecord] = (),
+    historical_outcomes: Sequence[ProjectOutcome] = (),
+    proposal_records: Sequence[ProposalRecord] = (),
+    monthly_target: RevenueTarget = RevenueTarget(initial_fee=0.0, mrr=0.0),
+    quarter_target: RevenueTarget = RevenueTarget(initial_fee=0.0, mrr=0.0),
+    month_start: date | None = None,
+    month_end: date | None = None,
+    quarter_start: date | None = None,
+    quarter_end: date | None = None,
+    min_win_pattern_sample_size: int = 3,
 ) -> DailyReportData:
     """アクション管理DB・案件管理DBの当日分レコードから日報用データを組み立てる。
 
@@ -184,6 +259,13 @@ def build_daily_report_data(
     - 新規獲得案件: `created_date == report_date`の案件。
     - ステータス変更案件: `status_changed_date == report_date`の案件。
     - 翌営業日の次回アクション: `next_action_date == next_business_day(report_date)`の案件。
+    - 月次・クオーター目標に対する進捗率: `confirmed_projects`（**呼び出し側は契約済み
+      ステータスの案件のみに絞り込んだ上で渡すこと**）のうち、契約日が
+      month_start〜month_end／quarter_start〜quarter_endの範囲内のものを集計する
+      （weekly_report.build_weekly_report_dataと同じ集計方法）。month_start等を
+      省略した場合、当該期間は実績0円・進捗率は目標次第（目標も未設定なら`None`）となる。
+    - 営業パフォーマンス分析: `historical_outcomes`（決着済み案件）から全社平均受注接触回数を、
+      `proposal_records`から勝ちパターンを算出する（いずれもweekly_report.pyと同じ関数を使う）。
     """
     member_summaries = _build_member_summaries(actions, report_date)
 
@@ -221,6 +303,45 @@ def build_daily_report_data(
         if p.next_action_date == target_next_business_day
     )
 
+    # month_start等未指定時はreport_date当日のみを期間とする（confirmed_projectsも
+    # 省略時は空のため、期間の取り方に関わらず実績は0円になる。呼び出し側
+    # （src.reports.batch.run_daily_report）は必ず月・クオーターの実範囲を渡す）。
+    resolved_month_start = month_start if month_start is not None else report_date
+    resolved_month_end = month_end if month_end is not None else report_date
+    resolved_quarter_start = quarter_start if quarter_start is not None else report_date
+    resolved_quarter_end = quarter_end if quarter_end is not None else report_date
+
+    out_of_quarter_confirmed = [
+        p.project_id
+        for p in confirmed_projects
+        if p.contract_date is not None
+        and not (resolved_quarter_start <= p.contract_date <= resolved_quarter_end)
+    ]
+    if out_of_quarter_confirmed:
+        # weekly_report.build_weekly_report_dataの同種チェックと同じ意図（モジュール
+        # docstring参照）。日報にはクオーター着地予測が無いため実害は無いが、
+        # confirmed_projectsの絞り込み漏れ自体を早期に検知できるようにする。
+        logger.warning(
+            "build_daily_report_data: クオーター範囲(%s〜%s)外の契約日を持つ契約済み"
+            "レコードが混入しています: %s",
+            resolved_quarter_start,
+            resolved_quarter_end,
+            sorted(out_of_quarter_confirmed),
+        )
+
+    monthly_progress = _revenue_progress(
+        confirmed_projects, resolved_month_start, resolved_month_end, monthly_target
+    )
+    quarterly_progress = _revenue_progress(
+        confirmed_projects, resolved_quarter_start, resolved_quarter_end, quarter_target
+    )
+
+    average_contacts = average_won_contact_count(historical_outcomes)
+
+    win_patterns = tuple(
+        analyze_win_patterns(proposal_records, min_sample_size=min_win_pattern_sample_size)
+    )
+
     return DailyReportData(
         report_date=report_date,
         next_business_day=target_next_business_day,
@@ -228,6 +349,10 @@ def build_daily_report_data(
         new_projects=new_projects,
         status_changes=status_changes,
         upcoming_actions=upcoming_actions,
+        monthly_progress=monthly_progress,
+        quarterly_progress=quarterly_progress,
+        average_won_contact_count=average_contacts,
+        win_patterns=win_patterns,
     )
 
 
@@ -274,6 +399,38 @@ def _format_status_change_lines(changes: Sequence[StatusChangeSummary]) -> str:
     return "\n".join(lines)
 
 
+def _format_progress_lines(label: str, progress: RevenueProgress) -> str:
+    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照。非公開関数の
+    モジュール横断importの前例がないため複製している）。"""
+
+    def _rate_text(rate: float | None) -> str:
+        return f"{rate:.1f}%" if rate is not None else "目標未設定"
+
+    initial_fee_line = (
+        f"{label}（初期費用）: 実績{progress.actual.initial_fee:,.0f}円 / "
+        f"目標{progress.target.initial_fee:,.0f}円（進捗率 {_rate_text(progress.initial_fee_progress_rate)}）"
+    )
+    mrr_line = (
+        f"{label}（MRR）: 実績{progress.actual.mrr:,.0f}円 / "
+        f"目標{progress.target.mrr:,.0f}円（進捗率 {_rate_text(progress.mrr_progress_rate)}）"
+    )
+    return f"{initial_fee_line}\n{mrr_line}"
+
+
+def _format_win_pattern_lines(patterns: Sequence[WinPattern]) -> str:
+    """weekly_report.py内の同名関数と同一ロジック（モジュールdocstring参照）。"""
+    if not patterns:
+        return "（サンプル数が十分な勝ちパターンはありません）"
+    lines = []
+    for p in patterns:
+        services = "／".join(sorted(p.services)) if p.services else "サービス未設定"
+        lines.append(
+            f"・{p.meeting_number}回目商談 × {services}: "
+            f"受注率{p.win_rate * 100:.1f}%（サンプル数{p.sample_size}件）"
+        )
+    return "\n".join(lines)
+
+
 def _format_upcoming_action_lines(actions: Sequence[UpcomingActionSummary]) -> str:
     if not actions:
         return "（翌営業日に予定されている次回アクションはありません）"
@@ -288,6 +445,12 @@ def generate_daily_report_text(data: DailyReportData, *, template_path: Path | N
     path = template_path or DEFAULT_TEMPLATE_PATH
     template = path.read_text(encoding="utf-8")
 
+    average_contacts_text = (
+        f"{data.average_won_contact_count:.1f}回"
+        if data.average_won_contact_count is not None
+        else "未確定（受注実績なし）"
+    )
+
     try:
         return template.format(
             report_date=data.report_date.isoformat(),
@@ -296,6 +459,10 @@ def generate_daily_report_text(data: DailyReportData, *, template_path: Path | N
             new_project_lines=_format_new_project_lines(data.new_projects),
             status_change_lines=_format_status_change_lines(data.status_changes),
             upcoming_action_lines=_format_upcoming_action_lines(data.upcoming_actions),
+            monthly_progress_lines=_format_progress_lines("月次目標", data.monthly_progress),
+            quarterly_progress_lines=_format_progress_lines("クオーター目標", data.quarterly_progress),
+            average_won_contact_count_line=average_contacts_text,
+            win_pattern_lines=_format_win_pattern_lines(data.win_patterns),
         )
     except KeyError as e:
         raise ValueError(
