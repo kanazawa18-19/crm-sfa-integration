@@ -7,6 +7,8 @@ Any-to-Any 相互リアルタイム同期、営業分析、自動チーム日報
 
 詳細仕様は [`docs/CRM_SFA_基本詳細仕様書_v2.0.xlsx`](docs/CRM_SFA_基本詳細仕様書_v2.0.xlsx)
 （全文テキストは [`docs/spec_full_text_dump.txt`](docs/spec_full_text_dump.txt)）を参照。
+v2.0確定（2026-08-05）後の変更・実装差分は同ファイルの
+`11_変更履歴・実装差分`シートにまとめている。
 
 ## アーキテクチャ概要
 
@@ -42,7 +44,10 @@ gas/                Googleスプレッドシート側のGoogle Apps Script（onE
 - スクラッチ開発（iPaaS不使用）。サーバーレスでランニングコスト最小化。
 - 各外部ツール連携モジュールは疎結合。`ENABLE_ZOHO=False` のように環境変数だけで
   他システムに影響を与えず切り離せること。
-- コンフリクト解決: Notion（マスター）優先。却下データは必ず保全（スプレッドシート同期ログへ退避）。
+- コンフリクト解決: 直近編集優先（`updated_at`が新しい側を採用、同時刻はNotionをタイブレーク優先）。
+  却下データは必ず保全（スプレッドシート同期ログへ退避、採用元/却下元ツールも記録）。
+  2026-08-12に「Notion常に優先」から変更（金沢さん承認済み。経緯は
+  [`docs/zoho_webhook_activation_note.md`](docs/zoho_webhook_activation_note.md) 参照）。
 - 日報・週報のテンプレートはコード非直書き（`src/reports/templates/`）。
 - 判定閾値（コンディション判定の14日・1.5倍等）は設定ファイルで外出しし運用調整可能にする。
 
@@ -93,6 +98,14 @@ GAS（Google Apps Script）の`onEdit`インストーラブルトリガーで実
 別ランタイムのため`gas/payloadUtils.test.js`をNode.jsで実行して検証する
 （`node --test gas/payloadUtils.test.js`）。
 
+■ Phase 2 実装ノート（2026-08-13）: 上記Phase 1ノートの9タブ構成（GAS `setupTemplate.js`
+経由）は設計のみで、本番スプレッドシートには未適用だった。同期エンジンが実際に読み書きする
+6業務タブ＋同期ログタブの計7タブ（分析・クロスセル対象リストの2タブは対応するPython側の
+書き込みコードが存在しないため対象外）は、Sheets APIで直接作成・ヘッダー設定し、サービス
+アカウントへの共有権限付与とあわせて2026-08-13に動作確認済み（Notion→スプレッドシート
+方向）。**GAS側の`onEdit`トリガーが本番スプレッドシートに実際に設置されているかは未確認**
+であり、スプレッドシート側での直接編集が他ツールへ反映される保証はまだ無い。
+
 ■ Phase 4 実装ノート: kintone CSV → Notion 6DBへの一括インポート（`scripts/migrate_data.py`）
 は、取引先マスターDBの「営業ステータス」導出ロジック・リレーションキー列名の推測・USER型
 プロパティ未解決・PIIを含む出力ファイルの取り扱い等、04_項目マッピングに明記の無い実装者
@@ -110,10 +123,30 @@ GAS（Google Apps Script）の`onEdit`インストーラブルトリガーで実
 加えない設計にしている（Notion APIの`dual_property`が参照先DBに副作用を及ぼす問題を
 レビューで検出・修正済み）。
 
+■ Phase 2 実装ノート（2026-08-12/13）: IDマッピングストア（Notion主キー⇔kintone/Zoho/
+スプレッドシート外部ID）は、Vercelサーバーレスの`/tmp`が揮発する制約からSQLite常設運用が
+できないため、GCP/AWSへの正式DB移行までの暫定ブリッジとしてNotion裏付けの
+`NotionIdMappingStore`を導入した
+（[`docs/id_mapping_persistence_note.md`](docs/id_mapping_persistence_note.md) 参照）。
+
+■ Phase 2 実装ノート（2026-08-12/13）: Zoho CRM⇔Notionのリアルタイム双方向Webhook同期は、
+案件（Deals）のみから全6モジュール（チェーン/アクション/取引先マスター/連絡先/商品）へ
+拡張済み。コンフリクト解決も「Notion常に優先」から「直近編集優先」へ変更した
+（[`docs/zoho_webhook_activation_note.md`](docs/zoho_webhook_activation_note.md) 参照）。
+このうち取引先マスター（client_master）は、移行時にkintone由来ページへZohoレコードを
+マージする特殊な設計のため、当初IDマッピングストアにkintone⇔Zoho対応が一切記録されて
+いない欠落が2026-08-13に発覚し、32,059件分を再構築して解消した
+（[`docs/client_master_id_mapping_note.md`](docs/client_master_id_mapping_note.md) 参照）。
+
+■ Phase 3 実装ノート（2026-08-12）: マネージャー通知（失注/失注候補/停滞案件/契約成立の
+一覧、ダッシュボード`/alerts`）を追加した。バックエンドAPIの既知の制約は
+[`docs/dashboard_note.md`](docs/dashboard_note.md) 参照。
+
 ■ 未対応・保留中の機能: Eight連携（名刺データ自動登録）、商談手当計算、外部データ連携
-（国交省/観光庁オープンデータ）、Zoho CRMとNotionのデータマージは、いずれも詳細確認待ちで
-実装未着手。kintoneのCSVエクスポートが揃うまで、`src/migration/`パッケージの実データ完全
-対応（顧客種別・契約進捗状況・アクション内容のkintone値↔Notion値マッピング）も保留中。
+（国交省/観光庁オープンデータ）は、いずれも詳細確認待ちで実装未着手。kintoneのCSV
+エクスポートが揃うまで、`src/migration/`パッケージの実データ完全対応（顧客種別・契約進捗
+状況・アクション内容のkintone値↔Notion値マッピング）も保留中。Zoho CRMとNotionの
+データマージ（client_master含む）は完了済み（上記2026-08-12/13ノート参照）。
 
 ## 保留・要確認事項
 
