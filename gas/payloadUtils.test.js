@@ -183,6 +183,7 @@ test("tabDefinitions: 同期ログタブの列はspreadsheet_sync.pyのappend_co
     "対象ID",
     "項目名",
     "採用値",
+    "採用元ツール",
     "却下値",
     "却下元ツール",
     "発生日時",
