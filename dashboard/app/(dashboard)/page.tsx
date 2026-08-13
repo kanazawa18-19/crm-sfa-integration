@@ -2,7 +2,15 @@ import ErrorMessage from "@/components/ErrorMessage";
 import ForecastBarChart from "@/components/charts/ForecastBarChart";
 import StatusCategoryChart from "@/components/charts/StatusCategoryChart";
 import { DashboardSummary, getDashboardSummary, getErrorMessage } from "@/lib/backend";
-import { formatYen } from "@/lib/format";
+import { formatDate, formatDateRange, formatYen } from "@/lib/format";
+
+type ForecastPeriodKey = "quarter" | "half" | "year";
+
+const FORECAST_PERIOD_LABELS: Record<ForecastPeriodKey, string> = {
+  quarter: "クオーター着地予測",
+  half: "半期着地予測",
+  year: "通期着地予測",
+};
 
 // バックエンドの最新データを毎リクエスト取得するため、静的プリレンダリングを無効化する。
 export const dynamic = "force-dynamic";
@@ -29,18 +37,9 @@ export default async function DashboardPage() {
     return <ErrorMessage message={getErrorMessage(error)} />;
   }
 
-  const { forecast, status_breakdown, totals, as_of } = summary;
+  const { forecast, notes, status_breakdown, totals, as_of } = summary;
 
-  const initialFeeData = [
-    { name: "Min", value: forecast.min.initial_fee },
-    { name: "Expected", value: forecast.expected.initial_fee },
-    { name: "Max", value: forecast.max.initial_fee },
-  ];
-  const mrrData = [
-    { name: "Min", value: forecast.min.mrr },
-    { name: "Expected", value: forecast.expected.mrr },
-    { name: "Max", value: forecast.max.mrr },
-  ];
+  const forecastPeriods: ForecastPeriodKey[] = ["quarter", "half", "year"];
 
   const categoryCounts = new Map<string, number>();
   for (const item of status_breakdown) {
@@ -63,7 +62,7 @@ export default async function DashboardPage() {
     <div className="flex flex-col gap-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">全社ダッシュボード</h1>
-        <p className="mt-1 text-sm text-gray-500">基準日: {as_of}</p>
+        <p className="mt-1 text-sm text-gray-500">基準日: {formatDate(as_of)}</p>
       </div>
 
       <section>
@@ -78,32 +77,77 @@ export default async function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-lg font-semibold text-gray-900">クオーター着地予測</h2>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-            <h3 className="mb-2 text-sm font-medium text-gray-700">初期費用</h3>
-            <ForecastBarChart data={initialFeeData} color="#2563eb" />
-            <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
-              {initialFeeData.map((item) => (
-                <div key={item.name}>
-                  <dt>{item.name}</dt>
-                  <dd className="font-semibold text-gray-900">{formatYen(item.value)}</dd>
-                </div>
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <h2 className="text-lg font-semibold text-gray-900">着地予測</h2>
+          <p className="text-xs text-gray-500">会計年度は12月始まり・11月末</p>
+        </div>
+
+        {notes.length > 0 && (
+          <div className="mb-3 rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-800">
+            <p className="font-medium">注記</p>
+            <ul className="mt-1 list-disc pl-5">
+              {notes.map((note) => (
+                <li key={note}>{note}</li>
               ))}
-            </dl>
+            </ul>
           </div>
-          <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-            <h3 className="mb-2 text-sm font-medium text-gray-700">MRR</h3>
-            <ForecastBarChart data={mrrData} color="#16a34a" />
-            <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
-              {mrrData.map((item) => (
-                <div key={item.name}>
-                  <dt>{item.name}</dt>
-                  <dd className="font-semibold text-gray-900">{formatYen(item.value)}</dd>
+        )}
+
+        <p className="mb-4 text-xs text-gray-500">
+          半期・通期の実績にはクオーター分も含まれます（3期間は累積であり、独立した数字ではありません）。
+        </p>
+
+        <div className="flex flex-col gap-8">
+          {forecastPeriods.map((periodKey) => {
+            const period = forecast[periodKey];
+            const initialFeeData = [
+              { name: "Min", value: period.min.initial_fee },
+              { name: "Expected", value: period.expected.initial_fee },
+              { name: "Max", value: period.max.initial_fee },
+            ];
+            const mrrData = [
+              { name: "Min", value: period.min.mrr },
+              { name: "Expected", value: period.expected.mrr },
+              { name: "Max", value: period.max.mrr },
+            ];
+
+            return (
+              <div key={periodKey}>
+                <h3 className="mb-3 text-base font-semibold text-gray-900">
+                  {FORECAST_PERIOD_LABELS[periodKey]}
+                  <span className="ml-2 text-sm font-normal text-gray-500">
+                    {formatDateRange(period.range.start, period.range.end)}
+                  </span>
+                </h3>
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                    <h4 className="mb-2 text-sm font-medium text-gray-700">初期費用</h4>
+                    <ForecastBarChart data={initialFeeData} color="#2563eb" />
+                    <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
+                      {initialFeeData.map((item) => (
+                        <div key={item.name}>
+                          <dt>{item.name}</dt>
+                          <dd className="font-semibold text-gray-900">{formatYen(item.value)}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                    <h4 className="mb-2 text-sm font-medium text-gray-700">MRR</h4>
+                    <ForecastBarChart data={mrrData} color="#16a34a" />
+                    <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
+                      {mrrData.map((item) => (
+                        <div key={item.name}>
+                          <dt>{item.name}</dt>
+                          <dd className="font-semibold text-gray-900">{formatYen(item.value)}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
                 </div>
-              ))}
-            </dl>
-          </div>
+              </div>
+            );
+          })}
         </div>
       </section>
 

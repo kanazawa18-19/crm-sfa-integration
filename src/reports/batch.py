@@ -31,6 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from src.analytics.contact_count import COUNTABLE_ACTION_TYPES, ActionRecord, count_total_contacts
+from src.analytics.fiscal_calendar import fiscal_quarter_range
 from src.analytics.member_performance import MemberActionRecord
 from src.analytics.win_rate import ProjectOutcome
 from src.api.action_classifier import classify_action_type
@@ -39,6 +40,7 @@ from src.api.dashboard_service import (
     NotionDataSource,
     PROP_アクション日,
     PROP_初期費用,
+    PROP_契約日,
     PROP_営業ステータス,
     PROP_担当メンバー,
     PROP_担当営業,
@@ -72,9 +74,6 @@ _JST = timezone(timedelta(hours=9))
 # 07_日報週報仕様「チーム週報」毎週金曜18:00配信想定（date.weekday(): 月=0 … 金=4）。
 _WEEKLY_REPORT_WEEKDAY = 4
 
-# 案件管理DBに「契約日 / 予想契約日」プロパティ名として実在する（src/db_schema/project.py参照）。
-PROP_契約日 = "契約日 / 予想契約日"
-
 # Notionプロパティ名ではなく、案件管理DBに対応するプロパティが存在しないため
 # 環境変数から読み取る月次・クオーター目標値のプレフィックス（モジュールdocstring参照）。
 _TARGET_ENV_PREFIXES = ("MONTHLY", "QUARTER")
@@ -99,17 +98,6 @@ def _month_range(as_of: date) -> tuple[date, date]:
     else:
         next_month_start = start.replace(month=start.month + 1)
     return start, next_month_start - timedelta(days=1)
-
-
-def _quarter_range(as_of: date) -> tuple[date, date]:
-    """as_ofを含む暦四半期（1-3月/4-6月/7-9月/10-12月）の初日・末日を返す。"""
-    start_month = (as_of.month - 1) // 3 * 3 + 1
-    start = date(as_of.year, start_month, 1)
-    if start_month + 3 > 12:
-        end = date(as_of.year, 12, 31)
-    else:
-        end = date(as_of.year, start_month + 3, 1) - timedelta(days=1)
-    return start, end
 
 
 def _parse_date(value: Any) -> date | None:
@@ -247,11 +235,13 @@ def run_weekly_report(
 ) -> str:
     """週報を生成し配信する。生成したテキストを返す（呼び出し側でのログ・テスト用）。
 
-    week_endを含む週（月〜金）・月・クオーターを自動算出する。
+    week_endを含む週（月〜金）・月・クオーターを自動算出する。クオーターは暦四半期では
+    なく、自社の会計年度（期初12月・期末11月）に基づく会計四半期
+    （`src.analytics.fiscal_calendar.fiscal_quarter_range`参照）。
     """
     week_start, week_end = _week_range(week_end)
     month_start, month_end = _month_range(week_end)
-    quarter_start, quarter_end = _quarter_range(week_end)
+    quarter_start, quarter_end = fiscal_quarter_range(week_end)
 
     source = data_source or NotionDataSource()
     projects = source.get_projects()

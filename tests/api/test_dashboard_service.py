@@ -83,7 +83,106 @@ def test_build_dashboard_summary_counts_by_category() -> None:
     assert result["totals"]["cancelled_count"] == 1
     assert "as_of" in result
     assert "forecast" in result
-    assert set(result["forecast"].keys()) == {"max", "expected", "min"}
+    assert set(result["forecast"].keys()) == {
+        "quarter",
+        "half",
+        "year",
+        "unscheduled_active_count",
+        "unscheduled_confirmed_count",
+    }
+    for period in ("quarter", "half", "year"):
+        assert set(result["forecast"][period].keys()) == {"range", "max", "expected", "min"}
+        assert set(result["forecast"][period]["range"].keys()) == {"start", "end"}
+
+
+def test_build_dashboard_summary_forecast_scopes_confirmed_projects_by_contract_date() -> None:
+    projects = [
+        _project(
+            notion_page_id="p_in_year",
+            営業ステータス="契約",
+            初期費用=100000,
+            月額費用=10000,
+            **{"契約日 / 予想契約日": "2026-08-05"},  # as_of=2026-08-15の会計Q3内
+        ),
+        _project(
+            notion_page_id="p_out_of_year",
+            営業ステータス="契約",
+            初期費用=999999999,
+            月額費用=999999999,
+            **{"契約日 / 予想契約日": "2020-01-01"},  # 会計年度外
+        ),
+    ]
+    data_source = FakeDataSource(projects=projects)
+
+    result = build_dashboard_summary(date(2026, 8, 15), data_source=data_source)
+
+    assert result["forecast"]["quarter"]["range"] == {"start": "2026-06-01", "end": "2026-08-31"}
+    assert result["forecast"]["half"]["range"] == {"start": "2026-06-01", "end": "2026-11-30"}
+    assert result["forecast"]["year"]["range"] == {"start": "2025-12-01", "end": "2026-11-30"}
+    assert result["forecast"]["quarter"]["max"]["initial_fee"] == 100000
+    assert result["forecast"]["half"]["max"]["initial_fee"] == 100000
+    assert result["forecast"]["year"]["max"]["initial_fee"] == 100000
+
+
+def test_build_dashboard_summary_forecast_scopes_active_projects_by_expected_contract_date() -> None:
+    projects = [
+        _project(
+            notion_page_id="p_in_quarter",
+            営業ステータス="アポ",
+            確度="A",
+            初期費用=100000,
+            月額費用=10000,
+            **{"契約日 / 予想契約日": "2026-07-01"},  # 会計Q3内
+        ),
+        _project(
+            notion_page_id="p_in_half_only",
+            営業ステータス="アポ",
+            確度="A",
+            初期費用=200000,
+            月額費用=20000,
+            **{"契約日 / 予想契約日": "2026-10-01"},  # 会計Q4（クオーター対象外）だが下半期内
+        ),
+    ]
+    data_source = FakeDataSource(projects=projects)
+
+    result = build_dashboard_summary(date(2026, 8, 15), data_source=data_source)
+
+    assert result["forecast"]["quarter"]["max"]["initial_fee"] == 100000
+    assert result["forecast"]["half"]["max"]["initial_fee"] == 300000
+    assert result["forecast"]["year"]["max"]["initial_fee"] == 300000
+
+
+def test_build_dashboard_summary_excludes_unscheduled_active_projects_from_all_periods() -> None:
+    """予想契約日未入力の進行中案件は、3期間いずれの着地予測にも計上せず、
+    unscheduled_active_countとしてのみ件数を計上する。"""
+    projects = [
+        _project(notion_page_id="p1", 営業ステータス="アポ", 確度="A", 初期費用=100000, 月額費用=10000),
+    ]
+    data_source = FakeDataSource(projects=projects)
+
+    result = build_dashboard_summary(date(2026, 8, 15), data_source=data_source)
+
+    assert result["forecast"]["unscheduled_active_count"] == 1
+    assert result["forecast"]["quarter"]["max"]["initial_fee"] == 0
+    assert result["forecast"]["half"]["max"]["initial_fee"] == 0
+    assert result["forecast"]["year"]["max"]["initial_fee"] == 0
+
+
+def test_build_dashboard_summary_excludes_unscheduled_confirmed_projects_from_all_periods() -> None:
+    """契約日が未入力の契約済案件は、3期間いずれの着地予測にも計上せず、
+    unscheduled_confirmed_countとしてのみ件数を計上する。"""
+    projects = [
+        _project(notion_page_id="p1", 営業ステータス="契約", 初期費用=100000, 月額費用=10000),
+    ]
+    data_source = FakeDataSource(projects=projects)
+
+    result = build_dashboard_summary(date(2026, 8, 15), data_source=data_source)
+
+    assert result["forecast"]["unscheduled_confirmed_count"] == 1
+    assert result["forecast"]["quarter"]["max"]["initial_fee"] == 0
+    assert result["forecast"]["half"]["max"]["initial_fee"] == 0
+    assert result["forecast"]["year"]["max"]["initial_fee"] == 0
+    assert any("契約済だが契約日が未入力" in note for note in result["notes"])
 
 
 def test_build_dashboard_summary_status_breakdown_sums_fees() -> None:

@@ -19,10 +19,28 @@ describe("backend", () => {
     const body = {
       as_of: "2026-08-06",
       forecast: {
-        max: { initial_fee: 1, mrr: 1 },
-        expected: { initial_fee: 1, mrr: 1 },
-        min: { initial_fee: 1, mrr: 1 },
+        quarter: {
+          range: { start: "2026-06-01", end: "2026-08-31" },
+          max: { initial_fee: 1, mrr: 1 },
+          expected: { initial_fee: 1, mrr: 1 },
+          min: { initial_fee: 1, mrr: 1 },
+        },
+        half: {
+          range: { start: "2026-06-01", end: "2026-11-30" },
+          max: { initial_fee: 1, mrr: 1 },
+          expected: { initial_fee: 1, mrr: 1 },
+          min: { initial_fee: 1, mrr: 1 },
+        },
+        year: {
+          range: { start: "2025-12-01", end: "2026-11-30" },
+          max: { initial_fee: 1, mrr: 1 },
+          expected: { initial_fee: 1, mrr: 1 },
+          min: { initial_fee: 1, mrr: 1 },
+        },
+        unscheduled_active_count: 0,
+        unscheduled_confirmed_count: 0,
       },
+      notes: ["予想契約日が未入力の進行中案件が0件あり、上記の着地予測には含まれていません。"],
       status_breakdown: [],
       totals: {
         project_count: 0,

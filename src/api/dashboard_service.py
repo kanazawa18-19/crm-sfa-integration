@@ -15,7 +15,12 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
-from src.analytics.forecast import ForecastProject, forecast_quarter
+from src.analytics.fiscal_calendar import (
+    fiscal_half_range,
+    fiscal_quarter_range,
+    fiscal_year_range,
+)
+from src.analytics.forecast import ForecastAmount, ForecastProject, forecast_quarter
 from src.analytics.member_performance import (
     MemberActionRecord,
     MemberProjectRecord,
@@ -25,7 +30,13 @@ from src.api.action_classifier import classify_action_type
 from src.api.notion_display import page_to_display_dict
 from src.api.user_directory import NotionUserDirectory
 from src.db_schema.action import ACTION_SCHEMA
-from src.db_schema.project import CONFIDENCE_LEVELS, PROJECT_SCHEMA, classify_status
+from src.db_schema.project import (
+    ACTIVE_STATUSES,
+    CONFIDENCE_LEVELS,
+    CONFIRMED_STATUSES,
+    PROJECT_SCHEMA,
+    classify_status,
+)
 from src.reports.daily_report import (
     DailyActionRecord,
     DailyProjectRecord,
@@ -90,6 +101,9 @@ PROP_担当メンバー = "担当メンバー"
 PROP_次回アクション日 = "次回アクション日"
 PROP_提案サービス = "提案サービス"
 PROP_作成日時 = "作成日時"
+# 契約済案件は実際の契約日、進行中（未契約）案件は営業担当が入力した予想契約日が入る
+# 単一プロパティ（src/reports/batch.pyのPROP_契約日と同じ、案件管理DBに実在するプロパティ名）。
+PROP_契約日 = "契約日 / 予想契約日"
 
 # アクション履歴DBのプロパティ名（src/db_schema/action.pyの実データに準拠）。
 ACTION_TITLE_PROP = "商談回数・電話回数・メール回数（何回目）"
@@ -252,36 +266,112 @@ class NotionDataSource:
         return self._user_directory.resolve(str(first))
 
 
+def _forecast_amount_dict(amount: ForecastAmount) -> dict[str, float]:
+    return {"initial_fee": amount.initial_fee, "mrr": amount.mrr}
+
+
+def _period_scoped_forecast_projects(
+    projects: list[dict[str, Any]], *, start: date, end: date
+) -> list[ForecastProject]:
+    """指定期間（start〜end、両端含む）に属する契約済・進行中案件のみを`ForecastProject`へ
+    変換する。日付は「契約日 / 予想契約日」（`PROP_契約日`）の1つのプロパティを、契約済案件は
+    実際の契約日として、進行中案件は営業担当が入力した予想契約日として読む
+    （build_dashboard_summaryのdocstring参照）。この日付が未設定の進行中案件・契約済案件は
+    どの期間にも含めない（それぞれunscheduled_active_count/unscheduled_confirmed_countとして
+    別途集計する）。失注・解約案件はforecast_quarter()側でも計上対象外のため、そもそも
+    この一覧に含めない。
+    """
+    result = []
+    for p in projects:
+        status = p.get(PROP_営業ステータス)
+        if status not in CONFIRMED_STATUSES and status not in ACTIVE_STATUSES:
+            continue
+        scoped_date = _parse_date(p.get(PROP_契約日))
+        if scoped_date is None or not (start <= scoped_date <= end):
+            continue
+        result.append(
+            ForecastProject(
+                project_id=p["notion_page_id"],
+                confidence=p.get(PROP_確度),
+                status=status,
+                initial_fee=p.get(PROP_初期費用) or 0.0,
+                monthly_fee=p.get(PROP_月額費用) or 0.0,
+            )
+        )
+    return result
+
+
+def _period_forecast_dict(
+    projects: list[dict[str, Any]], *, start: date, end: date
+) -> dict[str, Any]:
+    period_projects = _period_scoped_forecast_projects(projects, start=start, end=end)
+    forecast = forecast_quarter(period_projects)
+    return {
+        "range": {"start": start.isoformat(), "end": end.isoformat()},
+        "max": _forecast_amount_dict(forecast.max),
+        "expected": _forecast_amount_dict(forecast.expected),
+        "min": _forecast_amount_dict(forecast.min),
+    }
+
+
 def build_dashboard_summary(
     as_of: date | None = None,
     *,
     data_source: NotionDataSource | None = None,
 ) -> dict[str, Any]:
-    """全案件のクオーター着地予測・ステータス内訳・件数集計をまとめて返す。
+    """クオーター/半期/通期の3期間ごとに着地予測・ステータス内訳・件数集計をまとめて返す。
 
-    as_ofは現状フォレキャスト自体の算出には使用しない（forecast_quarterは案件の現時点の
-    スナップショットのみを対象とする純粋関数のため）。将来、期間を絞った集計が必要に
-    なった場合の拡張余地として引数だけ残している。
+    3期間（クオーター/半期/通期）はいずれもas_ofを含む自社の会計年度（期初12月・期末11月、
+    `src.analytics.fiscal_calendar`参照）に基づいて算出する。各期間への案件の帰属判定は
+    以下のルール（金沢さん確認済み）に従う。
+    - 契約済（CONFIRMED_STATUSES）案件は「契約日 / 予想契約日」（PROP_契約日）の実際の
+      契約日が期間内であれば計上する。
+    - 進行中（ACTIVE_STATUSES）案件は同じPROP_契約日に営業担当が入力した予想契約日が
+      期間内であれば計上する。
+    - 進行中案件でPROP_契約日が未設定の場合は、3期間いずれの着地予測にも一切計上しない
+      （曖昧に含めたり除外したりせず、サイレントに数字が消えることを防ぐため
+      `unscheduled_active_count`として別途件数のみ返す）。
+    - 契約済案件でPROP_契約日が未設定の場合も同様に3期間いずれの着地予測にも一切計上しない
+      （PROP_契約日はRequirementLevel.OPTIONALのため実際に起こり得るデータ不備であり、
+      実績値がサイレントに消えることを防ぐため`unscheduled_confirmed_count`として
+      別途件数のみ返す）。
 
     未知の営業ステータス値（classify_statusがValueErrorを送出する値）を持つ案件は、
     ログにwarningを出した上でステータス内訳・件数集計から除外する
     （forecast_quarter側はACTIVE_STATUSES等に含まれない値を元々無視するため対応不要）。
+
+    上記の注意点は`notes`（トップレベル、forecastの兄弟）に人間可読な日本語の注記文として
+    格納し、フロントエンド側でそのまま表示する（build_daily_report等、他のbuild_*関数と
+    同じくビジネスロジックをバックエンドに閉じ込める方針に合わせている）。
     """
     resolved_as_of = as_of or _today_jst()
     source = data_source or NotionDataSource()
     projects = source.get_projects()
 
-    forecast_projects = [
-        ForecastProject(
-            project_id=p["notion_page_id"],
-            confidence=p.get(PROP_確度),
-            status=p.get(PROP_営業ステータス),
-            initial_fee=p.get(PROP_初期費用) or 0.0,
-            monthly_fee=p.get(PROP_月額費用) or 0.0,
-        )
+    quarter_start, quarter_end = fiscal_quarter_range(resolved_as_of)
+    half_start, half_end = fiscal_half_range(resolved_as_of)
+    year_start, year_end = fiscal_year_range(resolved_as_of)
+
+    unscheduled_active_count = sum(
+        1
         for p in projects
+        if p.get(PROP_営業ステータス) in ACTIVE_STATUSES and _parse_date(p.get(PROP_契約日)) is None
+    )
+    unscheduled_confirmed_count = sum(
+        1
+        for p in projects
+        if p.get(PROP_営業ステータス) in CONFIRMED_STATUSES and _parse_date(p.get(PROP_契約日)) is None
+    )
+
+    notes = [
+        f"予想契約日が未入力の進行中案件が{unscheduled_active_count}件あり、"
+        "上記の着地予測には含まれていません。",
     ]
-    forecast = forecast_quarter(forecast_projects)
+    if unscheduled_confirmed_count:
+        notes.append(
+            f"契約済だが契約日が未入力の案件が{unscheduled_confirmed_count}件あり、"
+            "着地予測の実績値に反映されていません。"
+        )
 
     breakdown: dict[str, dict[str, Any]] = {}
     confirmed_count = active_count = lost_count = cancelled_count = 0
@@ -323,13 +413,13 @@ def build_dashboard_summary(
     return {
         "as_of": resolved_as_of.isoformat(),
         "forecast": {
-            "max": {"initial_fee": forecast.max.initial_fee, "mrr": forecast.max.mrr},
-            "expected": {
-                "initial_fee": forecast.expected.initial_fee,
-                "mrr": forecast.expected.mrr,
-            },
-            "min": {"initial_fee": forecast.min.initial_fee, "mrr": forecast.min.mrr},
+            "quarter": _period_forecast_dict(projects, start=quarter_start, end=quarter_end),
+            "half": _period_forecast_dict(projects, start=half_start, end=half_end),
+            "year": _period_forecast_dict(projects, start=year_start, end=year_end),
+            "unscheduled_active_count": unscheduled_active_count,
+            "unscheduled_confirmed_count": unscheduled_confirmed_count,
         },
+        "notes": notes,
         "status_breakdown": list(breakdown.values()),
         "totals": {
             "project_count": confirmed_count + active_count + lost_count + cancelled_count,

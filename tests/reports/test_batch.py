@@ -9,9 +9,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from src.analytics.fiscal_calendar import fiscal_quarter_range
 from src.reports.batch import (
     _month_range,
-    _quarter_range,
     _revenue_target_from_env,
     _week_range,
     run_daily_report,
@@ -89,16 +89,42 @@ def test_month_range_handles_december_year_rollover() -> None:
     assert _month_range(date(2026, 12, 15)) == (date(2026, 12, 1), date(2026, 12, 31))
 
 
-def test_quarter_range_third_quarter() -> None:
-    assert _quarter_range(date(2026, 8, 15)) == (date(2026, 7, 1), date(2026, 9, 30))
+# クオーターの日付範囲自体（会計四半期）の詳細な境界値検証は
+# tests/analytics/test_fiscal_calendar.py 側で行う。ここではrun_weekly_reportが
+# fiscal_quarter_range()を正しく呼び出していることの回帰確認のみ行う（暦四半期の
+# 1-3月/4-6月/7-9月/10-12月ではなく、会計四半期＝期初12月・期末11月であること）。
 
 
-def test_quarter_range_fourth_quarter() -> None:
-    assert _quarter_range(date(2026, 11, 1)) == (date(2026, 10, 1), date(2026, 12, 31))
+def test_run_weekly_report_uses_fiscal_quarter_not_calendar_quarter() -> None:
+    """2026-08-15は暦四半期なら7-9月だが、会計四半期（期初12月）ではQ3（6-8月）になる。
+    暦四半期の6-8月境界と会計四半期の境界は一致しないため、9月契約分が誤って
+    「当クオーター」に混入しないことを確認する（暦四半期のままだと9/30まで含んでしまう）。"""
+    quarter_start, quarter_end = fiscal_quarter_range(date(2026, 8, 21))  # 金曜
+    assert (quarter_start, quarter_end) == (date(2026, 6, 1), date(2026, 8, 31))
 
+    projects = [
+        _project(
+            notion_page_id="p_this_quarter",
+            営業ステータス="契約",
+            初期費用=500000,
+            月額費用=50000,
+            **{"契約日 / 予想契約日": "2026-08-05"},  # 会計Q3内
+        ),
+        _project(
+            notion_page_id="p_next_month_calendar_quarter_but_next_fiscal_quarter",
+            営業ステータス="契約",
+            初期費用=999999999,
+            月額費用=999999999,
+            **{"契約日 / 予想契約日": "2026-09-01"},  # 暦四半期なら同じ7-9月だが会計Q4
+        ),
+    ]
+    source = FakeDataSource(projects=projects, actions=[])
+    notifier = FakeNotifier()
 
-def test_quarter_range_first_quarter() -> None:
-    assert _quarter_range(date(2026, 2, 1)) == (date(2026, 1, 1), date(2026, 3, 31))
+    text = run_weekly_report(date(2026, 8, 21), data_source=source, notifier=notifier)
+
+    assert "999,999,999円" not in text
+    assert "500,000円" in text
 
 
 # --- _revenue_target_from_env ----------------------------------------------------------------
