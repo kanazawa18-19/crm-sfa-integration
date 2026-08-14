@@ -44,7 +44,14 @@ CONTACT_SCHEMA = DatabaseSchema(
             property_type=PropertyType.RELATION,
             requirement=RequirementLevel.REQUIRED,
             sync_scope=SyncScope.ALL_TOOLS,
-            description="所属企業",
+            description=(
+                "所属企業。ただし"
+                "webhook_handlers/lead_inquiry_webhook.py経由のレコードのみ、会社名が"
+                "取引先マスターと完全一致しなかった場合に意図的に空のまま作成される"
+                "（無数の重複取引先マスター作成を避けるための割り切り、2026-08-14）。"
+                "この経路由来のレコードで空なのは仕様通りであり、データ品質バッチ等で"
+                "誤ってバグ扱いしないこと。"
+            ),
             relation_target="client_master",
         ),
         # 2026-08-10、ZohoデータとNotionデータのマージに際し金沢さんの要望で追加

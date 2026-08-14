@@ -41,6 +41,30 @@ def find_page_id_by_email(
     return None
 
 
+def find_page_id_by_title(
+    client: NotionQueryClient, property_name: str, value: str
+) -> str | None:
+    """`property_name`（title型プロパティ）が`value`と完全一致するページを1件返す
+    （無ければNone）。`find_page_id_by_email`と同様、Notion API側のフィルタで絞り込んだ
+    上でクライアント側でも再比較する。あいまい一致（表記ゆれ吸収、`notion_dedupe.py`の
+    ような名寄せ）は意図的に行わない完全一致専用のヘルパー——呼び出し元がこれを
+    どう使うか（例: 一致しない場合に新規作成するかしないか）はこの関数の関知するところ
+    ではなく、各呼び出し元のモジュールに委ねる。
+    """
+    normalized = value.strip()
+    candidates = client.query_all_pages(
+        filter={"property": property_name, "title": {"equals": normalized}}
+    )
+    for page in candidates:
+        props = page.get("properties") or {}
+        if property_name not in props:
+            continue
+        parsed = parse_notion_property_value(props[property_name])
+        if isinstance(parsed, str) and parsed.strip() == normalized:
+            return page["id"]
+    return None
+
+
 def find_page_id_by_text_property(
     client: NotionQueryClient, property_name: str, value: str
 ) -> str | None:

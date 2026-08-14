@@ -52,6 +52,9 @@ from src.sync_engine.clients.notion_client import NotionApiError
 from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.production_wiring import ProductionSyncWiring, get_production_wiring
 from src.sync_engine.webhook_handlers.kintone_webhook import handler as kintone_webhook_handler
+from src.sync_engine.webhook_handlers.lead_inquiry_webhook import (
+    handler as lead_inquiry_webhook_handler,
+)
 from src.sync_engine.webhook_handlers.notion_webhook import (
     handler_with_proxy as notion_webhook_handler_with_proxy,
 )
@@ -287,6 +290,19 @@ async def webhook_web_engagement_meeting(request: Request) -> Response:
     """
     event = await _lambda_event_from_request(request)
     result = web_engagement_meeting_webhook_handler(event, context=None)
+    return _lambda_result_to_response(result)
+
+
+@app.post("/api/webhooks/lead-inquiry")
+async def webhook_lead_inquiry(request: Request) -> Response:
+    """lead-researcher（別リポジトリ、問い合わせメール自動調査Slackボット）からの
+    リード情報受信。
+
+    `Dispatcher`/`IdMappingStore`は経由しない設計（`lead_inquiry_webhook.handler`の
+    docstring参照）のため、`_wiring_dependency`（Dispatcher一式）には依存しない。
+    """
+    event = await _lambda_event_from_request(request)
+    result = lead_inquiry_webhook_handler(event, context=None)
     return _lambda_result_to_response(result)
 
 
