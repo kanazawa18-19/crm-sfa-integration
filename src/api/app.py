@@ -133,9 +133,18 @@ def _wiring_dependency() -> ProductionSyncWiring:
 
 
 async def _lambda_event_from_request(request: Request) -> dict[str, Any]:
-    """FastAPIの`Request`を、Webhookハンドラ（Lambda形式）が期待する`event`辞書へ変換する。"""
+    """FastAPIの`Request`を、Webhookハンドラ（Lambda形式）が期待する`event`辞書へ変換する。
+
+    `query_params`はkintone_webhook.pyのクエリパラメータ方式の共有シークレット検証
+    （`verify_webhook_query_param()`、kintoneのWebhook機能がカスタムHTTPヘッダーを
+    送信できないための代替手段）で使う。他のハンドラは無視して構わない。
+    """
     body = await request.body()
-    return {"headers": dict(request.headers), "body": body.decode("utf-8")}
+    return {
+        "headers": dict(request.headers),
+        "body": body.decode("utf-8"),
+        "query_params": dict(request.query_params),
+    }
 
 
 def _partial_skip_summary(dispatcher: Any) -> list[dict[str, Any]] | None:
@@ -186,10 +195,16 @@ def _lambda_result_to_response(result: dict[str, Any], *, dispatcher: Any = None
 
 
 # --- Webhook受信エンドポイント（リアルタイム連携） ------------------------------------------
-# 認証は各handler内部の共有シークレット検証（X-Webhook-Secretヘッダー、
-# src/sync_engine/webhook_handlers/_common.pyのverify_webhook_secret）で行う。
-# 実際にkintone/Zoho/Notion/スプレッドシート側でこれらのURLをWebhook購読登録する作業は、
-# 本番データ移行が完了するまで意図的に行わない（登録するとここへ通知が飛び始める）。
+# 認証は各handler内部の共有シークレット検証で行う（多くはX-Webhook-Secretヘッダー、
+# src/sync_engine/webhook_handlers/_common.pyのverify_webhook_secret）。ただしZoho
+# （カスタムヘッダー・bodyへの任意フィールド追加のいずれも不可、body内tokenフィールド方式、
+# verify_webhook_body_token）・kintone（カスタムヘッダー不可、URLクエリパラメータ方式、
+# verify_webhook_query_param）は、外部ツール側のWebhook機能の制約により別方式を使う。
+#
+# 2026-08-14時点の各ツール側Webhook購読登録状況: Zohoは本番登録済み・稼働中
+# （docs/zoho_webhook_activation_note.md参照）。kintoneはkintone→Notion方向を有効化する
+# 方針となり、本モジュール側の実装は完了（docs/kintone_webhook_activation_note.md参照）だが
+# kintone管理画面側での購読登録はこの時点ではまだ手動作業が残っている。
 
 
 @app.post("/api/webhooks/notion")

@@ -90,6 +90,40 @@ def verify_webhook_body_token(body: Mapping[str, Any], *, token_field: str, env_
     return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
 
 
+def verify_webhook_query_param(
+    query_params: Mapping[str, str], *, param_name: str, env_var: str
+) -> bool:
+    """URLクエリパラメータに埋め込まれた共有シークレットによるWebhook認証。fail-closed設計。
+
+    kintoneのWebhook機能（アプリ単位の設定画面）は、送信するHTTPリクエストへ任意の
+    ヘッダーを付与する項目もbodyへ任意フィールドを追加する項目も持たず、指定できるのは
+    「Webhook URL」欄のみ（2026-08-14、kintone公式ヘルプ（jp.kintone.help/k/ja/app/
+    set_webhook/webhook.html）で確認済み: 説明／Webhook URL／通知を送信する条件／
+    有効化チェックボックスのみで、HTTPヘッダーのカスタマイズ機能は無い）。そのため
+    verify_webhook_secret()（ヘッダー方式）・verify_webhook_body_token()（body方式）の
+    いずれも使えず、Webhook URL自体にクエリパラメータとして共有シークレットを埋め込む
+    方式にする（例: https://.../api/webhooks/kintone?secret=xxxx）。Slackの Incoming
+    Webhook自体がURLにシークレットを埋め込む方式であり、「Webhook URLのみ設定可能」な
+    連携先向けの標準的な妥協点として扱う。
+
+    fail-closedの考え方は他の検証関数と同じ: env_var未設定時は拒否、
+    ALLOW_UNSIGNED_WEBHOOKS=trueのみローカル開発での通過を許容する。比較には
+    hmac.compare_digest()を使う（タイミングサイドチャネル対策、他の検証関数と同じ理由）。
+
+    既知のトレードオフ: ヘッダーやbodyと異なり、クエリパラメータはURLの一部として
+    プロキシ・アクセスログ等に残りやすい（Vercelのリクエストログ等）。ヘッダー方式より
+    弱いことを認識した上で、「Webhook URLしか設定できない」という制約下での現実的な
+    選択として採用する。
+    """
+    expected = os.environ.get(env_var)
+    if expected:
+        actual = query_params.get(param_name)
+        if not isinstance(actual, str):
+            return False
+        return hmac.compare_digest(actual, expected)
+    return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
+
+
 def unauthorized_response() -> dict[str, Any]:
     """BLOCKER7: 共有シークレット不一致時の401レスポンス。"""
     return {"statusCode": 401, "body": json.dumps({"error": "invalid webhook secret"})}
