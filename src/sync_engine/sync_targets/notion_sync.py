@@ -32,14 +32,16 @@ class NotionSyncTarget(SyncTarget):
     def __init__(self, client: NotionClient) -> None:
         self._client = client
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         return self._client.get_page(external_id)
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str:
         if external_id is None:
             return self._client.create_page(properties)
         self._client.update_page(external_id, properties)
         return external_id
 
-    def delete_record(self, external_id: str) -> None:
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self._client.archive_page(external_id)

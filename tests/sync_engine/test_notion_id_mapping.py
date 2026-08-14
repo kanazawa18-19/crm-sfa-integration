@@ -282,7 +282,12 @@ def test_upsert_rejects_duplicate_external_id(
 
     def query_matcher(request, context):
         filt = request.json()["filter"]
-        if filt == {"property": "kintone_id", "rich_text": {"equals": "1001"}}:
+        if filt == {
+            "and": [
+                {"property": "kintone_id", "rich_text": {"equals": "1001"}},
+                {"property": "db_key", "select": {"equals": "client_master"}},
+            ]
+        }:
             return {"results": [existing_page], "has_more": False, "next_cursor": None}
         return _empty_query_response()
 
@@ -339,36 +344,54 @@ def test_find_by_external_id_kintone(requests_mock, store: NotionIdMappingStore)
     page = _page("page-1", notion_key="CLI-001", kintone_id="1001")
     requests_mock.post(QUERY_URL, json=_query_response([page]))
 
-    result = store.find_by_external_id(Tool.KINTONE, "1001")
+    result = store.find_by_external_id(Tool.KINTONE, "1001", db_key="client_master")
 
     assert result is not None
     assert result.notion_key == "CLI-001"
     sent_body = requests_mock.last_request.json()
-    assert sent_body["filter"] == {"property": "kintone_id", "rich_text": {"equals": "1001"}}
+    # 2026-08-14、shirokuma-secレビューBLOCKER対応: db_keyも必ず絞り込む複合フィルターになる
+    # （外部IDだけの検索は、kintoneのレコード番号がアプリ単位で独立採番されているため、
+    # 別db_keyの同番号レコードと衝突しうる）。
+    assert sent_body["filter"] == {
+        "and": [
+            {"property": "kintone_id", "rich_text": {"equals": "1001"}},
+            {"property": "db_key", "select": {"equals": "client_master"}},
+        ]
+    }
 
 
 def test_find_by_external_id_zoho(requests_mock, store: NotionIdMappingStore) -> None:
     page = _page("page-1", notion_key="CLI-001", zoho_id="zoho-abc")
     requests_mock.post(QUERY_URL, json=_query_response([page]))
 
-    result = store.find_by_external_id(Tool.ZOHO, "zoho-abc")
+    result = store.find_by_external_id(Tool.ZOHO, "zoho-abc", db_key="client_master")
 
     assert result is not None
     assert result.notion_key == "CLI-001"
     sent_body = requests_mock.last_request.json()
-    assert sent_body["filter"] == {"property": "zoho_id", "rich_text": {"equals": "zoho-abc"}}
+    assert sent_body["filter"] == {
+        "and": [
+            {"property": "zoho_id", "rich_text": {"equals": "zoho-abc"}},
+            {"property": "db_key", "select": {"equals": "client_master"}},
+        ]
+    }
 
 
 def test_find_by_external_id_spreadsheet_row(requests_mock, store: NotionIdMappingStore) -> None:
     page = _page("page-1", notion_key="CLI-001", spreadsheet_row=42)
     requests_mock.post(QUERY_URL, json=_query_response([page]))
 
-    result = store.find_by_external_id(Tool.SPREADSHEET, "42")
+    result = store.find_by_external_id(Tool.SPREADSHEET, "42", db_key="client_master")
 
     assert result is not None
     assert result.notion_key == "CLI-001"
     sent_body = requests_mock.last_request.json()
-    assert sent_body["filter"] == {"property": "spreadsheet_row", "number": {"equals": 42}}
+    assert sent_body["filter"] == {
+        "and": [
+            {"property": "spreadsheet_row", "number": {"equals": 42}},
+            {"property": "db_key", "select": {"equals": "client_master"}},
+        ]
+    }
 
 
 def test_find_by_external_id_returns_none_when_not_found(
@@ -376,12 +399,12 @@ def test_find_by_external_id_returns_none_when_not_found(
 ) -> None:
     requests_mock.post(QUERY_URL, json=_empty_query_response())
 
-    assert store.find_by_external_id(Tool.KINTONE, "no-such-id") is None
+    assert store.find_by_external_id(Tool.KINTONE, "no-such-id", db_key="client_master") is None
 
 
 def test_find_by_external_id_unsupported_tool_raises(store: NotionIdMappingStore) -> None:
     with pytest.raises(ValueError):
-        store.find_by_external_id(Tool.NOTION, "CLI-001")
+        store.find_by_external_id(Tool.NOTION, "CLI-001", db_key="client_master")
 
 
 # --- update_last_synced_at --------------------------------------------------------------------

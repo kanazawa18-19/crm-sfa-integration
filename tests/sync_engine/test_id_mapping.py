@@ -63,7 +63,7 @@ def test_delete_nonexistent_key_is_noop(store: SQLiteIdMappingStore) -> None:
 def test_find_by_external_id_kintone(store: SQLiteIdMappingStore) -> None:
     store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", kintone_id="1001"))
 
-    result = store.find_by_external_id(Tool.KINTONE, "1001")
+    result = store.find_by_external_id(Tool.KINTONE, "1001", db_key="client_master")
 
     assert result is not None
     assert result.notion_key == "CLI-001"
@@ -72,7 +72,7 @@ def test_find_by_external_id_kintone(store: SQLiteIdMappingStore) -> None:
 def test_find_by_external_id_zoho(store: SQLiteIdMappingStore) -> None:
     store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", zoho_id="zoho-abc"))
 
-    result = store.find_by_external_id(Tool.ZOHO, "zoho-abc")
+    result = store.find_by_external_id(Tool.ZOHO, "zoho-abc", db_key="client_master")
 
     assert result is not None
     assert result.notion_key == "CLI-001"
@@ -81,19 +81,73 @@ def test_find_by_external_id_zoho(store: SQLiteIdMappingStore) -> None:
 def test_find_by_external_id_spreadsheet_row(store: SQLiteIdMappingStore) -> None:
     store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", spreadsheet_row=42))
 
-    result = store.find_by_external_id(Tool.SPREADSHEET, "42")
+    result = store.find_by_external_id(Tool.SPREADSHEET, "42", db_key="client_master")
 
     assert result is not None
     assert result.notion_key == "CLI-001"
 
 
 def test_find_by_external_id_returns_none_when_not_found(store: SQLiteIdMappingStore) -> None:
-    assert store.find_by_external_id(Tool.KINTONE, "no-such-id") is None
+    assert store.find_by_external_id(Tool.KINTONE, "no-such-id", db_key="client_master") is None
 
 
 def test_find_by_external_id_unsupported_tool_raises(store: SQLiteIdMappingStore) -> None:
     with pytest.raises(ValueError):
-        store.find_by_external_id(Tool.NOTION, "CLI-001")
+        store.find_by_external_id(Tool.NOTION, "CLI-001", db_key="client_master")
+
+
+def test_find_by_external_id_does_not_match_across_different_db_keys(
+    store: SQLiteIdMappingStore,
+) -> None:
+    # 回帰テスト（2026-08-14、shirokuma-secレビューBLOCKER対応）: kintoneのレコード番号は
+    # アプリ（db_key）単位で独立採番されているため、同じ外部ID値が別db_keyに存在しても
+    # db_keyを指定した検索では取り違えないこと。
+    store.upsert(IdMapping(notion_key="PJ-001", db_key="project", kintone_id="45"))
+    store.upsert(IdMapping(notion_key="ACT-001", db_key="action", kintone_id="45"))
+
+    project_result = store.find_by_external_id(Tool.KINTONE, "45", db_key="project")
+    action_result = store.find_by_external_id(Tool.KINTONE, "45", db_key="action")
+
+    assert project_result is not None and project_result.notion_key == "PJ-001"
+    assert action_result is not None and action_result.notion_key == "ACT-001"
+
+
+def test_find_by_external_id_spreadsheet_row_does_not_match_across_different_db_keys(
+    store: SQLiteIdMappingStore,
+) -> None:
+    # obasan-qualityレビューWARN対応（2026-08-14）: kintoneと全く同じ構造のリスクが
+    # スプレッドシートのspreadsheet_row（シート＝db_key単位で行番号が振られる）にもある。
+    # kintoneだけでなくspreadsheetでも同じ回帰を確認しておく。
+    store.upsert(IdMapping(notion_key="PJ-001", db_key="project", spreadsheet_row=5))
+    store.upsert(IdMapping(notion_key="ACT-001", db_key="action", spreadsheet_row=5))
+
+    project_result = store.find_by_external_id(Tool.SPREADSHEET, "5", db_key="project")
+    action_result = store.find_by_external_id(Tool.SPREADSHEET, "5", db_key="action")
+
+    assert project_result is not None and project_result.notion_key == "PJ-001"
+    assert action_result is not None and action_result.notion_key == "ACT-001"
+
+
+def test_upsert_allows_same_external_id_across_different_db_keys(
+    store: SQLiteIdMappingStore,
+) -> None:
+    # 2026-08-14、shirokuma-secレビューBLOCKER対応: 一意制約が(db_key, kintone_id)の複合
+    # キーへ変更されたため、db_keyが異なれば同じkintone_id値を許容する（以前はグローバルな
+    # 一意制約でDuplicateExternalIdErrorになっていた）。
+    store.upsert(IdMapping(notion_key="PJ-001", db_key="project", kintone_id="45"))
+    store.upsert(IdMapping(notion_key="ACT-001", db_key="action", kintone_id="45"))
+
+    assert store.get("PJ-001") is not None
+    assert store.get("ACT-001") is not None
+
+
+def test_upsert_still_rejects_duplicate_external_id_within_same_db_key(
+    store: SQLiteIdMappingStore,
+) -> None:
+    store.upsert(IdMapping(notion_key="PJ-001", db_key="project", kintone_id="45"))
+
+    with pytest.raises(DuplicateExternalIdError):
+        store.upsert(IdMapping(notion_key="PJ-002", db_key="project", kintone_id="45"))
 
 
 def test_update_last_synced_at(store: SQLiteIdMappingStore) -> None:

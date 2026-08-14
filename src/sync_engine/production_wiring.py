@@ -105,10 +105,15 @@ class _MultiDbNotionSyncTarget(SyncTarget):
         # レスポンスのtypeフィールドから動的に読み取る）ため、任意の1クライアントで良い。
         self._fallback_client = next(iter(clients_by_db_key.values()))
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        # db_key引数は受け取るが使わない（他の_MultiDbXSyncTargetと違い、Notionのpage_idは
+        # グローバルに一意なため、外部ID＝external_idだけで衝突なく一意に解決できる。
+        # `_client_for()`がnotion_key自体からdb_keyを逆引きする既存の仕組みで十分）。
         return self._fallback_client.get_page(external_id)
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         if external_id is None:
             logger.warning(
                 "_MultiDbNotionSyncTarget: 新規Notionページ作成(external_id未指定)はdb_keyを"
@@ -132,7 +137,7 @@ class _MultiDbNotionSyncTarget(SyncTarget):
         client.update_page(external_id, properties)
         return external_id
 
-    def delete_record(self, external_id: str) -> None:
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self._fallback_client.archive_page(external_id)
 
     def _client_for(self, notion_key: str) -> HttpNotionClient | None:
@@ -143,21 +148,28 @@ class _MultiDbNotionSyncTarget(SyncTarget):
 
 
 class _MultiDbKintoneSyncTarget(SyncTarget):
-    """db_key単位で構築した`KintoneSyncTarget`を、`IdMappingStore`で選択するルーター。"""
+    """db_key単位で構築した`KintoneSyncTarget`を、呼び出し元が渡す`db_key`で選択するルーター。
+
+    2026-08-14、shirokuma-secレビューBLOCKER対応: 以前は`IdMappingStore.find_by_external_id`
+    へexternal_idのみで問い合わせてdb_keyを逆引きしていたが、kintoneのレコード番号はアプリ
+    単位で独立採番されているため、この逆引きだけでは別アプリの同番号レコードと取り違える
+    事故がありえた（実際にkintone→Notion方向のWebhookを有効化した際に発生）。呼び出し元
+    （`Dispatcher._write_value`）は元々`mapping.db_key`を保持しているため、逆引きに頼らず
+    直接渡してもらう設計に変更した。`id_mapping_store`は本クラスではもう使わない。
+    """
 
     tool = Tool.KINTONE
 
-    def __init__(
-        self, targets_by_db_key: dict[str, KintoneSyncTarget], id_mapping_store: IdMappingStore
-    ) -> None:
+    def __init__(self, targets_by_db_key: dict[str, KintoneSyncTarget]) -> None:
         self._targets_by_db_key = targets_by_db_key
-        self._store = id_mapping_store
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
-        target = self._resolve(external_id)
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        target = self._resolve(db_key)
         return target.get_record(external_id) if target is not None else None
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         if external_id is None:
             logger.warning(
                 "_MultiDbKintoneSyncTarget: 新規kintoneレコード作成(external_id未指定)はdb_keyを"
@@ -165,44 +177,46 @@ class _MultiDbKintoneSyncTarget(SyncTarget):
                 properties,
             )
             return None
-        target = self._resolve(external_id)
+        target = self._resolve(db_key)
         if target is None:
             logger.warning(
-                "_MultiDbKintoneSyncTarget: external_id=%r のdb_keyを特定できないか、当該DB用の"
-                "kintoneアプリが未設定のため、書き込みをスキップします",
+                "_MultiDbKintoneSyncTarget: db_key=%r 用のkintoneアプリが未設定のため、"
+                "書き込みをスキップします（external_id=%r）",
+                db_key,
                 external_id,
             )
             return None
         return target.upsert_record(external_id, properties)
 
-    def delete_record(self, external_id: str) -> None:
-        target = self._resolve(external_id)
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
+        target = self._resolve(db_key)
         if target is not None:
             target.delete_record(external_id)
 
-    def _resolve(self, external_id: str) -> KintoneSyncTarget | None:
-        mapping = self._store.find_by_external_id(Tool.KINTONE, external_id)
-        if mapping is None:
+    def _resolve(self, db_key: str | None) -> KintoneSyncTarget | None:
+        if db_key is None:
             return None
-        return self._targets_by_db_key.get(mapping.db_key)
+        return self._targets_by_db_key.get(db_key)
 
 
 class _MultiDbZohoSyncTarget(SyncTarget):
-    """db_key単位で構築した`ZohoSyncTarget`を、`IdMappingStore`で選択するルーター。"""
+    """db_key単位で構築した`ZohoSyncTarget`を、呼び出し元が渡す`db_key`で選択するルーター。
+
+    `_MultiDbKintoneSyncTarget`と同じ理由・同じ設計変更（2026-08-14）。
+    """
 
     tool = Tool.ZOHO
 
-    def __init__(
-        self, targets_by_db_key: dict[str, ZohoSyncTarget], id_mapping_store: IdMappingStore
-    ) -> None:
+    def __init__(self, targets_by_db_key: dict[str, ZohoSyncTarget]) -> None:
         self._targets_by_db_key = targets_by_db_key
-        self._store = id_mapping_store
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
-        target = self._resolve(external_id)
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        target = self._resolve(db_key)
         return target.get_record(external_id) if target is not None else None
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         if external_id is None:
             logger.warning(
                 "_MultiDbZohoSyncTarget: 新規Zohoレコード作成(external_id未指定)はdb_keyを"
@@ -210,46 +224,46 @@ class _MultiDbZohoSyncTarget(SyncTarget):
                 properties,
             )
             return None
-        target = self._resolve(external_id)
+        target = self._resolve(db_key)
         if target is None:
             logger.warning(
-                "_MultiDbZohoSyncTarget: external_id=%r のdb_keyを特定できないため、書き込みを"
-                "スキップします",
+                "_MultiDbZohoSyncTarget: db_key=%r 用のZohoモジュールが未設定のため、書き込みを"
+                "スキップします（external_id=%r）",
+                db_key,
                 external_id,
             )
             return None
         return target.upsert_record(external_id, properties)
 
-    def delete_record(self, external_id: str) -> None:
-        target = self._resolve(external_id)
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
+        target = self._resolve(db_key)
         if target is not None:
             target.delete_record(external_id)
 
-    def _resolve(self, external_id: str) -> ZohoSyncTarget | None:
-        mapping = self._store.find_by_external_id(Tool.ZOHO, external_id)
-        if mapping is None:
+    def _resolve(self, db_key: str | None) -> ZohoSyncTarget | None:
+        if db_key is None:
             return None
-        return self._targets_by_db_key.get(mapping.db_key)
+        return self._targets_by_db_key.get(db_key)
 
 
 class _MultiDbSpreadsheetSyncTarget(SyncTarget):
-    """db_key単位で構築した`SpreadsheetSyncTarget`を、`IdMappingStore`で選択するルーター。"""
+    """db_key単位で構築した`SpreadsheetSyncTarget`を、呼び出し元が渡す`db_key`で選択するルーター。
+
+    `_MultiDbKintoneSyncTarget`と同じ理由・同じ設計変更（2026-08-14）。
+    """
 
     tool = Tool.SPREADSHEET
 
-    def __init__(
-        self,
-        targets_by_db_key: dict[str, SpreadsheetSyncTarget],
-        id_mapping_store: IdMappingStore,
-    ) -> None:
+    def __init__(self, targets_by_db_key: dict[str, SpreadsheetSyncTarget]) -> None:
         self._targets_by_db_key = targets_by_db_key
-        self._store = id_mapping_store
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
-        target = self._resolve(external_id)
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        target = self._resolve(db_key)
         return target.get_record(external_id) if target is not None else None
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         if external_id is None:
             logger.warning(
                 "_MultiDbSpreadsheetSyncTarget: 新規行追加(external_id未指定)はdb_keyを"
@@ -257,26 +271,26 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
                 properties,
             )
             return None
-        target = self._resolve(external_id)
+        target = self._resolve(db_key)
         if target is None:
             logger.warning(
-                "_MultiDbSpreadsheetSyncTarget: external_id=%r のdb_keyを特定できないため、"
-                "書き込みをスキップします",
+                "_MultiDbSpreadsheetSyncTarget: db_key=%r 用のスプレッドシートタブが未設定の"
+                "ため、書き込みをスキップします（external_id=%r）",
+                db_key,
                 external_id,
             )
             return None
         return target.upsert_record(external_id, properties)
 
-    def delete_record(self, external_id: str) -> None:
-        target = self._resolve(external_id)
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
+        target = self._resolve(db_key)
         if target is not None:
             target.delete_record(external_id)
 
-    def _resolve(self, external_id: str) -> SpreadsheetSyncTarget | None:
-        mapping = self._store.find_by_external_id(Tool.SPREADSHEET, external_id)
-        if mapping is None:
+    def _resolve(self, db_key: str | None) -> SpreadsheetSyncTarget | None:
+        if db_key is None:
             return None
-        return self._targets_by_db_key.get(mapping.db_key)
+        return self._targets_by_db_key.get(db_key)
 
 
 _NON_PERSISTENT_PATH_PREFIXES = ("/tmp",)
@@ -536,15 +550,15 @@ def build_production_dispatcher(*, id_mapping_store: IdMappingStore | None = Non
 
     kintone_targets = build_kintone_targets_by_db()
     if kintone_targets:
-        targets[Tool.KINTONE] = _MultiDbKintoneSyncTarget(kintone_targets, store)
+        targets[Tool.KINTONE] = _MultiDbKintoneSyncTarget(kintone_targets)
 
     zoho_targets = build_zoho_targets_by_db()
     if zoho_targets:
-        targets[Tool.ZOHO] = _MultiDbZohoSyncTarget(zoho_targets, store)
+        targets[Tool.ZOHO] = _MultiDbZohoSyncTarget(zoho_targets)
 
     spreadsheet_targets = build_spreadsheet_targets_by_db()
     if spreadsheet_targets:
-        targets[Tool.SPREADSHEET] = _MultiDbSpreadsheetSyncTarget(spreadsheet_targets, store)
+        targets[Tool.SPREADSHEET] = _MultiDbSpreadsheetSyncTarget(spreadsheet_targets)
 
     return Dispatcher(
         store,

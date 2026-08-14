@@ -453,53 +453,76 @@ class _FakeKintoneSyncTarget:
         self.db_key = db_key
         self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         return {"db_key": self.db_key}
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         self.upsert_calls.append((external_id, dict(properties)))
         return external_id
 
-    def delete_record(self, external_id: str) -> None:
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         pass
 
 
-def test_multi_db_kintone_sync_target_routes_by_external_id_lookup(
-    store: SQLiteIdMappingStore,
-) -> None:
-    store.upsert(
-        IdMapping(notion_key="MSA-PJ-001", db_key="project", kintone_id="1001", last_synced_at=NOW)
-    )
+def test_multi_db_kintone_sync_target_routes_by_explicit_db_key() -> None:
+    # 2026-08-14、shirokuma-secレビューBLOCKER対応: ルーターはもはやIdMappingStoreへ逆引き
+    # せず、呼び出し元が渡すdb_keyで直接ルーティングする（kintoneのレコード番号はアプリ単位で
+    # 独立採番されており、外部IDのみでの逆引きは別アプリの同番号レコードと衝突しうるため）。
     project_target = _FakeKintoneSyncTarget("project")
     client_target = _FakeKintoneSyncTarget("client_master")
-    router = _MultiDbKintoneSyncTarget(
-        {"project": project_target, "client_master": client_target}, store
-    )
+    router = _MultiDbKintoneSyncTarget({"project": project_target, "client_master": client_target})
 
-    router.upsert_record("1001", {"営業ステータス": "商談中(B)"})
+    router.upsert_record("1001", {"営業ステータス": "商談中(B)"}, db_key="project")
 
     assert project_target.upsert_calls == [("1001", {"営業ステータス": "商談中(B)"})]
     assert client_target.upsert_calls == []
 
 
-def test_multi_db_kintone_sync_target_skips_write_when_db_key_unresolvable(
-    store: SQLiteIdMappingStore, caplog: pytest.LogCaptureFixture
+def test_multi_db_kintone_sync_target_routes_different_db_keys_with_same_external_id() -> None:
+    # 回帰テスト: kintoneのレコード番号がアプリ（db_key）をまたいで衝突しても
+    # （例: project#1001とclient_master#1001が別レコード）、db_keyで正しく区別できること。
+    project_target = _FakeKintoneSyncTarget("project")
+    client_target = _FakeKintoneSyncTarget("client_master")
+    router = _MultiDbKintoneSyncTarget({"project": project_target, "client_master": client_target})
+
+    router.upsert_record("1001", {"営業ステータス": "商談中(B)"}, db_key="project")
+    router.upsert_record("1001", {"取引先名": "テスト商事"}, db_key="client_master")
+
+    assert project_target.upsert_calls == [("1001", {"営業ステータス": "商談中(B)"})]
+    assert client_target.upsert_calls == [("1001", {"取引先名": "テスト商事"})]
+
+
+def test_multi_db_kintone_sync_target_skips_write_when_db_key_unconfigured(
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    router = _MultiDbKintoneSyncTarget({"project": _FakeKintoneSyncTarget("project")}, store)
+    router = _MultiDbKintoneSyncTarget({"project": _FakeKintoneSyncTarget("project")})
 
     with caplog.at_level("WARNING"):
-        result = router.upsert_record("no-such-id", {"営業ステータス": "商談中(B)"})
+        result = router.upsert_record(
+            "1001", {"営業ステータス": "商談中(B)"}, db_key="client_master"
+        )
 
     assert result is None
-    assert any("no-such-id" in r.getMessage() for r in caplog.records)
+    assert any("client_master" in r.getMessage() for r in caplog.records)
 
 
-def test_multi_db_kintone_sync_target_get_record_returns_none_when_no_target(
-    store: SQLiteIdMappingStore,
+def test_multi_db_kintone_sync_target_skips_write_when_db_key_missing(
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    router = _MultiDbKintoneSyncTarget({}, store)
+    router = _MultiDbKintoneSyncTarget({"project": _FakeKintoneSyncTarget("project")})
 
-    assert router.get_record("no-such-id") is None
+    with caplog.at_level("WARNING"):
+        result = router.upsert_record("1001", {"営業ステータス": "商談中(B)"})
+
+    assert result is None
+
+
+def test_multi_db_kintone_sync_target_get_record_returns_none_when_no_target() -> None:
+    router = _MultiDbKintoneSyncTarget({})
+
+    assert router.get_record("no-such-id", db_key="project") is None
 
 
 # --- ProductionSyncWiring / get_production_wiring -----------------------------------------------
@@ -586,13 +609,13 @@ def test_multi_db_kintone_sync_target_reports_skip_through_real_dispatcher(
     class _FakeNotionTarget:
         tool = Tool.NOTION
 
-        def get_record(self, external_id: str) -> dict[str, Any] | None:
+        def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
             return None
 
-        def upsert_record(self, external_id, properties):
+        def upsert_record(self, external_id, properties, *, db_key: str | None = None):
             return external_id
 
-        def delete_record(self, external_id: str) -> None:
+        def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
             pass
 
     class _FakeZohoTarget(_FakeNotionTarget):
@@ -602,7 +625,7 @@ def test_multi_db_kintone_sync_target_reports_skip_through_real_dispatcher(
         tool = Tool.SPREADSHEET
 
     # "project"用のkintoneアプリしか構成しない（"client_master"は未構成）ルーターを作る。
-    kintone_router = _MultiDbKintoneSyncTarget({"project": object()}, store)  # type: ignore[arg-type]
+    kintone_router = _MultiDbKintoneSyncTarget({"project": object()})  # type: ignore[arg-type]
     dispatcher = Dispatcher(
         store,
         {
@@ -677,13 +700,13 @@ def test_skip_tracking_dispatcher_logs_warning_on_partial_skip(
     class _SkippingTarget:
         tool = Tool.KINTONE
 
-        def get_record(self, external_id: str) -> dict[str, Any] | None:
+        def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
             return None
 
-        def upsert_record(self, external_id, properties):
+        def upsert_record(self, external_id, properties, *, db_key: str | None = None):
             return None  # 常にスキップ
 
-        def delete_record(self, external_id: str) -> None:
+        def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
             pass
 
     inner = Dispatcher(store, {Tool.KINTONE: _SkippingTarget()})

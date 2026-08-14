@@ -85,8 +85,18 @@ class IdMappingStore(ABC):
         """マッピングを削除する。存在しない場合は何もしない。"""
 
     @abstractmethod
-    def find_by_external_id(self, tool: Tool, external_id: str) -> IdMapping | None:
-        """kintone/Zoho/スプレッドシートの外部IDからマッピングを逆引きする（コンフリクト検知用）。"""
+    def find_by_external_id(self, tool: Tool, external_id: str, *, db_key: str) -> IdMapping | None:
+        """kintone/Zoho/スプレッドシートの外部IDからマッピングを逆引きする（コンフリクト検知用）。
+
+        `db_key`は必須（2026-08-14、shirokuma-secレビューBLOCKER対応で追加）。特にkintoneの
+        レコード番号はアプリ単位で独立採番されており、db_keyを無視して外部IDだけで検索すると、
+        たとえば案件管理アプリのレコード#45と取引先マスタアプリのレコード#45を取り違え、
+        全く別のNotionページへ誤ったプロパティを書き込んでしまう事故になりうる（実際に
+        kintone→Notion方向のWebhookを有効化した際、アクション管理アプリのイベントが
+        取引先マスターDBのNotionページを誤って解決し、書き込みに失敗して発覚した）。
+        Zoho（IDは元々グローバルに一意）・スプレッドシート（行番号はシート単位）についても
+        一貫性のため同様にdb_keyで絞り込む。
+        """
 
     @abstractmethod
     def update_last_synced_at(self, notion_key: str, synced_at: datetime) -> None:
@@ -127,16 +137,21 @@ class SQLiteIdMappingStore(IdMappingStore):
         )
         # SQLiteのUNIQUE制約はNULLを重複扱いしない（NULL同士は複数許容）ため、
         # 未連携（NULL）のレコードを妨げずに、実際の外部ID重複のみをDBレベルでも防止できる。
+        # 2026-08-14、shirokuma-secレビューBLOCKER対応: (db_key, 外部ID)の複合一意制約へ変更。
+        # kintoneのレコード番号はアプリ（db_key）単位で独立採番されており、db_keyを含めない
+        # 単純な一意制約だと、例えば案件管理#45と取引先マスタ#45が同じkintone_id値として
+        # 衝突しうる（find_by_external_id()のdocstring参照）。
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_id_mapping_kintone_id "
-            "ON id_mapping(kintone_id)"
+            "ON id_mapping(db_key, kintone_id)"
         )
         self._conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_id_mapping_zoho_id ON id_mapping(zoho_id)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_id_mapping_zoho_id "
+            "ON id_mapping(db_key, zoho_id)"
         )
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_id_mapping_spreadsheet_row "
-            "ON id_mapping(spreadsheet_row)"
+            "ON id_mapping(db_key, spreadsheet_row)"
         )
         self._conn.commit()
 
@@ -188,7 +203,11 @@ class SQLiteIdMappingStore(IdMappingStore):
             ) from exc
 
     def _assert_no_duplicate_external_id(self, mapping: IdMapping) -> None:
-        """外部ID（kintone_id/zoho_id/spreadsheet_row）が既に別のnotion_keyに紐づいていないか検査する。"""
+        """外部ID（kintone_id/zoho_id/spreadsheet_row）が同一db_key内で既に別のnotion_keyに
+        紐づいていないか検査する（db_keyをまたいだ重複は正当なので許容する。例えば案件管理の
+        レコード#45と取引先マスタのレコード#45が同じkintone_id="45"を持つのは異なるdb_key
+        なので問題ない）。
+        """
         for tool, value in (
             (Tool.KINTONE, mapping.kintone_id),
             (Tool.ZOHO, mapping.zoho_id),
@@ -196,7 +215,7 @@ class SQLiteIdMappingStore(IdMappingStore):
         ):
             if value is None:
                 continue
-            existing = self.find_by_external_id(tool, str(value))
+            existing = self.find_by_external_id(tool, str(value), db_key=mapping.db_key)
             if existing is not None and existing.notion_key != mapping.notion_key:
                 raise DuplicateExternalIdError(tool, value, existing.notion_key)
 
@@ -204,13 +223,14 @@ class SQLiteIdMappingStore(IdMappingStore):
         self._conn.execute("DELETE FROM id_mapping WHERE notion_key = ?", (notion_key,))
         self._conn.commit()
 
-    def find_by_external_id(self, tool: Tool, external_id: str) -> IdMapping | None:
+    def find_by_external_id(self, tool: Tool, external_id: str, *, db_key: str) -> IdMapping | None:
         column = _EXTERNAL_ID_COLUMNS.get(tool)
         if column is None:
             raise ValueError(f"unsupported tool for external id lookup: {tool}")
         value: str | int = int(external_id) if tool is Tool.SPREADSHEET else external_id
         row = self._conn.execute(
-            f"SELECT * FROM id_mapping WHERE {column} = ?", (value,)  # noqa: S608 (columnは固定辞書のみ)
+            f"SELECT * FROM id_mapping WHERE {column} = ? AND db_key = ?",  # noqa: S608 (columnは固定辞書のみ)
+            (value, db_key),
         ).fetchone()
         return self._row_to_mapping(row) if row else None
 

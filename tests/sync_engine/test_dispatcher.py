@@ -44,16 +44,18 @@ class FakeSyncTarget(SyncTarget):
         self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
         self.delete_calls: list[str] = []
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         return self._records.get(external_id)
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         self.upsert_calls.append((external_id, dict(properties)))
         if self._always_skip:
             return None
         return external_id or "new-id"
 
-    def delete_record(self, external_id: str) -> None:
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self.delete_calls.append(external_id)
 
 
@@ -189,6 +191,38 @@ def test_dispatch_skips_stale_event(store: SQLiteIdMappingStore, mapping: IdMapp
 
     assert result.skipped
     assert result.reason == "stale_event"
+
+
+def test_dispatch_does_not_confuse_records_with_colliding_external_id_across_db_keys(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """回帰テスト（2026-08-14、shirokuma-secレビューBLOCKER対応）: kintoneのレコード番号は
+    アプリ（db_key）単位で独立採番されているため、別db_key（ここではaction）に同じ
+    kintone_id="1001"を持つレコードが存在しても、正しいdb_keyのマッピングだけが解決される
+    こと。実際にkintone→Notion方向のWebhookを有効化した際、これが原因でアクション管理
+    アプリのイベントが取引先マスターDBのNotionページを誤って解決する事故が発生した。
+    """
+    colliding_mapping = IdMapping(
+        notion_key="ACT-001",
+        db_key="action",
+        kintone_id="1001",  # mappingフィクスチャ（client_master）と同じ値、別db_key。
+        last_synced_at=NOW - timedelta(days=1),
+    )
+    store.upsert(colliding_mapping)
+    dispatcher = Dispatcher(store, _all_targets())
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    dispatcher.dispatch(event)
+
+    # client_master側のマッピングだけが更新され、action側は無関係のまま。
+    assert store.get("CLI-001").last_synced_at == NOW
+    assert store.get("ACT-001").last_synced_at == NOW - timedelta(days=1)
 
 
 def test_dispatch_updates_last_synced_at(store: SQLiteIdMappingStore, mapping: IdMapping) -> None:

@@ -52,12 +52,14 @@ class ZohoSyncTarget(SyncTarget):
     def _enabled(self) -> bool:
         return self._enabled_override if self._enabled_override is not None else is_zoho_enabled()
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         if not self._enabled:
             return None
         return self._client.get_record(self._module, external_id)
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str | None:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str | None:
         if not self._enabled:
             # 「作成されていない」ことを型で表現する（""だと採番済みIDと誤認されうるため）。
             return external_id
@@ -66,7 +68,7 @@ class ZohoSyncTarget(SyncTarget):
         self._client.update_record(self._module, external_id, properties)
         return external_id
 
-    def delete_record(self, external_id: str) -> None:
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         if not self._enabled:
             return
         self._client.update_record(self._module, external_id, {_DELETE_FLAG_FIELD: True})

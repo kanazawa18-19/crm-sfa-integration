@@ -35,17 +35,19 @@ class SpreadsheetSyncTarget(SyncTarget):
         self._client = client
         self._sheet = sheet
 
-    def get_record(self, external_id: str) -> dict[str, Any] | None:
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         return self._client.get_row(self._sheet, int(external_id))
 
-    def upsert_record(self, external_id: str | None, properties: dict[str, Any]) -> str:
+    def upsert_record(
+        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> str:
         if external_id is None:
             row = self._client.append_row(self._sheet, properties)
             return str(row)
         self._client.update_row(self._sheet, int(external_id), properties)
         return external_id
 
-    def delete_record(self, external_id: str) -> None:
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self._client.update_row(self._sheet, int(external_id), {_DELETE_FLAG_COLUMN: True})
 
     def append_conflict_log(self, rejected: RejectedData) -> str:

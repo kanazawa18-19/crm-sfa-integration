@@ -205,7 +205,7 @@ class Dispatcher:
                 target = self._targets.get(tool)
                 external_id = _external_id_for(tool, mapping)
                 record = (
-                    target.get_record(external_id)
+                    target.get_record(external_id, db_key=mapping.db_key)
                     if target is not None and external_id is not None
                     else None
                 )
@@ -275,7 +275,14 @@ class Dispatcher:
     def _resolve_mapping(self, event: SyncEvent) -> IdMapping | None:
         if event.source_tool is Tool.NOTION:
             return self._store.get(event.external_id)
-        return self._store.find_by_external_id(event.source_tool, event.external_id)
+        # 2026-08-14、shirokuma-secレビューBLOCKER対応: db_keyを渡さない検索だと、kintoneの
+        # ように外部IDがdb_key（アプリ）単位で独立採番されているツールで、別db_keyの同番号
+        # レコードを取り違える事故がありえた（IdMappingStore.find_by_external_id()の
+        # docstring参照）。event.db_keyはWebhookハンドラ側で既に確定しているため、ここで
+        # 渡して曖昧さを無くす。
+        return self._store.find_by_external_id(
+            event.source_tool, event.external_id, db_key=event.db_key
+        )
 
     def _write_values(
         self, tools: frozenset[Tool], mapping: IdMapping, property_name: str, value: object
@@ -307,7 +314,7 @@ class Dispatcher:
         if target is None:
             return False
         external_id = _external_id_for(tool, mapping)
-        result = target.upsert_record(external_id, {property_name: value})
+        result = target.upsert_record(external_id, {property_name: value}, db_key=mapping.db_key)
         return result is not None
 
 

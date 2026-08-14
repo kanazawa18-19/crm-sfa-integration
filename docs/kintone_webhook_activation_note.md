@@ -154,3 +154,38 @@ kintoneの仕様上、設定変更を本番環境へ反映するには別途ア�
 コードは、この環境では三者三様であり、どれか1つから他を推測してはいけない**。今後
 `KINTONE_FIELD_TRANSFORMS`を変更・拡張する際は、必ず`scripts/list_kintone_fields.py`で
 実コードを確認すること。
+
+**問題3（最重要）: `IdMappingStore.find_by_external_id()`がdb_key（アプリ）を無視して
+外部IDだけで検索しており、別アプリの同番号レコードを取り違える設計バグがあった**。
+問題1・2を解消して初めて本物のWebhook通知が届いた際、アクション管理アプリのイベントが
+取引先マスターDBの全く別のNotionページを誤って解決し、存在しない「アクション種別」
+プロパティへの書き込みを試みてKeyErrorで失敗した。調査の結果、kintoneのレコード番号は
+アプリ単位で1から独立採番されており（取引先マスタ#45と案件管理#45とアクション管理#45は
+全くの別レコード）、`find_by_external_id(tool, external_id)`がdb_keyを一切見ずに検索して
+いたことが根本原因と判明した。**今回はNotionプロパティ名がdb_key間で偶然一致しなかった
+ためエラーで気づけたが、プロパティ名が一致していれば、サイレントに誤ったNotionページへ
+誤った値が書き込まれていた可能性がある**。
+
+さらに重要な点として、この不具合はkintone→Notion方向のWebhook（今回新規有効化）だけの
+問題ではない。**同じ`find_by_external_id()`は、2026-08-11から本番稼働している逆方向
+（Notion/Zoho/スプレッドシート→kintone書き込み、`_MultiDbKintoneSyncTarget`経由）でも
+最初から使われていた**。取引先マスタ／案件管理／アクション管理の3アプリ間でレコード番号
+（若い番号ほど）が重複するのはほぼ確実であり、この期間中に他ツール発の更新が該当db_key
+以外の同番号kintoneレコードへ誤って書き込まれていた可能性がある（kintone側は指定した
+レコードが存在すれば上書きに成功するため、Notionのケースと違いエラーにならず**サイレント
+に発生しうる**）。修正は`db_key`を`IdMappingStore.find_by_external_id()`・`SyncTarget`
+インターフェース・`Dispatcher`・`production_wiring.py`の`_MultiDbKintoneSyncTarget`/
+`_MultiDbZohoSyncTarget`/`_MultiDbSpreadsheetSyncTarget`まで一貫して通す形で実施済み
+（SQLite側はUNIQUE INDEXも`(db_key, kintone_id)`等の複合キーへ変更）。
+
+**Zoho・スプレッドシートへの影響**: Zoho CRMのレコードIDは組織単位でグローバルに
+一意（モジュールをまたいで重複しない仕様）と考えられるため、同種の取り違えリスクは
+相対的に低いと判断している。ただしこの前提はコード内のコメントに基づくものであり、
+実データでの裏付け検証はしていない。スプレッドシートの`spreadsheet_row`（シート＝db_key
+単位で行番号が振られる）はkintoneと全く同じ構造のリスクを持つ。
+
+**既存データへの影響調査**: この修正はコードの予防策のみで、過去に紛れ込んだ可能性のある
+誤マッピング・誤書き込みを自動検出する仕組みではない。`scripts/audit_id_mapping_collisions.py`
+（本ノートと同時期に新設）でid_mappingストア内の外部ID重複（同一tool・同一external_id値が
+異なるdb_keyにまたがっていないか）を横断的にチェックできる。2026-08-14実施の監査結果は
+このスクリプトの実行ログ・金沢さんへの報告を参照。

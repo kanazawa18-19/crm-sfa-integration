@@ -320,7 +320,8 @@ class NotionIdMappingStore(IdMappingStore):
         raise_for_error(response, NotionIdMappingStoreApiError)
 
     def _assert_no_duplicate_external_id(self, mapping: IdMapping) -> None:
-        """外部ID（kintone_id/zoho_id/spreadsheet_row）が既に別のnotion_keyに紐づいていないか検査する。
+        """外部ID（kintone_id/zoho_id/spreadsheet_row）が同一db_key内で既に別のnotion_keyに
+        紐づいていないか検査する（db_keyをまたいだ重複は正当なので許容する）。
 
         `SQLiteIdMappingStore._assert_no_duplicate_external_id`と同じ事前チェックだが、
         Notion側にはDBレベルの一意制約によるフォールバック検知が無い（本モジュールdocstring
@@ -333,7 +334,7 @@ class NotionIdMappingStore(IdMappingStore):
         ):
             if value is None:
                 continue
-            existing = self.find_by_external_id(tool, str(value))
+            existing = self.find_by_external_id(tool, str(value), db_key=mapping.db_key)
             if existing is not None and existing.notion_key != mapping.notion_key:
                 raise DuplicateExternalIdError(tool, value, existing.notion_key)
 
@@ -347,14 +348,19 @@ class NotionIdMappingStore(IdMappingStore):
         response = self._request("PATCH", f"/pages/{page['id']}", json_body={"archived": True})
         raise_for_error(response, NotionIdMappingStoreApiError)
 
-    def find_by_external_id(self, tool: Tool, external_id: str) -> IdMapping | None:
+    def find_by_external_id(self, tool: Tool, external_id: str, *, db_key: str) -> IdMapping | None:
         property_name = _EXTERNAL_ID_PROPERTIES.get(tool)
         if property_name is None:
             raise ValueError(f"unsupported tool for external id lookup: {tool}")
         if tool is Tool.SPREADSHEET:
-            filter_obj = _number_equals_filter(property_name, int(external_id))
+            external_id_filter = _number_equals_filter(property_name, int(external_id))
         else:
-            filter_obj = _text_equals_filter(property_name, str(external_id))
+            external_id_filter = _text_equals_filter(property_name, str(external_id))
+        # db_keyを必ず絞り込む（2026-08-14、shirokuma-secレビューBLOCKER対応）。特にkintoneの
+        # レコード番号はアプリ単位で独立採番されており、db_key無しの検索では例えば案件管理#45と
+        # 取引先マスタ#45を取り違えて全く別のNotionページを誤って解決してしまう
+        # （IdMappingStore.find_by_external_id()のdocstring参照）。
+        filter_obj = {"and": [external_id_filter, _select_equals_filter("db_key", db_key)]}
         page = self._query_first(filter_obj)
         return _page_to_mapping(page) if page else None
 

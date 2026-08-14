@@ -1006,7 +1006,7 @@ def materialize(
     ) -> None:
         with store_lock:
             existing = (
-                id_mapping_store.find_by_external_id(Tool.KINTONE, record.kintone_id)
+                id_mapping_store.find_by_external_id(Tool.KINTONE, record.kintone_id, db_key=db_key)
                 if record.kintone_id
                 else None
             )
