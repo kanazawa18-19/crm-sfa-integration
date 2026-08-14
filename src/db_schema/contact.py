@@ -168,6 +168,18 @@ CONTACT_SCHEMA = DatabaseSchema(
             sync_scope=SyncScope.NOTION_ONLY,
             description="web-engagement-tool側のリード詳細画面へのリンク",
         ),
+        # 2026-08-14、金沢さんの承認で追加（「連絡先DBの担当者プロパティは作ってもいいよ」）。
+        # 案件管理DBの「担当メンバー」（PropertyType.USER）と同じ命名・型に揃え、Notion側の
+        # 連絡先データベース(3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae)にも実際にpeopleプロパティ
+        # として追加済み。どのツール間でどう連携させるか（自動割り当てロジック等）は未設計
+        # のため、現時点ではNotion側の値をそのまま保持するだけの箱として追加する。
+        PropertyDefinition(
+            name="担当メンバー",
+            property_type=PropertyType.USER,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="連絡先の担当営業（Notion people）。案件管理DBの「担当メンバー」と同義",
+        ),
         *common_internal_properties(),
     ),
 )
