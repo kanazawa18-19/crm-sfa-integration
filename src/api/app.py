@@ -7,7 +7,6 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -16,12 +15,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.auth import verify_cron_secret, verify_dashboard_api_token
-from src.db_schema.base import Tool
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -618,59 +616,3 @@ def save_revenue_target_sheet_settings(
         "unit_count_month_count": unit_count_month_count,
     }
 
-
-# --- 一時的な調査用エンドポイント（2026-08-14、shirokuma-secレビューWARN対応） --------------
-# `IdMappingStore.find_by_external_id()`がdb_keyを無視していたバグ
-# （docs/kintone_webhook_activation_note.md「問題3」参照）が、2026-08-11から本番稼働の
-# 「他ツール→kintone」書き込み経路で実際に既存データを壊していないかを一度きり調査するための
-# 診断用エンドポイント。認証は専用の`AUDIT_API_TOKEN`（他の管理系トークンとは独立、
-# 調査完了後にこのエンドポイントごと削除する前提の使い捨てトークン）。
-def _verify_audit_api_token(authorization: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("AUDIT_API_TOKEN")
-    if not expected or authorization is None or not hmac.compare_digest(
-        authorization, f"Bearer {expected}"
-    ):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/api/admin/audit-id-mapping-collisions", dependencies=[Depends(_verify_audit_api_token)])
-async def audit_id_mapping_collisions_endpoint(db_keys: str | None = None) -> dict[str, Any]:
-    # scripts/audit_id_mapping_collisions.pyと同じロジック（`scripts/`はVercelの
-    # デプロイバンドルに含まれないため、`ModuleNotFoundError`を避けてここに直接書く）。
-    # 全6db_key・数万件規模を1リクエストで走査すると処理時間が長くタイムアウトしうるため、
-    # ?db_keys=project,action,client_master のようにカンマ区切りで絞り込めるようにする
-    # （未指定時は全db_keyが対象、従来通り）。
-    from src.db_schema.registry import ALL_SCHEMAS
-
-    from src.sync_engine.production_wiring import build_id_mapping_store
-
-    if db_keys:
-        target_db_keys = tuple(k.strip() for k in db_keys.split(",") if k.strip())
-    else:
-        target_db_keys = tuple(schema.key for schema in ALL_SCHEMAS)
-    external_id_fields = (
-        (Tool.KINTONE, "kintone_id"),
-        (Tool.ZOHO, "zoho_id"),
-        (Tool.SPREADSHEET, "spreadsheet_row"),
-    )
-    store = build_id_mapping_store()
-    seen: dict[Tool, dict[str, dict[str, str]]] = {tool: {} for tool, _ in external_id_fields}
-    for db_key in target_db_keys:
-        for mapping in store.list_by_db(db_key):
-            for tool, field_name in external_id_fields:
-                value = getattr(mapping, field_name)
-                if value is None:
-                    continue
-                seen[tool].setdefault(str(value), {})[db_key] = mapping.notion_key
-
-    collisions = [
-        {"tool": tool.value, "external_id": external_id, "notion_keys_by_db_key": by_db_key}
-        for tool, _ in external_id_fields
-        for external_id, by_db_key in seen[tool].items()
-        if len(by_db_key) > 1
-    ]
-    return {
-        "db_keys_checked": list(target_db_keys),
-        "collision_count": len(collisions),
-        "collisions": collisions,
-    }
