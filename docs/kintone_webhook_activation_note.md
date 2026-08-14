@@ -187,5 +187,13 @@ kintoneの仕様上、設定変更を本番環境へ反映するには別途ア�
 **既存データへの影響調査**: この修正はコードの予防策のみで、過去に紛れ込んだ可能性のある
 誤マッピング・誤書き込みを自動検出する仕組みではない。`scripts/audit_id_mapping_collisions.py`
 （本ノートと同時期に新設）でid_mappingストア内の外部ID重複（同一tool・同一external_id値が
-異なるdb_keyにまたがっていないか）を横断的にチェックできる。2026-08-14実施の監査結果は
-このスクリプトの実行ログ・金沢さんへの報告を参照。
+異なるdb_keyにまたがっていないか）を横断的にチェックできる。
+
+2026-08-14、本番の`NotionIdMappingStore`（全6db_key: client_master/chain/contact/project/
+product/action）を対象に実際に監査を実施した結果、**衝突は0件**（kintone_id/zoho_id/
+spreadsheet_rowのいずれについても、異なるdb_keyにまたがる重複なし）。2026-08-11から本番
+稼働していたこのバグは、実際にはid_mappingデータの汚染・kintoneレコードへの誤書き込みを
+引き起こしていなかったと判断できる。監査は一時的な診断用APIエンドポイント
+（`/api/admin/audit-id-mapping-collisions`、専用トークン`AUDIT_API_TOKEN`）経由で実施し、
+確認後にエンドポイント・トークンとも撤去済み。継続的な検証が必要になった場合は
+`scripts/audit_id_mapping_collisions.py`をローカルから本番相当の環境変数で実行すること。
