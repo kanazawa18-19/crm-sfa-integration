@@ -42,30 +42,51 @@ Slackの Incoming Webhook自体がURLにシークレットを埋め込む方式�
      `dispatcher.py`のコメント「新規レコード作成フローは本ディスパッチャのスコープ外」参照）
    - このWebhookを有効にする: チェック
 
-4. 有効化後の動作確認チェックリスト。
+4. **設定を保存したら、必ずアプリの「アプリを更新」ボタンを押す**（2026-08-14実際に
+   ハマった落とし穴。Webhook設定画面での保存はkintoneの設定編集領域に留まり、
+   別途アプリ全体を「更新」して初めて本番環境に反映される。これを踏まずに何度
+   レコードを編集してもWebhookは一度も発火しない＝kintone側の「ログを確認」に
+   何も表示されない状態になる）。
+
+5. 有効化後の動作確認チェックリスト。
 
    1. kintoneで対象アプリ（取引先マスタ／案件管理／アクション管理のいずれか）のレコードを
       1件編集する（`KINTONE_FIELD_TRANSFORMS`に載っているフィールド、例えば案件管理の
-      「契約進捗状況」を変更する）。
+      「契約進捗状況」＝実フィールドコード`ドロップダウン_2`を変更する）。
    2. Vercelのfunction logsで `/api/webhooks/kintone` への200レスポンスを確認する。
    3. 同ログで`kintone webhook: ignoring field code=...`（意図的除外・未対応フィールド）や
       `kintone webhook: failed to transform field code=...`（値変換失敗）のwarning/infoログが
       想定通りかを確認する。
    4. 対応するNotionページのプロパティが更新されたか確認する。
+   5. kintone側の「Webhookログを確認」でも「エラー」ではなく実行された記録が残っているか
+      確認する（アプリ設定 → Webhook → 対象行の「ログを確認」）。
+
+## フィールドコードの検証方法（`scripts/list_kintone_fields.py`）
+
+2026-08-14に実際に有効化した際、`KINTONE_FIELD_TRANSFORMS`のキーがCSV移行データの列名
+（≒表示ラベル）を前提にしており、実際のフィールドコードと大きく食い違っていたことが
+判明した（下記「背景・設計メモ」参照）。今後この対応表を見直す・新しいdb_keyを追加する
+際は、必ず実際のフィールドコードを確認してから書くこと。
+
+```
+set -a; source config/.env; set +a
+python scripts/list_kintone_fields.py --db-key project
+```
+
+コード・ラベル・型の一覧が表示され、コードとラベルが異なるフィールドには
+`<-- コード!=ラベル`マークが付く（トークン自体は出力に含まれない）。
 
 ## 既知の未検証事項
 
 - **「商談中（A〜D）」等の選択肢値の括弧の全角/半角**: 2026-08-14、金沢さん指摘対応で解決済み。
   `normalize_project_status()`（`src/migration/project_mapping.py`）が半角括弧を全角へ
   正規化してからエイリアス表を引くため、CSV移行データ（全角）・Webhook/REST API経由の
-  実データ（未確認だったが全角/半角どちらでも）のいずれでも同じ結果になる
-  （`tests/migration/test_project_mapping.py`の
+  実データのいずれでも同じ結果になる（`tests/migration/test_project_mapping.py`の
   `test_normalize_project_status_accepts_half_width_brackets`で回帰確認済み）。
-- **`GET /k/v1/record.json`のNUMBER型フィールドの実際の返却型**: `kintone_field_transforms.py`の
-  金額フィールド変換（`float(v) if v not in (None, "") else None`）は、kintoneのNUMBER型が
-  文字列で値を返すという前提（`kintone_webhook.py`のモジュールdocstring記載のペイロード例が
-  この前提）に基づく。この前提自体は変更していないが、Webhook経由の実際のペイロードで
-  再確認しておくとより確実。
+- **`GET /k/v1/record.json`のNUMBER型フィールドの実際の返却型**: 2026-08-14、実際の
+  kintone Webhook通知（本番）で確認済み。文字列で値が返ることを確認し、
+  `kintone_field_transforms.py`の金額フィールド変換（`float(v) if v not in (None, "") else None`）
+  はこの前提のまま問題ない。
 
 ## 対象外フィールドの挙動に関する注意（運用者向け）
 
@@ -89,11 +110,9 @@ Slackの Incoming Webhook自体がURLにシークレットを埋め込む方式�
 
 有効化前の調査で、既存実装（kintoneのフィールドコードをそのままNotionプロパティ名として
 扱う素朴な実装）には重大な欠陥が見つかった。実際のkintoneフィールドコードはNotion
-プロパティ名と一致しないことが多く（一括移行時の実データ検証済みコード
-`src/migration/project_mapping.py`等で判明）、有効化してもほぼ全プロパティが
-Dispatcher側で「スキーマに存在しない」として黙ってスキップされ、
-リアルタイム反映が実質機能しないまま「設定済み」に見えてしまうところだった。これは
-2026-08-12にZoho側で実際に発覚した本番障害
+プロパティ名と一致しないことが多く、有効化してもほぼ全プロパティがDispatcher側で
+「スキーマに存在しない」として黙ってスキップされ、リアルタイム反映が実質機能しないまま
+「設定済み」に見えてしまうところだった。これは2026-08-12にZoho側で実際に発覚した本番障害
 （`src/sync_engine/webhook_handlers/zoho_field_transforms.py`参照）と全く同じクラスの
 問題であり、その教訓を活かして先に`kintone_field_transforms.py`
 （`KINTONE_FIELD_TRANSFORMS`）を整備してから有効化する運びとした。
@@ -103,3 +122,35 @@ Dispatcher側で「スキーマに存在しない」として黙ってスキッ�
 リレーション解決・派生値計算・DBをまたぐ反映が必要なフィールドは、Webhookの
 1レコード単位の部分更新イベントでは同期的に解決できないため意図的に対象外としている
 （詳細は`kintone_field_transforms.py`のモジュールdocstring参照）。
+
+### 実際に有効化して発覚した2つの問題（2026-08-14）
+
+上記の対策（`KINTONE_FIELD_TRANSFORMS`整備）を済ませてから金沢さんに実際の有効化作業を
+依頼したところ、想定していなかった2つの問題に順番にぶつかった。
+
+**問題1: 「アプリを更新」を押していなかったため、Webhook自体が一度も発火しなかった**。
+Webhook設定画面での保存・「このWebhookを有効にする」チェックは正しく行われていたが、
+kintoneの仕様上、設定変更を本番環境へ反映するには別途アプリ全体の「アプリを更新」操作が
+必要だった。これを踏むまでは、レコードをいくら追加・編集してもkintone側の「Webhookログ」
+に一切記録が残らない（試みてすらいない）状態になり、原因の切り分けにかなりの時間を要した
+（Vercel側のログ・kintone側の実行ログ・URLの文字列突き合わせ・kintoneプラン確認等、
+考えられる原因を一通り除外した後に判明）。同じ現象に遭遇した場合、まずこれを疑うこと。
+
+**問題2: `KINTONE_FIELD_TRANSFORMS`のキーがCSV移行データの列名（表示ラベル相当）を
+前提にしており、実際のフィールドコードと全く別物だった**。問題1を解消して初めて届いた
+本物のWebhook通知のログで、アクション管理アプリの実フィールドコードが
+`actionContent`/`comment`/`cnctorMember`/`toPerson`/`service`/`client_name`/
+`nextActionDate`という英語ベースの識別子であることが判明し、当初の日本語ラベルベースの
+キー（「アクション内容」「コメント」等）が一切マッチせず、対象フィールドが全て
+「対象外」としてスキップされていたことが分かった。`config/.env`のkintone APIトークンで
+`GET /k/v1/app/form/fields.json`を実際に呼び出し（`scripts/list_kintone_fields.py`として
+恒久化）、3アプリ全てのコード・ラベル対応を突き合わせて`KINTONE_FIELD_TRANSFORMS`を
+修正した。特に案件管理アプリの金額フィールドは、コード`初期費用`のラベルが
+「提案料金（イニシャル）」、コード`初期費用_0`のラベルが「提案料金（ランニング）」という、
+コード文字列とラベルの対応が直感に反する組み合わせだったため注意（詳細は
+`kintone_field_transforms.py`のコメント参照）。
+
+この2件の教訓: **CSVエクスポートの列名・kintone管理画面の表示ラベル・実際のフィールド
+コードは、この環境では三者三様であり、どれか1つから他を推測してはいけない**。今後
+`KINTONE_FIELD_TRANSFORMS`を変更・拡張する際は、必ず`scripts/list_kintone_fields.py`で
+実コードを確認すること。

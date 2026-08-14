@@ -28,10 +28,10 @@ def _payload(app_id: str = "123", record: dict | None = None) -> dict:
             "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
             "作成者": {"type": "CREATOR", "value": {"code": "user1"}},
             "更新者": {"type": "MODIFIER", "value": {"code": "user1"}},
-            # 実際のkintoneフィールドコード（Notionプロパティ名とは異なる、
+            # 実際のkintoneフィールドコード（ラベルではない。2026-08-14、実API検証済み、
             # KINTONE_FIELD_TRANSFORMS参照）。
-            "契約進捗状況": {"type": "DROP_DOWN", "value": "商談中（B）"},
-            "提案料金（イニシャル）": {"type": "NUMBER", "value": "500000"},
+            "ドロップダウン_2": {"type": "DROP_DOWN", "value": "商談中（B）"},  # ラベル: 契約進捗状況
+            "初期費用": {"type": "NUMBER", "value": "500000"},  # ラベル: 提案料金（イニシャル）
         },
     }
 
@@ -61,11 +61,11 @@ def test_kintone_payload_to_sync_event_builds_client_master_event() -> None:
     record = {
         "$id": {"type": "__ID__", "value": "10"},
         "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
-        "顧客名（法人・個人・施設）": {"type": "SINGLE_LINE_TEXT", "value": "テスト商事"},
+        "顧客名": {"type": "SINGLE_LINE_TEXT", "value": "テスト商事"},  # ラベル: 顧客名（法人・個人・施設）
         "顧客種別": {"type": "DROP_DOWN", "value": "ホテル・旅館"},
         "都道府県名": {"type": "DROP_DOWN", "value": "東京都"},
         "TEL": {"type": "SINGLE_LINE_TEXT", "value": "03-1234-5678"},
-        # リレーション解決が必要なため意図的に対象外のフィールド。
+        # リレーション解決が必要なため意図的に対象外のフィールド（コード==ラベル）。
         "本部名": {"type": "SINGLE_LINE_TEXT", "value": "テストチェーン"},
     }
 
@@ -87,11 +87,11 @@ def test_kintone_payload_to_sync_event_builds_action_event() -> None:
     record = {
         "$id": {"type": "__ID__", "value": "77"},
         "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
-        "アクション内容": {"type": "DROP_DOWN", "value": "電話"},
-        "コメント": {"type": "MULTI_LINE_TEXT", "value": "折り返し予定"},
+        "actionContent": {"type": "DROP_DOWN", "value": "電話"},  # ラベル: アクション内容
+        "comment": {"type": "MULTI_LINE_TEXT", "value": "折り返し予定"},  # ラベル: コメント
         # リレーション解決が必要なため意図的に対象外のフィールド。
-        "対応者": {"type": "SINGLE_LINE_TEXT", "value": "山田"},
-        "担当者名": {"type": "SINGLE_LINE_TEXT", "value": "先方 太郎"},
+        "cnctorMember": {"type": "USER_SELECT", "value": [{"code": "yamada"}]},  # ラベル: 対応者
+        "toPerson": {"type": "SINGLE_LINE_TEXT", "value": "先方 太郎"},  # ラベル: 担当者名
     }
 
     event = kintone_payload_to_sync_event(
@@ -104,26 +104,26 @@ def test_kintone_payload_to_sync_event_builds_action_event() -> None:
         "アクション種別": "テレアポ",
         "履歴メモ": "折り返し予定",
     }
-    assert "対応者" not in event.properties
-    assert "担当者名" not in event.properties
+    assert "cnctorMember" not in event.properties
+    assert "toPerson" not in event.properties
 
 
 def test_kintone_payload_to_sync_event_skips_fields_not_in_transform_table() -> None:
     # obasan-qualityレビューWARN対応（2026-08-14）: 架空のフィールド名ではなく、実際に
-    # リレーション解決が必要なため意図的に対象外とされているフィールド名（KINTONE_FIELD_
-    # TRANSFORMSに存在しない）で検証する。
+    # リレーション解決が必要なため意図的に対象外とされているフィールドコード（KINTONE_
+    # FIELD_TRANSFORMSに存在しない）で検証する（コード"店舗名"、ラベル「施設名（会社名）」）。
     payload = _payload()
-    payload["record"]["施設名（会社名）"] = {"type": "SINGLE_LINE_TEXT", "value": "何か"}
+    payload["record"]["店舗名"] = {"type": "SINGLE_LINE_TEXT", "value": "何か"}
 
     event = kintone_payload_to_sync_event(payload, {}, app_id_to_db_key=APP_ID_MAP)
 
-    assert "施設名（会社名）" not in event.properties
+    assert "店舗名" not in event.properties
     assert "営業ステータス" in event.properties
 
 
 def test_kintone_payload_to_sync_event_skips_field_when_value_normalization_fails() -> None:
     payload = _payload()
-    payload["record"]["契約進捗状況"] = {"type": "DROP_DOWN", "value": "存在しないステータス"}
+    payload["record"]["ドロップダウン_2"] = {"type": "DROP_DOWN", "value": "存在しないステータス"}
 
     event = kintone_payload_to_sync_event(payload, {}, app_id_to_db_key=APP_ID_MAP)
 

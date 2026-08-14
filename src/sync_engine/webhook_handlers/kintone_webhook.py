@@ -14,17 +14,20 @@ Webhook URL自体にクエリパラメータとして共有シークレットを
 kintoneの実際のWebhook通知は type/app/record を含む形で送信され、recordは
 kintone REST APIのレコード取得結果と同じ形式（各フィールドが {"value": ...} でラップされる）。
 recordのキーはkintoneの実フィールドコードであり、これはNotionプロパティ名とは一致しない
-ことが多い（例: kintoneの「契約進捗状況」列 → Notionの「営業ステータス」プロパティ）。
-以前はフィールドコードをそのままNotionプロパティ名として扱う素朴な実装だったが、これでは
-実際にはほぼ全てのプロパティがDispatcher側で「スキーマに存在しない」として黙って
-スキップされ、kintone→Notionの反映が実質機能しないまま「設定済み」に見えてしまう
-（Zoho側で2026-08-12に発覚した同種のBLOCKERと同じ落とし穴）。この変換は
-`kintone_field_transforms.KINTONE_FIELD_TRANSFORMS`（フィールドコード→
+ことが多い（例: 案件管理アプリの実フィールドコード"ドロップダウン_2"→表示ラベル「契約進捗
+状況」→Notionの「営業ステータス」プロパティ）。**フィールドコードは表示ラベルとも一致しない
+ことが多い**（2026-08-14、実際にWebhookを有効化した直後に発覚。当初はCSV移行データの列名
+＝表示ラベルをそのままフィールドコードとして使ってしまい、実際にはほぼ全てのプロパティが
+Dispatcher側で「スキーマに存在しない」として黙ってスキップされ、kintone→Notionの反映が
+実質機能しないまま「設定済み」に見える状態になっていた。`GET /k/v1/app/form/fields.json`で
+実際のコードを検証し修正済み。Zoho側で2026-08-12に発覚した同種のBLOCKERと同じ落とし穴）。
+この変換は`kintone_field_transforms.KINTONE_FIELD_TRANSFORMS`（フィールドコード→
 (Notionプロパティ名, 値変換関数)、db_key別）に委譲する。リレーション解決が必要な
 フィールドや派生値フィールドは意図的に対象外（詳細は`kintone_field_transforms.py`
 のモジュールdocstring参照）。
 
 想定ペイロード例（テストフィクスチャは tests/sync_engine/webhook_handlers/ を参照。
+フィールドコードは実際のkintone環境で検証済みの値、コメントに表示ラベルを付記する。
 "商談中（B）"の括弧は一括移行時に実CSVで確認済みの全角表記だが、Webhook/REST API経由の
 実データが半角括弧でも動くよう`normalize_project_status()`側で正規化している
 （2026-08-14、金沢さん指摘対応。`src/migration/project_mapping.py`参照）:
@@ -34,8 +37,8 @@ recordのキーはkintoneの実フィールドコードであり、これはNoti
   "record": {
     "$id": {"type": "__ID__", "value": "45"},
     "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
-    "契約進捗状況": {"type": "DROP_DOWN", "value": "商談中（B）"},
-    "提案料金（イニシャル）": {"type": "NUMBER", "value": "500000"}
+    "ドロップダウン_2": {"type": "DROP_DOWN", "value": "商談中（B）"},
+    "初期費用": {"type": "NUMBER", "value": "500000"}
   }
 }
 """

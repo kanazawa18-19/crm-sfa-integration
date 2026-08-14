@@ -13,10 +13,25 @@ kintone側のWebhookを有効化すると、ほぼ全てのプロパティが「
 同種のBLOCKER、`zoho_field_transforms.py`参照、を教訓にkintone側のWebhook有効化前に
 先回りして対応）。
 
-この変換ロジックは新規に考案したものではなく、一度限りの一括移行コード
+この変換ロジックの「どのNotionプロパティに何の値を入れるか・どう変換するか」という判断
+自体は新規に考案したものではなく、一度限りの一括移行コード
 （`src/migration/project_mapping.py`/`kintone_client_master.py`/`action_mapping.py`）で
-既に確定させたフィールドごとの判断を、部分更新（1フィールド単位）向けに移植したもの。
-値変換の実装自体は重複させず、それらのモジュールから再利用する。
+既に確定させたフィールドごとの判断を、部分更新（1フィールド単位）向けに移植したもの
+（値変換の実装自体も重複させず、それらのモジュールから再利用する）。
+
+**ただしキーとして使うkintoneフィールドコードは、CSVエクスポートの列名（＝多くの場合
+フィールドの「ラベル」）とは全く別物であり、移行コード側の前提をそのまま流用できない**
+（2026-08-14発覚。実際にkintone Webhookを有効化した直後、案件管理アプリの
+「契約進捗状況」というラベルの実フィールドコードが`ドロップダウン_2`、「初期費用」という
+ラベル文字列を含むコード`初期費用`/`初期費用_0`がそれぞれ「提案料金（イニシャル）」
+「提案料金（ランニング）」という別ラベルを指す、といった食い違いが判明し、有効化した
+Webhookが実質何もNotionへ反映しない状態になっていた）。以下のテーブルのキーは、
+`config/.env`のkintone APIトークンで`GET /k/v1/app/form/fields.json`を実際に呼び出し
+（`app`パラメータにKINTONE_APP_ID_*を指定）、返ってきた`properties[].label`と各Notion
+プロパティの対応を人手で突き合わせて確定させた実際のフィールドコード（2026-08-14検証済み）。
+ラベルとコードが一致しないフィールドが複数あるため、今後この対応表を変更する際は
+必ずラベルではなくこの実APIレスポンスのコードを確認すること（フィールド構成が変わった
+場合は同じ方法で再検証する）。
 
 以下は意図的に対象外（`zoho_field_transforms.py`と同じ「1フィールド単位のWebhook
 部分更新には不適切」という基準）:
@@ -53,17 +68,21 @@ from src.migration.zoho_client_master import normalize_prefecture
 
 # 対象は transform_kintone_project() が実際にNotionプロパティへ書き込んでいるフィールドの
 # うち、リレーション解決が不要なもののみ（src/migration/project_mapping.py参照）。
+# キーは実フィールドコード（2026-08-14、GET /k/v1/app/form/fields.json?app=<project>で検証済み。
+# コメントのラベルは検証時点の表示ラベル）。
 _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
-    # kintoneフィールドコード != Notionプロパティ名。
-    "契約進捗状況": ("営業ステータス", normalize_project_status),
-    "課金開始予定日": ("契約日 / 予想契約日", normalize_date),
+    "ドロップダウン_2": ("営業ステータス", normalize_project_status),  # ラベル: 契約進捗状況
+    "日付_3": ("契約日 / 予想契約日", normalize_date),  # ラベル: 課金開始予定日
     # 「月額費用」「初期費用」はPROJECT_SCHEMA上NUMBER型（build_notion_property_valueは
     # 型変換をせずそのままNotion APIへ渡すため、kintoneのNUMBER型フィールドが返す文字列を
     # そのまま渡すと{"number": "500000"}という不正な形になりNotion APIが拒否する）。
     # zoho_field_transforms.pyの同一プロパティと同じくfloat変換する（shirokuma-sec/
     # obasan-qualityレビューBLOCKER対応、2026-08-14）。
-    "提案料金（ランニング）": ("月額費用", lambda v: float(v) if v not in (None, "") else None),
-    "提案料金（イニシャル）": ("初期費用", lambda v: float(v) if v not in (None, "") else None),
+    # 紛らわしいがコード"初期費用_0"のラベルは「提案料金（ランニング）」＝月額費用側、
+    # コード"初期費用"のラベルは「提案料金（イニシャル）」＝初期費用側（kintone側の
+    # フィールド作成順に由来する命名で、コード文字列とラベルの対応が直感に反する）。
+    "初期費用_0": ("月額費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（ランニング）
+    "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（イニシャル）
 }
 
 # 対象は transform_client_master() が実際にNotionプロパティへ書き込んでいるフィールドのうち、
@@ -71,27 +90,27 @@ _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any
 # 関わらないもののみ（kintone REST APIのレコードはフィールドコードが一意なため、CSV固有の
 # その問題はそもそも発生しない）。「営業ステータス」（derive_client_sales_statusによる派生値）
 # と「本部名」（チェーンDBへのリレーション作成）は対象外（モジュールdocstring参照）。
+# キーは実フィールドコード（2026-08-14、GET /k/v1/app/form/fields.json?app=<client_master>で検証済み）。
 _CLIENT_MASTER_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
-    # kintoneフィールドコード != Notionプロパティ名。
-    "顧客名（法人・個人・施設）": ("取引先名", lambda v: v),
-    "顧客種別": ("顧客種別", normalize_customer_type),
-    "〒": ("郵便番号", lambda v: v or None),
+    "顧客名": ("取引先名", lambda v: v),  # ラベル: 顧客名（法人・個人・施設）
+    "顧客種別": ("顧客種別", normalize_customer_type),  # コード==ラベル
+    "郵便番号": ("郵便番号", lambda v: v or None),  # ラベル: 〒
     # zoho_field_transforms.pyの同一プロパティと同じくnormalize_prefectureで選択肢検証する
     # （生値をそのまま渡すと、表記ゆれがあった場合にNotion側のSELECT型プロパティへ未知の
     # 選択肢が黙って新規作成されてしまう。shirokuma-secレビューWARN対応、2026-08-14）。
-    "都道府県名": ("都道府県", normalize_prefecture),
-    "住所（市区町村以下を記載）": ("住所", lambda v: v or None),
-    # kintoneフィールドコード == Notionプロパティ名だが、統一的に本テーブル経由にしている。
-    "TEL": ("TEL", lambda v: v or None),
-    "FAX": ("FAX", lambda v: v or None),
+    "都道府県名": ("都道府県", normalize_prefecture),  # コード==ラベル
+    "住所": ("住所", lambda v: v or None),  # ラベル: 住所（市区町村以下を記載）
+    "TEL": ("TEL", lambda v: v or None),  # コード==ラベル
+    "FAX": ("FAX", lambda v: v or None),  # コード==ラベル
 }
 
 # 対象は transform_kintone_action() が実際にNotionプロパティへ書き込んでいるフィールドのうち、
 # リレーション解決・チェックボックス解析が不要なもののみ（src/migration/action_mapping.py参照）。
+# キーは実フィールドコード。この2件は2026-08-14、実際のkintone Webhook通知（本番）で確認済み
+# （GET /k/v1/app/form/fields.json?app=<action>でも再確認済み）。
 _ACTION_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
-    # kintoneフィールドコード != Notionプロパティ名。
-    "アクション内容": ("アクション種別", normalize_action_type),
-    "コメント": ("履歴メモ", lambda v: v or None),
+    "actionContent": ("アクション種別", normalize_action_type),  # ラベル: アクション内容
+    "comment": ("履歴メモ", lambda v: v or None),  # ラベル: コメント
 }
 
 # db_key -> (kintoneフィールドコード -> (Notionプロパティ名, 値変換関数))。
