@@ -28,6 +28,15 @@ def test_project_status_field_normalizes_via_alias_table() -> None:
     assert transform("契約済") == "契約"
 
 
+def test_project_status_field_normalizes_half_width_brackets_too() -> None:
+    # 2026-08-14、金沢さん指摘対応: kintone Webhook/REST APIの実データが半角括弧だった
+    # 場合でも動くことをこのテーブル経由でも確認する（normalize_project_status自体の
+    # テストはtests/migration/test_project_mapping.py参照）。
+    _, transform = KINTONE_FIELD_TRANSFORMS["project"]["契約進捗状況"]
+
+    assert transform("商談中(B)") == "アポ"
+
+
 def test_project_status_field_raises_for_unmapped_value() -> None:
     _, transform = KINTONE_FIELD_TRANSFORMS["project"]["契約進捗状況"]
 

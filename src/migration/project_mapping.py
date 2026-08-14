@@ -27,8 +27,15 @@ def normalize_project_status(kintone_status: str | None) -> str:
     契約日／予想契約日の振り分けロジックが値に直接依存するため、未知の値は
     黙ってフォールバックせず即ValueErrorとする（kintone_client_master.normalize_customer_type
     の任意項目フォールバック方針とは対称的だが、必須かどうかで意図的に使い分けている）。
+
+    「商談中（B）」等の括弧は、一括移行時のCSVエクスポートでは全角と確認済み
+    （_STATUS_ALIASESのキー）だが、kintone Webhook/REST API経由の実データでも同じ表記か
+    2026-08-14時点で未検証だった（CSVエクスポートとWebhook/REST APIは別の取得経路のため、
+    normalize_dateがCSVとNotion APIとで日付形式の違いを踏んだ前例がある）。検証の手間を
+    金沢さんに強いる代わりに、半角括弧を全角へ正規化してからエイリアス表を引くことで
+    どちらの表記でも同じ結果になるようにした（2026-08-14、金沢さん指摘対応）。
     """
-    normalized = (kintone_status or "").strip()
+    normalized = (kintone_status or "").strip().replace("(", "（").replace(")", "）")
     canonical = _STATUS_ALIASES.get(normalized, normalized)
     valid_options = PROJECT_SCHEMA.get_property("営業ステータス").options
     if canonical not in valid_options:

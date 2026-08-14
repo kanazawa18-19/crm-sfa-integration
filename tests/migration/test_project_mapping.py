@@ -22,6 +22,21 @@ def test_normalize_project_status_known_values(raw: str, expected: str) -> None:
     assert normalize_project_status(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("商談中(A)", "アポ"),
+        ("商談中(B)", "アポ"),
+        ("商談中(C)", "アポ"),
+        ("商談中(D)", "アポ"),
+    ],
+)
+def test_normalize_project_status_accepts_half_width_brackets(raw: str, expected: str) -> None:
+    # 2026-08-14、金沢さん指摘対応: CSV移行データ（全角括弧確認済み）とkintone Webhook/
+    # REST API経由の実データで表記が異なっていても動くよう、半角括弧も受け付ける。
+    assert normalize_project_status(raw) == expected
+
+
 def test_normalize_project_status_covers_all_schema_options() -> None:
     """実Notionスキーマの営業ステータス全32値（kintone由来の既存11値＋Zoho「ステージ」
     由来の21値、2026-08-10追加）を、normalize_project_status()がエラーにならず、かつ

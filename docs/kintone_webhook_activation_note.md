@@ -42,13 +42,7 @@ Slackの Incoming Webhook自体がURLにシークレットを埋め込む方式�
      `dispatcher.py`のコメント「新規レコード作成フローは本ディスパッチャのスコープ外」参照）
    - このWebhookを有効にする: チェック
 
-4. **本番で有効化する前に、実際のkintoneレコード1件のフィールド値表記を確認する**（要検証、
-   下記「既知の未検証事項」参照）。特に「契約進捗状況」の「商談中（A〜D）」の括弧が
-   全角か半角か。`GET /k/v1/record.json`（kintone REST API、APIトークン方式）で実際に
-   1レコード取得するか、Webhookを一時的に有効化してVercelのfunction logsで実際のペイロード
-   を確認する。
-
-5. 有効化後の動作確認チェックリスト。
+4. 有効化後の動作確認チェックリスト。
 
    1. kintoneで対象アプリ（取引先マスタ／案件管理／アクション管理のいずれか）のレコードを
       1件編集する（`KINTONE_FIELD_TRANSFORMS`に載っているフィールド、例えば案件管理の
@@ -61,14 +55,12 @@ Slackの Incoming Webhook自体がURLにシークレットを埋め込む方式�
 
 ## 既知の未検証事項
 
-- **「商談中（A〜D）」等の選択肢値の括弧が全角か半角か**: `src/migration/project_mapping.py`の
-  `_STATUS_ALIASES`は一括移行時の実CSVエクスポートで確認済みの全角括弧
-  （`"商談中（B）"`）を使っている。`KINTONE_FIELD_TRANSFORMS`（`kintone_field_transforms.py`）は
-  この関数（`normalize_project_status`）をそのまま再利用しているため、同じ表記を前提にしている。
-  CSVエクスポートとWebhook/REST APIは別の取得経路であり、`normalize_date`が過去に
-  「kintone CSVは`2023/12/01`、Notion APIはISO 8601が必要」という経路差異バグを踏んだ前例が
-  あるため、選択肢の文字表記についても本番投入前に実データで確認すること。もし実際が
-  半角括弧だった場合、`_STATUS_ALIASES`（および呼び出し元）の修正が必要になる。
+- **「商談中（A〜D）」等の選択肢値の括弧の全角/半角**: 2026-08-14、金沢さん指摘対応で解決済み。
+  `normalize_project_status()`（`src/migration/project_mapping.py`）が半角括弧を全角へ
+  正規化してからエイリアス表を引くため、CSV移行データ（全角）・Webhook/REST API経由の
+  実データ（未確認だったが全角/半角どちらでも）のいずれでも同じ結果になる
+  （`tests/migration/test_project_mapping.py`の
+  `test_normalize_project_status_accepts_half_width_brackets`で回帰確認済み）。
 - **`GET /k/v1/record.json`のNUMBER型フィールドの実際の返却型**: `kintone_field_transforms.py`の
   金額フィールド変換（`float(v) if v not in (None, "") else None`）は、kintoneのNUMBER型が
   文字列で値を返すという前提（`kintone_webhook.py`のモジュールdocstring記載のペイロード例が

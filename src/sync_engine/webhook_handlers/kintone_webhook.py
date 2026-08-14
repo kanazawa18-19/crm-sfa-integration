@@ -25,12 +25,9 @@ recordのキーはkintoneの実フィールドコードであり、これはNoti
 のモジュールdocstring参照）。
 
 想定ペイロード例（テストフィクスチャは tests/sync_engine/webhook_handlers/ を参照。
-"商談中（B）"の括弧の全角/半角は、一括移行時に実CSVで確認済みの表記
-`src/migration/project_mapping.py`の`_STATUS_ALIASES`に合わせている。ただしCSV
-エクスポートとWebhook/REST APIは別の取得経路であり、`normalize_date`がCSVとNotion API
-とで日付形式の違いを踏んだ前例があるため、**本番のkintone Webhookを有効化する前に
-実際のペイロード（またはGET /k/v1/record.json）で1件確認し、この表記が実際に一致する
-ことを確認すること**）:
+"商談中（B）"の括弧は一括移行時に実CSVで確認済みの全角表記だが、Webhook/REST API経由の
+実データが半角括弧でも動くよう`normalize_project_status()`側で正規化している
+（2026-08-14、金沢さん指摘対応。`src/migration/project_mapping.py`参照）:
 {
   "type": "record.updated",
   "app": {"id": "123"},
