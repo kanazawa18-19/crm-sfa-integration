@@ -634,13 +634,20 @@ def _verify_audit_api_token(authorization: str | None = Header(default=None)) ->
 
 
 @app.get("/api/admin/audit-id-mapping-collisions", dependencies=[Depends(_verify_audit_api_token)])
-async def audit_id_mapping_collisions_endpoint() -> dict[str, Any]:
+async def audit_id_mapping_collisions_endpoint(db_keys: str | None = None) -> dict[str, Any]:
     # scripts/audit_id_mapping_collisions.pyと同じロジック（`scripts/`はVercelの
     # デプロイバンドルに含まれないため、`ModuleNotFoundError`を避けてここに直接書く）。
+    # 全6db_key・数万件規模を1リクエストで走査すると処理時間が長くタイムアウトしうるため、
+    # ?db_keys=project,action,client_master のようにカンマ区切りで絞り込めるようにする
+    # （未指定時は全db_keyが対象、従来通り）。
     from src.db_schema.registry import ALL_SCHEMAS
+
     from src.sync_engine.production_wiring import build_id_mapping_store
 
-    db_keys = tuple(schema.key for schema in ALL_SCHEMAS)
+    if db_keys:
+        target_db_keys = tuple(k.strip() for k in db_keys.split(",") if k.strip())
+    else:
+        target_db_keys = tuple(schema.key for schema in ALL_SCHEMAS)
     external_id_fields = (
         (Tool.KINTONE, "kintone_id"),
         (Tool.ZOHO, "zoho_id"),
@@ -648,7 +655,7 @@ async def audit_id_mapping_collisions_endpoint() -> dict[str, Any]:
     )
     store = build_id_mapping_store()
     seen: dict[Tool, dict[str, dict[str, str]]] = {tool: {} for tool, _ in external_id_fields}
-    for db_key in db_keys:
+    for db_key in target_db_keys:
         for mapping in store.list_by_db(db_key):
             for tool, field_name in external_id_fields:
                 value = getattr(mapping, field_name)
@@ -663,7 +670,7 @@ async def audit_id_mapping_collisions_endpoint() -> dict[str, Any]:
         if len(by_db_key) > 1
     ]
     return {
-        "db_keys_checked": list(db_keys),
+        "db_keys_checked": list(target_db_keys),
         "collision_count": len(collisions),
         "collisions": collisions,
     }
