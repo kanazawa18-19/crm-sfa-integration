@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.auth import verify_cron_secret, verify_dashboard_api_token
+from src.db_schema.base import Tool
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -634,20 +635,35 @@ def _verify_audit_api_token(authorization: str | None = Header(default=None)) ->
 
 @app.get("/api/admin/audit-id-mapping-collisions", dependencies=[Depends(_verify_audit_api_token)])
 async def audit_id_mapping_collisions_endpoint() -> dict[str, Any]:
-    from scripts.audit_id_mapping_collisions import _ALL_DB_KEYS, find_cross_db_key_collisions
+    # scripts/audit_id_mapping_collisions.pyと同じロジック（`scripts/`はVercelの
+    # デプロイバンドルに含まれないため、`ModuleNotFoundError`を避けてここに直接書く）。
+    from src.db_schema.registry import ALL_SCHEMAS
     from src.sync_engine.production_wiring import build_id_mapping_store
 
+    db_keys = tuple(schema.key for schema in ALL_SCHEMAS)
+    external_id_fields = (
+        (Tool.KINTONE, "kintone_id"),
+        (Tool.ZOHO, "zoho_id"),
+        (Tool.SPREADSHEET, "spreadsheet_row"),
+    )
     store = build_id_mapping_store()
-    collisions = find_cross_db_key_collisions(store, _ALL_DB_KEYS)
+    seen: dict[Tool, dict[str, dict[str, str]]] = {tool: {} for tool, _ in external_id_fields}
+    for db_key in db_keys:
+        for mapping in store.list_by_db(db_key):
+            for tool, field_name in external_id_fields:
+                value = getattr(mapping, field_name)
+                if value is None:
+                    continue
+                seen[tool].setdefault(str(value), {})[db_key] = mapping.notion_key
+
+    collisions = [
+        {"tool": tool.value, "external_id": external_id, "notion_keys_by_db_key": by_db_key}
+        for tool, _ in external_id_fields
+        for external_id, by_db_key in seen[tool].items()
+        if len(by_db_key) > 1
+    ]
     return {
-        "db_keys_checked": list(_ALL_DB_KEYS),
+        "db_keys_checked": list(db_keys),
         "collision_count": len(collisions),
-        "collisions": [
-            {
-                "tool": c.tool.value,
-                "external_id": c.external_id,
-                "notion_keys_by_db_key": c.notion_keys_by_db_key,
-            }
-            for c in collisions
-        ],
+        "collisions": collisions,
     }
