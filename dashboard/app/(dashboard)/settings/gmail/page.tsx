@@ -17,6 +17,8 @@ export default async function GmailSettingsPage({
   const { connected, error } = await searchParams;
 
   const connection = await prisma.repGmailConnection.findUnique({ where: { repEmail: user.email } });
+  const allConnections =
+    user.role === "master" ? await prisma.repGmailConnection.findMany({ orderBy: { connectedAt: "desc" } }) : null;
 
   return (
     <div className="max-w-xl space-y-6">
@@ -60,6 +62,54 @@ export default async function GmailSettingsPage({
           </>
         )}
       </div>
+
+      {allConnections && (
+        <div>
+          <h2 className="text-sm font-semibold text-(--color-foreground)/70">連携状況（全体）</h2>
+          <p className="mt-1 text-xs text-(--color-foreground)/50">
+            現在Gmailと連携しているアドレス一覧です（管理者のみ表示）。
+          </p>
+          <div className="surface-card mt-3 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
+                    <th className="px-4 py-2 font-medium">メールアドレス</th>
+                    <th className="font-medium">連携日時</th>
+                    <th className="font-medium">最終同期</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allConnections.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-3 text-(--text-grey)" colSpan={3}>
+                        まだ誰も連携していません。
+                      </td>
+                    </tr>
+                  ) : (
+                    allConnections.map((c) => (
+                      <tr key={c.id} className="border-b border-(--border-subtle) last:border-0">
+                        <td className="px-4 py-2">
+                          {c.repEmail}
+                          {c.repEmail === user.email && <span className="badge-blue ml-2">あなた</span>}
+                        </td>
+                        <td>{c.connectedAt.toLocaleString("ja-JP")}</td>
+                        <td>
+                          {c.lastSyncedAt ? (
+                            c.lastSyncedAt.toLocaleString("ja-JP")
+                          ) : (
+                            <span className="badge-muted">未同期</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
