@@ -1,0 +1,91 @@
+// Prisma schema for the crm-sfa-integration dashboard's own auth/security
+// data (user accounts, 2FA, IP allowlist). Ported from web-engagement-tool's
+// prisma/schema.prisma (2026-08-15) — same models, same field names, so the
+// two admin surfaces stay familiar to whoever maintains both. This DB is
+// scoped to just the dashboard's security concerns; all business data
+// (leads, projects, contacts) still lives in Notion via the Python backend
+// (BACKEND_API_URL) — this schema is not a general-purpose app database.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  master
+  editor
+  viewer
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  // Null while an invited user hasn't set their password yet.
+  passwordHash String?
+  role         UserRole @default(viewer)
+  createdAt    DateTime @default(now())
+
+  // TOTP two-factor auth (only relevant when AppSettings.twoFactorEnabled is
+  // on). totpSecretEnc is set once the user completes enrollment; until
+  // then totpEnabled stays false and login forces them through the
+  // enrollment flow instead of straight into the app.
+  totpSecretEnc       String?
+  totpEnabled         Boolean  @default(false)
+  // One-time recovery codes (hashed like a password, same scrypt scheme) for
+  // when the user loses their authenticator device. Consumed entries are
+  // removed from the array.
+  totpBackupCodesHash String[] @default([])
+
+  // Email one-time-code two-factor auth — the alternative to TOTP a user can
+  // pick during enrollment. Mutually exclusive with totpEnabled in practice
+  // (a user only ever completes one enrollment flow), but nothing here
+  // enforces that at the schema level.
+  emailOtpEnabled Boolean @default(false)
+
+  resetTokens PasswordResetToken[]
+}
+
+// One-time code issued for email-based 2FA login. Old/expired rows aren't
+// cleaned up automatically; volume is low enough not to matter.
+model EmailOtpCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Singleton row (id always 1) — org-wide security policy toggles. Both
+// default OFF so the initial rollout doesn't lock anyone out until a master
+// explicitly turns them on from /settings/security.
+model AppSettings {
+  id                 Int      @id @default(1)
+  twoFactorEnabled   Boolean  @default(false)
+  ipAllowlistEnabled Boolean  @default(false)
+  // Allowed IPv4 addresses or CIDR blocks (e.g. "203.0.113.5",
+  // "203.0.113.0/24"). Only enforced (in proxy.ts) when ipAllowlistEnabled
+  // is true. lib/ipAllowlist.ts's ALWAYS_ALLOWED_IPS is unioned in on top of
+  // this at check time regardless of what's here.
+  ipAllowlist        String[] @default([])
+  updatedAt          DateTime @updatedAt
+}

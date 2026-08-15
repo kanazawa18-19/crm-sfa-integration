@@ -10,13 +10,20 @@ const navItems = [
   { href: "/settings", label: "設定" },
 ];
 
-export default function Header() {
+const MASTER_ONLY_NAV_ITEMS = [
+  { href: "/users", label: "ユーザー管理" },
+  { href: "/settings/security", label: "セキュリティ設定" },
+];
+
+export default function Header({ role }: { role: "master" | "editor" | "viewer" }) {
+  const items = role === "master" ? [...navItems, ...MASTER_ONLY_NAV_ITEMS] : navItems;
+
   return (
     <header className="border-b border-gray-200 bg-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <span className="text-lg font-bold text-gray-900">営業管理ダッシュボード</span>
-        <nav className="flex gap-6">
-          {navItems.map((item) => (
+        <nav className="flex flex-wrap gap-6">
+          {items.map((item) => (
             <Link
               key={item.href}
               href={item.href}

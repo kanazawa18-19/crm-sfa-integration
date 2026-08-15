@@ -1,79 +1,35 @@
-import { createHmac, timingSafeEqual } from "crypto";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import prisma from "@/lib/prisma";
+import { COOKIE_NAME, verifySessionToken } from "@/lib/adminSession";
 
-export const SESSION_COOKIE_NAME = "dashboard_session";
+// web-engagement-toolのlib/auth.tsと同じ実装(2026-08-15移植)。単一の共有
+// DASHBOARD_PASSWORDによるセッション方式(旧実装)を置き換え、ユーザーごとの
+// アカウント・ロールベースの認証にする。
 
-// セッションの有効期間。cookie の maxAge と揃えること。
-export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
+export type CurrentUser = { id: string; email: string; role: "master" | "editor" | "viewer" };
 
-const SESSION_VALUE = "authenticated";
+const ROLE_ORDER = { viewer: 0, editor: 1, master: 2 } as const;
+const ROLE_LABELS_JA = { viewer: "閲覧者", editor: "編集者", master: "管理者" } as const;
 
-/**
- * DASHBOARD_PASSWORD / SESSION_SECRET が未設定の場合は常に認証を失敗させる
- * （fail-closed）。
- */
-export function isAuthConfigured(): boolean {
-  return Boolean(process.env.DASHBOARD_PASSWORD && process.env.SESSION_SECRET);
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(COOKIE_NAME)?.value;
+  const verified = verifySessionToken(token);
+  if (!verified) return null;
+
+  const user = await prisma.user.findUnique({ where: { id: verified.userId } });
+  if (!user) return null;
+
+  return { id: user.id, email: user.email, role: user.role };
 }
 
-export function verifyPassword(password: string): boolean {
-  if (!isAuthConfigured()) {
-    return false;
+/** Server Component guard — redirects to login if signed out, or throws if the role isn't high enough. */
+export async function requireRole(minRole: keyof typeof ROLE_ORDER): Promise<CurrentUser> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  if (ROLE_ORDER[user.role] < ROLE_ORDER[minRole]) {
+    throw new Error(`この操作には${ROLE_LABELS_JA[minRole]}以上の権限が必要です`);
   }
-  // タイミング攻撃対策として定数時間比較を行う（Geminiクロスレビューでの指摘を反映）。
-  const expectedBuffer = Buffer.from(process.env.DASHBOARD_PASSWORD as string);
-  const passwordBuffer = Buffer.from(password);
-  if (passwordBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-  return timingSafeEqual(passwordBuffer, expectedBuffer);
-}
-
-/**
- * セッショントークンを発行する。`issuedAt`（発行時刻・ミリ秒）を署名対象に含めることで、
- * 有効期限切れの判定を isValidSessionToken 側で行えるようにする。
- */
-export function createSessionToken(issuedAt: number = Date.now()): string | null {
-  const secret = process.env.SESSION_SECRET;
-  if (!secret) {
-    return null;
-  }
-  const hmac = createHmac("sha256", secret)
-    .update(`${SESSION_VALUE}.${issuedAt}`)
-    .digest("hex");
-  return `${issuedAt}.${hmac}`;
-}
-
-export function isValidSessionToken(token: string | undefined | null): boolean {
-  if (!token) {
-    return false;
-  }
-
-  const separatorIndex = token.indexOf(".");
-  if (separatorIndex === -1) {
-    return false;
-  }
-  const issuedAt = Number(token.slice(0, separatorIndex));
-  if (!Number.isInteger(issuedAt)) {
-    return false;
-  }
-
-  const expected = createSessionToken(issuedAt);
-  if (!expected) {
-    return false;
-  }
-  const tokenBuffer = Buffer.from(token);
-  const expectedBuffer = Buffer.from(expected);
-  if (tokenBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-  if (!timingSafeEqual(tokenBuffer, expectedBuffer)) {
-    return false;
-  }
-
-  const ageMs = Date.now() - issuedAt;
-  if (ageMs < 0 || ageMs > SESSION_MAX_AGE_SECONDS * 1000) {
-    return false;
-  }
-
-  return true;
+  return user;
 }
