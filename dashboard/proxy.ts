@@ -9,7 +9,15 @@ import prisma from "@/lib/prisma";
 // web-engagement-toolのsrc/proxy.tsと同じ構成に移植(2026-08-15、ユーザー管理・IP制限・
 // 2FA導入に伴う置き換え)。
 
-const PUBLIC_PATHS = ["/login", "/forgot-password", "/set-password", "/login/2fa", "/login/2fa-setup", "/login/2fa-email"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/forgot-password",
+  "/set-password",
+  "/login/2fa",
+  "/login/2fa-setup",
+  "/login/2fa-email",
+  "/confirm-email-change",
+];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

@@ -35,6 +35,11 @@ model User {
   role         UserRole @default(viewer)
   createdAt    DateTime @default(now())
 
+  // 自己プロフィール編集(/settings/profile, 2026-08-16)で追加。どちらも任意項目 —
+  // 未設定でも既存ユーザーの動作に影響しない。
+  name      String?
+  avatarUrl String?
+
   // TOTP two-factor auth (only relevant when AppSettings.twoFactorEnabled is
   // on). totpSecretEnc is set once the user completes enrollment; until
   // then totpEnabled stays false and login forces them through the
@@ -52,7 +57,8 @@ model User {
   // enforces that at the schema level.
   emailOtpEnabled Boolean @default(false)
 
-  resetTokens PasswordResetToken[]
+  resetTokens       PasswordResetToken[]
+  emailChangeTokens EmailChangeToken[]
 }
 
 // One-time code issued for email-based 2FA login. Old/expired rows aren't
@@ -71,6 +77,24 @@ model EmailOtpCode {
 model PasswordResetToken {
   id        String    @id @default(cuid())
   userId    String
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// メールアドレス変更(/settings/profile, 2026-08-16)の本人確認用ワンタイムトークン。
+// PasswordResetTokenと同じワンタイムトークン方式だが、確定先が「ログイン中のuserId」
+// ではなく「これから確定するnewEmail」である点が違う — 即時上書きせず、新しいメール
+// アドレス宛にリンクを送って本人がクリックするまでUser.emailは変更しない安全設計。
+model EmailChangeToken {
+  id        String    @id @default(cuid())
+  userId    String
+  newEmail  String
   token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?

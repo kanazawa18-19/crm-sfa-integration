@@ -2,6 +2,7 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { randomBytes } from "crypto";
 import prisma from "@/lib/prisma";
 import {
@@ -16,6 +17,7 @@ import {
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { encryptToken, decryptToken } from "@/lib/tokenCrypto";
+import { validateAvatarFile } from "@/lib/avatar";
 import {
   verifyTotpCode,
   generateBackupCodes,
@@ -351,4 +353,155 @@ export async function updateSecuritySettings(formData: FormData) {
   });
 
   redirect("/settings/security");
+}
+
+// --- 自分のプロフィール編集(/settings/profile) ---------------------------------
+// 管理者が他人を編集する機能ではなく、ログイン中の本人が自分の情報を編集するための
+// アクション群(2026-08-16)。ロールに関係なく本人であればよいのでrequireRole("viewer")
+// (=最低ロール、実質「ログイン済みなら誰でも」)で認可する。
+
+export type ProfileActionState = { error?: string; success?: string };
+
+export async function updateOwnName(
+  _prevState: ProfileActionState | undefined,
+  formData: FormData
+): Promise<ProfileActionState> {
+  const user = await requireRole("viewer");
+  const name = String(formData.get("name") ?? "").trim();
+  if (name.length > 100) {
+    return { error: "表示名は100文字以内で入力してください" };
+  }
+
+  await prisma.user.update({ where: { id: user.id }, data: { name: name || null } });
+  revalidatePath("/settings/profile");
+  return { success: "表示名を更新しました" };
+}
+
+const EMAIL_CHANGE_TOKEN_TTL_MS = 1000 * 60 * 60; // 1 hour、パスワード再設定と同じ有効期限
+
+/**
+ * メールアドレス変更はパスワード再設定/招待と同じワンタイムトークン方式。即時上書きは
+ * せず、新しいメールアドレス宛に確認リンクを送り、confirmEmailChange()でクリックされて
+ * 初めて確定する(乗っ取られたセッションから他人のメールを乗っ取られるのを防ぐ)。
+ */
+export async function requestOwnEmailChange(
+  _prevState: ProfileActionState | undefined,
+  formData: FormData
+): Promise<ProfileActionState> {
+  const user = await requireRole("viewer");
+  const newEmail = String(formData.get("newEmail") ?? "").trim().toLowerCase();
+
+  if (!newEmail || !newEmail.includes("@")) {
+    return { error: "有効なメールアドレスを入力してください" };
+  }
+  if (newEmail === user.email) {
+    return { error: "現在と同じメールアドレスです" };
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email: newEmail } });
+  if (existing) {
+    return { error: "このメールアドレスは既に使用されています" };
+  }
+
+  const token = randomBytes(32).toString("hex");
+  await prisma.emailChangeToken.create({
+    data: {
+      userId: user.id,
+      newEmail,
+      token,
+      expiresAt: new Date(Date.now() + EMAIL_CHANGE_TOKEN_TTL_MS),
+    },
+  });
+
+  const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
+  await sendEmail({
+    to: newEmail,
+    subject: "【営業管理ダッシュボード】メールアドレス変更の確認",
+    text: `メールアドレスを変更するには以下のリンクを開いてください(1時間有効)。\n\n${baseUrl}/confirm-email-change?token=${token}\n\n心当たりがない場合はこのメールを無視してください。`,
+  });
+
+  return { success: `${newEmail} 宛に確認メールを送信しました。メール内のリンクを開いて変更を確定してください。` };
+}
+
+export async function confirmEmailChange(_prevState: string | undefined, formData: FormData) {
+  const token = String(formData.get("token") ?? "");
+  if (!token) return "リンクが不正です";
+
+  const changeToken = await prisma.emailChangeToken.findUnique({ where: { token } });
+  if (!changeToken || changeToken.usedAt || changeToken.expiresAt < new Date()) {
+    return "リンクの有効期限が切れています。もう一度お試しください。";
+  }
+
+  // 発行後、確定前に他ユーザーがそのメールアドレスを取得している可能性もゼロではない
+  // ため、確定直前にもう一度重複チェックする。
+  const existing = await prisma.user.findUnique({ where: { email: changeToken.newEmail } });
+  if (existing && existing.id !== changeToken.userId) {
+    return "このメールアドレスは既に使用されています";
+  }
+
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: changeToken.userId }, data: { email: changeToken.newEmail } }),
+    prisma.emailChangeToken.update({ where: { id: changeToken.id }, data: { usedAt: new Date() } }),
+  ]);
+
+  redirect("/settings/profile?emailChanged=1");
+}
+
+/** 現在のパスワード入力を必須にすることで、乗っ取られたセッションからの変更を防ぐ。 */
+export async function changeOwnPassword(
+  _prevState: ProfileActionState | undefined,
+  formData: FormData
+): Promise<ProfileActionState> {
+  const user = await requireRole("viewer");
+  const currentPassword = String(formData.get("currentPassword") ?? "");
+  const newPassword = String(formData.get("newPassword") ?? "");
+
+  if (newPassword.length < 8) {
+    return { error: "新しいパスワードは8文字以上で入力してください" };
+  }
+
+  const freshUser = await prisma.user.findUnique({ where: { id: user.id } });
+  if (!freshUser || !verifyPassword(currentPassword, freshUser.passwordHash)) {
+    return { error: "現在のパスワードが正しくありません" };
+  }
+
+  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: hashPassword(newPassword) } });
+  return { success: "パスワードを変更しました" };
+}
+
+export async function updateOwnAvatar(
+  _prevState: ProfileActionState | undefined,
+  formData: FormData
+): Promise<ProfileActionState> {
+  const user = await requireRole("viewer");
+  const file = formData.get("avatar");
+  if (!(file instanceof File)) {
+    return { error: "画像ファイルを選択してください" };
+  }
+
+  const validationError = validateAvatarFile(file);
+  if (validationError) {
+    return { error: validationError };
+  }
+
+  let url: string;
+  try {
+    // ビルド時にBLOB_READ_WRITE_TOKENが未設定でもnext buildが失敗しないよう、
+    // モジュールのトップレベルではなくこのアクション内でのみ動的importする。
+    const { put } = await import("@vercel/blob");
+    const ext = file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg";
+    const blob = await put(`avatars/${user.id}.${ext}`, file, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+    });
+    url = blob.url;
+  } catch (error) {
+    console.error("avatar upload failed", error);
+    return { error: "画像のアップロードに失敗しました。時間をおいて再度お試しください。" };
+  }
+
+  await prisma.user.update({ where: { id: user.id }, data: { avatarUrl: url } });
+  revalidatePath("/settings/profile");
+  return { success: "アイコン画像を更新しました" };
 }
