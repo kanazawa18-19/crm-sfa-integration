@@ -125,12 +125,23 @@ model AppSettings {
 // lib/tokenCrypto.ts / src/gmail_sync/token_crypto.py — 同じTOKEN_ENCRYPTION_KEYを
 // 両言語から使う)。接続UIはdashboard(Next.js)側にあるが、実際にこのテーブルを
 // 定期的にポーリングしてGmail APIを叩くのはPythonバックエンド側(src/gmail_sync/)。
+// 2026-08-16、Gmail Push通知(users.watch() + Cloud Pub/Sub)によるほぼリアルタイム同期化に
+// 伴いhistoryId/watchExpirationを追加。Zoho watch channel(ZOHO_WATCH_CHANNEL_ID、env変数で
+// 1本管理)と異なり、Gmailのwatch()は担当者(メールボックス)ごとに個別のため、行ごとに
+// DBで状態管理する(src/gmail_sync/watch_registration.py参照)。
 model RepGmailConnection {
   id              String    @id @default(cuid())
   repEmail        String    @unique
   refreshTokenEnc String
   connectedAt     DateTime  @default(now())
   lastSyncedAt    DateTime?
+  // Gmail APIのhistoryId(増分取得の起点)。未設定(null)の担当者は、Pushがまだ登録されて
+  // いない/一度もフル同期していない状態を表し、sync_all()(日次セーフティネット)の
+  // フルスキャンのみでカバーされる。
+  historyId       String?
+  // users.watch()の有効期限。Google仕様上、登録・延長時点から最大7日。
+  // watch_registration.renew_all_watches()が残り2日以内/未設定の担当者のみ延長する。
+  watchExpiration DateTime?
 }
 
 // 連絡先とのメール送受信ログ(2026-08-16、Gmail連携移管)。Notion側はAPIレート制限・
