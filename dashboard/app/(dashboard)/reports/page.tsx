@@ -2,17 +2,14 @@ import ErrorMessage from "@/components/ErrorMessage";
 import DatePicker from "@/components/DatePicker";
 import { DailyReport, getDailyReport, getErrorMessage } from "@/lib/backend";
 import { formatYen } from "@/lib/format";
+import { todayDateStringJst } from "@/lib/date";
 
 // バックエンドの最新データを毎リクエスト取得するため、静的プリレンダリングを無効化する。
 export const dynamic = "force-dynamic";
 
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 export default async function ReportsPage(props: PageProps<"/reports">) {
   const searchParams = await props.searchParams;
-  const date = typeof searchParams.date === "string" ? searchParams.date : todayDateString();
+  const date = typeof searchParams.date === "string" ? searchParams.date : todayDateStringJst();
 
   let report: DailyReport;
   try {

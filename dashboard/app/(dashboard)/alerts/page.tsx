@@ -6,13 +6,10 @@ import {
   getErrorMessage,
   getManagerAlerts,
 } from "@/lib/backend";
+import { todayDateStringJst } from "@/lib/date";
 
 // バックエンドの最新データを毎リクエスト取得するため、静的プリレンダリングを無効化する。
 export const dynamic = "force-dynamic";
-
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 interface AlertSection {
   key: keyof ManagerAlertsResponse["alerts"];
@@ -99,7 +96,7 @@ export default async function AlertsPage(props: PageProps<"/alerts">) {
   const searchParams = await props.searchParams;
   // DatePickerコンポーネントは共通実装でURLクエリパラメータ名を常に"date"に固定しているため、
   // reports/page.tsxと同様に"date"で受け取り、バックエンドへは"as_of"として渡す。
-  const asOf = typeof searchParams.date === "string" ? searchParams.date : todayDateString();
+  const asOf = typeof searchParams.date === "string" ? searchParams.date : todayDateStringJst();
 
   let alerts: ManagerAlertsResponse;
   try {

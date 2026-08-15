@@ -8,6 +8,12 @@ const ERROR_MESSAGES_JA: Record<string, string> = {
   exchange_failed: "Googleとの連携処理に失敗しました。もう一度お試しください。",
 };
 
+// toLocaleString("ja-JP")だけでは書式(区切り文字)が日本語になるだけでタイムゾーンは
+// サーバーの実行環境(Vercelは基本UTC)のままになる — timeZoneを明示してJST表示にする。
+function formatJst(date: Date): string {
+  return date.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+}
+
 export default async function GmailSettingsPage({
   searchParams,
 }: {
@@ -40,7 +46,7 @@ export default async function GmailSettingsPage({
               連携中: <span className="font-medium">{user.email}</span>
             </p>
             <p className="text-sm text-(--text-grey)">
-              最終同期: {connection.lastSyncedAt ? connection.lastSyncedAt.toLocaleString("ja-JP") : "未同期"}
+              最終同期: {connection.lastSyncedAt ? formatJst(connection.lastSyncedAt) : "未同期"}
             </p>
             <div className="flex gap-3">
               <Link href="/gmail/oauth/start" className="btn-ghost">
@@ -93,10 +99,10 @@ export default async function GmailSettingsPage({
                           {c.repEmail}
                           {c.repEmail === user.email && <span className="badge-blue ml-2">あなた</span>}
                         </td>
-                        <td>{c.connectedAt.toLocaleString("ja-JP")}</td>
+                        <td>{formatJst(c.connectedAt)}</td>
                         <td>
                           {c.lastSyncedAt ? (
-                            c.lastSyncedAt.toLocaleString("ja-JP")
+                            formatJst(c.lastSyncedAt)
                           ) : (
                             <span className="badge-muted">未同期</span>
                           )}
