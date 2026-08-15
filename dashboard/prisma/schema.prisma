@@ -1,10 +1,16 @@
-// Prisma schema for the crm-sfa-integration dashboard's own auth/security
-// data (user accounts, 2FA, IP allowlist). Ported from web-engagement-tool's
-// prisma/schema.prisma (2026-08-15) — same models, same field names, so the
-// two admin surfaces stay familiar to whoever maintains both. This DB is
-// scoped to just the dashboard's security concerns; all business data
-// (leads, projects, contacts) still lives in Notion via the Python backend
-// (BACKEND_API_URL) — this schema is not a general-purpose app database.
+// Prisma schema for the crm-sfa-integration project's shared Postgres
+// (Neon, provisioned 2026-08-15). Originally scoped to just the dashboard's
+// own auth/security data (user accounts, 2FA, IP allowlist), ported from
+// web-engagement-tool's prisma/schema.prisma — same models, same field
+// names, so the two admin surfaces stay familiar to whoever maintains both.
+//
+// 2026-08-16, Gmail連携移管(gmail_sync)に伴いRepGmailConnection/EmailLogを追加。
+// この2モデルは主にPythonバックエンド(src/gmail_sync/)がpsycopgで直接読み書きする
+// (Python側は独自のマイグレーションツールを持たず、このNeon DBのスキーマ管理は
+// Prisma/dashboardに一本化する設計 — 同一DBに対する二重のマイグレーション履歴を
+// 避けるため)。連絡先・案件等の業務データは引き続きNotion側(Python backend経由、
+// BACKEND_API_URL)が正であり、このDBはあくまでダッシュボードの認証・Gmail連携の
+// 実務データ置き場という位置付け。
 
 generator client {
   provider = "prisma-client"
@@ -88,4 +94,37 @@ model AppSettings {
   // this at check time regardless of what's here.
   ipAllowlist        String[] @default([])
   updatedAt          DateTime @updatedAt
+}
+
+// 営業担当ごとのGmail OAuth接続(2026-08-16、Gmail連携移管)。web-engagement-tool側の
+// RepCalendarConnectionと同じ暗号化リフレッシュトークン方式(AES-256-GCM、
+// lib/tokenCrypto.ts / src/gmail_sync/token_crypto.py — 同じTOKEN_ENCRYPTION_KEYを
+// 両言語から使う)。接続UIはdashboard(Next.js)側にあるが、実際にこのテーブルを
+// 定期的にポーリングしてGmail APIを叩くのはPythonバックエンド側(src/gmail_sync/)。
+model RepGmailConnection {
+  id              String    @id @default(cuid())
+  repEmail        String    @unique
+  refreshTokenEnc String
+  connectedAt     DateTime  @default(now())
+  lastSyncedAt    DateTime?
+}
+
+// 連絡先とのメール送受信ログ(2026-08-16、Gmail連携移管)。Notion側はAPIレート制限・
+// 件数の都合上生ログは持たず、連絡先ページには「最終メール日時」等のロールアップの
+// みを書き込む(src/gmail_sync/参照)。gmailMessageIdでの重複排除はPython側で行う。
+model EmailLog {
+  id             String   @id @default(cuid())
+  // Notion連絡先DB(3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae)のpage_id。
+  contactPageId  String
+  contactEmail   String
+  repEmail       String
+  gmailMessageId String   @unique
+  direction      String // "inbound" | "outbound"
+  subject        String?
+  snippet        String?
+  sentAt         DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([contactPageId])
+  @@index([contactEmail])
 }
