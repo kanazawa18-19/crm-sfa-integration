@@ -398,10 +398,24 @@ export async function requestOwnEmailChange(
     return { error: "現在と同じメールアドレスです" };
   }
 
+  // requestPasswordResetと同じ方針: 入力されたメールアドレスが既に別アカウントで
+  // 使われているかどうかをレスポンスの文言から判別できないよう、常に同じ成功
+  // メッセージを返す(そのアドレスが既に使われている場合はメールを送らないだけで、
+  // 呼び出し側にはエラーとして伝えない — shirokuma-secレビュー指摘、2026-08-16)。
+  const successMessage = `${newEmail} が未登録であれば、確認メールを送信しました。メール内のリンクを開いて変更を確定してください。`;
+
   const existing = await prisma.user.findUnique({ where: { email: newEmail } });
   if (existing) {
-    return { error: "このメールアドレスは既に使用されています" };
+    return { success: successMessage };
   }
+
+  // 同一ユーザーの未使用トークンを無効化してから新しく発行する。古いリクエストの
+  // リンクが宛先を変えて有効なまま残り続けるのを防ぐ(shirokuma-secレビュー指摘、
+  // 2026-08-16)。
+  await prisma.emailChangeToken.updateMany({
+    where: { userId: user.id, usedAt: null },
+    data: { usedAt: new Date() },
+  });
 
   const token = randomBytes(32).toString("hex");
   await prisma.emailChangeToken.create({
@@ -420,7 +434,7 @@ export async function requestOwnEmailChange(
     text: `メールアドレスを変更するには以下のリンクを開いてください(1時間有効)。\n\n${baseUrl}/confirm-email-change?token=${token}\n\n心当たりがない場合はこのメールを無視してください。`,
   });
 
-  return { success: `${newEmail} 宛に確認メールを送信しました。メール内のリンクを開いて変更を確定してください。` };
+  return { success: successMessage };
 }
 
 export async function confirmEmailChange(_prevState: string | undefined, formData: FormData) {
@@ -439,10 +453,23 @@ export async function confirmEmailChange(_prevState: string | undefined, formDat
     return "このメールアドレスは既に使用されています";
   }
 
+  const targetUser = await prisma.user.findUnique({ where: { id: changeToken.userId } });
+  const oldEmail = targetUser?.email;
+
   await prisma.$transaction([
     prisma.user.update({ where: { id: changeToken.userId }, data: { email: changeToken.newEmail } }),
     prisma.emailChangeToken.update({ where: { id: changeToken.id }, data: { usedAt: new Date() } }),
   ]);
+
+  // 変更前のメールアドレス宛に通知する — 自分がリクエストしていない変更(乗っ取り)
+  // に本人が気づける最後の砦(shirokuma-secレビュー指摘、2026-08-16)。
+  if (oldEmail) {
+    await sendEmail({
+      to: oldEmail,
+      subject: "【営業管理ダッシュボード】メールアドレスが変更されました",
+      text: `このアカウントのメールアドレスが ${changeToken.newEmail} に変更されました。\n\n心当たりがない場合は至急管理者にご連絡ください。`,
+    });
+  }
 
   redirect("/settings/profile?emailChanged=1");
 }
