@@ -1,26 +1,172 @@
 @import "tailwindcss";
 
+/*
+ * Manual theme switch: ThemeToggle (components/ThemeToggle.tsx) always
+ * resolves the visitor's choice to a concrete data-theme="light"|"dark" on
+ * <html> (a blocking script in the root layout does this before first
+ * paint, so "system" still tracks the OS live via a matchMedia listener —
+ * it's just resolved to an explicit value rather than left ambiguous).
+ * Reconfiguring the built-in dark: variant to key off that attribute means
+ * every dark: utility class in the app respects the manual override, not
+ * just the CSS custom properties below.
+ *
+ * web-engagement-tool(MA)側のglobals.cssと同じ構成・同じトークン値で移植
+ * (2026-08-15、金沢さん指示でSmartHR Design System(https://smarthr.design/)の
+ * デザイントークンを参考に配色・角丸・シャドウを統一。ロゴのみConnector Japanのまま)。
+ * SmartHR自体はダークモードを持たないため、ダーク側の値は同じ色相を保ちつつ自分たちで
+ * 設計した。
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8f7f6;
+  --foreground: #23221e;
+
+  /* Brand palette — SmartHR Design System準拠 */
+  --brand-blue: #0077c7;
+  --brand-blue-light: #6cb6e8;
+  --brand-blue-dark: #005a94;
+  --brand-gold: #ffcc17;
+  --brand-gold-light: #ffe185;
+  --brand-danger: #e01e5a;
+  --text-grey: #706d65;
+  --text-disabled: #c1bdb7;
+
+  --surface: #ffffff;
+  --surface-muted: #f3f2f0;
+  --border-subtle: #d6d3d0;
+
+  /* SmartHR角丸トークン(s/m/l/full) */
+  --radius-s: 4px;
+  --radius-m: 6px;
+  --radius-l: 8px;
+  --radius-full: 10000px;
+
+  /* SmartHRシャドウトークン(LAYER0-4)。SmartHRは色を明示しないため
+     TEXT_BLACKベースの低不透明度で近似している。 */
+  --shadow-layer1: 0 1px 2px 0 rgba(35, 34, 30, 0.3);
+  --shadow-layer2: 0 2px 4px 1px rgba(35, 34, 30, 0.16);
+  --shadow-layer3: 0 4px 8px 2px rgba(35, 34, 30, 0.14);
+  --shadow-layer4: 0 8px 16px 4px rgba(35, 34, 30, 0.12);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-blue-light: var(--brand-blue-light);
+  --color-brand-blue-dark: var(--brand-blue-dark);
+  --color-brand-gold: var(--brand-gold);
+  --color-brand-gold-light: var(--brand-gold-light);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #16181c;
+    --foreground: #eeece9;
+    --surface: #1e2126;
+    --surface-muted: #262a31;
+    --border-subtle: rgba(238, 236, 233, 0.14);
+    --brand-blue: #4fa8dd;
+    --brand-blue-light: #8cc6ea;
+    --brand-blue-dark: #0077c7;
+    --text-grey: #a19d94;
+    --text-disabled: #5c584f;
   }
+}
+
+/* Explicit override — wins over the media query above in either direction. */
+:root[data-theme="dark"] {
+  --background: #16181c;
+  --foreground: #eeece9;
+  --surface: #1e2126;
+  --surface-muted: #262a31;
+  --border-subtle: rgba(238, 236, 233, 0.14);
+  --brand-blue: #4fa8dd;
+  --brand-blue-light: #8cc6ea;
+  --brand-blue-dark: #0077c7;
+  --text-grey: #a19d94;
+  --text-disabled: #5c584f;
+}
+
+:root[data-theme="light"] {
+  --background: #f8f7f6;
+  --foreground: #23221e;
+  --surface: #ffffff;
+  --surface-muted: #f3f2f0;
+  --border-subtle: #d6d3d0;
+  --brand-blue: #0077c7;
+  --brand-blue-light: #6cb6e8;
+  --brand-blue-dark: #005a94;
+  --text-grey: #706d65;
+  --text-disabled: #c1bdb7;
+}
+
+* {
+  border-color: var(--border-subtle);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+@layer components {
+  .surface-card {
+    @apply rounded-[8px] border bg-(--color-surface);
+    box-shadow: var(--shadow-layer1);
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-(--brand-blue) px-4 py-2 text-sm font-semibold text-white transition-colors duration-150 hover:bg-(--brand-blue-dark) disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-gold {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-(--brand-gold) px-4 py-2 text-sm font-semibold text-[#3a2e04] transition-colors duration-150 hover:bg-(--brand-gold-light) disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-(--border-subtle) bg-(--color-surface) px-4 py-2 text-sm font-semibold text-(--foreground) transition-colors duration-150 hover:bg-(--color-surface-muted) disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-(--brand-danger) transition-colors duration-150 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400 dark:hover:bg-red-950/70;
+  }
+  .btn-xs {
+    @apply px-2.5! py-1! text-xs!;
+  }
+
+  .input {
+    @apply rounded-[4px] border border-(--border-subtle) bg-(--color-surface) px-3 py-1.5 text-sm text-(--color-foreground) outline-none transition-colors focus:border-(--brand-blue) focus:ring-2 focus:ring-(--brand-blue-light)/40;
+  }
+
+  .badge-blue {
+    @apply inline-flex items-center rounded-full bg-(--brand-blue-light)/25 px-2.5 py-0.5 text-xs font-medium text-(--brand-blue-dark);
+  }
+  .badge-gold {
+    @apply inline-flex items-center rounded-full bg-(--brand-gold-light)/40 px-2.5 py-0.5 text-xs font-medium text-[#7a5c06];
+  }
+  .badge-muted {
+    @apply inline-flex items-center rounded-full bg-(--color-surface-muted) px-2.5 py-0.5 text-xs font-medium text-(--text-grey);
+  }
+
+  .link {
+    @apply text-(--brand-blue) underline decoration-(--brand-blue-light) decoration-2 underline-offset-2 transition-colors hover:text-(--brand-blue-dark);
+  }
+
+  .page-title {
+    @apply text-2xl font-extrabold tracking-tight text-(--foreground);
+  }
+
+  .alert-warning {
+    @apply rounded-[6px] border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-300;
+  }
+  .alert-error {
+    @apply rounded-[6px] border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-700/50 dark:bg-red-950/40 dark:text-red-300;
+  }
+  .alert-success {
+    @apply rounded-[6px] border border-green-300 bg-green-50 p-3 text-sm text-green-800 dark:border-green-700/50 dark:bg-green-950/40 dark:text-green-300;
+  }
 }

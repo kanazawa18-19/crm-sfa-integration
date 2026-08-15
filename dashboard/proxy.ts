@@ -40,5 +40,12 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // 画像等の静的アセット(public/配下、例: public/brand/*.png)を除外し忘れると、
+  // ログイン前でも表示すべきロゴ画像までミドルウェアに横取りされ/loginへ
+  // リダイレクトされてしまう(2026-08-15、実際にログイン画面のロゴが表示されない
+  // 不具合として発覚。拡張子ベースで除外することで、今後public/配下に何を
+  // 追加しても同じ事故が起きないようにする)。
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+  ],
 };

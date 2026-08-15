@@ -19,10 +19,10 @@ export default async function TotpSetupPage() {
   const qrCodeDataUrl = await generateTotpQrCodeDataUrl(user.email, secret);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
-        <h1 className="mb-2 text-xl font-bold text-gray-900">2要素認証の設定</h1>
-        <p className="mb-4 text-sm text-gray-500">
+    <div className="flex min-h-screen items-center justify-center bg-(--color-background)">
+      <div className="surface-card w-full max-w-sm p-8">
+        <h1 className="page-title mb-2 text-xl">2要素認証の設定</h1>
+        <p className="mb-4 text-sm text-(--color-foreground)/60">
           管理者により2要素認証が必須化されました。認証アプリ(Google Authenticator、1Password等)でQRコードを読み取るか、メールでコードを受け取るか選んでください。
         </p>
         <TwoFactorSetupChooser secret={secret} qrCodeDataUrl={qrCodeDataUrl} email={user.email} />

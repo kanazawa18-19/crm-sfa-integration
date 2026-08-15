@@ -12,7 +12,7 @@ function SetPasswordForm() {
   const [error, formAction, pending] = useActionState(setPassword, undefined);
 
   if (!token) {
-    return <p className="text-sm text-red-600">リンクが不正です。メールのリンクからもう一度お試しください。</p>;
+    return <p className="text-sm text-(--brand-danger)">リンクが不正です。メールのリンクからもう一度お試しください。</p>;
   }
 
   return (
@@ -25,26 +25,22 @@ function SetPasswordForm() {
         required
         minLength={8}
         autoFocus
-        className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+        className="input"
       />
-      <button
-        type="submit"
-        disabled={pending}
-        className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-      >
+      <button type="submit" disabled={pending} className="btn-primary">
         {pending ? "設定中..." : "パスワードを設定してログイン画面へ"}
       </button>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-(--brand-danger)">{error}</p>}
     </form>
   );
 }
 
 export default function SetPasswordPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
-        <h1 className="mb-2 text-xl font-bold text-gray-900">パスワードを設定</h1>
-        <p className="mb-4 text-sm text-gray-500">8文字以上の新しいパスワードを入力してください。</p>
+    <div className="flex min-h-screen items-center justify-center bg-(--color-background)">
+      <div className="surface-card w-full max-w-sm p-8">
+        <h1 className="page-title mb-2 text-xl">パスワードを設定</h1>
+        <p className="mb-4 text-sm text-(--color-foreground)/60">8文字以上の新しいパスワードを入力してください。</p>
         <Suspense fallback={null}>
           <SetPasswordForm />
         </Suspense>

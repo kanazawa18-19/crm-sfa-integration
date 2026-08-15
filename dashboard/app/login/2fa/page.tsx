@@ -14,10 +14,10 @@ export default async function TotpVerifyPage() {
   if (!user.totpEnabled) redirect("/login/2fa-setup");
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
-        <h1 className="mb-2 text-xl font-bold text-gray-900">2要素認証</h1>
-        <p className="mb-4 text-sm text-gray-500">
+    <div className="flex min-h-screen items-center justify-center bg-(--color-background)">
+      <div className="surface-card w-full max-w-sm p-8">
+        <h1 className="page-title mb-2 text-xl">2要素認証</h1>
+        <p className="mb-4 text-sm text-(--color-foreground)/60">
           認証アプリに表示されている6桁のコード、またはバックアップコードを入力してください。
         </p>
         <TotpVerifyForm />

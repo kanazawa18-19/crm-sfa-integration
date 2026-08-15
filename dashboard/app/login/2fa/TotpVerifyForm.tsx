@@ -16,16 +16,12 @@ export default function TotpVerifyForm() {
         placeholder="123456 または バックアップコード"
         required
         autoFocus
-        className="rounded border border-gray-300 px-3 py-2 text-center text-lg tracking-widest text-gray-900 focus:border-blue-500 focus:outline-none"
+        className="input text-center text-lg tracking-widest"
       />
-      <button
-        type="submit"
-        disabled={pending}
-        className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-      >
+      <button type="submit" disabled={pending} className="btn-primary">
         {pending ? "確認中..." : "確認する"}
       </button>
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p className="text-xs text-(--brand-danger)">{error}</p>}
     </form>
   );
 }
