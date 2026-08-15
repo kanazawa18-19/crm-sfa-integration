@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from src.gmail_sync import sync
+from src.gmail_sync.gmail_client import GmailMessage, GmailMessageRef
+
+
+def test_extract_addresses_parses_name_and_plain_forms() -> None:
+    assert sync._extract_addresses("Taro Yamada <taro@example.com>") == ["taro@example.com"]
+    assert sync._extract_addresses("a@example.com, Name <b@example.com>") == [
+        "a@example.com",
+        "b@example.com",
+    ]
+
+
+def test_extract_addresses_lowercases() -> None:
+    assert sync._extract_addresses("Taro@Example.COM") == ["taro@example.com"]
+
+
+def test_parse_sent_at_valid_header() -> None:
+    result = sync._parse_sent_at("Mon, 16 Aug 2026 09:00:00 +0900")
+    assert result.year == 2026
+    assert result.month == 8
+    assert result.day == 16
+
+
+def test_parse_sent_at_missing_header_falls_back_to_now() -> None:
+    before = datetime.now(timezone.utc)
+    result = sync._parse_sent_at(None)
+    after = datetime.now(timezone.utc)
+    assert before <= result <= after
+
+
+def test_parse_sent_at_malformed_header_falls_back_to_now() -> None:
+    before = datetime.now(timezone.utc)
+    result = sync._parse_sent_at("not a date")
+    after = datetime.now(timezone.utc)
+    assert before <= result <= after
+
+
+class FakeContactClient:
+    def __init__(self, contacts_by_email: dict[str, str]) -> None:
+        self._by_email = contacts_by_email
+        self.updated_pages: list[tuple[str, dict]] = []
+
+    def update_page(self, page_id: str, properties: dict) -> None:
+        self.updated_pages.append((page_id, properties))
+
+
+def _message(
+    id_: str = "msg1",
+    from_header: str = "lead@client.example.com",
+    to_header: str = "rep@cnctor.jp",
+    subject: str | None = "件名",
+    date_header: str | None = "Mon, 16 Aug 2026 09:00:00 +0900",
+    snippet: str | None = "本文の抜粋",
+) -> GmailMessage:
+    return GmailMessage(
+        id=id_,
+        from_header=from_header,
+        to_header=to_header,
+        subject=subject,
+        date_header=date_header,
+        snippet=snippet,
+    )
+
+
+def test_sync_rep_logs_inbound_email_when_sender_matches_contact(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+
+    def fake_find_contact_page_id(client, email):
+        return "contact-page-1" if email == "lead@client.example.com" else None
+
+    monkeypatch.setattr(sync, "find_contact_page_id", fake_find_contact_page_id)
+
+    notified: list[dict] = []
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: notified.append(kwargs))
+
+    contact_client = FakeContactClient({})
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", contact_client, internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert len(inserted) == 1
+    assert inserted[0]["direction"] == "inbound"
+    assert inserted[0]["contact_email"] == "lead@client.example.com"
+    assert inserted[0]["contact_page_id"] == "contact-page-1"
+    assert len(contact_client.updated_pages) == 1
+    assert contact_client.updated_pages[0][0] == "contact-page-1"
+    assert len(notified) == 1
+    assert notified[0]["direction"] == "inbound"
+
+
+def test_sync_rep_logs_outbound_email_when_recipient_matches_contact(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: _message(from_header="rep@cnctor.jp", to_header="lead@client.example.com"),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+    monkeypatch.setattr(
+        sync, "find_contact_page_id", lambda client, email: "contact-page-1" if email == "lead@client.example.com" else None
+    )
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert inserted[0]["direction"] == "outbound"
+
+
+def test_sync_rep_skips_already_logged_messages(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: True)
+
+    def fail_get_message(*args, **kwargs):
+        raise AssertionError("get_message should not be called for already-logged messages")
+
+    monkeypatch.setattr(sync.gmail_client, "get_message", fail_get_message)
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+    assert count == 0
+
+
+def test_sync_rep_skips_messages_with_no_matching_contact(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: None)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+    assert count == 0
+    assert inserted == []
+
+
+def test_sync_rep_skips_messages_between_only_internal_addresses(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: _message(from_header="rep@cnctor.jp", to_header="colleague@cnctor.jp"),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    def fail_find_contact(*args, **kwargs):
+        raise AssertionError("find_contact_page_id should not be called when no external address is present")
+
+    monkeypatch.setattr(sync, "find_contact_page_id", fail_find_contact)
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+    assert count == 0

@@ -36,6 +36,7 @@ from src.document_generation.common import (
 )
 from src.document_generation.contract_generator import generate_contract
 from src.document_generation.quote_generator import generate_quote
+from src.gmail_sync.sync import sync_all
 from src.reports.batch import run_report_batch
 from src.reports.revenue_target_settings import (
     RevenueTargetSettingsStore,
@@ -329,6 +330,18 @@ def run_daily_batch() -> dict[str, Any]:
     日報は毎日、週報は金曜日のみ配信する（`src.reports.batch.run_report_batch`参照）。
     """
     return run_report_batch()
+
+
+@app.get("/api/cron/gmail-sync", dependencies=[Depends(verify_cron_secret)])
+def run_gmail_sync() -> dict[str, Any]:
+    """Vercel Cronから1日1回呼ばれる、Gmail連携(src/gmail_sync/)の同期エントリポイント。
+
+    Gmail連携済みの営業担当ごとに直近のメールをポーリングし、連絡先DBとメアド一致した
+    ものだけをEmailLogへ記録・Notion連絡先ページの「最終メール日時」を更新する。
+    対応するweb-engagement-tool側のLeadがあれば、あわせてWebhookで通知する
+    (`src/gmail_sync/notify.py`、未設定なら通知はスキップされ同期処理自体は継続する)。
+    """
+    return sync_all()
 
 
 @app.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])

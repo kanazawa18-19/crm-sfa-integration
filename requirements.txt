@@ -1,5 +1,7 @@
 requests>=2.31
 google-auth>=2.35
+psycopg[binary]>=3.2
+cryptography>=42.0
 python-dotenv>=1.0
 pydantic>=2.6
 boto3>=1.34

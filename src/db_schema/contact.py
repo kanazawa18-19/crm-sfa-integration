@@ -180,6 +180,16 @@ CONTACT_SCHEMA = DatabaseSchema(
             sync_scope=SyncScope.ALL_TOOLS,
             description="連絡先の担当営業（Notion people）。案件管理DBの「担当メンバー」と同義",
         ),
+        # 2026-08-16、Gmail連携移管（src/gmail_sync/）に伴い追加。生のメール送受信ログは
+        # Postgres側のEmailLogテーブルに持ち、Notion側にはAPIレート制限・件数の都合上
+        # ロールアップ（最終日時のみ）を書き込む。
+        PropertyDefinition(
+            name="最終メール日時",
+            property_type=PropertyType.DATETIME,
+            requirement=RequirementLevel.AUTO,
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="この連絡先との直近のメール送受信日時（gmail_syncが自動更新）",
+        ),
         *common_internal_properties(),
     ),
 )
