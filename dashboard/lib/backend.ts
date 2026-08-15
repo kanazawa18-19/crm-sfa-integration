@@ -65,7 +65,7 @@ async function fetchBackend<T>(
 
 // クオーター/半期/通期のいずれか1期間分の着地予測。会計年度は12月始まり・11月末
 // （src/analytics/fiscal_calendar.py参照）で、rangeもその会計期間に基づく。
-interface ForecastPeriod {
+export interface ForecastPeriod {
   range: { start: string; end: string };
   max: { initial_fee: number; mrr: number };
   expected: { initial_fee: number; mrr: number };
