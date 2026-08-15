@@ -5,7 +5,6 @@ import pytest
 from src.gmail_sync.gmail_client import (
     GmailApiError,
     HistoryIdExpiredError,
-    get_profile,
     list_history,
     watch_mailbox,
 )
@@ -37,23 +36,25 @@ def test_watch_mailbox_raises_on_error(requests_mock) -> None:
         watch_mailbox(_ACCESS_TOKEN, "projects/test/topics/gmail-notifications")
 
 
-def test_list_history_returns_added_message_ids(requests_mock) -> None:
+def test_list_history_returns_added_message_ids_and_history_id(requests_mock) -> None:
     requests_mock.get(
         f"{_BASE_URL}/history",
         json={
             "history": [
                 {"messagesAdded": [{"message": {"id": "msg1"}}]},
                 {"messagesAdded": [{"message": {"id": "msg2"}}, {"message": {"id": "msg3"}}]},
-            ]
+            ],
+            "historyId": "5000",
         },
     )
 
     result = list_history(_ACCESS_TOKEN, "1000")
 
-    assert result == ["msg1", "msg2", "msg3"]
+    assert result.message_ids == ["msg1", "msg2", "msg3"]
+    assert result.history_id == "5000"
 
 
-def test_list_history_follows_pagination(requests_mock) -> None:
+def test_list_history_follows_pagination_and_uses_last_page_history_id(requests_mock) -> None:
     requests_mock.get(
         f"{_BASE_URL}/history",
         [
@@ -61,16 +62,38 @@ def test_list_history_follows_pagination(requests_mock) -> None:
                 "json": {
                     "history": [{"messagesAdded": [{"message": {"id": "msg1"}}]}],
                     "nextPageToken": "page2",
+                    "historyId": "4000",
                 }
             },
-            {"json": {"history": [{"messagesAdded": [{"message": {"id": "msg2"}}]}]}},
+            {
+                "json": {
+                    "history": [{"messagesAdded": [{"message": {"id": "msg2"}}]}],
+                    "historyId": "5000",
+                }
+            },
         ],
     )
 
     result = list_history(_ACCESS_TOKEN, "1000")
 
-    assert result == ["msg1", "msg2"]
+    assert result.message_ids == ["msg1", "msg2"]
+    # 最後のページの値を採用する(shirokuma-secレビューWARN対応: レスポンス自体に含まれる
+    # historyIdを使うことで、list_history()完了後に別途get_profile()を呼ぶ場合に生じる
+    # レース(その間の新着メールのhistoryIdを見逃す)を避ける)。
+    assert result.history_id == "5000"
     assert requests_mock.request_history[1].qs["pagetoken"] == ["page2"]
+
+
+def test_list_history_returns_none_history_id_when_absent_from_response(requests_mock) -> None:
+    requests_mock.get(
+        f"{_BASE_URL}/history",
+        json={"history": [{"messagesAdded": [{"message": {"id": "msg1"}}]}]},
+    )
+
+    result = list_history(_ACCESS_TOKEN, "1000")
+
+    assert result.message_ids == ["msg1"]
+    assert result.history_id is None
 
 
 def test_list_history_raises_history_id_expired_on_404(requests_mock) -> None:
@@ -78,11 +101,3 @@ def test_list_history_raises_history_id_expired_on_404(requests_mock) -> None:
 
     with pytest.raises(HistoryIdExpiredError):
         list_history(_ACCESS_TOKEN, "too-old")
-
-
-def test_get_profile_returns_history_id(requests_mock) -> None:
-    requests_mock.get(f"{_BASE_URL}/profile", json={"emailAddress": "rep@cnctor.jp", "historyId": "9999"})
-
-    result = get_profile(_ACCESS_TOKEN)
-
-    assert result["historyId"] == "9999"

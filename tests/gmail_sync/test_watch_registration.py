@@ -16,17 +16,26 @@ def _connection(
     rep_email: str = "rep@cnctor.jp",
     *,
     watch_expiration: datetime | None = None,
+    history_id: str | None = "1000",
 ) -> db.RepGmailConnection:
     return db.RepGmailConnection(
         rep_email=rep_email,
         refresh_token_enc="encrypted-refresh-token",
         last_synced_at=None,
-        history_id="1000",
+        history_id=history_id,
         watch_expiration=watch_expiration,
     )
 
 
-def test_register_or_renew_watch_saves_history_id_and_expiration(monkeypatch: pytest.MonkeyPatch) -> None:
+# register_or_renew_watch(): 初回登録(historyId未設定)時のみhistoryIdをセットし、
+# 既に設定済みの場合は延長(watchExpirationのみ更新)として扱う
+# (2026-08-16、shirokuma-secレビューWARN対応: 無条件上書きだと、sync_rep_incremental()側の
+# 増分同期が失敗し続けている間にバックログを飛び越えて恒久的な見逃しにつながるため)。
+
+
+def test_register_or_renew_watch_sets_history_id_on_first_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         watch_registration.gmail_client, "refresh_access_token", lambda refresh_token: "access-token"
     )
@@ -35,6 +44,11 @@ def test_register_or_renew_watch_saves_history_id_and_expiration(monkeypatch: py
         "watch_mailbox",
         lambda access_token, topic_name: {"historyId": "5000", "expiration": "1755600000000"},
     )
+    monkeypatch.setattr(
+        watch_registration.db,
+        "find_connection_by_email",
+        lambda rep_email: _connection(rep_email, watch_expiration=None, history_id=None),
+    )
 
     saved: list[tuple] = []
     monkeypatch.setattr(
@@ -42,6 +56,11 @@ def test_register_or_renew_watch_saves_history_id_and_expiration(monkeypatch: py
         "update_watch_state",
         lambda rep_email, history_id, expiration: saved.append((rep_email, history_id, expiration)),
     )
+
+    def fail_update_watch_expiration(*args, **kwargs):
+        raise AssertionError("update_watch_expiration should not be called on first registration")
+
+    monkeypatch.setattr(watch_registration.db, "update_watch_expiration", fail_update_watch_expiration)
 
     register_or_renew_watch("rep@cnctor.jp", "refresh-token", "projects/test/topics/gmail-notifications")
 
@@ -52,12 +71,73 @@ def test_register_or_renew_watch_saves_history_id_and_expiration(monkeypatch: py
     assert expiration == datetime.fromtimestamp(1755600000000 / 1000, tz=timezone.utc)
 
 
-def test_register_or_renew_watch_raises_when_response_missing_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_register_or_renew_watch_does_not_overwrite_existing_history_id_on_renewal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         watch_registration.gmail_client, "refresh_access_token", lambda refresh_token: "access-token"
     )
     monkeypatch.setattr(
-        watch_registration.gmail_client, "watch_mailbox", lambda access_token, topic_name: {}
+        watch_registration.gmail_client,
+        "watch_mailbox",
+        # watch_mailbox()自体は呼び出し時点の"今"のhistoryIdを返す(=保存済みの値と異なりうる)。
+        lambda access_token, topic_name: {"historyId": "9999", "expiration": "1755600000000"},
+    )
+    monkeypatch.setattr(
+        watch_registration.db,
+        "find_connection_by_email",
+        lambda rep_email: _connection(rep_email, watch_expiration=None, history_id="1000"),
+    )
+
+    def fail_update_watch_state(*args, **kwargs):
+        raise AssertionError("update_watch_state (historyId overwrite) should not be called on renewal")
+
+    monkeypatch.setattr(watch_registration.db, "update_watch_state", fail_update_watch_state)
+
+    saved: list[tuple] = []
+    monkeypatch.setattr(
+        watch_registration.db,
+        "update_watch_expiration",
+        lambda rep_email, expiration: saved.append((rep_email, expiration)),
+    )
+
+    register_or_renew_watch("rep@cnctor.jp", "refresh-token", "projects/test/topics/gmail-notifications")
+
+    assert len(saved) == 1
+    rep_email, expiration = saved[0]
+    assert rep_email == "rep@cnctor.jp"
+    assert expiration == datetime.fromtimestamp(1755600000000 / 1000, tz=timezone.utc)
+
+
+def test_register_or_renew_watch_raises_when_response_missing_expiration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        watch_registration.gmail_client, "refresh_access_token", lambda refresh_token: "access-token"
+    )
+    monkeypatch.setattr(
+        watch_registration.gmail_client, "watch_mailbox", lambda access_token, topic_name: {"historyId": "5000"}
+    )
+
+    with pytest.raises(watch_registration.gmail_client.GmailApiError):
+        register_or_renew_watch("rep@cnctor.jp", "refresh-token", "projects/test/topics/gmail-notifications")
+
+
+def test_register_or_renew_watch_raises_when_first_registration_response_missing_history_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        watch_registration.gmail_client, "refresh_access_token", lambda refresh_token: "access-token"
+    )
+    monkeypatch.setattr(
+        watch_registration.gmail_client,
+        "watch_mailbox",
+        lambda access_token, topic_name: {"expiration": "1755600000000"},
+    )
+    monkeypatch.setattr(
+        watch_registration.db,
+        "find_connection_by_email",
+        lambda rep_email: _connection(rep_email, watch_expiration=None, history_id=None),
     )
 
     with pytest.raises(watch_registration.gmail_client.GmailApiError):

@@ -37,18 +37,31 @@ class GmailWatchNotConfiguredError(Exception):
 def register_or_renew_watch(rep_email: str, refresh_token: str, topic_name: str) -> None:
     """1名分のGmail Push通知watchを登録・延長する。冪等(何度呼んでも安全、Zoho watch
     channelと同じ設計思想 — Google側が既存のwatchを上書きするため、重複登録による
-    エラーは起きない)。"""
+    エラーは起きない)。
+
+    `historyId`は初回登録(DB上でまだ未設定)の場合のみ`watch_mailbox()`のレスポンス由来の
+    値をセットする。既に`historyId`が保存済み(=`sync.sync_rep_incremental()`側で増分同期の
+    起点として管理中)の場合は`watchExpiration`のみ更新し、`historyId`には触れない
+    (2026-08-16、shirokuma-secレビューWARN対応: 無条件に「今」の値で上書きすると、増分同期が
+    何日も失敗し続けている間に日次のwatch延長が走った場合、未処理のバックログを飛び越えて
+    `historyId`がリセットされてしまい、恒久的なメール見逃しにつながるため)。
+    """
     access_token = gmail_client.refresh_access_token(refresh_token)
     result = gmail_client.watch_mailbox(access_token, topic_name)
 
-    history_id = result.get("historyId")
     expiration_ms = result.get("expiration")
-    if not history_id or not expiration_ms:
-        raise gmail_client.GmailApiError(
-            200, f"watch response missing historyId/expiration: {result!r}"
-        )
-
+    if not expiration_ms:
+        raise gmail_client.GmailApiError(200, f"watch response missing expiration: {result!r}")
     expiration = datetime.fromtimestamp(int(expiration_ms) / 1000, tz=timezone.utc)
+
+    existing = db.find_connection_by_email(rep_email)
+    if existing is not None and existing.history_id:
+        db.update_watch_expiration(rep_email, expiration)
+        return
+
+    history_id = result.get("historyId")
+    if not history_id:
+        raise gmail_client.GmailApiError(200, f"watch response missing historyId: {result!r}")
     db.update_watch_state(rep_email, str(history_id), expiration)
 
 

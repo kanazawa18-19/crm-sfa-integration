@@ -110,12 +110,17 @@ def handler(
             "statusCode": 200,
             "body": json.dumps({"processed": False, "reason": "missing_email_address"}),
         }
+    # `_extract_addresses()`(sync.py)等、他のメールアドレス比較箇所との一貫性に合わせ、
+    # 比較前に小文字化する(2026-08-16、shirokuma-secレビューWARN対応。`RepGmailConnection.
+    # repEmail`の保存側の大文字小文字ゆれ自体は別問題だが、少なくとも比較時点では吸収する)。
+    email_address_normalized = email_address.strip().lower()
 
     try:
-        conn = db.find_connection_by_email(email_address)
+        conn = db.find_connection_by_email(email_address_normalized)
         if conn is None:
             logger.warning(
-                "gmail_push_webhook: no RepGmailConnection found for emailAddress=%s", email_address
+                "gmail_push_webhook: no RepGmailConnection found for emailAddress=%s",
+                email_address_normalized,
             )
             return {
                 "statusCode": 200,
@@ -132,7 +137,7 @@ def handler(
         # 取りこぼした分は次回のsync_all()(日次セーフティネット)で拾われる。
         logger.exception(
             "gmail_push_webhook: unexpected error while processing push notification for %s",
-            email_address,
+            email_address_normalized,
         )
         return {"statusCode": 200, "body": json.dumps({"processed": False, "reason": "error"})}
 

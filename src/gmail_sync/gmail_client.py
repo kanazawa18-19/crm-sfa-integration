@@ -104,22 +104,6 @@ def _header_value(headers: list[dict[str, Any]], name: str) -> str | None:
     return None
 
 
-def get_profile(access_token: str) -> dict[str, Any]:
-    """`GET /users/me/profile`でmailbox全体の現在の`historyId`等を取得する(2026-08-16)。
-
-    `sync.sync_rep_incremental()`が、フル同期実施後・`list_history()`処理後に、次回以降の
-    増分取得の起点として保存する`historyId`を得るために使う(`list_history()`のレスポンス
-    自体には最新の`historyId`が含まれないため)。
-    """
-    response = request_with_retry(
-        "GET",
-        f"{_GMAIL_API_BASE}/profile",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
-    raise_for_error(response, GmailApiError)
-    return response.json()
-
-
 def watch_mailbox(access_token: str, topic_name: str) -> dict[str, Any]:
     """`POST /users/me/watch`でPush通知(Cloud Pub/Sub)を登録・更新する(2026-08-16)。
 
@@ -144,9 +128,21 @@ class HistoryIdExpiredError(GmailApiError):
     """
 
 
-def list_history(access_token: str, start_history_id: str) -> list[str]:
-    """`GET /users/me/history`で`start_history_id`以降に追加されたメッセージIDの一覧を返す
-    (2026-08-16、Push通知経由の増分同期用)。
+@dataclass(frozen=True)
+class HistoryListResult:
+    message_ids: list[str]
+    # レスポンス自体に含まれる、その時点でのmailboxの最新historyId。呼び出し完了後に別途
+    # `GET /users/me/profile`等で"現在の"historyIdを取得すると、取得完了までの間に新着
+    # メールが来た場合その新着分のhistoryIdが保存値未満になり得て、次回`list_history()`で
+    # 二度と拾えなくなる(恒久的な見逃し)。必ずこのレスポンス由来の値を使うこと
+    # (2026-08-16、shirokuma-secレビューWARN対応)。全ページ中`historyId`が含まれる最後の
+    # ページの値を採用する(取得できなければNone)。
+    history_id: str | None
+
+
+def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
+    """`GET /users/me/history`で`start_history_id`以降に追加されたメッセージIDの一覧、および
+    レスポンス自体に含まれる最新の`historyId`を返す(2026-08-16、Push通知経由の増分同期用)。
 
     `historyTypes=messageAdded`のみ対象とする(削除・ラベル変更等は本同期の対象外)。
     ページネーション(`nextPageToken`)に対応し、全ページ分をまとめて返す。
@@ -154,6 +150,7 @@ def list_history(access_token: str, start_history_id: str) -> list[str]:
     ため、呼び出し元はフル同期にフォールバックすること)。
     """
     message_ids: list[str] = []
+    latest_history_id: str | None = None
     page_token: str | None = None
     while True:
         params: dict[str, Any] = {
@@ -178,10 +175,13 @@ def list_history(access_token: str, start_history_id: str) -> list[str]:
                 message_id = message.get("id")
                 if message_id:
                     message_ids.append(message_id)
+        response_history_id = data.get("historyId")
+        if response_history_id:
+            latest_history_id = str(response_history_id)
         page_token = data.get("nextPageToken")
         if not page_token:
             break
-    return message_ids
+    return HistoryListResult(message_ids=message_ids, history_id=latest_history_id)
 
 
 def get_message(access_token: str, message_id: str) -> GmailMessage:

@@ -159,10 +159,17 @@ def sync_rep_incremental(
     """1名分の営業担当のGmailを、保存済みの`historyId`起点で増分同期する(2026-08-16、
     `gmail_push_webhook.py`から呼ばれる主経路)。新規に記録したメール件数を返す。
 
-    保存済み`historyId`が無い(Push未登録・初回)場合は、`sync_rep()`(フル同期)にフォール
-    バックしてから`historyId`を取得・保存する(以降の呼び出しから増分同期へ移行できるように
-    するため)。`gmail_client.HistoryIdExpiredError`(`startHistoryId`が古すぎて404)の場合も
-    同様に`sync_rep()`へフォールバックする。
+    `historyId`の更新は、増分同期が正常完了した場合(`list_history()`のレスポンス自体に
+    含まれる`historyId`を使う)にのみ行う。以下2つのフォールバック経路では`historyId`を
+    進めない(shirokuma-secレビューWARN対応、2026-08-16 — 誤って進めるとバックログを
+    飛び越えて恒久的な見逃しにつながるため):
+    - 保存済み`historyId`が無い(Push未登録・初回)場合: `sync_rep()`(フル同期)にフォール
+      バックするのみ。以降の増分同期への移行は`watch_registration.register_or_renew_watch()`
+      が初回登録時に設定する`historyId`に委ねる。
+    - `gmail_client.HistoryIdExpiredError`(`startHistoryId`が古すぎて404)の場合:
+      `sync_rep()`にフォールバックした上で、保存済みの(もう使えない)`historyId`をクリアする
+      (`db.update_history_id(rep_email, None)`)。クリアすることで、次回の
+      `register_or_renew_watch()`が「未設定」と判断し、有効な値へ再ブートストラップできる。
     """
     conn = db.find_connection_by_email(rep_email)
     stored_history_id = conn.history_id if conn is not None else None
@@ -170,14 +177,10 @@ def sync_rep_incremental(
     access_token = gmail_client.refresh_access_token(refresh_token)
 
     if not stored_history_id:
-        logged_count = sync_rep(
-            rep_email, refresh_token, contact_client, internal_domains=internal_domains
-        )
-        _refresh_history_id(rep_email, access_token)
-        return logged_count
+        return sync_rep(rep_email, refresh_token, contact_client, internal_domains=internal_domains)
 
     try:
-        message_ids = gmail_client.list_history(access_token, stored_history_id)
+        result = gmail_client.list_history(access_token, stored_history_id)
     except gmail_client.HistoryIdExpiredError:
         logger.warning(
             "gmail_sync: historyId expired for rep %s, falling back to full sync", rep_email
@@ -185,31 +188,19 @@ def sync_rep_incremental(
         logged_count = sync_rep(
             rep_email, refresh_token, contact_client, internal_domains=internal_domains
         )
-        _refresh_history_id(rep_email, access_token)
+        db.update_history_id(rep_email, None)
         return logged_count
 
     logged_count = 0
-    for message_id in message_ids:
+    for message_id in result.message_ids:
         if _process_message_ref(
             message_id, access_token, rep_email, contact_client, internal_domains=internal_domains
         ):
             logged_count += 1
 
-    _refresh_history_id(rep_email, access_token)
+    if result.history_id:
+        db.update_history_id(rep_email, result.history_id)
     return logged_count
-
-
-def _refresh_history_id(rep_email: str, access_token: str) -> None:
-    """直近の`historyId`をGmail APIから取得し直してDBへ保存する。
-
-    `list_history()`のレスポンス自体には最新の`historyId`が含まれないため
-    (Gmail APIの`users.history.list`は履歴レコードの一覧のみを返す仕様)、
-    `users.getProfile`で現在のmailbox全体の`historyId`を別途取得する。
-    """
-    profile = gmail_client.get_profile(access_token)
-    history_id = profile.get("historyId")
-    if history_id:
-        db.update_history_id(rep_email, str(history_id))
 
 
 def _default_contact_client() -> HttpNotionClient:

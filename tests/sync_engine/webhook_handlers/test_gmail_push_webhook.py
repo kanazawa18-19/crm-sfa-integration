@@ -108,6 +108,31 @@ def test_handler_calls_sync_rep_incremental_when_rep_found(monkeypatch: pytest.M
     assert calls == [("rep@cnctor.jp", "refresh-token", frozenset({"cnctor.jp"}))]
 
 
+def test_handler_lowercases_email_address_before_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # shirokuma-secレビューWARN対応(2026-08-16): Pub/Subペイロードのemailアドレスの
+    # 大文字小文字ゆれを比較前に吸収する(`_extract_addresses()`等、他の箇所との一貫性)。
+    lookups: list[str] = []
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.db.find_connection_by_email",
+        lambda rep_email: lookups.append(rep_email) or _connection("rep@cnctor.jp"),
+    )
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.decrypt_token",
+        lambda enc: "refresh-token",
+    )
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
+        lambda rep_email, refresh_token, contact_client, *, internal_domains: 0,
+    )
+
+    response = handler(
+        _event(_pubsub_body(email_address="Rep@CNCTOR.JP")), context=None, contact_client=FakeContactClient()
+    )
+
+    assert response["statusCode"] == 200
+    assert lookups == ["rep@cnctor.jp"]
+
+
 def test_handler_returns_200_when_sync_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.gmail_push_webhook.db.find_connection_by_email",

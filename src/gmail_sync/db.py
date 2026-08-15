@@ -87,9 +87,15 @@ def update_last_synced_at(rep_email: str, when: datetime) -> None:
         conn.commit()
 
 
-def update_history_id(rep_email: str, history_id: str) -> None:
+def update_history_id(rep_email: str, history_id: str | None) -> None:
     """`sync.sync_rep_incremental()`が増分取得のたびに`historyId`だけを更新する(2026-08-16)。
-    `watchExpiration`はwatch登録・延長時(`update_watch_state()`)のみ更新対象のため触れない。
+    `watchExpiration`はwatch登録・延長時(`update_watch_state()`/`update_watch_expiration()`)
+    のみ更新対象のため触れない。
+
+    `history_id=None`は、`HistoryIdExpiredError`発生時に古い(もう使えない)値をクリアする
+    ために使う(shirokuma-secレビューWARN対応: クリアしておかないと、次回の
+    `watch_registration.register_or_renew_watch()`が「既にhistoryId設定済み」と誤認し、
+    有効な値へ再ブートストラップされなくなってしまうため)。
     """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -99,9 +105,26 @@ def update_history_id(rep_email: str, history_id: str) -> None:
         conn.commit()
 
 
+def update_watch_expiration(rep_email: str, expiration: datetime) -> None:
+    """`watch_registration.register_or_renew_watch()`の延長時(既に`historyId`が保存済みの
+    場合)、`watchExpiration`のみを更新する(2026-08-16、shirokuma-secレビューWARN対応)。
+
+    延長のたびに`historyId`も無条件で上書きすると、`sync_rep_incremental()`側の増分同期が
+    何日も失敗し続けている間に日次のwatch延長が走った場合、未処理のバックログを飛び越えて
+    `historyId`がリセットされてしまい、恒久的なメール見逃しにつながる。そのため延長では
+    `historyId`には触れない(初回登録時のみ`update_watch_state()`で設定する)。
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "RepGmailConnection" SET "watchExpiration" = %s WHERE "repEmail" = %s',
+            (expiration, rep_email),
+        )
+        conn.commit()
+
+
 def update_watch_state(rep_email: str, history_id: str, expiration: datetime) -> None:
-    """`watch_registration.register_or_renew_watch()`から呼ばれ、Push登録結果
-    (`historyId`/`watchExpiration`)を保存する(2026-08-16)。"""
+    """`watch_registration.register_or_renew_watch()`の初回登録時(`historyId`未設定の場合)
+    のみ呼ばれ、Push登録結果(`historyId`/`watchExpiration`)を保存する(2026-08-16)。"""
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             'UPDATE "RepGmailConnection" SET "historyId" = %s, "watchExpiration" = %s WHERE "repEmail" = %s',

@@ -179,6 +179,12 @@ def test_sync_rep_skips_messages_between_only_internal_addresses(monkeypatch) ->
 
 
 # --- sync_rep_incremental (2026-08-16、Gmail Push通知対応) ------------------------------------
+#
+# shirokuma-secレビューWARN対応(2026-08-16): historyIdの更新は増分同期(list_history())が
+# 正常完了した場合のみ行う。フォールバック経路(historyId未保存・期限切れ)では、
+# get_profile()等で"現在の"historyIdを取得して上書きしない(バックログを飛び越えた恒久的な
+# 見逃しにつながるため)。期限切れの場合は保存済みのhistoryIdをNoneへクリアし、次回の
+# watch登録(register_or_renew_watch())で再ブートストラップできるようにするに留める。
 
 
 def _stored_connection(history_id: str | None) -> db.RepGmailConnection:
@@ -202,12 +208,11 @@ def test_sync_rep_incremental_falls_back_to_full_sync_when_no_stored_history_id(
     monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
     monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
     monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
-    monkeypatch.setattr(sync.gmail_client, "get_profile", lambda access_token: {"historyId": "5000"})
 
-    saved: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
-    )
+    def fail_update_history_id(*args, **kwargs):
+        raise AssertionError("update_history_id should not be called on the no-stored-id fallback path")
+
+    monkeypatch.setattr(sync.db, "update_history_id", fail_update_history_id)
 
     def fail_list_history(*args, **kwargs):
         raise AssertionError("list_history should not be called when no historyId is stored")
@@ -219,13 +224,18 @@ def test_sync_rep_incremental_falls_back_to_full_sync_when_no_stored_history_id(
     )
 
     assert count == 1
-    assert saved == [("rep@cnctor.jp", "5000")]
 
 
 def test_sync_rep_incremental_uses_list_history_when_history_id_present(monkeypatch) -> None:
+    from src.gmail_sync.gmail_client import HistoryListResult
+
     monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("1000"))
     monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
-    monkeypatch.setattr(sync.gmail_client, "list_history", lambda access_token, start_history_id: ["msg1"])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_history",
+        lambda access_token, start_history_id: HistoryListResult(message_ids=["msg1"], history_id="6000"),
+    )
     monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
     monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
 
@@ -233,9 +243,8 @@ def test_sync_rep_incremental_uses_list_history_when_history_id_present(monkeypa
     monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
     monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
     monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
-    monkeypatch.setattr(sync.gmail_client, "get_profile", lambda access_token: {"historyId": "6000"})
 
-    saved: list[tuple[str, str]] = []
+    saved: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
     )
@@ -251,10 +260,36 @@ def test_sync_rep_incremental_uses_list_history_when_history_id_present(monkeypa
 
     assert count == 1
     assert len(inserted) == 1
+    # list_history()自体のレスポンス由来のhistoryIdをそのまま使う(get_profile()は呼ばない)。
     assert saved == [("rep@cnctor.jp", "6000")]
 
 
-def test_sync_rep_incremental_falls_back_to_full_sync_when_history_id_expired(monkeypatch) -> None:
+def test_sync_rep_incremental_does_not_update_history_id_when_response_omits_it(monkeypatch) -> None:
+    from src.gmail_sync.gmail_client import HistoryListResult
+
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("1000"))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_history",
+        lambda access_token, start_history_id: HistoryListResult(message_ids=[], history_id=None),
+    )
+
+    def fail_update_history_id(*args, **kwargs):
+        raise AssertionError("update_history_id should not be called when list_history() omits historyId")
+
+    monkeypatch.setattr(sync.db, "update_history_id", fail_update_history_id)
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 0
+
+
+def test_sync_rep_incremental_falls_back_to_full_sync_and_clears_history_id_when_expired(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("too-old"))
     monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
 
@@ -268,9 +303,8 @@ def test_sync_rep_incremental_falls_back_to_full_sync_when_history_id_expired(mo
     monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
     monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
     monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
-    monkeypatch.setattr(sync.gmail_client, "get_profile", lambda access_token: {"historyId": "7000"})
 
-    saved: list[tuple[str, str]] = []
+    saved: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
     )
@@ -280,4 +314,6 @@ def test_sync_rep_incremental_falls_back_to_full_sync_when_history_id_expired(mo
     )
 
     assert count == 1
-    assert saved == [("rep@cnctor.jp", "7000")]
+    # 期限切れの古いhistoryIdを「今」の値で上書きするのではなくNoneへクリアする
+    # (次回のwatch登録で再ブートストラップできるようにするため)。
+    assert saved == [("rep@cnctor.jp", None)]
