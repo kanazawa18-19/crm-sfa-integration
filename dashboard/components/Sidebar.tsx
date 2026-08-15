@@ -20,6 +20,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/members", label: "メンバー実績" },
   { href: "/tasks", label: "タスク" },
   { href: "/documents", label: "書類作成" },
+  { href: "/settings/gmail", label: "Gmail連携" },
   { href: "/settings", label: "設定" },
 ];
 
