@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.gmail_sync import sync
-from src.gmail_sync.gmail_client import GmailMessage, GmailMessageRef
+from src.gmail_sync import db, sync
+from src.gmail_sync.gmail_client import GmailMessage, GmailMessageRef, HistoryIdExpiredError
 
 
 def test_extract_addresses_parses_name_and_plain_forms() -> None:
@@ -176,3 +176,108 @@ def test_sync_rep_skips_messages_between_only_internal_addresses(monkeypatch) ->
         "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
     )
     assert count == 0
+
+
+# --- sync_rep_incremental (2026-08-16、Gmail Push通知対応) ------------------------------------
+
+
+def _stored_connection(history_id: str | None) -> db.RepGmailConnection:
+    return db.RepGmailConnection(
+        rep_email="rep@cnctor.jp",
+        refresh_token_enc="enc",
+        last_synced_at=None,
+        history_id=history_id,
+        watch_expiration=None,
+    )
+
+
+def test_sync_rep_incremental_falls_back_to_full_sync_when_no_stored_history_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection(None))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+    monkeypatch.setattr(sync.gmail_client, "get_profile", lambda access_token: {"historyId": "5000"})
+
+    saved: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
+    )
+
+    def fail_list_history(*args, **kwargs):
+        raise AssertionError("list_history should not be called when no historyId is stored")
+
+    monkeypatch.setattr(sync.gmail_client, "list_history", fail_list_history)
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert saved == [("rep@cnctor.jp", "5000")]
+
+
+def test_sync_rep_incremental_uses_list_history_when_history_id_present(monkeypatch) -> None:
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("1000"))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_history", lambda access_token, start_history_id: ["msg1"])
+    monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+    monkeypatch.setattr(sync.gmail_client, "get_profile", lambda access_token: {"historyId": "6000"})
+
+    saved: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
+    )
+
+    def fail_list_recent_messages(*args, **kwargs):
+        raise AssertionError("list_recent_messages should not be called during incremental sync")
+
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", fail_list_recent_messages)
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert len(inserted) == 1
+    assert saved == [("rep@cnctor.jp", "6000")]
+
+
+def test_sync_rep_incremental_falls_back_to_full_sync_when_history_id_expired(monkeypatch) -> None:
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("too-old"))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+
+    def raise_expired(access_token, start_history_id):
+        raise HistoryIdExpiredError(404, "not found")
+
+    monkeypatch.setattr(sync.gmail_client, "list_history", raise_expired)
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+    monkeypatch.setattr(sync.gmail_client, "get_profile", lambda access_token: {"historyId": "7000"})
+
+    saved: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
+    )
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert saved == [("rep@cnctor.jp", "7000")]

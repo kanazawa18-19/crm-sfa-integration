@@ -31,21 +31,51 @@ class RepGmailConnection:
     rep_email: str
     refresh_token_enc: str
     last_synced_at: datetime | None
+    # 2026-08-16、Gmail Push通知対応で追加。どちらも未設定(None)ならPush未登録/一度も
+    # フル同期していない状態を表す(sync.sync_rep_incremental()参照)。
+    history_id: str | None = None
+    watch_expiration: datetime | None = None
 
 
 def list_gmail_connections() -> list[RepGmailConnection]:
     """Gmail連携済みの営業担当を全件返す。"""
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute('SELECT "repEmail", "refreshTokenEnc", "lastSyncedAt" FROM "RepGmailConnection"')
+        cur.execute(
+            'SELECT "repEmail", "refreshTokenEnc", "lastSyncedAt", "historyId", "watchExpiration" '
+            'FROM "RepGmailConnection"'
+        )
         rows = cur.fetchall()
     return [
         RepGmailConnection(
             rep_email=row["repEmail"],
             refresh_token_enc=row["refreshTokenEnc"],
             last_synced_at=row["lastSyncedAt"],
+            history_id=row["historyId"],
+            watch_expiration=row["watchExpiration"],
         )
         for row in rows
     ]
+
+
+def find_connection_by_email(rep_email: str) -> RepGmailConnection | None:
+    """Pub/Sub通知の`emailAddress`から該当担当のGmail連携を1件引く(2026-08-16、
+    `gmail_push_webhook.py`向け)。見つからなければNoneを返す。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "repEmail", "refreshTokenEnc", "lastSyncedAt", "historyId", "watchExpiration" '
+            'FROM "RepGmailConnection" WHERE "repEmail" = %s',
+            (rep_email,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return RepGmailConnection(
+        rep_email=row["repEmail"],
+        refresh_token_enc=row["refreshTokenEnc"],
+        last_synced_at=row["lastSyncedAt"],
+        history_id=row["historyId"],
+        watch_expiration=row["watchExpiration"],
+    )
 
 
 def update_last_synced_at(rep_email: str, when: datetime) -> None:
@@ -53,6 +83,29 @@ def update_last_synced_at(rep_email: str, when: datetime) -> None:
         cur.execute(
             'UPDATE "RepGmailConnection" SET "lastSyncedAt" = %s WHERE "repEmail" = %s',
             (when, rep_email),
+        )
+        conn.commit()
+
+
+def update_history_id(rep_email: str, history_id: str) -> None:
+    """`sync.sync_rep_incremental()`が増分取得のたびに`historyId`だけを更新する(2026-08-16)。
+    `watchExpiration`はwatch登録・延長時(`update_watch_state()`)のみ更新対象のため触れない。
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "RepGmailConnection" SET "historyId" = %s WHERE "repEmail" = %s',
+            (history_id, rep_email),
+        )
+        conn.commit()
+
+
+def update_watch_state(rep_email: str, history_id: str, expiration: datetime) -> None:
+    """`watch_registration.register_or_renew_watch()`から呼ばれ、Push登録結果
+    (`historyId`/`watchExpiration`)を保存する(2026-08-16)。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "RepGmailConnection" SET "historyId" = %s, "watchExpiration" = %s WHERE "repEmail" = %s',
+            (history_id, expiration, rep_email),
         )
         conn.commit()
 

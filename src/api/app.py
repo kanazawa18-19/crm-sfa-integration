@@ -37,6 +37,10 @@ from src.document_generation.common import (
 from src.document_generation.contract_generator import generate_contract
 from src.document_generation.quote_generator import generate_quote
 from src.gmail_sync.sync import sync_all
+from src.gmail_sync.watch_registration import (
+    GmailWatchNotConfiguredError,
+    renew_all_watches,
+)
 from src.reports.batch import run_report_batch
 from src.reports.revenue_target_settings import (
     RevenueTargetSettingsStore,
@@ -52,6 +56,9 @@ from src.sync_engine.clients._http import ApiError
 from src.sync_engine.clients.notion_client import NotionApiError
 from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.production_wiring import ProductionSyncWiring, get_production_wiring
+from src.sync_engine.webhook_handlers.gmail_push_webhook import (
+    handler as gmail_push_webhook_handler,
+)
 from src.sync_engine.webhook_handlers.kintone_webhook import handler as kintone_webhook_handler
 from src.sync_engine.webhook_handlers.lead_inquiry_webhook import (
     handler as lead_inquiry_webhook_handler,
@@ -294,6 +301,20 @@ async def webhook_web_engagement_meeting(request: Request) -> Response:
     return _lambda_result_to_response(result)
 
 
+@app.post("/api/webhooks/gmail-push")
+async def webhook_gmail_push(request: Request) -> Response:
+    """Google Cloud Pub/Subからの Gmail Push通知(`users.watch()`登録済みの新着メール検知)の
+    受信エンドポイント。
+
+    `Dispatcher`/`IdMappingStore`は経由しない設計(`gmail_push_webhook.handler`の
+    docstring参照)のため、`_wiring_dependency`(Dispatcher一式)には依存しない。担当者が
+    見つからない・処理中の例外いずれも、Pub/Subの再送ループを防ぐため常に200を返す。
+    """
+    event = await _lambda_event_from_request(request)
+    result = gmail_push_webhook_handler(event, context=None)
+    return _lambda_result_to_response(result)
+
+
 @app.post("/api/webhooks/lead-inquiry")
 async def webhook_lead_inquiry(request: Request) -> Response:
     """lead-researcher（別リポジトリ、問い合わせメール自動調査Slackボット）からの
@@ -342,6 +363,26 @@ def run_gmail_sync() -> dict[str, Any]:
     (`src/gmail_sync/notify.py`、未設定なら通知はスキップされ同期処理自体は継続する)。
     """
     return sync_all()
+
+
+@app.get("/api/cron/gmail-watch-renewal", dependencies=[Depends(verify_cron_secret)])
+def run_gmail_watch_renewal() -> dict[str, Any]:
+    """Vercel Cronから1日1回呼ばれる、Gmail Push通知(`users.watch()`)の自動延長エントリ
+    ポイント(2026-08-16)。
+
+    Gmailのwatchは登録・延長時点から最大7日で失効し、放置すると`/api/webhooks/gmail-push`
+    への通知が無音で止まる(この場合も日次の`sync_all()`セーフティネットが拾うため即座に
+    データが失われるわけではないが、リアルタイム性が失われる)。`renew_all_watches()`は
+    失効が近い(残り2日以内)/未登録の担当者だけを対象に登録・延長する。
+
+    Pub/Subトピック(`GMAIL_PUBSUB_TOPIC_NAME`)が未設定の場合は、成功したように見える
+    no-opにせず明確な500エラーとして表面化させる(`renew_zoho_watch_channel()`と同じ方針)。
+    """
+    try:
+        return renew_all_watches()
+    except GmailWatchNotConfiguredError as exc:
+        logger.error("gmail watch renewal failed (not configured): %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])

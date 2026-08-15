@@ -18,6 +18,7 @@ from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    extract_error_message,
     raise_for_error,
     request_with_retry,
 )
@@ -101,6 +102,86 @@ def _header_value(headers: list[dict[str, Any]], name: str) -> str | None:
         if (h.get("name") or "").lower() == name.lower():
             return h.get("value")
     return None
+
+
+def get_profile(access_token: str) -> dict[str, Any]:
+    """`GET /users/me/profile`でmailbox全体の現在の`historyId`等を取得する(2026-08-16)。
+
+    `sync.sync_rep_incremental()`が、フル同期実施後・`list_history()`処理後に、次回以降の
+    増分取得の起点として保存する`historyId`を得るために使う(`list_history()`のレスポンス
+    自体には最新の`historyId`が含まれないため)。
+    """
+    response = request_with_retry(
+        "GET",
+        f"{_GMAIL_API_BASE}/profile",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    raise_for_error(response, GmailApiError)
+    return response.json()
+
+
+def watch_mailbox(access_token: str, topic_name: str) -> dict[str, Any]:
+    """`POST /users/me/watch`でPush通知(Cloud Pub/Sub)を登録・更新する(2026-08-16)。
+
+    レスポンスの`historyId`/`expiration`(epoch ms文字列)をそのまま返す
+    (`watch_registration.register_or_renew_watch()`が`db.update_watch_state()`へ渡す)。
+    同じmailboxに対して何度呼んでも安全(Google側が既存のwatchを上書きする)。
+    """
+    response = request_with_retry(
+        "POST",
+        f"{_GMAIL_API_BASE}/watch",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json_body={"topicName": topic_name, "labelIds": ["INBOX"]},
+    )
+    raise_for_error(response, GmailApiError)
+    return response.json()
+
+
+class HistoryIdExpiredError(GmailApiError):
+    """`startHistoryId`が古すぎてGmail側が404を返した場合に送出する(フル同期へのフォールバック
+    のトリガー)。Gmailのhistoryレコードは一定期間で失効するため、Push未受信期間が長い等の
+    理由で発生しうる(呼び出し元はsync.sync_rep()による通常のフル同期にフォールバックすること)。
+    """
+
+
+def list_history(access_token: str, start_history_id: str) -> list[str]:
+    """`GET /users/me/history`で`start_history_id`以降に追加されたメッセージIDの一覧を返す
+    (2026-08-16、Push通知経由の増分同期用)。
+
+    `historyTypes=messageAdded`のみ対象とする(削除・ラベル変更等は本同期の対象外)。
+    ページネーション(`nextPageToken`)に対応し、全ページ分をまとめて返す。
+    `start_history_id`が古すぎる場合、Gmail APIは404を返す(`HistoryIdExpiredError`を送出する
+    ため、呼び出し元はフル同期にフォールバックすること)。
+    """
+    message_ids: list[str] = []
+    page_token: str | None = None
+    while True:
+        params: dict[str, Any] = {
+            "startHistoryId": start_history_id,
+            "historyTypes": "messageAdded",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = request_with_retry(
+            "GET",
+            f"{_GMAIL_API_BASE}/history",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+        )
+        if response.status_code == 404:
+            raise HistoryIdExpiredError(response.status_code, extract_error_message(response))
+        raise_for_error(response, GmailApiError)
+        data = response.json()
+        for record in data.get("history", []):
+            for added in record.get("messagesAdded", []):
+                message = added.get("message") or {}
+                message_id = message.get("id")
+                if message_id:
+                    message_ids.append(message_id)
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return message_ids
 
 
 def get_message(access_token: str, message_id: str) -> GmailMessage:
