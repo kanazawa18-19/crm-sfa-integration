@@ -36,6 +36,7 @@ from src.document_generation.common import (
 )
 from src.document_generation.contract_generator import generate_contract
 from src.document_generation.quote_generator import generate_quote
+from src.email_reminders.reminder_check import run_reminder_check
 from src.gmail_sync.sync import sync_all
 from src.gmail_sync.watch_registration import (
     GmailWatchNotConfiguredError,
@@ -383,6 +384,20 @@ def run_gmail_watch_renewal() -> dict[str, Any]:
     except GmailWatchNotConfiguredError as exc:
         logger.error("gmail watch renewal failed (not configured): %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/cron/email-reminder-check", dependencies=[Depends(verify_cron_secret)])
+def run_email_reminder_check() -> dict[str, Any]:
+    """GitHub Actionsのscheduled workflow(`.github/workflows/email-reminder-check.yml`、
+    1時間おき)から呼ばれる、未返信メールリマインド(`src/email_reminders/`)のエントリ
+    ポイント(2026-08-16)。
+
+    Vercel Hobbyプランのcron制約(1日1回まで)では1時間おきの実行が組めないため、
+    `vercel.json`には登録せず、GitHub Actions側から`CRON_SECRET`付きで直接叩く方式にする
+    (`verify_cron_secret`自体はVercel Cron専用ではなく`Authorization: Bearer`ヘッダーの
+    照合のみを行うため、呼び出し元がVercel Cronか否かは問わない)。
+    """
+    return run_reminder_check()
 
 
 @app.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])

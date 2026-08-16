@@ -1,0 +1,80 @@
+"""未返信メールリマインドの本体(2026-08-16)。
+
+対象は「連絡先からの受信メールで、その後まだ返信していないもの」全件
+(`db.find_latest_inbound_awaiting_reply()`が`EmailLog`側で判定する — ある`contactPageId`の
+最新行が`direction="inbound"`のケース)。新しい受信/送信メールが記録されて最新行が
+変われば、古い受信メールへのリマインド判定は自然にされなくなる。
+
+閾値は`AppSettings.emailReminderThresholdHours`(3時間刻み、3〜72時間、管理者が選択式で
+有効にする)。各対象について、経過時間以下で最大の閾値(＝直近でクロスした閾値)のみを
+対象にリマインドする。同じ受信メール1件・同じ閾値での二重送信は`EmailReminderLog`の
+一意制約(`@@unique([emailLogId, thresholdHours])`)相当のチェック(`db.reminder_already_sent()`)
+で防ぐ。
+
+`GET /api/cron/email-reminder-check`(GitHub Actionsから1時間おき)から呼ばれる想定。
+新規env変数は無い(`SLACK_BOT_TOKEN`・`DATABASE_URL`は既存を流用)。
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+from src.email_reminders import db, slack_notify
+
+logger = logging.getLogger(__name__)
+
+
+def _elapsed_hours(sent_at: datetime, *, now: datetime) -> float:
+    """`sent_at`(psycopg経由、`TIMESTAMP(3)`列 — タイムゾーン情報を持たないUTC値として
+    保存されている)からの経過時間を時間単位で返す。"""
+    if sent_at.tzinfo is None:
+        sent_at = sent_at.replace(tzinfo=timezone.utc)
+    return (now - sent_at) / timedelta(hours=1)
+
+
+def _threshold_to_notify(elapsed_hours: float, thresholds: list[int]) -> int | None:
+    """経過時間以下で最大の閾値(＝直近でクロスした閾値)を返す。該当が無ければNone。"""
+    crossed = [t for t in thresholds if t <= elapsed_hours]
+    if not crossed:
+        return None
+    return max(crossed)
+
+
+def run_reminder_check() -> dict[str, int]:
+    """未返信メールのリマインド判定・送信を1回実行する。サマリを返す。"""
+    enabled, thresholds = db.get_reminder_settings()
+    if not enabled:
+        return {"disabled": 1}
+
+    candidates = db.find_latest_inbound_awaiting_reply()
+    now = datetime.now(timezone.utc)
+
+    sent = 0
+    failed = 0
+    for row in candidates:
+        try:
+            elapsed_hours = _elapsed_hours(row["sentAt"], now=now)
+            threshold = _threshold_to_notify(elapsed_hours, thresholds)
+            if threshold is None:
+                continue
+            if db.reminder_already_sent(row["id"], threshold):
+                continue
+
+            slack_notify.send_reminder_dm(
+                rep_email=row["repEmail"],
+                contact_email=row["contactEmail"],
+                hours_elapsed=int(elapsed_hours),
+                subject=row.get("subject"),
+            )
+            db.record_reminder_sent(row["id"], threshold)
+            sent += 1
+        except Exception:
+            # 1件(担当者)の失敗が他を止めないよう、対象ごとにtry/exceptで独立させる
+            # (gmail_sync.sync.sync_all()と同じ方針)。
+            logger.exception(
+                "email_reminders: failed to process reminder for email_log_id=%s", row.get("id")
+            )
+            failed += 1
+
+    return {"eligible": len(candidates), "sent": sent, "failed": failed}
