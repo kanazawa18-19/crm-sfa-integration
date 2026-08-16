@@ -107,10 +107,20 @@ def _process_message_ref(
 
     # インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。顧客からの
     # 受信メールのみを対象とする(outboundは自社側の発信文面であり検知対象外)。
+    #
+    # score_email()自体もtry/exceptで隔離する(shirokuma-secレビューWARN対応、2026-08-16):
+    # keywords.pyは金沢さんが今後追記・修正しうる非エンジニア向けデータであり、正規表現の
+    # 記述ミス等で例外が飛ぶと、インシデント検知という副次機能のバグでGmail同期という
+    # 中核機能全体(EmailLog記録)が止まってしまう。失敗時は(None, None)にフォールバックして
+    # メイン処理を継続させる(notify_managers_immediate()と同じ「副次機能は失敗してもメインを
+    # 止めない」方針)。
     incident_score: int | None = None
     incident_priority: str | None = None
     if direction == "inbound":
-        incident_score, incident_priority = score_email(message.subject, message.snippet)
+        try:
+            incident_score, incident_priority = score_email(message.subject, message.snippet)
+        except Exception:
+            logger.exception("gmail_sync: failed to score incident for %s", matched_email)
 
     db.insert_email_log(
         contact_page_id=matched_contact_id,

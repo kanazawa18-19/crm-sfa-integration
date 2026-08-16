@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -23,7 +22,6 @@ from src.incident_detection import db
 
 logger = logging.getLogger(__name__)
 
-_DIGEST_WINDOW = timedelta(hours=24)
 _REQUEST_TIMEOUT_SECONDS = 10
 
 
@@ -57,11 +55,16 @@ def notify_managers_immediate(
 
 
 def run_incident_digest() -> dict[str, int]:
-    """直近24時間で`incidentPriority`が"medium"のEmailLogをまとめて1通のSlackメッセージで
-    送る日次ダイジェスト(`GET /api/cron/incident-digest`から呼ばれる想定)。0件ならSlack送信
-    自体をスキップする。"""
-    since = datetime.now(timezone.utc) - _DIGEST_WINDOW
-    rows = db.find_medium_priority_since(since)
+    """`incidentPriority`が"medium"で、まだダイジェスト未送信(`digestedAt IS NULL`)の
+    EmailLogをまとめて1通のSlackメッセージで送る日次ダイジェスト(`GET /api/cron/incident-digest`
+    から呼ばれる想定)。0件ならSlack送信自体をスキップする。
+
+    `db.claim_undigested_medium_priority_emails()`が対象行の`digestedAt`をアトミックに
+    埋めてから返すため、以前の相対時刻ウィンドウ方式と異なりCronの実行タイミングのズレ・
+    多重起動があっても二重送信/取りこぼしが起きない(shirokuma-secレビューWARN対応、
+    2026-08-16、詳細は`db.claim_undigested_medium_priority_emails()`のdocstring参照)。
+    """
+    rows = db.claim_undigested_medium_priority_emails()
     if not rows:
         return {"count": 0}
 

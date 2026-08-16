@@ -10,7 +10,6 @@ DATABASE_URL環境変数を共有する想定。新規env変数は追加しな�
 from __future__ import annotations
 
 import os
-from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -37,19 +36,34 @@ def update_incident_classification(email_log_id: str, score: int, priority: str 
         conn.commit()
 
 
-def find_medium_priority_since(since: datetime) -> list[dict[str, Any]]:
-    """`since`以降に記録(`createdAt`基準)された、`incidentPriority`が"medium"のEmailLogを
-    全件返す(`notify.run_incident_digest()`の日次ダイジェスト向け)。`sentAt`(メール自体の
-    送信日時)ではなく`createdAt`(この検知処理でEmailLogへ記録した日時)を基準にすることで、
-    ダイジェスト対象が「前回実行以降に新たに検知した分」から漏れなくずれなく揃う。"""
+def claim_undigested_medium_priority_emails() -> list[dict[str, Any]]:
+    """`incidentPriority`が"medium"で、まだ日次ダイジェストに載せていない
+    (`digestedAt IS NULL`)EmailLogを、アトミックに"claim"(`digestedAt`をnow()で埋める)
+    してから返す(`notify.run_incident_digest()`向け、shirokuma-secレビューWARN対応、
+    2026-08-16)。
+
+    以前は素朴な相対時刻ウィンドウ(`createdAt >= now() - 24h`)で対象を絞っていたが、
+    Vercel Cronの実行タイミングのズレ・多重起動があると同じインシデントが2日連続で
+    ダイジェストに載ったり、逆に一生載らず漏れたりする問題があった。
+    `src/email_reminders/db.py`の`record_reminder_sent()`と同じ「送信の権利を先にDB側で
+    アトミックに獲得してから送る」設計を踏襲し、`UPDATE ... WHERE "digestedAt" IS NULL
+    ... RETURNING`の単一クエリで「対象の特定」と「claim」を同時に行う(別クエリに分けると
+    そこにも別のレース条件が生まれるため、`record_reminder_sent()`より一歩進めて1クエリに
+    まとめている)。
+
+    トレードオフとして、claim(`digestedAt`更新・コミット)に成功した後でSlack送信自体が
+    失敗した場合、その回のダイジェストからは漏れる(`email_reminders.reminder_check`と
+    同じ設計判断 — 二重送信より安全な設計として採用する)。
+    """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, "contactEmail", "repEmail", subject, "incidentScore", "sentAt"
-            FROM "EmailLog"
-            WHERE "incidentPriority" = 'medium' AND "createdAt" >= %s
-            ORDER BY "sentAt" DESC
-            """,
-            (since,),
+            UPDATE "EmailLog"
+            SET "digestedAt" = now()
+            WHERE "incidentPriority" = 'medium' AND "digestedAt" IS NULL
+            RETURNING id, "contactEmail", "repEmail", subject, "incidentScore", "sentAt"
+            """
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+        conn.commit()
+    return rows

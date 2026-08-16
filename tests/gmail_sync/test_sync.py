@@ -439,3 +439,36 @@ def test_sync_rep_continues_when_notify_managers_immediate_raises(monkeypatch) -
     # 通知失敗があってもメイン処理(EmailLog記録・戻り値の件数)は継続する
     assert count == 1
     assert len(inserted) == 1
+
+
+def test_sync_rep_continues_with_none_classification_when_score_email_raises(monkeypatch) -> None:
+    # keywords.pyは非エンジニア(金沢さん)が今後追記・修正しうるデータであり、正規表現の
+    # 記述ミス等でscore_email()が例外を送出しても、Gmail同期という中核機能(EmailLog記録)は
+    # 止めない(shirokuma-secレビューWARN対応、2026-08-16)。
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(sync.gmail_client, "get_message", lambda access_token, message_id: _message())
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    def raise_error(subject, snippet):
+        raise RuntimeError("bad regex in keywords.py")
+
+    monkeypatch.setattr(sync, "score_email", raise_error)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+
+    notified: list[dict] = []
+    monkeypatch.setattr(sync, "notify_managers_immediate", lambda **kwargs: notified.append(kwargs))
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert len(inserted) == 1
+    assert inserted[0]["incident_score"] is None
+    assert inserted[0]["incident_priority"] is None
+    assert notified == []

@@ -9,6 +9,13 @@ import pytest
 
 from src.incident_detection import notify
 
+# run_incident_digest()は`db.claim_undigested_medium_priority_emails()`が対象行の
+# claim(digestedAt更新)まで済ませた上で返す設計(2026-08-16、shirokuma-secレビューWARN対応)
+# のため、notify.py側のテストではclaim自体の中身(UPDATE...RETURNINGのアトミック性)は
+# 検証せず、db.claim_undigested_medium_priority_emails()の戻り値をそのまま信頼して
+# Slack投稿ロジックのみを検証する(claim自体の検証はraw SQLを叩くdb.pyの実装であり、
+# 他モジュール同様このリポジトリでは単体テスト対象外としている)。
+
 
 def test_notify_managers_immediate_skips_when_webhook_url_not_configured(
     monkeypatch: pytest.MonkeyPatch,
@@ -69,7 +76,7 @@ def test_notify_managers_immediate_does_not_raise_when_post_fails(monkeypatch: p
 def test_run_incident_digest_skips_slack_post_when_no_medium_priority_emails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(notify.db, "find_medium_priority_since", lambda since: [])
+    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", lambda: [])
     calls: list[Any] = []
     monkeypatch.setattr(notify.requests, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
 
@@ -100,7 +107,7 @@ def test_run_incident_digest_posts_single_summary_message_when_medium_priority_e
             "sentAt": datetime(2026, 8, 16, 10, 0, tzinfo=timezone.utc),
         },
     ]
-    monkeypatch.setattr(notify.db, "find_medium_priority_since", lambda since: rows)
+    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", lambda: rows)
     monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://hooks.slack.com/services/xxx")
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -124,8 +131,8 @@ def test_run_incident_digest_skips_slack_post_when_webhook_url_not_configured(
 ) -> None:
     monkeypatch.setattr(
         notify.db,
-        "find_medium_priority_since",
-        lambda since: [
+        "claim_undigested_medium_priority_emails",
+        lambda: [
             {
                 "id": "log-1",
                 "contactEmail": "lead1@client.example.com",
@@ -144,3 +151,32 @@ def test_run_incident_digest_skips_slack_post_when_webhook_url_not_configured(
 
     assert result == {"count": 1}
     assert calls == []
+
+
+def test_run_incident_digest_does_not_raise_and_still_counts_claimed_rows_when_slack_post_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # claim(digestedAt更新)はSlack投稿より先にコミット済みのため、投稿自体が失敗しても
+    # 「claimしたが送信できなかった」件数として結果に反映される(claimされた行は次回の
+    # ダイジェストから漏れる、という設計上のトレードオフをテストで固定する)。
+    rows = [
+        {
+            "id": "log-1",
+            "contactEmail": "lead1@client.example.com",
+            "repEmail": "rep1@cnctor.jp",
+            "subject": "対応状況について",
+            "incidentScore": 5,
+            "sentAt": datetime(2026, 8, 16, 9, 0, tzinfo=timezone.utc),
+        }
+    ]
+    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", lambda: rows)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://hooks.slack.com/services/xxx")
+
+    def fail_post(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("network error")
+
+    monkeypatch.setattr(notify.requests, "post", fail_post)
+
+    result = notify.run_incident_digest()
+
+    assert result == {"count": 1}
