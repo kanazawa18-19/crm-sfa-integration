@@ -1,0 +1,22 @@
+name: Email reminder check
+
+# Vercel Hobbyプランのcron制約(1日1回まで)では未返信メールリマインド(1時間おきの判定が
+# 必要)を組めないため、GitHub Actionsのscheduled workflowから
+# /api/cron/email-reminder-check を叩く方式にする(vercel.jsonのcronsには登録しない)。
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call email-reminder-check endpoint
+        run: |
+          curl -f -sS \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://crm-sfa-integration.vercel.app/api/cron/email-reminder-check"
