@@ -207,3 +207,41 @@ model EmailLog {
   @@index([contactPageId])
   @@index([contactEmail])
 }
+
+// データ監査ログ(2026-08-17、金沢さんからの「最終編集者・作成者・編集内容を記録したい」
+// 要望対応)。Notionへの全書き込みが最終的に集約される共通層(HttpNotionClient.create_page/
+// update_page、src/sync_engine/clients/notion_client.py)にフックして自動記録する
+// (呼び出し元ごとに個別のログ呼び出しを仕込む方式は書き漏れリスクが高いため避けた設計)。
+//
+// 対象はこのバックエンド経由でのNotion書き込みのみ。Notion管理画面から人間が直接編集した
+// 変更はこのコードを経由しないため捕捉できない(Notion自体にフィールド単位の変更履歴を
+// 返すAPIが無いため技術的な制約として対象外)。
+//
+// このテーブルもEmailLog等と同様、書き込みはPython側(psycopg直接アクセス、
+// src/audit_log/db.py)が行う。
+model AuditLog {
+  id            String   @id @default(cuid())
+  // 対象Notion DB(src/db_schema/registry.pyのスキーマキー)。
+  // "client_master" | "contact" | "project" | "action" | "product" | "chain" のいずれか。
+  dbKey         String
+  // 対象NotionページのID。
+  notionPageId  String
+  // "create" | "update"。
+  action        String
+  // プロパティ名 -> {"before": ..., "after": ...} の差分(update)、または初期値
+  // (create、beforeは全てnull)。Notion APIの生JSON構造ではなく、シンプルな
+  // 文字列/数値/配列等に変換済みの値を格納する(HttpNotionClient.get_page()と同じ変換)。
+  changedFields Json
+  // どの経路からの書き込みか。例: "kintone_webhook" | "zoho_webhook" | "spreadsheet_webhook" |
+  // "gmail_sync" | "lead_inquiry_webhook" | "slack_interaction_webhook" | "migration" 等。
+  actorSource   String
+  // 人間が分かる識別子(可能な範囲で)。Webhook起因なら固定文字列、将来dashboard操作からの
+  // 書き込みが追加された場合はログインユーザーのメール等を想定。
+  actorLabel    String?
+  createdAt     DateTime @default(now())
+
+  @@index([dbKey])
+  @@index([notionPageId])
+  @@index([actorSource])
+  @@index([createdAt])
+}

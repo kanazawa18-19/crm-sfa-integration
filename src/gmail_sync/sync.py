@@ -20,6 +20,7 @@ import os
 from datetime import datetime, timezone
 from email.utils import getaddresses, parsedate_to_datetime
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.registry import get_schema
 from src.gmail_sync import db, gmail_client
 from src.gmail_sync.matcher import find_contact_page_id
@@ -134,7 +135,10 @@ def _process_message_ref(
         incident_score=incident_score,
         incident_priority=incident_priority,
     )
-    contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: sent_at.isoformat()})
+    # rep_email（同期対象の営業担当）をactorLabelとして記録する（obasan-qualityレビュー
+    # WARN対応、2026-08-17。db.insert_email_log()に既に渡している値と同じ）。
+    with set_actor("gmail_sync", label=rep_email):
+        contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: sent_at.isoformat()})
 
     if incident_priority == "high":
         # 副次通知は失敗してもメイン処理(EmailLog記録)に影響させない

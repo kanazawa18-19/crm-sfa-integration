@@ -84,6 +84,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
@@ -312,9 +313,10 @@ def handler(
     had_unexpected_error = False
     for sync_event in sync_events:
         try:
-            result: DispatchResult | None = (
-                dispatcher.dispatch(sync_event) if dispatcher is not None else None
-            )
+            with set_actor("zoho_webhook"):
+                result: DispatchResult | None = (
+                    dispatcher.dispatch(sync_event) if dispatcher is not None else None
+                )
         except Exception:
             logger.exception(
                 "unexpected error while dispatching zoho sync event (external_id=%s)",

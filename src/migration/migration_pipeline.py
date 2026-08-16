@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence, TypeVar
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.action import ACTION_SCHEMA
 from src.db_schema.base import Tool
 from src.db_schema.chain import CHAIN_SCHEMA
@@ -1021,7 +1022,13 @@ def materialize(
             return
 
         try:
-            page_id = client.create_page(resolved_properties(record))
+            # set_actor("migration")はスレッドプール並列実行時、ThreadPoolExecutorの
+            # ワーカースレッドへ自動的には伝播しない（contextvarsはスレッド境界を越えて
+            # 継承されないため、呼び出し元スレッドでwithしても意味が無い）。そのため
+            # 実際にcreate_page()を呼ぶこの関数自身（並列・逐次どちらの経路でも最終的に
+            # ここが呼ばれる）でwithする。
+            with set_actor("migration"):
+                page_id = client.create_page(resolved_properties(record))
         except ApiError as exc:
             invalid_page_id = _extract_invalid_page_id(exc)
             if invalid_page_id is None:
@@ -1041,7 +1048,8 @@ def materialize(
                 resolved_properties(record), invalid_page_id
             )
             try:
-                page_id = client.create_page(cleaned_properties)
+                with set_actor("migration"):
+                    page_id = client.create_page(cleaned_properties)
             except Exception:
                 logger.error(
                     "[%s] %s でのcreate_page()が失敗しました（アクセス不能なページ参照を"

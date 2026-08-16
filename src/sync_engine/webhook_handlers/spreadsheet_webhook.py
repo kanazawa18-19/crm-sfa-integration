@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
@@ -97,9 +98,10 @@ def handler(
         return internal_error_response()
 
     try:
-        result: DispatchResult | None = (
-            dispatcher.dispatch(sync_event) if dispatcher is not None else None
-        )
+        with set_actor("spreadsheet_webhook"):
+            result: DispatchResult | None = (
+                dispatcher.dispatch(sync_event) if dispatcher is not None else None
+            )
     except Exception:
         logger.exception("unexpected error while dispatching spreadsheet sync event")
         return internal_error_response()

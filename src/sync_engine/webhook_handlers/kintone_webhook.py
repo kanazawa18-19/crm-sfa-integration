@@ -49,6 +49,7 @@ import json
 import os
 from typing import Any, Mapping
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.sync_event import SyncEvent
@@ -88,6 +89,23 @@ def _default_app_id_to_db_key() -> dict[str, str]:
         if app_id:
             mapping[app_id] = db_key
     return mapping
+
+
+def _kintone_actor_label(record: Mapping[str, Any]) -> str | None:
+    """kintoneレコードの「更新者」（無ければ「作成者」）フィールドから、監査ログの
+    `actorLabel`に使う表示名を取り出す（obasan-qualityレビューWARN対応、2026-08-17）。
+    実際のkintone REST API/Webhookのレコード表現では、これらのフィールドは
+    `{"type": "MODIFIER"|"CREATOR", "value": {"code": "user1", "name": "山田太郎"}}`
+    の形（`name`はkintone側のユーザー表示名設定に依存し、無い場合もある）。
+    どちらも取れない場合はNone（`actorLabel`は省略可のため、その場合は経路名のみ記録される）。
+    """
+    modifier = record.get("更新者") or record.get("作成者")
+    if not isinstance(modifier, dict):
+        return None
+    value = modifier.get("value")
+    if not isinstance(value, dict):
+        return None
+    return value.get("name") or value.get("code")
 
 
 def kintone_payload_to_sync_event(
@@ -182,9 +200,11 @@ def handler(
         return internal_error_response()
 
     try:
-        result: DispatchResult | None = (
-            dispatcher.dispatch(sync_event) if dispatcher is not None else None
-        )
+        actor_label = _kintone_actor_label(payload.get("record") or {})
+        with set_actor("kintone_webhook", label=actor_label):
+            result: DispatchResult | None = (
+                dispatcher.dispatch(sync_event) if dispatcher is not None else None
+            )
     except Exception:
         logger.exception("unexpected error while dispatching kintone sync event")
         return internal_error_response()

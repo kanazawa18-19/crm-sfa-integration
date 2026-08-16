@@ -19,8 +19,11 @@ from typing import Any
 
 import requests
 
+from src.audit_log.actor_context import get_actor
+from src.audit_log.recorder import record_notion_write
 from src.db_schema.base import DatabaseSchema, PropertyType
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients.notion_display_resolver import resolve_display_values
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
@@ -289,12 +292,65 @@ class HttpNotionClient:
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複ページ作成を避けリトライしない。
         response = self._request("POST", "/pages", json_body=body, idempotent=False)
         raise_for_error(response, NotionApiError)
-        return response.json()["id"]
+        page_id: str = response.json()["id"]
+        record_notion_write(
+            db_key=self._db_key,
+            notion_page_id=page_id,
+            action="create",
+            before=None,
+            after=self._resolve_for_audit(properties),
+        )
+        return page_id
 
     def update_page(self, page_id: str, properties: dict[str, Any]) -> None:
+        # 監査ログ（データ監査ログ、2026-08-17）の差分抽出用に、更新直前のページ現在値を
+        # 読んでおく（`docs/audit_log_note.md`参照）。update_page呼び出しごとにGETが1回
+        # 追加でNotion APIへ飛ぶことになる（書き込み系リクエスト数が実質倍になる）が、
+        # Notion APIのレート制限は実測でおおむね平均3req/秒程度であり、本プロジェクトの
+        # 書き込み頻度（Webhook契機の逐次処理が中心で、一括移行のような大量バルク処理は
+        # `src/migration/`側で別途レート制限リトライを備えている）に対しては許容範囲と判断した。
+        # 取得に失敗した場合（ページ削除・権限エラー・API障害・テストでのモック未設定等）は
+        # 監査ログの記録自体を諦めるのみで、本来のPATCH処理には影響させない
+        # （詳細は`_fetch_current_values_for_audit`/`src/audit_log/recorder.py`参照）。
+        before = self._fetch_current_values_for_audit(page_id, properties)
         body = {"properties": build_notion_properties(properties, self._schema)}
         response = self._request("PATCH", f"/pages/{page_id}", json_body=body)
         raise_for_error(response, NotionApiError)
+        record_notion_write(
+            db_key=self._db_key,
+            notion_page_id=page_id,
+            action="update",
+            before=self._resolve_for_audit(before) if before is not None else None,
+            after=self._resolve_for_audit(properties),
+        )
+
+    def _resolve_for_audit(self, values: dict[str, Any]) -> dict[str, Any]:
+        """監査ログに記録する直前、RELATION/USER型の値を人間が読める表示名へ解決する
+        （obasan-qualityレビューWARN対応、2026-08-17。詳細は`notion_display_resolver.py`
+        参照）。解決に使うのは`values`のコピーのみで、Notion APIへの実際の書き込みに使う
+        `properties`自体は書き換えない。"""
+        return resolve_display_values(self._db_key, values, actor_source=get_actor().source)
+
+    def _fetch_current_values_for_audit(
+        self, page_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """監査ログの「変更前」の値として、`properties`に含まれるプロパティ名分だけ現在値を
+        読む。取得できなければNoneを返す（呼び出し元の`record_notion_write`はNoneの場合、
+        誤った内容を記録するより記録自体をスキップする設計）。"""
+        try:
+            current = self.get_page(page_id)
+        except Exception:
+            logger.warning(
+                "failed to fetch current values for audit log before update_page "
+                "(db_key=%r, page_id=%s); skipping audit log for this update",
+                self._db_key,
+                page_id,
+                exc_info=True,
+            )
+            return None
+        if current is None:
+            return None
+        return {name: current.get(name) for name in properties}
 
     def archive_page(self, page_id: str) -> None:
         response = self._request("PATCH", f"/pages/{page_id}", json_body={"archived": True})

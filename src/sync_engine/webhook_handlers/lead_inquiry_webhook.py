@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping, Protocol
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.registry import get_schema
 from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.clients.notion_lookup import find_page_id_by_email, find_page_id_by_title
@@ -157,43 +158,46 @@ def handler(
         return bad_request_response("payload must include a non-empty 'email' or 'name'")
 
     try:
-        contact = contact_client if contact_client is not None else _default_contact_client()
-        client_master = (
-            client_master_client if client_master_client is not None else _default_client_master_client()
-        )
-
-        client_master_page_id = None
-        if company:
-            client_master_page_id = find_page_id_by_title(
-                client_master, _CLIENT_MASTER_TITLE_PROPERTY, company
+        with set_actor("lead_inquiry_webhook"):
+            contact = contact_client if contact_client is not None else _default_contact_client()
+            client_master = (
+                client_master_client
+                if client_master_client is not None
+                else _default_client_master_client()
             )
 
-        existing_page_id, current = _resolve_existing_contact(
-            contact, email=email, name=name, client_master_page_id=client_master_page_id
-        )
+            client_master_page_id = None
+            if company:
+                client_master_page_id = find_page_id_by_title(
+                    client_master, _CLIENT_MASTER_TITLE_PROPERTY, company
+                )
 
-        if existing_page_id is not None:
-            update_props: dict[str, Any] = {}
-            if email and not current.get(_EMAIL_PROPERTY):
-                update_props[_EMAIL_PROPERTY] = email
-            if phone and not current.get(_PHONE_PROPERTY):
-                update_props[_PHONE_PROPERTY] = phone
-            if client_master_page_id and not current.get(_CLIENT_MASTER_RELATION_PROPERTY):
-                update_props[_CLIENT_MASTER_RELATION_PROPERTY] = [client_master_page_id]
-            if update_props:
-                contact.update_page(existing_page_id, update_props)
-            page_id = existing_page_id
-            created = False
-        else:
-            create_props: dict[str, Any] = {_NAME_PROPERTY: name or email}
-            if email:
-                create_props[_EMAIL_PROPERTY] = email
-            if phone:
-                create_props[_PHONE_PROPERTY] = phone
-            if client_master_page_id:
-                create_props[_CLIENT_MASTER_RELATION_PROPERTY] = [client_master_page_id]
-            page_id = contact.create_page(create_props)
-            created = True
+            existing_page_id, current = _resolve_existing_contact(
+                contact, email=email, name=name, client_master_page_id=client_master_page_id
+            )
+
+            if existing_page_id is not None:
+                update_props: dict[str, Any] = {}
+                if email and not current.get(_EMAIL_PROPERTY):
+                    update_props[_EMAIL_PROPERTY] = email
+                if phone and not current.get(_PHONE_PROPERTY):
+                    update_props[_PHONE_PROPERTY] = phone
+                if client_master_page_id and not current.get(_CLIENT_MASTER_RELATION_PROPERTY):
+                    update_props[_CLIENT_MASTER_RELATION_PROPERTY] = [client_master_page_id]
+                if update_props:
+                    contact.update_page(existing_page_id, update_props)
+                page_id = existing_page_id
+                created = False
+            else:
+                create_props: dict[str, Any] = {_NAME_PROPERTY: name or email}
+                if email:
+                    create_props[_EMAIL_PROPERTY] = email
+                if phone:
+                    create_props[_PHONE_PROPERTY] = phone
+                if client_master_page_id:
+                    create_props[_CLIENT_MASTER_RELATION_PROPERTY] = [client_master_page_id]
+                page_id = contact.create_page(create_props)
+                created = True
     except Exception:
         logger.exception("unexpected error while syncing lead-researcher inquiry to Notion contact db")
         return internal_error_response()

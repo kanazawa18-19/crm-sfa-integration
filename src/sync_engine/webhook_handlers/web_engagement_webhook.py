@@ -41,6 +41,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.registry import get_schema
 from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.clients.notion_lookup import find_page_id_by_email
@@ -128,44 +129,45 @@ def handler(
     event_type = payload.get("event_type")
 
     try:
-        client = notion_client if notion_client is not None else _default_notion_client()
-        existing_page_id = find_page_id_by_email(client, _EMAIL_PROPERTY, email)
+        with set_actor("web_engagement_webhook"):
+            client = notion_client if notion_client is not None else _default_notion_client()
+            existing_page_id = find_page_id_by_email(client, _EMAIL_PROPERTY, email)
 
-        properties: dict[str, Any] = {}
-        score = payload.get("score")
-        if score is not None:
-            properties[_SCORE_PROPERTY] = score
-        portal_url = payload.get("portal_url")
-        if portal_url:
-            properties[_PORTAL_URL_PROPERTY] = portal_url
-        # payload.phoneは受け取っても`携帯番号`へは書き込まない（shirokuma-secレビュー
-        # BLOCKER対応、2026-08-13）。`携帯番号`はsync_scope=ALL_TOOLSのため、Notionへの
-        # 書き込みは実際のNotion API Webhook経由でdispatcher.dispatch()へ届く。Notion発の
-        # 変更は常にマスターとして無条件伝播される設計（コンフリクト判定なし、
-        # dispatcher.pyのNotion発イベント処理を参照）のため、このWebhookのように未検証な
-        # 入力（web-engagement-tool側フォーム等）をそのまま書くと、Zoho/kintone側で
-        # 営業担当が管理している正しい電話番号を無条件で上書きしてしまう。この連携が
-        # 「Any-to-Any同期の汎用機構の外側で完結させる」（本モジュールdocstring参照）
-        # という設計意図を保つには、ALL_TOOLS scopeのプロパティをここから書いてはいけない。
-        # payload.assigned_rep_emailは受け取っても書き込まない。連絡先DB
-        # （src/db_schema/contact.py）には担当営業に相当するプロパティが現状存在しない
-        # ため、対応する受け皿が無く今回は捨てる（WARN3、2026-08-13）。
-        if event_type == _HOT_LEAD_EVENT_TYPE:
-            # 繰り返しのhot_lead通知で上書きされ続けるのは許容し、最新のホットリード化日時
-            # として扱う（2026-08-13、金沢さん要望）。
-            properties[_HOT_LEAD_AT_PROPERTY] = datetime.now(timezone.utc).isoformat()
+            properties: dict[str, Any] = {}
+            score = payload.get("score")
+            if score is not None:
+                properties[_SCORE_PROPERTY] = score
+            portal_url = payload.get("portal_url")
+            if portal_url:
+                properties[_PORTAL_URL_PROPERTY] = portal_url
+            # payload.phoneは受け取っても`携帯番号`へは書き込まない（shirokuma-secレビュー
+            # BLOCKER対応、2026-08-13）。`携帯番号`はsync_scope=ALL_TOOLSのため、Notionへの
+            # 書き込みは実際のNotion API Webhook経由でdispatcher.dispatch()へ届く。Notion発の
+            # 変更は常にマスターとして無条件伝播される設計（コンフリクト判定なし、
+            # dispatcher.pyのNotion発イベント処理を参照）のため、このWebhookのように未検証な
+            # 入力（web-engagement-tool側フォーム等）をそのまま書くと、Zoho/kintone側で
+            # 営業担当が管理している正しい電話番号を無条件で上書きしてしまう。この連携が
+            # 「Any-to-Any同期の汎用機構の外側で完結させる」（本モジュールdocstring参照）
+            # という設計意図を保つには、ALL_TOOLS scopeのプロパティをここから書いてはいけない。
+            # payload.assigned_rep_emailは受け取っても書き込まない。連絡先DB
+            # （src/db_schema/contact.py）には担当営業に相当するプロパティが現状存在しない
+            # ため、対応する受け皿が無く今回は捨てる（WARN3、2026-08-13）。
+            if event_type == _HOT_LEAD_EVENT_TYPE:
+                # 繰り返しのhot_lead通知で上書きされ続けるのは許容し、最新のホットリード化日時
+                # として扱う（2026-08-13、金沢さん要望）。
+                properties[_HOT_LEAD_AT_PROPERTY] = datetime.now(timezone.utc).isoformat()
 
-        if existing_page_id is not None:
-            if properties:
-                client.update_page(existing_page_id, properties)
-            page_id = existing_page_id
-            created = False
-        else:
-            create_properties = dict(properties)
-            create_properties[_NAME_PROPERTY] = _build_display_name(payload, email)
-            create_properties[_EMAIL_PROPERTY] = email
-            page_id = client.create_page(create_properties)
-            created = True
+            if existing_page_id is not None:
+                if properties:
+                    client.update_page(existing_page_id, properties)
+                page_id = existing_page_id
+                created = False
+            else:
+                create_properties = dict(properties)
+                create_properties[_NAME_PROPERTY] = _build_display_name(payload, email)
+                create_properties[_EMAIL_PROPERTY] = email
+                page_id = client.create_page(create_properties)
+                created = True
     except Exception:
         logger.exception(
             "unexpected error while syncing web-engagement-tool lead to Notion contact db"

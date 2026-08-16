@@ -20,6 +20,7 @@ import time
 from typing import Any, Mapping
 from urllib.parse import parse_qs
 
+from src.audit_log.actor_context import set_actor
 from src.db_schema.registry import get_schema
 from src.meeting_sync.slack_approval import handle_interaction
 from src.sync_engine.clients.notion_client import HttpNotionClient
@@ -91,7 +92,12 @@ def handler(
 
     try:
         client = action_client if action_client is not None else _default_action_client()
-        handle_interaction(payload, client)
+        # 承認ボタンを押したSlackユーザーID（obasan-qualityレビューWARN対応、2026-08-17）。
+        # handle_interaction()自身が本人確認のため既に同じ値をpayloadから読んでいるが
+        # （candidate.rep_slack_user_idとの一致確認）、監査ログのactorLabelとしても使う。
+        actor_label = (payload.get("user") or {}).get("id")
+        with set_actor("slack_interaction_webhook", label=actor_label):
+            handle_interaction(payload, client)
     except Exception:
         logger.exception("unexpected error while handling Slack interaction")
         return internal_error_response()
