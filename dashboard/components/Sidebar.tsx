@@ -28,6 +28,7 @@ const NAV_LINKS: NavLink[] = [
 const MASTER_ONLY_NAV_LINKS: NavLink[] = [
   { href: "/users", label: "ユーザー管理" },
   { href: "/settings/security", label: "セキュリティ設定" },
+  { href: "/settings/email-reminders", label: "未返信メールリマインド設定" },
 ];
 
 const ROLE_LABELS: Record<string, string> = {

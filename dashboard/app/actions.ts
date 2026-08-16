@@ -18,6 +18,7 @@ import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { encryptToken, decryptToken } from "@/lib/tokenCrypto";
 import { validateAvatarFile } from "@/lib/avatar";
+import { EMAIL_REMINDER_THRESHOLD_OPTIONS } from "@/lib/emailReminderThresholds";
 import {
   verifyTotpCode,
   generateBackupCodes,
@@ -353,6 +354,31 @@ export async function updateSecuritySettings(formData: FormData) {
   });
 
   redirect("/settings/security");
+}
+
+// --- 未返信メールリマインド設定(/settings/email-reminders) --------------------------
+// 実際の判定・送信はPython側(src/email_reminders/reminder_check.py、GitHub Actionsから
+// 1時間おき)が行う。ここではAppSettings.emailReminderEnabled/emailReminderThresholdHours
+// の保存のみを担う(2026-08-16)。
+
+export async function updateEmailReminderSettings(formData: FormData) {
+  await requireRole("master");
+
+  const emailReminderEnabled = formData.get("emailReminderEnabled") === "on";
+  // 想定外の値(フォーム外から不正なvalueを送られた場合)が紛れ込まないよう、
+  // 許可された選択肢(EMAIL_REMINDER_THRESHOLD_OPTIONS)に含まれるものだけを採用する。
+  const emailReminderThresholdHours = formData
+    .getAll("emailReminderThresholdHours")
+    .map((value) => Number(value))
+    .filter((value) => EMAIL_REMINDER_THRESHOLD_OPTIONS.includes(value));
+
+  await prisma.appSettings.upsert({
+    where: { id: 1 },
+    update: { emailReminderEnabled, emailReminderThresholdHours },
+    create: { id: 1, emailReminderEnabled, emailReminderThresholdHours },
+  });
+
+  redirect("/settings/email-reminders");
 }
 
 // --- 自分のプロフィール編集(/settings/profile) ---------------------------------
