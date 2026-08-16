@@ -118,6 +118,30 @@ model AppSettings {
   // this at check time regardless of what's here.
   ipAllowlist        String[] @default([])
   updatedAt          DateTime @updatedAt
+
+  // 未返信メールリマインド(2026-08-16、src/email_reminders/)。デフォルトOFF・閾値未選択
+  // で導入する(既存のtwoFactorEnabled/ipAllowlistEnabledと同じ、初期ロールアウトで誰にも
+  // 意図せずSlack DMが飛ばないようにするための設計)。
+  emailReminderEnabled        Boolean @default(false)
+  // 有効な閾値(時間単位、3刻みで3〜72の範囲を想定、例: [3, 6, 24])。
+  // src/email_reminders/reminder_check.pyがこの配列のみを見て判定する。
+  emailReminderThresholdHours Int[]   @default([])
+}
+
+// 未返信メールリマインド(2026-08-16、src/email_reminders/)の送信済み記録。EmailLogの
+// どの受信メールに対して、どの閾値でリマインドを送ったかを保持し、同じ組み合わせでの
+// 二重送信を防ぐ(@@unique)。EmailLog側が削除されたら追随して削除してよい記録のため
+// onDelete: Cascade。このテーブルの読み書きもEmailLog同様、Python側(psycopg直接アクセス、
+// src/email_reminders/db.py)が行う。
+model EmailReminderLog {
+  id             String   @id @default(cuid())
+  emailLogId     String
+  thresholdHours Int
+  sentAt         DateTime @default(now())
+
+  emailLog EmailLog @relation(fields: [emailLogId], references: [id], onDelete: Cascade)
+
+  @@unique([emailLogId, thresholdHours])
 }
 
 // 営業担当ごとのGmail OAuth接続(2026-08-16、Gmail連携移管)。web-engagement-tool側の
@@ -159,6 +183,8 @@ model EmailLog {
   snippet        String?
   sentAt         DateTime
   createdAt      DateTime @default(now())
+
+  reminderLogs EmailReminderLog[]
 
   @@index([contactPageId])
   @@index([contactEmail])
