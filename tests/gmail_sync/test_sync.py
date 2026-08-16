@@ -317,3 +317,125 @@ def test_sync_rep_incremental_falls_back_to_full_sync_and_clears_history_id_when
     # 期限切れの古いhistoryIdを「今」の値で上書きするのではなくNoneへクリアする
     # (次回のwatch登録で再ブートストラップできるようにするため)。
     assert saved == [("rep@cnctor.jp", None)]
+
+
+# --- インシデント・アクシデント検知連携(2026-08-16、src/incident_detection/) --------------------
+
+
+def test_sync_rep_stores_incident_classification_for_inbound_email(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: _message(subject="ご連絡", snippet="不具合が発生しています"),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+
+    notified: list[dict] = []
+    monkeypatch.setattr(sync, "notify_managers_immediate", lambda **kwargs: notified.append(kwargs))
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert inserted[0]["incident_score"] == 3
+    assert inserted[0]["incident_priority"] == "low"
+    # low優先度は即時通知の対象外
+    assert notified == []
+
+
+def test_sync_rep_does_not_score_outbound_email(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: _message(
+            from_header="rep@cnctor.jp",
+            to_header="lead@client.example.com",
+            subject="経緯報告書",
+            snippet="不具合が発生しています",
+        ),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+
+    notified: list[dict] = []
+    monkeypatch.setattr(sync, "notify_managers_immediate", lambda **kwargs: notified.append(kwargs))
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert inserted[0]["direction"] == "outbound"
+    assert inserted[0]["incident_score"] is None
+    assert inserted[0]["incident_priority"] is None
+    assert notified == []
+
+
+def test_sync_rep_notifies_managers_immediately_for_high_priority_incident(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: _message(subject="経緯報告書", snippet="不具合が発生しました"),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
+
+    notified: list[dict] = []
+    monkeypatch.setattr(sync, "notify_managers_immediate", lambda **kwargs: notified.append(kwargs))
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert len(notified) == 1
+    assert notified[0]["score"] == 8
+    assert notified[0]["contact_email"] == "lead@client.example.com"
+    assert notified[0]["rep_email"] == "rep@cnctor.jp"
+
+
+def test_sync_rep_continues_when_notify_managers_immediate_raises(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.gmail_client, "list_recent_messages", lambda access_token: [GmailMessageRef(id="msg1")])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: _message(subject="経緯報告書", snippet="不具合が発生しました"),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+
+    def raise_error(**kwargs):
+        raise RuntimeError("slack down")
+
+    monkeypatch.setattr(sync, "notify_managers_immediate", raise_error)
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    # 通知失敗があってもメイン処理(EmailLog記録・戻り値の件数)は継続する
+    assert count == 1
+    assert len(inserted) == 1

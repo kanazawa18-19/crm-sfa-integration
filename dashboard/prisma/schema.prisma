@@ -172,17 +172,22 @@ model RepGmailConnection {
 // 件数の都合上生ログは持たず、連絡先ページには「最終メール日時」等のロールアップの
 // みを書き込む(src/gmail_sync/参照)。gmailMessageIdでの重複排除はPython側で行う。
 model EmailLog {
-  id             String   @id @default(cuid())
+  id               String   @id @default(cuid())
   // Notion連絡先DB(3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae)のpage_id。
-  contactPageId  String
-  contactEmail   String
-  repEmail       String
-  gmailMessageId String   @unique
-  direction      String // "inbound" | "outbound"
-  subject        String?
-  snippet        String?
-  sentAt         DateTime
-  createdAt      DateTime @default(now())
+  contactPageId    String
+  contactEmail     String
+  repEmail         String
+  gmailMessageId   String   @unique
+  direction        String // "inbound" | "outbound"
+  subject          String?
+  snippet          String?
+  sentAt           DateTime
+  createdAt        DateTime @default(now())
+  // インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。
+  // キーワード+重み付けスコアリングの合計スコアと優先度("high"|"medium"|"low")。
+  // direction="outbound"や検知対象外(スコア0)のメールはどちらもnullのまま。
+  incidentScore    Int?
+  incidentPriority String?
 
   reminderLogs EmailReminderLog[]
 

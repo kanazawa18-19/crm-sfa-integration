@@ -155,17 +155,25 @@ def insert_email_log(
     subject: str | None,
     snippet: str | None,
     sent_at: datetime,
+    incident_score: int | None = None,
+    incident_priority: str | None = None,
 ) -> None:
     """`gmailMessageId`の一意制約により、既に記録済みのメールを渡すと例外になる
     (呼び出し元がemail_log_exists()で事前に重複排除する設計、meeting_syncの
-    Googleカレンダーイベントid重複チェックと同じパターン)。"""
+    Googleカレンダーイベントid重複チェックと同じパターン)。
+
+    `incident_score`/`incident_priority`(2026-08-16、src/incident_detection/)は
+    `direction == "inbound"`の場合のみ呼び出し元(sync.py)がスコアリング結果を渡す。
+    それ以外(outbound、またはスコアリング対象外)はどちらもNoneのまま。
+    """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO "EmailLog"
                 (id, "contactPageId", "contactEmail", "repEmail", "gmailMessageId",
-                 direction, subject, snippet, "sentAt", "createdAt")
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                 direction, subject, snippet, "sentAt", "createdAt",
+                 "incidentScore", "incidentPriority")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s)
             """,
             (
                 uuid.uuid4().hex,
@@ -177,6 +185,8 @@ def insert_email_log(
                 subject,
                 snippet,
                 sent_at,
+                incident_score,
+                incident_priority,
             ),
         )
         conn.commit()

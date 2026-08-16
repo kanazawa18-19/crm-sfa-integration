@@ -25,6 +25,8 @@ from src.gmail_sync import db, gmail_client
 from src.gmail_sync.matcher import find_contact_page_id
 from src.gmail_sync.notify import notify_web_engagement_tool
 from src.gmail_sync.token_crypto import decrypt_token
+from src.incident_detection.notify import notify_managers_immediate
+from src.incident_detection.scorer import score_email
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,13 @@ def _process_message_ref(
     direction = "inbound" if matched_email in from_addrs else "outbound"
     sent_at = _parse_sent_at(message.date_header)
 
+    # インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。顧客からの
+    # 受信メールのみを対象とする(outboundは自社側の発信文面であり検知対象外)。
+    incident_score: int | None = None
+    incident_priority: str | None = None
+    if direction == "inbound":
+        incident_score, incident_priority = score_email(message.subject, message.snippet)
+
     db.insert_email_log(
         contact_page_id=matched_contact_id,
         contact_email=matched_email,
@@ -112,8 +121,25 @@ def _process_message_ref(
         subject=message.subject,
         snippet=message.snippet,
         sent_at=sent_at,
+        incident_score=incident_score,
+        incident_priority=incident_priority,
     )
     contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: sent_at.isoformat()})
+
+    if incident_priority == "high":
+        # 副次通知は失敗してもメイン処理(EmailLog記録)に影響させない
+        # (notify_web_engagement_toolと同じ方針。notify_managers_immediate自体も内部で
+        # try/exceptしているが、ここでも隔離しておくことで呼び出し側の想定漏れに備える)。
+        try:
+            notify_managers_immediate(
+                subject=message.subject,
+                snippet=message.snippet,
+                contact_email=matched_email,
+                rep_email=rep_email,
+                score=incident_score or 0,
+            )
+        except Exception:
+            logger.exception("gmail_sync: failed to notify managers of incident for %s", matched_email)
 
     notify_web_engagement_tool(
         contact_email=matched_email,

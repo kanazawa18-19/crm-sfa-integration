@@ -42,6 +42,7 @@ from src.gmail_sync.watch_registration import (
     GmailWatchNotConfiguredError,
     renew_all_watches,
 )
+from src.incident_detection.notify import run_incident_digest
 from src.reports.batch import run_report_batch
 from src.reports.revenue_target_settings import (
     RevenueTargetSettingsStore,
@@ -384,6 +385,17 @@ def run_gmail_watch_renewal() -> dict[str, Any]:
     except GmailWatchNotConfiguredError as exc:
         logger.error("gmail watch renewal failed (not configured): %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/cron/incident-digest", dependencies=[Depends(verify_cron_secret)])
+def run_incident_digest_cron() -> dict[str, Any]:
+    """Vercel Cronから1日1回呼ばれる、インシデント・アクシデント検知
+    (`src/incident_detection/`)の中優先度日次ダイジェスト配信エントリポイント(2026-08-16)。
+
+    高優先度(スコア8点以上)は`src/gmail_sync/sync.py`側で受信メール記録時に即座に
+    Slack通知される。このcronは中優先度(4〜7点)を直近24時間分まとめて1通で配信する。
+    """
+    return run_incident_digest()
 
 
 @app.get("/api/cron/email-reminder-check", dependencies=[Depends(verify_email_reminder_cron_secret)])
