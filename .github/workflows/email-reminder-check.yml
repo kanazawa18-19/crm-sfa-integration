@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+# 前回実行が長引いて次のscheduled runと重なる多重起動を抑止する(保険的な対策、
+# shirokuma-secレビューWARN対応、2026-08-16)。二重送信防止自体はsrc/email_reminders/db.py
+# 側(EmailReminderLogのユニーク制約へのON CONFLICT DO NOTHING)で担保済みだが、そもそも
+# 同時実行を避けられるならその方が安全なため、両輪で対策する。
+concurrency:
+  group: email-reminder-check
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest

@@ -23,7 +23,13 @@ def _connect() -> psycopg.Connection[dict[str, Any]]:
     if not url:
         raise ValueError("DATABASE_URL is not set")
     # connect_timeoutを明示しないとハングしうる(2026-08-16、実地検証で確認)。
-    return psycopg.connect(url, row_factory=dict_row, connect_timeout=10)
+    #
+    # options="-c timezone=UTC"(shirokuma-secレビューWARN対応、2026-08-16、
+    # src/email_reminders/db.pyと同じ理由で一貫性のため追加): このモジュールが読み書きする
+    # `sentAt`等はタイムゾーン情報を持たないPostgres `TIMESTAMP(3)`列で、UTC値として
+    # 保存・比較される前提のコードが呼び出し元に多い。この前提をNeon側のセッション
+    # TimeZone設定に暗黙に依存させず、接続確立時に明示的にUTCへ固定する。
+    return psycopg.connect(url, row_factory=dict_row, connect_timeout=10, options="-c timezone=UTC")
 
 
 @dataclass(frozen=True)

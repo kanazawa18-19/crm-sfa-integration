@@ -7,9 +7,15 @@
 
 閾値は`AppSettings.emailReminderThresholdHours`(3時間刻み、3〜72時間、管理者が選択式で
 有効にする)。各対象について、経過時間以下で最大の閾値(＝直近でクロスした閾値)のみを
-対象にリマインドする。同じ受信メール1件・同じ閾値での二重送信は`EmailReminderLog`の
-一意制約(`@@unique([emailLogId, thresholdHours])`)相当のチェック(`db.reminder_already_sent()`)
-で防ぐ。
+対象にリマインドする。
+
+同じ受信メール1件・同じ閾値での二重送信は、`db.record_reminder_sent()`が
+`EmailReminderLog`の一意制約(`@@unique([emailLogId, thresholdHours])`)へ
+`ON CONFLICT DO NOTHING`でアトミックに記録を試み、実際に新規記録できた場合のみ
+Slack DMを送る、という順序で防ぐ(shirokuma-secレビューWARN対応、2026-08-16)。
+先にチェックしてから送信・記録する順序だと、GitHub Actionsの多重起動時にチェックと
+記録の間で競合し二重送信になりうるため、「送信の権利」を先にDB側でアトミックに
+獲得してから送る設計にしている(詳細は`db.record_reminder_sent()`のdocstring参照)。
 
 `GET /api/cron/email-reminder-check`(GitHub Actionsから1時間おき)から呼ばれる想定。
 新規env変数は無い(`SLACK_BOT_TOKEN`・`DATABASE_URL`は既存を流用)。
@@ -58,7 +64,12 @@ def run_reminder_check() -> dict[str, int]:
             threshold = _threshold_to_notify(elapsed_hours, thresholds)
             if threshold is None:
                 continue
-            if db.reminder_already_sent(row["id"], threshold):
+
+            # 送信の権利を先にDBでアトミックに獲得してから送る(モジュールdocstring・
+            # db.record_reminder_sent()参照)。既に記録済み(=他の実行が先に処理済み)なら
+            # 送信せずスキップする。
+            newly_recorded = db.record_reminder_sent(row["id"], threshold)
+            if not newly_recorded:
                 continue
 
             slack_notify.send_reminder_dm(
@@ -67,7 +78,6 @@ def run_reminder_check() -> dict[str, int]:
                 hours_elapsed=int(elapsed_hours),
                 subject=row.get("subject"),
             )
-            db.record_reminder_sent(row["id"], threshold)
             sent += 1
         except Exception:
             # 1件(担当者)の失敗が他を止めないよう、対象ごとにtry/exceptで独立させる
