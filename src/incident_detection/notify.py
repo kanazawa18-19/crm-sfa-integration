@@ -1,14 +1,23 @@
 """インシデント・アクシデント検知のSlack通知(2026-08-16)。
 
-`src/sync_engine/slack_notifier.py`(WebhookSlackNotifier)と同じ、`SLACK_WEBHOOK_URL_ALERT`
-環境変数のIncoming WebhookへシンプルにHTTP POSTする方式(`src/sync_engine/slack_notifier.py`・
-`src/meeting_sync/slack_approval.py`が使っているのと同じ既存の運用アラート用Webhook)。
-新規env変数は無い。
+高優先度(スコア8点以上)の即時通知は、`User.isManager = true`のユーザー(アクセス権限用の
+`role`とは別軸のフラグ、dashboard管理画面でON/OFFする想定)全員へのSlack DMで送る
+(2026-08-16、コーディネーターからの追加設計変更 — 共有の運用アラートチャンネル
+(`SLACK_WEBHOOK_URL_ALERT`)でも通知先メールアドレスのハードコード/env変数でもなく、
+`db.find_manager_emails()`でDBから動的に解決する)。`src/meeting_sync/slack_approval.py`の
+`users.lookupByEmail`→`conversations.open`→`chat.postMessage`パターンをそのまま再利用する
+(`src/email_reminders/slack_notify.py`と同じ再利用方針)。使うのは既存の`SLACK_BOT_TOKEN`
+(meeting_sync/email_remindersと同じ環境変数)。新規env変数は無い。
 
-未設定時は何もせず静かにreturnする(`gmail_sync/notify.py`の`notify_web_engagement_tool`と
-同じパターン — インシデント検知自体はメール同期処理の副次的な効果であり、Webhook未設定を
-理由にメイン処理(EmailLog記録)を止めるべきではない)。同じ理由で、Slack送信自体の失敗も
-本モジュール内でtry/exceptして呼び出し元(gmail_sync.sync)へ伝播させない。
+中優先度の日次ダイジェスト(`run_incident_digest()`)は今回変更しない(既存の
+`SLACK_WEBHOOK_URL_ALERT`チャンネルのまま、合意済み)。
+
+`SLACK_BOT_TOKEN`未設定・`isManager`のユーザーが0人・`find_manager_emails()`自体の失敗
+(DB接続エラー等)のいずれの場合も何もせず静かにreturnする(`gmail_sync/notify.py`の
+`notify_web_engagement_tool`と同じパターン — インシデント検知自体はメール同期処理の
+副次的な効果であり、通知先解決の失敗を理由にメイン処理(EmailLog記録)を止めるべきではない)。
+同じ理由で、対象者ごとのDM送信失敗も本モジュール内でtry/exceptし、1人への送信失敗が他の
+対象者への送信や呼び出し元(gmail_sync.sync)へ伝播しないようにする。
 """
 
 from __future__ import annotations
@@ -19,10 +28,33 @@ import os
 import requests
 
 from src.incident_detection import db
+from src.meeting_sync.slack_approval import (
+    _REQUEST_TIMEOUT_SECONDS,
+    _SLACK_API_BASE,
+    _resolve_dm_channel,
+    _slack_headers,
+)
 
 logger = logging.getLogger(__name__)
 
-_REQUEST_TIMEOUT_SECONDS = 10
+
+def _send_incident_dm(manager_email: str, text: str) -> None:
+    resolved = _resolve_dm_channel(manager_email)
+    if resolved is None:
+        raise RuntimeError(f"Slackユーザー解決に失敗しました: {manager_email}")
+    channel, _user_id = resolved
+
+    response = requests.post(
+        f"{_SLACK_API_BASE}/chat.postMessage",
+        headers=_slack_headers(),
+        json={"channel": channel, "text": text},
+        timeout=_REQUEST_TIMEOUT_SECONDS,
+    )
+    result = response.json()
+    if not result.get("ok"):
+        # Slack Web APIはHTTP 200でもエラーをbody({"ok": false, "error": ...})で返す
+        # (slack_approval.py/email_reminders/slack_notify.pyと同じ注意点)。
+        raise RuntimeError(f"chat.postMessage失敗: {result.get('error')}")
 
 
 def notify_managers_immediate(
@@ -33,9 +65,18 @@ def notify_managers_immediate(
     rep_email: str,
     score: int,
 ) -> None:
-    """高優先度(スコア8点以上)のインシデントを検知した際、即座にマネージャー陣へ通知する。"""
-    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
-    if not url:
+    """高優先度(スコア8点以上)のインシデントを検知した際、`User.isManager = true`の各
+    マネージャーへ即座にSlack DMで通知する。1人への送信失敗が他の対象者への送信を
+    止めないよう、対象者ごとに独立してtry/exceptする。"""
+    if not os.environ.get("SLACK_BOT_TOKEN"):
+        return
+
+    try:
+        manager_emails = db.find_manager_emails()
+    except Exception:
+        logger.exception("incident_detection: failed to resolve manager emails")
+        return
+    if not manager_emails:
         return
 
     text = (
@@ -48,10 +89,13 @@ def notify_managers_immediate(
     if snippet:
         text += f"\n本文抜粋: {snippet}"
 
-    try:
-        requests.post(url, json={"text": text}, timeout=_REQUEST_TIMEOUT_SECONDS)
-    except Exception:
-        logger.exception("incident_detection: failed to notify managers for %s", contact_email)
+    for manager_email in manager_emails:
+        try:
+            _send_incident_dm(manager_email, text)
+        except Exception:
+            logger.exception(
+                "incident_detection: failed to notify manager %s for %s", manager_email, contact_email
+            )
 
 
 def run_incident_digest() -> dict[str, int]:

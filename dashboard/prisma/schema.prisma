@@ -35,6 +35,12 @@ model User {
   role         UserRole @default(viewer)
   createdAt    DateTime @default(now())
 
+  // アクセス権限用のroleとは別軸(2026-08-16、src/incident_detection/)。高優先度インシデント
+  // 検知の即時Slack DM通知先を、ハードコード/env変数ではなく動的にDBから解決するために追加。
+  // trueに設定されたUserのemail一覧をnotify_managers_immediate()が通知先とする
+  // (src/incident_detection/db.pyのfind_manager_emails()参照)。
+  isManager Boolean @default(false)
+
   // 自己プロフィール編集(/settings/profile, 2026-08-16)で追加。どちらも任意項目 —
   // 未設定でも既存ユーザーの動作に影響しない。
   name      String?

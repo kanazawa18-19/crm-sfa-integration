@@ -1,4 +1,4 @@
-"""EmailLogテーブル(Neon Postgres)のインシデント検知関連カラムへの直接アクセス(2026-08-16)。
+"""EmailLog/Userテーブル(Neon Postgres)のインシデント検知関連カラムへの直接アクセス(2026-08-16)。
 
 `src/gmail_sync/db.py`・`src/email_reminders/db.py`と同じ方針: このDBのスキーマ管理は
 dashboard(Next.js)側のPrisma(dashboard/prisma/schema.prisma)に一本化しており、ここでは
@@ -67,3 +67,17 @@ def claim_undigested_medium_priority_emails() -> list[dict[str, Any]]:
         rows = cur.fetchall()
         conn.commit()
     return rows
+
+
+def find_manager_emails() -> list[str]:
+    """`User.isManager = true`の全ユーザーのemailを返す(高優先度インシデント検知の即時
+    Slack DM通知先、2026-08-16、コーディネーターからの追加設計変更)。
+
+    通知先をハードコード/env変数で持つのではなく、dashboard側の管理画面でON/OFFできる
+    `User.isManager`フラグ(アクセス権限用の`role`とは別軸)から動的に解決する。
+    `notify.notify_managers_immediate()`がこの一覧の各emailへ個別にDM送信する。
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT email FROM "User" WHERE "isManager" = true')
+        rows = cur.fetchall()
+    return [row["email"] for row in rows]
