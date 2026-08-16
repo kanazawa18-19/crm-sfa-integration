@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.api.auth import verify_cron_secret, verify_dashboard_api_token
+from src.api.auth import verify_cron_secret, verify_dashboard_api_token, verify_email_reminder_cron_secret
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -386,16 +386,17 @@ def run_gmail_watch_renewal() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.get("/api/cron/email-reminder-check", dependencies=[Depends(verify_cron_secret)])
+@app.get("/api/cron/email-reminder-check", dependencies=[Depends(verify_email_reminder_cron_secret)])
 def run_email_reminder_check() -> dict[str, Any]:
     """GitHub Actionsのscheduled workflow(`.github/workflows/email-reminder-check.yml`、
     1時間おき)から呼ばれる、未返信メールリマインド(`src/email_reminders/`)のエントリ
     ポイント(2026-08-16)。
 
     Vercel Hobbyプランのcron制約(1日1回まで)では1時間おきの実行が組めないため、
-    `vercel.json`には登録せず、GitHub Actions側から`CRON_SECRET`付きで直接叩く方式にする
-    (`verify_cron_secret`自体はVercel Cron専用ではなく`Authorization: Bearer`ヘッダーの
-    照合のみを行うため、呼び出し元がVercel Cronか否かは問わない)。
+    `vercel.json`には登録せず、GitHub Actions側から専用シークレット
+    (`EMAIL_REMINDER_CRON_SECRET`、GitHub Secrets側と対になる値)付きで直接叩く方式にする。
+    既存の`CRON_SECRET`(Vercel Cron専用に運用中の値)とは意図的に分離している
+    (`verify_email_reminder_cron_secret`参照)。
     """
     return run_reminder_check()
 

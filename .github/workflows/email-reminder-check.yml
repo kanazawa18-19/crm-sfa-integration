@@ -26,5 +26,5 @@ jobs:
       - name: Call email-reminder-check endpoint
         run: |
           curl -f -sS \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer ${{ secrets.EMAIL_REMINDER_CRON_SECRET }}" \
             "https://crm-sfa-integration.vercel.app/api/cron/email-reminder-check"

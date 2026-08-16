@@ -47,3 +47,20 @@ def verify_cron_secret(authorization: str | None = Header(default=None)) -> None
 
     if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def verify_email_reminder_cron_secret(authorization: str | None = Header(default=None)) -> None:
+    """`GET /api/cron/email-reminder-check`専用のFastAPI依存性。
+
+    このエンドポイントはVercel Cron（1日1回までのHobbyプラン制約）ではなく、
+    GitHub Actionsのscheduled workflow（1時間おき）から呼ばれるため、Vercelが自動付与する
+    `CRON_SECRET`は使わず、専用の`EMAIL_REMINDER_CRON_SECRET`（GitHub Secrets側と対になる値）
+    で検証する（他のWebhookハンドラが呼び出し元ごとに専用シークレットを持つのと同じ方針）。
+    `verify_cron_secret`と同様fail-closed・定数時間比較。
+    """
+    expected = os.environ.get("EMAIL_REMINDER_CRON_SECRET")
+    if not expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="unauthorized")
