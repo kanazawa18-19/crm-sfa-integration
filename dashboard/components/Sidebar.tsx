@@ -7,18 +7,23 @@ import { logout } from "@/app/actions";
 import BrandLogo from "@/components/BrandLogo";
 import ThemeToggle from "@/components/ThemeToggle";
 import SubmitButton from "@/components/SubmitButton";
+import { ROLE_LABELS } from "@/lib/roleLabels";
 
 // web-engagement-tool(MA)のAdminNav.tsxのサイドバーUXを移植(2026-08-15)。ただし
 // ダッシュボード側はナビ項目が少ないため、見出しによるグルーピングは行うが
-// アコーディオン式の折りたたみ機能は省略する。2026-08-17: 「個人の設定」と
-// 「組織/共通の設定」を分離するsmartHRのIAパターンに倣い、フラットな一覧を
-// グループ分けに変更。
+// アコーディオン式の折りたたみ機能は省略する。2026-08-17: smartHRトライアル
+// 画面のIAパターンに倣い、「個人設定」(プロフィール編集/Gmail連携)は
+// デスクトップでは画面右上のAvatarMenu(components/AvatarMenu.tsx)に一本化した。
+// ただしAvatarMenuを含むヘッダーはデスクトップ専用(hidden md:flex)なので、
+// モバイルドロワーからも撤去すると個人設定への導線が消えてしまう。そのため
+// 「個人設定」グループ自体はNAV_GROUPSに残しつつ mobileOnly フラグでモバイル
+// ドロワーのみ表示し、デスクトップサイドバーでは非表示にする。
 //
 // NavGroup.id はサイドバー内部の安定した識別子(表示ラベル変更の影響を受けない)。
 // master限定リンクの注入判定にはこの id を用いる。
 
 type NavLink = { href: string; label: string; exact?: boolean };
-type NavGroup = { id: string; label: string; links: NavLink[] };
+type NavGroup = { id: string; label: string; links: NavLink[]; mobileOnly?: boolean };
 
 // Pinned outside any group — always one click away.
 const HOME_LINK: NavLink = { href: "/", label: "ダッシュボード", exact: true };
@@ -38,6 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     id: "personal-settings",
     label: "個人設定",
+    mobileOnly: true,
     links: [
       { href: "/settings/profile", label: "プロフィール編集" },
       { href: "/settings/gmail", label: "Gmail連携" },
@@ -56,12 +62,6 @@ const MASTER_ONLY_NAV_LINKS: NavLink[] = [
   { href: "/settings/security", label: "セキュリティ設定" },
   { href: "/settings/email-reminders", label: "未返信メールリマインド設定" },
 ];
-
-const ROLE_LABELS: Record<string, string> = {
-  master: "管理者",
-  editor: "編集者",
-  viewer: "閲覧者",
-};
 
 function isLinkActive(link: NavLink, pathname: string | null) {
   return link.exact ? pathname === link.href : Boolean(pathname?.startsWith(link.href));
@@ -141,9 +141,15 @@ export default function Sidebar({ role, email }: { role: "master" | "editor" | "
       </Link>
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3">
         <NavLinkItem link={HOME_LINK} pathname={pathname} onNavigate={closeDrawer} />
-        {groups.map((group) => (
-          <NavGroupSection key={group.id} group={group} pathname={pathname} onNavigate={closeDrawer} />
-        ))}
+        {groups.map((group) =>
+          group.mobileOnly ? (
+            <div key={group.id} className="md:hidden">
+              <NavGroupSection group={group} pathname={pathname} onNavigate={closeDrawer} />
+            </div>
+          ) : (
+            <NavGroupSection key={group.id} group={group} pathname={pathname} onNavigate={closeDrawer} />
+          )
+        )}
       </nav>
       <div className="border-t border-(--border-subtle) px-4 py-3">
         <p className="mb-2 text-[10px] font-semibold text-(--color-foreground)/40">表示テーマ</p>

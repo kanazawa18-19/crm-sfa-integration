@@ -7,7 +7,13 @@ import { COOKIE_NAME, verifySessionToken } from "@/lib/adminSession";
 // DASHBOARD_PASSWORDによるセッション方式(旧実装)を置き換え、ユーザーごとの
 // アカウント・ロールベースの認証にする。
 
-export type CurrentUser = { id: string; email: string; role: "master" | "editor" | "viewer" };
+export type CurrentUser = {
+  id: string;
+  email: string;
+  role: "master" | "editor" | "viewer";
+  name: string | null;
+  avatarUrl: string | null;
+};
 
 const ROLE_ORDER = { viewer: 0, editor: 1, master: 2 } as const;
 const ROLE_LABELS_JA = { viewer: "閲覧者", editor: "編集者", master: "管理者" } as const;
@@ -21,7 +27,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   const user = await prisma.user.findUnique({ where: { id: verified.userId } });
   if (!user) return null;
 
-  return { id: user.id, email: user.email, role: user.role };
+  return { id: user.id, email: user.email, role: user.role, name: user.name, avatarUrl: user.avatarUrl };
 }
 
 /** Server Component guard — redirects to login if signed out, or throws if the role isn't high enough. */
