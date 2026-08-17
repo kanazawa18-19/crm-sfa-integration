@@ -7,6 +7,7 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
