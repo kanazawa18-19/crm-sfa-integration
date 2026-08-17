@@ -714,3 +714,61 @@ def save_revenue_target_sheet_settings(
         "unit_count_month_count": unit_count_month_count,
     }
 
+
+# --- TEMPORARY: 担当メンバー一括割当バッチのdry-run結果を本番相当環境で確認するための
+# 使い捨てエンドポイント(2026-08-17)。書き込みは一切行わない(plan_backfillは純粋関数、
+# Notionへの読み取りのみ)。確認後、このエンドポイントとTEMP_AUDIT_TOKEN環境変数は撤去する。
+def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("TEMP_AUDIT_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@app.get("/api/_temp/backfill-assignees-dry-run", dependencies=[Depends(_verify_temp_audit_token)])
+def _temp_backfill_assignees_dry_run() -> dict[str, Any]:
+    from scripts.backfill_project_assignees import build_name_to_user_ids, plan_backfill
+    from src.api.user_directory import NotionUserDirectory
+    from src.db_schema.project import PROJECT_SCHEMA
+    from src.sync_engine.clients.notion_client import HttpNotionClient
+
+    user_directory = NotionUserDirectory()
+    name_to_user_ids = build_name_to_user_ids(user_directory)
+    project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
+    pages = project_client.query_all_pages()
+    plan = plan_backfill(pages, name_to_user_ids)
+
+    return {
+        "total_pages": len(pages),
+        "auto_assign_count": len(plan.auto_assign),
+        "needs_review_count": len(plan.needs_review),
+        "auto_assign_sample": [
+            {
+                "project_name": c.project_name,
+                "raw_assignee_name": c.raw_assignee_name,
+                "resolved_user_name": c.resolved_user_name,
+            }
+            for c in plan.auto_assign[:15]
+        ],
+        "needs_review_sample": [
+            {
+                "project_name": r.project_name,
+                "raw_assignee_name": r.raw_assignee_name,
+                "reason": r.reason,
+            }
+            for r in plan.needs_review[:15]
+        ],
+        "needs_review_reason_breakdown": {
+            "multiple_or_unparseable_names": sum(
+                1 for r in plan.needs_review if r.reason.startswith("担当者名から")
+            ),
+            "no_matching_user": sum(
+                1 for r in plan.needs_review if r.reason == "ワークスペースに該当するユーザーが見つかりません"
+            ),
+            "ambiguous_same_name": sum(
+                1 for r in plan.needs_review if r.reason.startswith("同姓同名の候補が")
+            ),
+        },
+    }
+
