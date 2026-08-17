@@ -717,12 +717,13 @@ def save_revenue_target_sheet_settings(
 
 
 # --- TEMPORARY: scripts/backfill_project_assignees.py --execute 相当を本番環境で実行する
-# 使い捨てエンドポイント(2026-08-17)。動物チームレビュー・Geminiクロスレビューを経て
+# 使い捨てエンドポイント群(2026-08-17)。動物チームレビュー・Geminiクロスレビューを経て、
 # 本番相当環境でのdry-run結果(auto_assign_count=1876)を金沢さんに確認いただいた上での
-# 実行。安全のため、呼び出し側が事前に把握しているauto_assign件数(1876)と実行直前に
-# 再計算した件数が一致しない場合は書き込みを行わず中断する(dry-runからの間にZoho/Notion
-# データが変化していないかの最終防御)。確認後、このエンドポイントとTEMP_AUDIT_TOKEN
-# 環境変数は撤去する。
+# 実行。Vercelのプラン上限(maxDuration<=300秒)のため、Zoho全件取得を伴うプラン計算
+# (backfill-plan、~4-5分かかる)と、実際の書き込み(backfill-write-batch、300秒以内で
+# 収まるバッチ単位)を分離した。書き込み側は事前に計算済みのcandidatesをリクエストボディで
+# 受け取るのみで、Zohoへの再問い合わせは行わない。確認後、これらのエンドポイントと
+# TEMP_AUDIT_TOKEN環境変数は撤去する。
 def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
     expected = os.environ.get("TEMP_AUDIT_TOKEN")
     if not expected:
@@ -731,8 +732,8 @@ def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-@app.get("/api/_temp/backfill-assignees-v2-execute", dependencies=[Depends(_verify_temp_audit_token)])
-def _temp_backfill_assignees_v2_execute(expected_count: int) -> dict[str, Any]:
+@app.get("/api/_temp/backfill-plan", dependencies=[Depends(_verify_temp_audit_token)])
+def _temp_backfill_plan() -> dict[str, Any]:
     import traceback
 
     try:
@@ -835,37 +836,56 @@ def _temp_backfill_assignees_v2_execute(expected_count: int) -> dict[str, Any]:
                 }
             )
 
-        if len(auto_assign) != expected_count:
-            return {
-                "aborted": True,
-                "reason": f"件数不一致のため中断しました(想定{expected_count}件、実際{len(auto_assign)}件)。"
-                "dry-runからの間にデータが変化した可能性があります。書き込みは一切行っていません。",
-                "actual_count": len(auto_assign),
-            }
+        return {"auto_assign_count": len(auto_assign), "auto_assign": auto_assign}
+    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
+        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
+
+
+class _TempBackfillWriteBatchCandidate(BaseModel):
+    page_id: str
+    project_name: str
+    resolved_user_id: str
+    resolved_user_name: str
+
+
+class _TempBackfillWriteBatchBody(BaseModel):
+    candidates: list[_TempBackfillWriteBatchCandidate]
+
+
+@app.post("/api/_temp/backfill-write-batch", dependencies=[Depends(_verify_temp_audit_token)])
+def _temp_backfill_write_batch(body: _TempBackfillWriteBatchBody) -> dict[str, Any]:
+    import traceback
+
+    try:
+        from src.db_schema.project import PROJECT_SCHEMA
+        from src.sync_engine.clients.notion_client import HttpNotionClient
+
+        PROP_担当メンバー = "担当メンバー"
+
+        project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
 
         succeeded, skipped, failed = [], [], []
-        for candidate in auto_assign:
+        for candidate in body.candidates:
             try:
-                current = project_client.get_page(candidate["page_id"])
+                current = project_client.get_page(candidate.page_id)
             except Exception as exc:  # noqa: BLE001
-                failed.append({"project_name": candidate["project_name"], "page_id": candidate["page_id"], "error": str(exc)})
+                failed.append({"project_name": candidate.project_name, "page_id": candidate.page_id, "error": str(exc)})
                 continue
             if current is None:
-                skipped.append(candidate)
+                skipped.append(candidate.page_id)
                 continue
             if current.get(PROP_担当メンバー) or []:
-                skipped.append(candidate)
+                skipped.append(candidate.page_id)
                 continue
             try:
-                project_client.update_page(candidate["page_id"], {PROP_担当メンバー: [candidate["resolved_user_id"]]})
+                project_client.update_page(candidate.page_id, {PROP_担当メンバー: [candidate.resolved_user_id]})
             except Exception as exc:  # noqa: BLE001
-                failed.append({"project_name": candidate["project_name"], "page_id": candidate["page_id"], "error": str(exc)})
+                failed.append({"project_name": candidate.project_name, "page_id": candidate.page_id, "error": str(exc)})
                 continue
-            succeeded.append(candidate)
+            succeeded.append(candidate.page_id)
 
         return {
-            "aborted": False,
-            "auto_assign_count": len(auto_assign),
+            "batch_size": len(body.candidates),
             "succeeded_count": len(succeeded),
             "skipped_count": len(skipped),
             "failed_count": len(failed),
