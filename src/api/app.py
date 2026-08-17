@@ -821,7 +821,7 @@ def _temp_zoho_owner_email_match_check() -> dict[str, Any]:
 
         return {
             "notion_user_count": len(notion_users),
-            "notion_user_sample": notion_users[:10],
+            "notion_user_sample": notion_users,
             "zoho_deal_sample_count": len(zoho_deals),
             "matched_count": len(matched),
             "unmatched_count": len(unmatched),
