@@ -50,7 +50,15 @@ logger = logging.getLogger(__name__)
 _JST = timezone(timedelta(hours=9))
 
 _CACHE_TTL_ENV_VAR = "DASHBOARD_CACHE_TTL_SECONDS"
-_DEFAULT_CACHE_TTL_SECONDS = 60.0
+# 案件管理DB全件（get_projects）のコールドフェッチは実測で約100秒かかる
+# （2026-08-17、Suspenseストリーミング化タスクのレビューで判明。案件数・Notion API
+# レイテンシ次第でさらに伸びる可能性もある）。デフォルトTTLがそれより短いと、
+# 全社ダッシュボードのように60秒に1回以上のペースでアクセスされる画面では
+# キャッシュがほぼ常に無効化され、実質毎回コールドフェッチ相当の遅さになってしまう。
+# 全社ダッシュボードの用途上10分程度のデータ鮮度低下は許容範囲と判断し600秒に引き上げた
+# （webhookベースのリアルタイム同期とは別物であり、この値を変えても同期パイプラインの
+# 正確性には影響しない）。
+_DEFAULT_CACHE_TTL_SECONDS = 600.0
 
 _STALLED_DAYS_ENV_VAR = "MANAGER_ALERT_STALLED_DAYS"
 _DEFAULT_STALLED_DAYS = 14
