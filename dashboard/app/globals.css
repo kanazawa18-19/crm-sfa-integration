@@ -123,23 +123,23 @@ body {
   }
 
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-(--brand-blue) px-4 py-2 text-sm font-semibold text-white transition-colors duration-150 hover:bg-(--brand-blue-dark) disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-(--brand-blue) px-4 py-3 text-base font-bold text-white transition-colors duration-150 hover:bg-(--brand-blue-dark) disabled:cursor-not-allowed disabled:opacity-40;
   }
   .btn-gold {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-(--brand-gold) px-4 py-2 text-sm font-semibold text-[#3a2e04] transition-colors duration-150 hover:bg-(--brand-gold-light) disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-(--brand-gold) px-4 py-3 text-base font-bold text-[#3a2e04] transition-colors duration-150 hover:bg-(--brand-gold-light) disabled:cursor-not-allowed disabled:opacity-40;
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-(--border-subtle) bg-(--color-surface) px-4 py-2 text-sm font-semibold text-(--foreground) transition-colors duration-150 hover:bg-(--color-surface-muted) disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-(--border-subtle) bg-(--color-surface) px-4 py-3 text-base font-bold text-(--foreground) transition-colors duration-150 hover:bg-(--color-surface-muted) disabled:cursor-not-allowed disabled:opacity-40;
   }
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-(--brand-danger) transition-colors duration-150 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400 dark:hover:bg-red-950/70;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-red-200 bg-red-50 px-4 py-3 text-base font-bold text-(--brand-danger) transition-colors duration-150 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400 dark:hover:bg-red-950/70;
   }
   .btn-xs {
-    @apply px-2.5! py-1! text-xs!;
+    @apply px-2.5! py-1! text-xs! font-semibold!;
   }
 
   .input {
-    @apply rounded-[4px] border border-(--border-subtle) bg-(--color-surface) px-3 py-1.5 text-sm text-(--color-foreground) outline-none transition-colors focus:border-(--brand-blue) focus:ring-2 focus:ring-(--brand-blue-light)/40;
+    @apply rounded-[6px] border border-(--border-subtle) bg-(--color-surface) px-2 py-2 text-base text-(--color-foreground) outline-none transition-colors focus:border-(--brand-blue) focus:ring-2 focus:ring-(--brand-blue-light)/40;
   }
 
   .badge-blue {
