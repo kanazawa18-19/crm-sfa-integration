@@ -44,12 +44,14 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from src.api.user_directory import NotionUserDirectory
 from src.calendar_sync.service import sync_next_action_date_to_calendar
 from src.calendar_sync.web_engagement_tool_client import WebEngagementToolCalendarClient
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS
 from src.lead_sync.service import sync_contact_to_lead
 from src.lead_sync.web_engagement_tool_client import WebEngagementToolLeadSyncClient
+from src.project_mirror.sync import sync_project_to_mirror
 from src.sync_engine.clients._http import (
     HOOK_MAX_RETRIES,
     HOOK_TIMEOUT_SECONDS,
@@ -534,6 +536,40 @@ def build_lead_sync_callable(
     )
 
 
+def build_project_mirror_sync_callable(
+    notion_client: NotionPageClient | None,
+) -> Callable[[Mapping[str, Any], str], Any] | None:
+    """`notion_webhook.handler_with_proxy`の`project_mirror_sync`引数へそのまま渡せる
+    `Callable[[Mapping[str, Any], str], Any]`を組み立てる（案件管理DBのPostgresミラー
+    （`ProjectMirror`）を更新する`src.project_mirror.sync.sync_project_to_mirror`をベースに
+    する、2026-08-17）。
+
+    `PROJECT_MIRROR_SYNC_ENABLED`環境変数（既定`false`）でロールアウトを制御する。無効時は
+    `calendar_sync`/`lead_sync`と同じ「未設定なら無効化」パターンに合わせ`None`を返す。
+    読み取り元の切り替え（`src/api/dashboard_service.py`の`PROJECT_MIRROR_READ_ENABLED`）とは
+    あえて別の環境変数にしている。「書き込み同期は開始したがミラーの内容をまだ信頼しきれ
+    ない」検証期間を挟み、読み取り元の切り替えだけを独立して後からON/OFFできるようにする
+    ための段階導入設計（ロールアウト手順の詳細はdocs/project_mirror_activation_note.md参照）。
+
+    `notion_client`（`ProductionSyncWiring.notion_page_client`を想定）が`None`の場合
+    （`NOTION_API_KEY`未設定でNotion同期自体が無効化されている場合）、
+    `sync_project_to_mirror`がページ全体の再取得（`get_raw_page`）に使うNotionクライアントが
+    無いため、同様に無効化し`None`を返す。
+    """
+    if os.environ.get("PROJECT_MIRROR_SYNC_ENABLED", "").strip().lower() != "true":
+        return None
+    if notion_client is None:
+        logger.info(
+            "NOTION_API_KEYが未設定のため、案件管理DBのPostgresミラー同期は無効化されます"
+        )
+        return None
+    return functools.partial(
+        sync_project_to_mirror,
+        notion_client=notion_client,
+        user_directory=NotionUserDirectory(max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES),
+    )
+
+
 def build_production_dispatcher(*, id_mapping_store: IdMappingStore | None = None) -> Dispatcher:
     """本番用のDispatcher（4ツール分のSyncTarget＋IdMappingStore）を組み立てる。
 
@@ -617,11 +653,13 @@ class ProductionSyncWiring:
     `dispatcher`は`SkipTrackingDispatcher`でラップされており、部分的な同期スキップが
     発生した場合にwarningログを出す（上記docstring参照）。
 
-    `calendar_sync_callable`/`lead_sync_callable`は、それぞれ`notion_webhook.handler_with_proxy`
-    の`calendar_sync`/`lead_sync`引数へそのまま渡せる`Callable[[Mapping[str, Any], str], Any]`
-    （`build_calendar_sync_callable`/`build_lead_sync_callable`参照）。対応する連携先の環境変数が
-    未設定の場合は`None`になる（Webhookエンドポイント側は`None`の場合当該フックを渡さない
-    想定であり、アプリ起動・Webhookリクエスト処理自体はいずれも失敗しない）。
+    `calendar_sync_callable`/`lead_sync_callable`/`project_mirror_sync_callable`は、それぞれ
+    `notion_webhook.handler_with_proxy`の`calendar_sync`/`lead_sync`/`project_mirror_sync`引数へ
+    そのまま渡せる`Callable[[Mapping[str, Any], str], Any]`
+    （`build_calendar_sync_callable`/`build_lead_sync_callable`/
+    `build_project_mirror_sync_callable`参照）。対応する連携先の環境変数が未設定の場合は
+    `None`になる（Webhookエンドポイント側は`None`の場合当該フックを渡さない想定であり、
+    アプリ起動・Webhookリクエスト処理自体はいずれも失敗しない）。
     """
 
     def __init__(self) -> None:
@@ -641,6 +679,9 @@ class ProductionSyncWiring:
         )
         self.lead_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
             build_lead_sync_callable(self.notion_page_client)
+        )
+        self.project_mirror_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
+            build_project_mirror_sync_callable(self.notion_page_client)
         )
 
 
@@ -681,6 +722,7 @@ __all__ = [
     "build_lead_sync_callable",
     "build_notion_clients_by_db",
     "build_production_dispatcher",
+    "build_project_mirror_sync_callable",
     "build_spreadsheet_targets_by_db",
     "build_zoho_targets_by_db",
     "get_production_wiring",

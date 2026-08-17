@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import pytest
+
 from src.api.dashboard_service import (
     NotionDataSource,
     build_daily_report,
@@ -384,6 +386,69 @@ def test_get_projects_uses_embedded_name_from_people_property() -> None:
     projects = ds.get_projects()
 
     assert projects[0]["担当メンバー"] == ["田中太郎"]
+
+
+# --- NotionDataSource._fetch_projects: PROJECT_MIRROR_READ_ENABLED分岐 --------------------------
+# project_page_to_mirror_record()自体のテストはtests/api/test_notion_display.py（実際の定義
+# 場所、2026-08-17移設分）を参照。
+
+
+def test_fetch_projects_reads_from_mirror_when_read_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROJECT_MIRROR_READ_ENABLED", "true")
+    mirror_projects = [{"notion_page_id": "proj-1", "案件名": "ミラー由来"}]
+    monkeypatch.setattr(
+        "src.project_mirror.db.list_projects", lambda: mirror_projects
+    )
+    project_client = _CountingProjectClient()
+    reset_cache()
+    data_source = NotionDataSource(
+        project_client=project_client, action_client=object(), user_directory=_FakeUserDirectory()
+    )
+
+    result = data_source.get_projects()
+
+    assert result == mirror_projects
+    assert project_client.call_count == 0
+    reset_cache()
+
+
+def test_fetch_projects_warns_when_mirror_is_empty(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """バックフィル未実施のままPROJECT_MIRROR_READ_ENABLEDだけ先に有効化すると、
+    エラーにならず「案件0件」の空ダッシュボードが無言で表示されてしまう
+    （shirokuma-secレビューWARN対応、2026-08-17）。警告ログで気づけるようにする。"""
+    monkeypatch.setenv("PROJECT_MIRROR_READ_ENABLED", "true")
+    monkeypatch.setattr("src.project_mirror.db.list_projects", lambda: [])
+    reset_cache()
+    data_source = NotionDataSource(
+        project_client=_CountingProjectClient(), action_client=object(), user_directory=_FakeUserDirectory()
+    )
+
+    with caplog.at_level("WARNING"):
+        result = data_source.get_projects()
+
+    assert result == []
+    assert any("ProjectMirrorが" in record.getMessage() for record in caplog.records)
+    reset_cache()
+
+
+def test_fetch_projects_reads_from_notion_when_read_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PROJECT_MIRROR_READ_ENABLED", raising=False)
+    project_client = _CountingProjectClient()
+    reset_cache()
+    data_source = NotionDataSource(
+        project_client=project_client, action_client=object(), user_directory=_FakeUserDirectory()
+    )
+
+    data_source.get_projects()
+
+    assert project_client.call_count == 1
+    reset_cache()
 
 
 # --- モジュールレベルTTLキャッシュ -----------------------------------------------------------------

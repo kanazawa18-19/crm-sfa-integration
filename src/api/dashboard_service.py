@@ -27,7 +27,11 @@ from src.analytics.member_performance import (
     compute_member_performance,
 )
 from src.api.action_classifier import classify_action_type
-from src.api.notion_display import page_to_display_dict
+from src.api.notion_display import (
+    page_to_display_dict,
+    project_page_to_mirror_record,
+    resolve_person_name,
+)
 from src.api.user_directory import NotionUserDirectory
 from src.db_schema.action import ACTION_SCHEMA
 from src.db_schema.project import (
@@ -120,43 +124,6 @@ PROP_案件名_ACTION = "案件名"
 PROP_担当営業 = "担当営業"
 
 
-def _resolve_person_name(person: Any, user_directory: Any) -> str | None:
-    """`notion_display._parse_people`が返す`{"id":..., "name":...}`形式1件を表示名へ変換する。
-
-    Notion APIのページプロパティレスポンスには通常ユーザーの`name`が直接埋め込まれている
-    （インテグレーションに「ユーザー情報の読み取り」権限がある場合）。実データ確認の結果、
-    `GET /v1/users`（ワークスペースメンバー一覧、`NotionUserDirectory`が使う）には
-    ゲストユーザー等の理由で現れないユーザーが存在することが判明したため、
-    ページに埋め込まれた`name`を最優先し、`name`が欠落している場合のみ
-    `NotionUserDirectory`によるID解決にフォールバックする。
-    """
-    if not isinstance(person, dict):
-        return None
-    name = person.get("name")
-    # 空白のみの名前（Notion側の入力揺れ）を「解決済み」と誤判定しないよう.strip()する
-    # （Geminiクロスレビューでの指摘を反映）。
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    person_id = person.get("id")
-    if not person_id:
-        return None
-    resolved = user_directory.resolve(str(person_id))
-    if resolved == str(person_id):
-        # NotionUserDirectory（GET /v1/usersのワークスペースメンバー一覧）でも解決できな
-        # かった（削除済みユーザー・ゲスト等、Notion側がそもそも名前情報を返さないケースが
-        # 実データで確認されている）。生のUUIDをそのまま表示すると分かりにくいため、
-        # 人間が読める形のプレースホルダーに変換する。
-        return f"不明なメンバー（{str(person_id)[:8]}）"
-    return resolved
-
-
-def _resolve_people_names(value: Any, user_directory: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    names = [_resolve_person_name(person, user_directory) for person in value]
-    return [name for name in names if name]
-
-
 def _first_relation_id(value: Any) -> str | None:
     if isinstance(value, list) and value:
         return str(value[0])
@@ -219,11 +186,36 @@ class NotionDataSource:
         return _cached("projects", self._fetch_projects)
 
     def _fetch_projects(self) -> list[dict[str, Any]]:
+        if os.environ.get("PROJECT_MIRROR_READ_ENABLED", "").strip().lower() == "true":
+            # Postgresミラー（src/project_mirror/）からの読み取りに切り替える
+            # （案件管理DB全件取得が実測約100秒かかる問題への対応、2026-08-17）。
+            # 遅延import: 未使用時（既定）はpsycopgへの依存を発生させないため
+            # （`src/audit_log/db.py`と同様、実際のDB接続はこの分岐に入った場合のみ発生する）。
+            #
+            # PROJECT_MIRROR_SYNC_ENABLED（書き込み同期の有効化、production_wiring.pyの
+            # build_project_mirror_sync_callable参照）とはあえて別の環境変数にしている。
+            # 「書き込み同期は開始したがミラーの内容をまだ信頼しきれない」検証期間を挟み、
+            # 読み取り元の切り替え（このフラグ）だけを独立して後からON/OFFできるようにする
+            # ための段階導入設計（詳細はdocs/project_mirror_activation_note.md参照）。
+            from src.project_mirror.db import list_projects
+
+            projects = list_projects()
+            if not projects:
+                # バックフィル未実施のままこのフラグだけ先に有効化すると、エラーにならず
+                # 「案件が0件」の空ダッシュボードが無言で表示されてしまう
+                # （shirokuma-secレビューWARN対応、2026-08-17）。
+                logger.warning(
+                    "get_projects: PROJECT_MIRROR_READ_ENABLED=true ですがProjectMirrorが"
+                    "0件でした。scripts/backfill_project_mirror.pyでのバックフィルが未実施の"
+                    "可能性があります。"
+                )
+            return projects
+
         pages = self._project_client.query_all_pages()
         records: list[dict[str, Any]] = []
         skipped_properties: set[str] = set()
         for page in pages:
-            record, skipped = page_to_display_dict(page, PROJECT_SCHEMA)
+            record, skipped = project_page_to_mirror_record(page, self._user_directory)
             records.append(record)
             skipped_properties |= skipped
         if skipped_properties:
@@ -231,10 +223,6 @@ class NotionDataSource:
                 "get_projects: db_key=%r スキーマに存在しない未定義プロパティをスキップしました: %s",
                 PROJECT_SCHEMA.key,
                 sorted(skipped_properties),
-            )
-        for record in records:
-            record[PROP_担当メンバー] = _resolve_people_names(
-                record.get(PROP_担当メンバー), self._user_directory
             )
         return records
 
@@ -268,7 +256,7 @@ class NotionDataSource:
         if isinstance(first, list):
             first = first[0] if first else None
         if isinstance(first, dict):
-            return _resolve_person_name(first, self._user_directory)
+            return resolve_person_name(first, self._user_directory)
         if not first:
             return None
         return self._user_directory.resolve(str(first))

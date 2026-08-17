@@ -51,11 +51,13 @@ class _FakeWiring:
         notion_page_client: Any = None,
         calendar_sync_callable: Any = None,
         lead_sync_callable: Any = None,
+        project_mirror_sync_callable: Any = None,
     ) -> None:
         self.dispatcher = dispatcher or _SpyDispatcher()
         self.notion_page_client = notion_page_client
         self.calendar_sync_callable = calendar_sync_callable
         self.lead_sync_callable = lead_sync_callable
+        self.project_mirror_sync_callable = project_mirror_sync_callable
         self.id_mapping_store = None
 
 
@@ -350,6 +352,51 @@ def test_webhook_notion_invokes_calendar_sync_callable_for_project_event(
     assert response.status_code == 200
     assert len(calendar_sync_calls) == 1
     called_properties, called_page_id = calendar_sync_calls[0]
+    assert called_page_id == "page-1"
+    assert called_properties == {"案件名": "MSA-PJ-001"}
+
+
+def test_webhook_notion_invokes_project_mirror_sync_callable_for_project_event(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本番エンドポイント（webhook_notion）がwiring.project_mirror_sync_callableを実際に
+    handler_with_proxyへ渡し、db_key="project"のイベントで呼び出されることを確認する
+    （2026-08-17、案件管理DB Postgresミラー導入）。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    raw_page = {
+        "id": "page-1",
+        "parent": {"type": "database_id", "database_id": PROJECT_SCHEMA.notion_database_id},
+        "last_edited_time": "2026-08-05T09:00:00.000Z",
+        "properties": {
+            "案件名": {"type": "title", "title": [{"plain_text": "MSA-PJ-001"}]},
+        },
+    }
+    project_mirror_sync_calls: list[tuple[dict, str]] = []
+
+    def _project_mirror_sync(properties: dict, page_id: str) -> None:
+        project_mirror_sync_calls.append((dict(properties), page_id))
+
+    _override_wiring(
+        _FakeWiring(
+            notion_page_client=_FakeNotionPageClient(raw_page),
+            project_mirror_sync_callable=_project_mirror_sync,
+        )
+    )
+
+    response = client.post(
+        "/api/webhooks/notion",
+        json={
+            "id": "evt_xxx",
+            "timestamp": "2026-08-05T09:00:00.000Z",
+            "type": "page.properties_updated",
+            "entity": {"id": "page-1", "type": "page"},
+            "data": {},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(project_mirror_sync_calls) == 1
+    called_properties, called_page_id = project_mirror_sync_calls[0]
     assert called_page_id == "page-1"
     assert called_properties == {"案件名": "MSA-PJ-001"}
 
@@ -764,3 +811,95 @@ def test_cron_zoho_webhook_renewal_defaults_to_all_six_modules(
     assert len(watch_calls) == 1
     sent_events = watch_calls[0].json()["watch"][0]["events"]
     assert sent_events == [f"{module}.all" for module in DEFAULT_MODULES]
+
+
+# --- /api/cron/project-mirror-reconcile -----------------------------------------------------
+
+
+def test_cron_project_mirror_reconcile_returns_401_without_secret_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+
+    response = client.get("/api/cron/project-mirror-reconcile")
+
+    assert response.status_code == 401
+
+
+def test_cron_project_mirror_reconcile_returns_401_with_wrong_secret(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+
+    response = client.get(
+        "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer wrong-secret"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_cron_project_mirror_reconcile_skips_when_sync_not_enabled_by_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PROJECT_MIRROR_SYNC_ENABLED未設定(既定)の場合、cronが`vercel.json`に登録された時点
+    (env var未設定でも)で毎晩ProjectMirrorへの書き込みが始まってしまわないよう、書き込みを
+    スキップすること(shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-17)。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.delenv("PROJECT_MIRROR_SYNC_ENABLED", raising=False)
+    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.api.app.refresh_all_projects", lambda **kwargs: calls.append(kwargs)
+    )
+
+    response = client.get(
+        "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"skipped": "PROJECT_MIRROR_SYNC_ENABLED is not set"}
+    assert calls == []
+
+
+def test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
+    # run_project_mirror_reconcile()はNotionUserDirectory()を構築するためNOTION_API_KEYが
+    # 必要(実際のAPI呼び出しは発生しない。refresh_all_projects自体を下でモック化するため)。
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-api-key")
+    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+
+    calls: list[dict[str, Any]] = []
+
+    def _fake_refresh_all_projects(*, notion_client: Any, user_directory: Any) -> dict[str, Any]:
+        calls.append({"notion_client": notion_client, "user_directory": user_directory})
+        return {"synced_count": 42}
+
+    monkeypatch.setattr("src.api.app.refresh_all_projects", _fake_refresh_all_projects)
+
+    response = client.get(
+        "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"synced_count": 42}
+    assert len(calls) == 1
+
+
+def test_cron_project_mirror_reconcile_returns_500_when_notion_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NOTION_API_KEY等が未設定でNotionクライアントが構成されていない場合、成功したように
+    見えるno-opにせず明確な500エラーとして表面化させる。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
+    _override_wiring(_FakeWiring(notion_page_client=None))
+
+    response = client.get(
+        "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 500

@@ -245,3 +245,25 @@ model AuditLog {
   @@index([actorSource])
   @@index([createdAt])
 }
+
+// 案件管理DB(Notion、約10,000件)のPostgres複製(読み取り専用ミラー、2026-08-17)。
+// 全社ダッシュボードでの`NotionDataSource.get_projects()`全件取得が実測約100秒かかる
+// 問題への対応。データの正本は引き続きNotionであり、双方向同期パイプライン
+// (Dispatcher/SyncEvent/IdMappingStore)には一切関与しない(ミラーが古くなっても実害は
+// ダッシュボード表示の鮮度低下のみ)。
+//
+// 個別プロパティを列化せず`data`(Json)へ丸ごと保存する。PROJECT_SCHEMA(約40プロパティ)は
+// 変更頻度が高く、列化するとNotion側のプロパティ追加のたびにdashboard側のマイグレーションが
+// 必須になってしまうため(既存の消費者はSQL側のフィルタ・集計を必要としない)。
+//
+// このテーブルもAuditLog等と同様、書き込みはPython側(psycopg直接アクセス、
+// src/project_mirror/db.py)が行う。
+model ProjectMirror {
+  id           String    @id @default(cuid())
+  notionPageId String    @unique
+  data         Json
+  lastEditedAt DateTime?
+  syncedAt     DateTime  @default(now())
+
+  @@index([syncedAt])
+}

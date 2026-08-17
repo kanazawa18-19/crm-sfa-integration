@@ -15,6 +15,7 @@ import logging
 from typing import Any, Mapping
 
 from src.db_schema.base import DatabaseSchema
+from src.db_schema.project import PROJECT_SCHEMA
 from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
 
 logger = logging.getLogger(__name__)
@@ -134,3 +135,72 @@ def page_to_display_dict(
             continue
         result[name] = parse_notion_property_for_display(value)
     return result, skipped_properties
+
+
+# --- people（USER型）のID→表示名解決 --------------------------------------------------------
+# `page_to_display_dict()`/`_parse_people()`が返す`{"id":..., "name":...}`形式の値を、
+# 実際にダッシュボード等へ表示する名前へ解決するロジック。元は`src/api/dashboard_service.py`
+# にあったが、`project_page_to_mirror_record()`（下記）を`src/project_mirror/sync.py`から
+# 共有するために本モジュールへ移設した（obasan-qualityレビューWARN対応、2026-08-17。
+# `project_mirror/sync.py`が`dashboard_service.py`へ依存する向きは、`calendar_sync`/
+# `lead_sync`等の既存の同種フックが`src.api`配下に依存しない設計と逆転してしまうため）。
+
+
+def resolve_person_name(person: Any, user_directory: Any) -> str | None:
+    """`_parse_people`が返す`{"id":..., "name":...}`形式1件を表示名へ変換する。
+
+    Notion APIのページプロパティレスポンスには通常ユーザーの`name`が直接埋め込まれている
+    （インテグレーションに「ユーザー情報の読み取り」権限がある場合）。実データ確認の結果、
+    `GET /v1/users`（ワークスペースメンバー一覧、`NotionUserDirectory`が使う）には
+    ゲストユーザー等の理由で現れないユーザーが存在することが判明したため、
+    ページに埋め込まれた`name`を最優先し、`name`が欠落している場合のみ
+    `NotionUserDirectory`によるID解決にフォールバックする。
+    """
+    if not isinstance(person, dict):
+        return None
+    name = person.get("name")
+    # 空白のみの名前（Notion側の入力揺れ）を「解決済み」と誤判定しないよう.strip()する
+    # （Geminiクロスレビューでの指摘を反映）。
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    person_id = person.get("id")
+    if not person_id:
+        return None
+    resolved = user_directory.resolve(str(person_id))
+    if resolved == str(person_id):
+        # NotionUserDirectory（GET /v1/usersのワークスペースメンバー一覧）でも解決できな
+        # かった（削除済みユーザー・ゲスト等、Notion側がそもそも名前情報を返さないケースが
+        # 実データで確認されている）。生のUUIDをそのまま表示すると分かりにくいため、
+        # 人間が読める形のプレースホルダーに変換する。
+        return f"不明なメンバー（{str(person_id)[:8]}）"
+    return resolved
+
+
+def resolve_people_names(value: Any, user_directory: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    names = [resolve_person_name(person, user_directory) for person in value]
+    return [name for name in names if name]
+
+
+# 案件管理DBの「担当メンバー」プロパティ名。`src/api/dashboard_service.py`のPROP_担当メンバーと
+# 同じ実データ値（`src/db_schema/project.py`参照）。
+_PROJECT_ASSIGNEE_PROPERTY = "担当メンバー"
+
+
+def project_page_to_mirror_record(
+    page: Mapping[str, Any], user_directory: Any
+) -> tuple[dict[str, Any], set[str]]:
+    """案件管理DBの1ページ（Notion API生JSON）を、ダッシュボード表示用dictへ変換する
+    （「1ページ→表示dict変換→担当メンバー名前解決」ロジック本体、2026-08-17）。
+
+    `src.api.dashboard_service.NotionDataSource._fetch_projects()`（Notion直接取得の通常経路）
+    と`src/project_mirror/sync.py`（Postgresミラーへの反映、`ProjectMirror.data`カラムに
+    そのまま格納する）の両方から共有し、変換ロジックの二重実装を避ける。戻り値は
+    `page_to_display_dict()`と同じ`(record, skipped_properties)`のタプル。
+    """
+    record, skipped = page_to_display_dict(page, PROJECT_SCHEMA)
+    record[_PROJECT_ASSIGNEE_PROPERTY] = resolve_people_names(
+        record.get(_PROJECT_ASSIGNEE_PROPERTY), user_directory
+    )
+    return record, skipped

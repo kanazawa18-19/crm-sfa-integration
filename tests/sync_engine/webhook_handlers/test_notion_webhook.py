@@ -838,6 +838,86 @@ def test_handler_with_proxy_without_calendar_sync_behaves_as_before(
     assert json.loads(response["body"]) == {"skipped": None}
 
 
+# --- project_mirror_sync フック -----------------------------------------------------------------
+
+
+def test_handler_with_proxy_calls_project_mirror_sync_when_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    calls: list[tuple[dict, str]] = []
+
+    def _project_mirror_sync(properties: dict, page_id: str) -> None:
+        calls.append((dict(properties), page_id))
+
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(
+        event, context=None, notion_client=client, project_mirror_sync=_project_mirror_sync
+    )
+
+    assert response["statusCode"] == 200
+    assert len(calls) == 1
+    called_properties, called_page_id = calls[0]
+    assert called_page_id == "26d6f1e2-0000-0000-0000-000000000000"
+    assert called_properties == {
+        "案件名": "MSA-PJ-001",
+        "営業ステータス": "提案中",
+        "初期費用": 500000,
+    }
+
+
+def test_handler_with_proxy_returns_200_even_when_project_mirror_sync_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+
+    def _failing_project_mirror_sync(properties: dict, page_id: str) -> None:
+        raise RuntimeError("project mirror sync boom")
+
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    with caplog.at_level("ERROR"):
+        response = handler_with_proxy(
+            event,
+            context=None,
+            notion_client=client,
+            project_mirror_sync=_failing_project_mirror_sync,
+        )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+    assert any("project mirror" in record.getMessage() for record in caplog.records)
+
+
+def test_handler_with_proxy_without_project_mirror_sync_behaves_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """project_mirror_sync未注入時は既存の挙動と変わらないことを確認する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(event, context=None, notion_client=client)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+
+
 # --- lead_sync フック -----------------------------------------------------------------------
 
 _CONTACT_DB_ID = "3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae"

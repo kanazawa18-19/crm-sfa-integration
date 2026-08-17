@@ -34,6 +34,7 @@ from src.sync_engine.production_wiring import (
     build_lead_sync_callable,
     build_notion_clients_by_db,
     build_production_dispatcher,
+    build_project_mirror_sync_callable,
     build_spreadsheet_targets_by_db,
     build_zoho_targets_by_db,
     get_production_wiring,
@@ -351,6 +352,63 @@ def test_production_sync_wiring_lead_sync_callable_is_set_when_fully_configured(
     wiring = ProductionSyncWiring()
 
     assert wiring.lead_sync_callable is not None
+
+
+# --- build_project_mirror_sync_callable --------------------------------------------------------
+
+
+def test_build_project_mirror_sync_callable_returns_none_when_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PROJECT_MIRROR_SYNC_ENABLED", raising=False)
+
+    assert build_project_mirror_sync_callable(_FakeNotionPageClientForWiring()) is None
+
+
+def test_build_project_mirror_sync_callable_returns_none_when_notion_client_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
+
+    assert build_project_mirror_sync_callable(None) is None
+
+
+def test_build_project_mirror_sync_callable_returns_callable_when_enabled_and_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+
+    project_mirror_sync = build_project_mirror_sync_callable(_FakeNotionPageClientForWiring())
+
+    assert project_mirror_sync is not None
+    assert callable(project_mirror_sync)
+
+
+def test_production_sync_wiring_project_mirror_sync_callable_is_none_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`PROJECT_MIRROR_SYNC_ENABLED`未設定（既定）ではNotion同期が構成済みでも無効のまま
+    （インフラ整備のみのロールアウト、2026-08-17）。"""
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    monkeypatch.delenv("PROJECT_MIRROR_SYNC_ENABLED", raising=False)
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.project_mirror_sync_callable is None
+
+
+def test_production_sync_wiring_project_mirror_sync_callable_is_set_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.project_mirror_sync_callable is not None
 
 
 # --- build_production_dispatcher ---------------------------------------------------------------

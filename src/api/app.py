@@ -28,6 +28,7 @@ from src.api.dashboard_service import (
     search_projects,
 )
 from src.api.task_service import build_tasks
+from src.api.user_directory import NotionUserDirectory
 from src.document_generation.application_generator import generate_application
 from src.document_generation.common import (
     ContractGenerationError,
@@ -43,6 +44,7 @@ from src.gmail_sync.watch_registration import (
     renew_all_watches,
 )
 from src.incident_detection.notify import run_incident_digest
+from src.project_mirror.sync import refresh_all_projects
 from src.reports.batch import run_report_batch
 from src.reports.revenue_target_settings import (
     RevenueTargetSettingsStore,
@@ -54,7 +56,7 @@ from src.reports.revenue_target_sheet import (
     fetch_mrr_targets,
     fetch_unit_count_targets,
 )
-from src.sync_engine.clients._http import ApiError
+from src.sync_engine.clients._http import ApiError, INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.notion_client import NotionApiError
 from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.production_wiring import ProductionSyncWiring, get_production_wiring
@@ -247,6 +249,7 @@ async def webhook_notion(
         dispatcher=wiring.dispatcher,
         calendar_sync=wiring.calendar_sync_callable,
         lead_sync=wiring.lead_sync_callable,
+        project_mirror_sync=wiring.project_mirror_sync_callable,
     )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
@@ -462,6 +465,43 @@ def run_zoho_webhook_renewal() -> dict[str, Any]:
         "channel_id": result["channel_id"],
         "channel_expiry": result["channel_expiry"],
     }
+
+
+@app.get("/api/cron/project-mirror-reconcile", dependencies=[Depends(verify_cron_secret)])
+def run_project_mirror_reconcile(
+    wiring: ProductionSyncWiring = Depends(_wiring_dependency),
+) -> dict[str, Any]:
+    """Vercel Cronから1日1回呼ばれる、案件管理DBのPostgresミラー（`ProjectMirror`）の夜間
+    reconciliationエントリポイント（2026-08-17）。
+
+    Webhook経由のリアルタイム同期（`project_mirror_sync`）だけでは、Webhook購読登録前の
+    既存データ・Webhook配信失敗・ページ削除等を取りこぼしうるため、`refresh_all_projects()`
+    （初回バックフィルと共通の全件反映処理）をフル実行して整合させる。
+
+    `PROJECT_MIRROR_SYNC_ENABLED`（既定false）が未設定の場合は書き込みをスキップする
+    （shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-17）。cronの`vercel.json`登録
+    自体は「インフラ整備のみ」段階でも行うため、このガードが無いと環境変数を何も設定して
+    いなくてもcron登録した時点で毎晩`ProjectMirror`への書き込みが始まってしまい、計画上の
+    「インフラ整備のみでは本番挙動は変わらない」前提と食い違う
+    （`build_project_mirror_sync_callable`と同じ「未設定なら無効化」パターンに揃える）。
+    """
+    if os.environ.get("PROJECT_MIRROR_SYNC_ENABLED", "").strip().lower() != "true":
+        return {"skipped": "PROJECT_MIRROR_SYNC_ENABLED is not set"}
+    if wiring.notion_page_client is None:
+        logger.error(
+            "run_project_mirror_reconcile: NOTION_API_KEY等が未設定のため実行できません"
+        )
+        raise HTTPException(status_code=500, detail="notion sync is not configured")
+    # NotionUserDirectory()はNotionDataSourceの`_cached("user_directory", ...)`（プロセス内
+    # 使い回し）とは意図的に異なり、cron実行のたびに新規構築する。本cronは1日1回・低頻度
+    # である一方、担当メンバー名の解決結果（ワークスペースメンバー一覧）を毎回最新化したい
+    # ため（コールドスタートを跨いだ古いキャッシュに固定されたくない）。
+    user_directory = NotionUserDirectory(
+        max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+    )
+    return refresh_all_projects(
+        notion_client=wiring.notion_page_client, user_directory=user_directory
+    )
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])
