@@ -7,7 +7,6 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -714,92 +713,5 @@ def save_revenue_target_sheet_settings(
         "mrr_month_count": mrr_month_count,
         "unit_count_month_count": unit_count_month_count,
     }
-
-
-# --- TEMPORARY: 案件管理DBで既に手動で「担当メンバー」が入っている少数件から参照されている
-# NotionユーザーID(ゲストユーザーを含む)を集め、GET /v1/users/{id}で個別解決できるか、
-# また email が Zoho Owner の9人と一致するかを確認する使い捨てエンドポイント(2026-08-17)。
-# 書き込みは一切行わない。確認後、このエンドポイントとTEMP_AUDIT_TOKEN環境変数は撤去する。
-def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("TEMP_AUDIT_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/api/_temp/notion-guest-user-check", dependencies=[Depends(_verify_temp_audit_token)])
-def _temp_notion_guest_user_check() -> dict[str, Any]:
-    import traceback
-
-    try:
-        from src.db_schema.project import PROJECT_SCHEMA
-        from src.sync_engine.clients._http import raise_for_error, request_with_retry
-        from src.sync_engine.clients.notion_client import HttpNotionClient
-
-        notion_api_key = os.environ.get("NOTION_API_KEY")
-        headers = {"Authorization": f"Bearer {notion_api_key}", "Notion-Version": "2022-06-28"}
-
-        project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
-        pages_with_assignee = project_client.query_all_pages(
-            page_size=50, filter={"property": "担当メンバー", "people": {"is_not_empty": True}}
-        )
-
-        user_ids: set[str] = set()
-        for page in pages_with_assignee:
-            prop = (page.get("properties") or {}).get("担当メンバー") or {}
-            for person in prop.get("people") or []:
-                if person.get("id"):
-                    user_ids.add(person["id"])
-
-        resolved_users = []
-        resolve_errors = []
-        for uid in user_ids:
-            resp = request_with_retry(
-                "GET",
-                f"https://api.notion.com/v1/users/{uid}",
-                headers=headers,
-                timeout=30.0,
-                max_retries=3,
-                max_rate_limit_retries=3,
-                backoff_base=1.0,
-                idempotent=True,
-            )
-            if resp.status_code >= 400:
-                resolve_errors.append({"id": uid, "status": resp.status_code, "body": resp.text[:300]})
-                continue
-            u = resp.json()
-            resolved_users.append(
-                {
-                    "id": u.get("id"),
-                    "name": u.get("name"),
-                    "type": u.get("type"),
-                    "email": (u.get("person") or {}).get("email"),
-                }
-            )
-
-        zoho_owner_emails = {
-            "kunikata@cnctor.jp",
-            "ono.sh@cnctor.jp",
-            "sugimoto@cnctor.jp",
-            "kanazawa@cnctor.jp",
-            "terada@cnctor.jp",
-            "ito.t@cnctor.jp",
-            "suenaga@cnctor.jp",
-            "masuda@cnctor.jp",
-            "hiramoto@cnctor.jp",
-        }
-        resolved_emails = {u["email"] for u in resolved_users if u.get("email")}
-
-        return {
-            "pages_with_assignee_count": len(pages_with_assignee),
-            "unique_user_id_count": len(user_ids),
-            "resolved_users": resolved_users,
-            "resolve_errors": resolve_errors,
-            "zoho_owner_emails_matched": sorted(zoho_owner_emails & resolved_emails),
-            "zoho_owner_emails_unmatched": sorted(zoho_owner_emails - resolved_emails),
-        }
-    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
-        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
 
 
