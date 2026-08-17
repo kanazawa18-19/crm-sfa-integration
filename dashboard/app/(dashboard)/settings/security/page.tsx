@@ -2,6 +2,7 @@ import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import { updateSecuritySettings } from "@/app/actions";
 import { ALWAYS_ALLOWED_IPS } from "@/lib/ipAllowlist";
+import SubmitButton from "@/components/SubmitButton";
 
 export const dynamic = "force-dynamic";
 
@@ -63,9 +64,9 @@ export default async function SecuritySettingsPage() {
           />
         </section>
 
-        <button type="submit" className="btn-primary w-fit">
+        <SubmitButton pendingLabel="保存中..." className="btn-primary w-fit">
           保存する
-        </button>
+        </SubmitButton>
       </form>
     </div>
   );

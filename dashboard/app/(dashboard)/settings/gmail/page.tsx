@@ -1,6 +1,7 @@
 import Link from "next/link";
 import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
+import SubmitButton from "@/components/SubmitButton";
 import { disconnectGmail } from "./actions";
 
 const ERROR_MESSAGES_JA: Record<string, string> = {
@@ -17,10 +18,10 @@ function formatJst(date: Date): string {
 export default async function GmailSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ connected?: string; error?: string }>;
+  searchParams: Promise<{ connected?: string; disconnected?: string; error?: string }>;
 }) {
   const user = await requireRole("viewer");
-  const { connected, error } = await searchParams;
+  const { connected, disconnected, error } = await searchParams;
 
   const connection = await prisma.repGmailConnection.findUnique({ where: { repEmail: user.email } });
   const allConnections =
@@ -35,6 +36,7 @@ export default async function GmailSettingsPage({
       </p>
 
       {connected === "1" && <div className="alert-success">Gmailを連携しました。</div>}
+      {disconnected === "1" && <div className="alert-success">Gmail連携を解除しました。</div>}
       {error && (
         <div className="alert-error">{ERROR_MESSAGES_JA[error] ?? "連携に失敗しました。もう一度お試しください。"}</div>
       )}
@@ -53,9 +55,9 @@ export default async function GmailSettingsPage({
                 再連携
               </Link>
               <form action={disconnectGmail}>
-                <button type="submit" className="btn-danger">
+                <SubmitButton pendingLabel="解除中..." className="btn-danger">
                   連携を解除
-                </button>
+                </SubmitButton>
               </form>
             </div>
           </>

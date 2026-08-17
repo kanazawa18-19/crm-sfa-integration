@@ -5,6 +5,7 @@ import { verifyEmailOtpLogin, resendEmailOtpCode } from "@/app/actions";
 
 export default function EmailOtpVerifyForm() {
   const [error, formAction, pending] = useActionState(verifyEmailOtpLogin, undefined);
+  const [resendError, resendAction, resendPending] = useActionState(resendEmailOtpCode, undefined);
 
   return (
     <>
@@ -24,10 +25,15 @@ export default function EmailOtpVerifyForm() {
         </button>
         {error && <p className="text-xs text-(--brand-danger)">{error}</p>}
       </form>
-      <form action={resendEmailOtpCode} className="mt-3 text-center">
-        <button type="submit" className="link text-xs">
-          コードを再送する
+      <form action={resendAction} className="mt-3 text-center">
+        <button
+          type="submit"
+          disabled={resendPending}
+          className="link text-xs disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {resendPending ? "再送中..." : "コードを再送する"}
         </button>
+        {resendError && <p className="mt-1 text-xs text-(--brand-danger)">{resendError}</p>}
       </form>
     </>
   );

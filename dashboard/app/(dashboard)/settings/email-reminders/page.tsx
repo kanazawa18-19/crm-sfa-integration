@@ -2,6 +2,7 @@ import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import { updateEmailReminderSettings } from "@/app/actions";
 import { EMAIL_REMINDER_THRESHOLD_OPTIONS } from "@/lib/emailReminderThresholds";
+import SubmitButton from "@/components/SubmitButton";
 
 export const dynamic = "force-dynamic";
 
@@ -56,9 +57,9 @@ export default async function EmailReminderSettingsPage() {
           </div>
         </section>
 
-        <button type="submit" className="btn-primary w-fit">
+        <SubmitButton pendingLabel="保存中..." className="btn-primary w-fit">
           保存する
-        </button>
+        </SubmitButton>
       </form>
     </div>
   );

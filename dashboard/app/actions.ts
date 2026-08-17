@@ -123,7 +123,7 @@ export async function sendEmailOtpCode(userId: string): Promise<void> {
   });
 }
 
-export async function chooseEmailOtpMethod(_formData: FormData) {
+export async function chooseEmailOtpMethod(_prevState: void | undefined, _formData: FormData) {
   const user = await requirePending2FAUser();
 
   await prisma.user.update({ where: { id: user.id }, data: { emailOtpEnabled: true } });
@@ -156,7 +156,7 @@ export async function verifyEmailOtpLogin(_prevState: string | undefined, formDa
   redirect("/");
 }
 
-export async function resendEmailOtpCode(_formData: FormData) {
+export async function resendEmailOtpCode(_prevState: string | undefined, _formData: FormData) {
   const user = await requirePending2FAUser();
 
   const latest = await prisma.emailOtpCode.findFirst({
@@ -164,10 +164,11 @@ export async function resendEmailOtpCode(_formData: FormData) {
     orderBy: { createdAt: "desc" },
   });
   const tooSoon = latest && Date.now() - latest.createdAt.getTime() < EMAIL_OTP_RESEND_COOLDOWN_MS;
-  if (!tooSoon) {
-    await sendEmailOtpCode(user.id);
+  if (tooSoon) {
+    return "少し時間をおいてから再送してください";
   }
 
+  await sendEmailOtpCode(user.id);
   redirect("/login/2fa-email");
 }
 
@@ -280,7 +281,7 @@ export async function setPassword(_prevState: string | undefined, formData: Form
 
 // --- ユーザー管理 ------------------------------------------------------------
 
-export async function inviteUser(formData: FormData) {
+export async function inviteUser(_prevState: void | undefined, formData: FormData) {
   await requireRole("master");
 
   const email = String(formData.get("email") ?? "").trim().toLowerCase();

@@ -1,6 +1,8 @@
 import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
-import { inviteUser, changeUserRole, deleteUser } from "@/app/actions";
+import { changeUserRole, deleteUser } from "@/app/actions";
+import SubmitButton from "@/components/SubmitButton";
+import InviteUserForm from "./InviteUserForm";
 
 export const dynamic = "force-dynamic";
 
@@ -26,17 +28,7 @@ export default async function UsersPage() {
         <p className="mt-1 text-xs text-(--color-foreground)/50">
           招待メールが送信され、本人がパスワードを設定して初回ログインします(SMTP未設定の場合はサーバーログにリンクが出力されます)。
         </p>
-        <form action={inviteUser} className="mt-3 flex flex-wrap gap-2">
-          <input name="email" type="email" placeholder="メールアドレス" required className="input" />
-          <select name="role" defaultValue="viewer" className="input">
-            {Object.entries(ROLE_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <button className="btn-primary">招待を送信</button>
-        </form>
+        <InviteUserForm />
       </section>
 
       <div className="surface-card mt-6 overflow-hidden">
@@ -67,7 +59,9 @@ export default async function UsersPage() {
                           </option>
                         ))}
                       </select>
-                      <button className="link text-xs">変更</button>
+                      <SubmitButton pendingLabel="変更中..." className="link text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                        変更
+                      </SubmitButton>
                     </form>
                   </td>
                   <td>
@@ -85,9 +79,12 @@ export default async function UsersPage() {
                     {u.id !== currentUser.id && (u.role !== "master" || !u.passwordHash) && (
                       <form action={deleteUser}>
                         <input type="hidden" name="id" value={u.id} />
-                        <button className="text-xs text-(--brand-danger) underline">
+                        <SubmitButton
+                          pendingLabel={u.passwordHash ? "削除中..." : "キャンセル中..."}
+                          className="text-xs text-(--brand-danger) underline disabled:cursor-not-allowed disabled:opacity-40"
+                        >
                           {u.passwordHash ? "削除" : "招待をキャンセル"}
-                        </button>
+                        </SubmitButton>
                       </form>
                     )}
                   </td>

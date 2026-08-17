@@ -7,5 +7,5 @@ import { requireRole } from "@/lib/auth";
 export async function disconnectGmail() {
   const user = await requireRole("viewer");
   await prisma.repGmailConnection.deleteMany({ where: { repEmail: user.email } });
-  redirect("/settings/gmail");
+  redirect("/settings/gmail?disconnected=1");
 }

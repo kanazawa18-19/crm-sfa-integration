@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { logout } from "@/app/actions";
 import BrandLogo from "@/components/BrandLogo";
 import ThemeToggle from "@/components/ThemeToggle";
+import SubmitButton from "@/components/SubmitButton";
 
 // web-engagement-tool(MA)のAdminNav.tsxのサイドバーUXを移植(2026-08-15)。ただし
 // ダッシュボード側はナビ項目が少ないため、見出しによるグルーピングは行うが
@@ -153,7 +154,9 @@ export default function Sidebar({ role, email }: { role: "master" | "editor" | "
         <span className="badge-blue mt-1 inline-block text-[10px]">{ROLE_LABELS[role]}</span>
       </div>
       <form action={logout} className="px-3 pb-5">
-        <button className="btn-ghost btn-xs w-full">ログアウト</button>
+        <SubmitButton pendingLabel="ログアウト中..." className="btn-ghost btn-xs w-full">
+          ログアウト
+        </SubmitButton>
       </form>
     </>
   );
