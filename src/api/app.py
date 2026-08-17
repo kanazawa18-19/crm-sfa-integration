@@ -806,11 +806,16 @@ def _temp_backfill_assignees_dry_run() -> dict[str, Any]:
                 plan.auto_assign.append(_AutoAssignCandidate(project_name, raw_name, names[0]))
         return plan
 
-    user_directory = NotionUserDirectory()
-    name_to_user_ids = _build_name_to_user_ids(user_directory)
-    project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
-    pages = project_client.query_all_pages()
-    plan = _plan_backfill(pages, name_to_user_ids)
+    import traceback
+
+    try:
+        user_directory = NotionUserDirectory()
+        name_to_user_ids = _build_name_to_user_ids(user_directory)
+        project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
+        pages = project_client.query_all_pages()
+        plan = _plan_backfill(pages, name_to_user_ids)
+    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
+        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
 
     return {
         "total_pages": len(pages),
