@@ -117,3 +117,38 @@ def test_resolve_raises_notion_user_directory_error_on_401(
 
     with pytest.raises(NotionUserDirectoryError):
         directory.resolve("user-1")
+
+
+# --- all_names_by_id ------------------------------------------------------------------------
+
+
+def test_all_names_by_id_returns_full_id_to_name_mapping(
+    requests_mock, directory: NotionUserDirectory
+) -> None:
+    requests_mock.get(
+        "https://api.notion.com/v1/users",
+        json={
+            "results": [
+                {"id": "user-1", "name": "田中太郎"},
+                {"id": "user-2", "name": "鈴木花子"},
+            ],
+            "has_more": False,
+            "next_cursor": None,
+        },
+    )
+
+    assert directory.all_names_by_id() == {"user-1": "田中太郎", "user-2": "鈴木花子"}
+
+
+def test_all_names_by_id_returns_copy_not_internal_cache(
+    requests_mock, directory: NotionUserDirectory
+) -> None:
+    requests_mock.get(
+        "https://api.notion.com/v1/users",
+        json={"results": [{"id": "user-1", "name": "田中太郎"}], "has_more": False, "next_cursor": None},
+    )
+
+    result = directory.all_names_by_id()
+    result["user-1"] = "改ざん"
+
+    assert directory.resolve("user-1") == "田中太郎"

@@ -98,3 +98,9 @@ class NotionUserDirectory:
 
     def resolve_many(self, user_ids: Sequence[str]) -> list[str]:
         return [self.resolve(user_id) for user_id in user_ids]
+
+    def all_names_by_id(self) -> dict[str, str]:
+        """ワークスペース全ユーザーの`id -> name`一覧を返す（氏名→ID逆引きマップの構築用、
+        例: `scripts/backfill_project_assignees.py`）。呼び出し側で辞書を書き換えても
+        インスタンス内キャッシュへ影響しないようコピーを返す。"""
+        return dict(self._load())
