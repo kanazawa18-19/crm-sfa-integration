@@ -7,7 +7,6 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -714,149 +713,5 @@ def save_revenue_target_sheet_settings(
         "mrr_month_count": mrr_month_count,
         "unit_count_month_count": unit_count_month_count,
     }
-
-
-# --- TEMPORARY: scripts/backfill_project_assignees.py のdry-run結果を本番相当環境で
-# 確認するための使い捨てエンドポイント(2026-08-17)。書き込みは一切行わない
-# (plan_backfill相当のロジックは純粋関数、Notion/Zoho/IdMappingStoreへの読み取りのみ)。
-# scripts/はVercelのpython関数バンドルに含まれないため、ロジックをここに複製している。
-# 確認後、このエンドポイントとTEMP_AUDIT_TOKEN環境変数は撤去する。
-def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("TEMP_AUDIT_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/api/_temp/backfill-assignees-v2-dry-run", dependencies=[Depends(_verify_temp_audit_token)])
-def _temp_backfill_assignees_v2_dry_run() -> dict[str, Any]:
-    import traceback
-    from collections import Counter
-
-    try:
-        from src.api.notion_display import page_to_display_dict
-        from src.db_schema.project import PROJECT_SCHEMA
-        from src.sync_engine.clients._http import raise_for_error
-        from src.sync_engine.clients.zoho_client import ZohoApiError
-        from src.sync_engine.clients.notion_client import HttpNotionClient
-        from src.sync_engine.production_wiring import build_id_mapping_store
-        from src.sync_engine.zoho_watch_channel import DEFAULT_WATCH_API_BASE_URL, build_zoho_client_from_env
-
-        PROP_担当メンバー = "担当メンバー"
-        PROP_案件名 = "案件名"
-
-        KNOWN_OWNERS = {
-            "kunikata@cnctor.jp": ("0fa87cdd-c868-4483-a394-8736b7e65d62", "國方勇樹"),
-            "ono.sh@cnctor.jp": ("fc7acd3f-2277-4538-a70c-7c92e4d9813e", "大野駿太郎"),
-            "kanazawa@cnctor.jp": ("5a59d895-0ea2-4597-9bf5-161d98c39101", "金沢裕貴"),
-            "hiramoto@cnctor.jp": ("8eb946ee-27c6-4919-bb41-216f16da923f", "平本來輝"),
-        }
-
-        def _normalize_email(email: str) -> str:
-            return email.strip().lower()
-
-        normalized_known_owners = {_normalize_email(e): v for e, v in KNOWN_OWNERS.items()}
-
-        id_mapping_store = build_id_mapping_store()
-        mappings = id_mapping_store.list_by_db(PROJECT_SCHEMA.key)
-        notion_page_id_to_zoho_deal_id = {m.notion_key: m.zoho_id for m in mappings if m.zoho_id}
-        notion_page_id_to_kintone_id = {m.notion_key: m.kintone_id for m in mappings if m.kintone_id}
-
-        zoho_client = build_zoho_client_from_env()
-        zoho_deal_owner_emails: dict[str, str] = {}
-        page = 1
-        page_token: str | None = None
-        use_token_pagination = False
-        while True:
-            if use_token_pagination:
-                url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page=200&sort_by=id&sort_order=asc"
-                if page_token:
-                    url += f"&page_token={page_token}"
-            else:
-                url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page=200&page={page}"
-            resp = zoho_client.request("GET", url)
-            if resp.status_code == 204:
-                break
-            if not use_token_pagination and resp.status_code == 400 and "page_token" in resp.text:
-                use_token_pagination = True
-                page_token = None
-                continue
-            raise_for_error(resp, ZohoApiError)
-            body = resp.json()
-            for deal in body.get("data") or []:
-                deal_id = deal.get("id")
-                owner = deal.get("Owner") or {}
-                email = owner.get("email")
-                if deal_id and email:
-                    zoho_deal_owner_emails[str(deal_id)] = email
-            info = body.get("info") or {}
-            if not info.get("more_records"):
-                break
-            if use_token_pagination:
-                page_token = info.get("next_page_token")
-                if not page_token:
-                    break
-            else:
-                page += 1
-
-        project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
-        pages = project_client.query_all_pages(
-            filter={"property": PROP_担当メンバー, "people": {"is_empty": True}}
-        )
-
-        auto_assign = []
-        needs_review = []
-        for pg in pages:
-            record, _skipped = page_to_display_dict(pg, PROJECT_SCHEMA)
-            assignees = record.get(PROP_担当メンバー) or []
-            if assignees:
-                continue
-            project_name = record.get(PROP_案件名) or ""
-            page_id = record["notion_page_id"]
-
-            zoho_deal_id = notion_page_id_to_zoho_deal_id.get(page_id)
-            if zoho_deal_id is None:
-                needs_review.append({"page_id": page_id, "project_name": project_name, "reason_category": "id_mapping_missing"})
-                continue
-
-            owner_email = zoho_deal_owner_emails.get(zoho_deal_id)
-            if not owner_email:
-                needs_review.append({"page_id": page_id, "project_name": project_name, "reason_category": "owner_not_set"})
-                continue
-
-            known = normalized_known_owners.get(_normalize_email(owner_email))
-            if known is None:
-                needs_review.append(
-                    {"page_id": page_id, "project_name": project_name, "reason_category": "owner_unresolved", "owner_email": owner_email}
-                )
-                continue
-
-            if page_id in notion_page_id_to_kintone_id:
-                needs_review.append({"page_id": page_id, "project_name": project_name, "reason_category": "kintone_origin_excluded"})
-                continue
-
-            auto_assign.append(
-                {
-                    "page_id": page_id,
-                    "project_name": project_name,
-                    "owner_email": owner_email,
-                    "resolved_user_id": known[0],
-                    "resolved_user_name": known[1],
-                }
-            )
-
-        reason_breakdown = dict(Counter(r["reason_category"] for r in needs_review))
-
-        return {
-            "total_pages_empty_assignee": len(pages),
-            "auto_assign_count": len(auto_assign),
-            "needs_review_count": len(needs_review),
-            "needs_review_reason_breakdown": reason_breakdown,
-            "auto_assign_sample": auto_assign[:20],
-            "needs_review_sample": needs_review[:20],
-        }
-    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
-        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
 
 
