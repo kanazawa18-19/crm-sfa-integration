@@ -7,7 +7,6 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -715,122 +714,4 @@ def save_revenue_target_sheet_settings(
         "unit_count_month_count": unit_count_month_count,
     }
 
-
-# --- TEMPORARY: Zoho Deals の Owner フィールド(= 「案件の担当者」、config/zoho_field_mapping.json
-# 確認済み)を実際に取得し、email基準でNotionワークスペースユーザーと突合できるかを
-# 本番相当環境で確認するための使い捨てエンドポイント(2026-08-17)。書き込みは一切行わない。
-# 確認後、このエンドポイントとTEMP_AUDIT_TOKEN環境変数は撤去する。
-def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("TEMP_AUDIT_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/api/_temp/zoho-owner-email-match-check", dependencies=[Depends(_verify_temp_audit_token)])
-def _temp_zoho_owner_email_match_check() -> dict[str, Any]:
-    import traceback
-
-    try:
-        from src.api.user_directory import NotionUserDirectory
-        from src.sync_engine.clients._http import raise_for_error, request_with_retry
-        from src.sync_engine.zoho_watch_channel import DEFAULT_WATCH_API_BASE_URL, build_zoho_client_from_env
-
-        # NotionワークスペースユーザーのID/氏名/emailを取得(NotionUserDirectoryは
-        # id->nameしかキャッシュしないため、ここでは直接Notion APIを叩いてemailも取る)。
-        notion_api_key = os.environ.get("NOTION_API_KEY")
-        notion_users: list[dict[str, Any]] = []
-        start_cursor: str | None = None
-        while True:
-            params: dict[str, Any] = {"start_cursor": start_cursor} if start_cursor else {}
-            resp = request_with_retry(
-                "GET",
-                "https://api.notion.com/v1/users",
-                headers={"Authorization": f"Bearer {notion_api_key}", "Notion-Version": "2022-06-28"},
-                params=params,
-                timeout=30.0,
-                max_retries=3,
-                max_rate_limit_retries=3,
-                backoff_base=1.0,
-                idempotent=True,
-            )
-            raise_for_error(resp, RuntimeError)
-            data = resp.json()
-            for u in data.get("results") or []:
-                notion_users.append(
-                    {
-                        "id": u["id"],
-                        "name": u.get("name"),
-                        "email": (u.get("person") or {}).get("email"),
-                    }
-                )
-            if not data.get("has_more"):
-                break
-            start_cursor = data.get("next_cursor")
-
-        notion_email_to_user = {
-            u["email"].strip().lower(): u for u in notion_users if u.get("email")
-        }
-
-        # Zoho Deals の Owner フィールドを取得(書き込みなし、最大5ページ=1000件まで)。
-        zoho_client = build_zoho_client_from_env()
-        zoho_deals: list[dict[str, Any]] = []
-        for page in range(1, 6):
-            zoho_resp = zoho_client.request(
-                "GET",
-                f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,Deal_Name&per_page=200&page={page}",
-            )
-            raise_for_error(zoho_resp, RuntimeError)
-            body = zoho_resp.json()
-            zoho_deals.extend(body.get("data") or [])
-            if not (body.get("info") or {}).get("more_records"):
-                break
-
-        matched = []
-        unmatched = []
-        owner_counts: dict[str, dict[str, Any]] = {}
-        for d in zoho_deals:
-            owner = d.get("Owner") or {}
-            owner_email = (owner.get("email") or "").strip().lower()
-            entry = {
-                "deal_name": d.get("Deal_Name"),
-                "owner_name": owner.get("name"),
-                "owner_email": owner.get("email"),
-            }
-            key = owner_email or f"(no-email:{owner.get('name')})"
-            stat = owner_counts.setdefault(
-                key,
-                {
-                    "owner_name": owner.get("name"),
-                    "owner_email": owner.get("email"),
-                    "deal_count": 0,
-                    "matched_notion_user": notion_email_to_user.get(owner_email, {}).get("name")
-                    if owner_email
-                    else None,
-                },
-            )
-            stat["deal_count"] += 1
-            if owner_email and owner_email in notion_email_to_user:
-                entry["matched_notion_user"] = notion_email_to_user[owner_email]["name"]
-                matched.append(entry)
-            else:
-                unmatched.append(entry)
-
-        owner_breakdown = sorted(owner_counts.values(), key=lambda x: -x["deal_count"])
-
-        return {
-            "notion_user_count": len(notion_users),
-            "notion_user_sample": notion_users,
-            "zoho_deal_sample_count": len(zoho_deals),
-            "matched_count": len(matched),
-            "unmatched_count": len(unmatched),
-            "unique_owner_count": len(owner_counts),
-            "unique_owner_matched_count": sum(1 for o in owner_counts.values() if o["matched_notion_user"]),
-            "owner_breakdown": owner_breakdown,
-            "matched_sample": matched[:15],
-            "unmatched_sample": unmatched[:15],
-        }
-    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
-        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
 
