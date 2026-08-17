@@ -34,10 +34,13 @@ def _page(
 
 
 class _FakeZohoResponse:
-    def __init__(self, status_code: int, body: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, status_code: int, body: dict[str, Any] | None = None, *, text: str = ""
+    ) -> None:
         self.status_code = status_code
         self.ok = status_code < 400
         self._body = body or {}
+        self.text = text
 
     def json(self) -> dict[str, Any]:
         return self._body
@@ -54,6 +57,28 @@ class _FakeZohoClient:
         self.requested_urls.append(url)
         page = int(url.rsplit("&page=", 1)[1])
         return self._responses_by_page[page]
+
+
+class _FakeZohoTokenPaginationClient:
+    """先頭2000件超過時のトークン形式ページング（`&page=`→HTTP 400→`&page_token=`）を
+    模すフェイク。`page_response`は`&page=1`への応答（400でトークン形式への切り替えを促す）、
+    `token_responses`は`page_token`未指定→指定後の順のレスポンスリスト。"""
+
+    def __init__(
+        self, page_response: _FakeZohoResponse, token_responses: list[_FakeZohoResponse]
+    ) -> None:
+        self._page_response = page_response
+        self._token_responses = token_responses
+        self._token_call_count = 0
+        self.requested_urls: list[str] = []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> _FakeZohoResponse:
+        self.requested_urls.append(url)
+        if "&page=" in url:
+            return self._page_response
+        response = self._token_responses[self._token_call_count]
+        self._token_call_count += 1
+        return response
 
 
 class _FakeNotionClient:
@@ -186,6 +211,40 @@ def test_fetch_zoho_deal_owner_emails_pages_through_more_records() -> None:
 
     assert result == {"deal-1": "kanazawa@cnctor.jp", "deal-2": "kunikata@cnctor.jp"}
     assert len(client.requested_urls) == 2
+
+
+def test_fetch_zoho_deal_owner_emails_switches_to_token_pagination_beyond_2000() -> None:
+    client = _FakeZohoTokenPaginationClient(
+        page_response=_FakeZohoResponse(
+            400,
+            text='{"code":"INVALID_QUERY","message":'
+            '"You can only get the first 2000 records without using page_token param"}',
+        ),
+        token_responses=[
+            _FakeZohoResponse(
+                200,
+                {
+                    "data": [{"id": "deal-2001", "Owner": {"email": "kanazawa@cnctor.jp"}}],
+                    "info": {"more_records": True, "next_page_token": "TOKEN_A"},
+                },
+            ),
+            _FakeZohoResponse(
+                200,
+                {
+                    "data": [{"id": "deal-2002", "Owner": {"email": "kunikata@cnctor.jp"}}],
+                    "info": {"more_records": False},
+                },
+            ),
+        ],
+    )
+
+    result = fetch_zoho_deal_owner_emails(client)  # type: ignore[arg-type]
+
+    assert result == {"deal-2001": "kanazawa@cnctor.jp", "deal-2002": "kunikata@cnctor.jp"}
+    # 1回目(&page=1、400で切り替え) + トークン形式2回 = 3リクエスト。
+    assert len(client.requested_urls) == 3
+    assert "sort_by=id" in client.requested_urls[1]
+    assert "page_token=TOKEN_A" in client.requested_urls[2]
 
 
 def test_fetch_zoho_deal_owner_emails_skips_deals_without_owner() -> None:

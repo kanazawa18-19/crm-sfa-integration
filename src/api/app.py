@@ -766,11 +766,22 @@ def _temp_backfill_assignees_v2_dry_run() -> dict[str, Any]:
         zoho_client = build_zoho_client_from_env()
         zoho_deal_owner_emails: dict[str, str] = {}
         page = 1
+        page_token: str | None = None
+        use_token_pagination = False
         while True:
-            url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page=200&page={page}"
+            if use_token_pagination:
+                url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page=200&sort_by=id&sort_order=asc"
+                if page_token:
+                    url += f"&page_token={page_token}"
+            else:
+                url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page=200&page={page}"
             resp = zoho_client.request("GET", url)
             if resp.status_code == 204:
                 break
+            if not use_token_pagination and resp.status_code == 400 and "page_token" in resp.text:
+                use_token_pagination = True
+                page_token = None
+                continue
             raise_for_error(resp, ZohoApiError)
             body = resp.json()
             for deal in body.get("data") or []:
@@ -782,7 +793,12 @@ def _temp_backfill_assignees_v2_dry_run() -> dict[str, Any]:
             info = body.get("info") or {}
             if not info.get("more_records"):
                 break
-            page += 1
+            if use_token_pagination:
+                page_token = info.get("next_page_token")
+                if not page_token:
+                    break
+            else:
+                page += 1
 
         project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
         pages = project_client.query_all_pages(

@@ -175,15 +175,40 @@ def build_notion_page_id_to_kintone_id(mappings: list[IdMapping]) -> dict[str, s
 def fetch_zoho_deal_owner_emails(client: HttpZohoClient) -> dict[str, str]:
     """Zoho Deals APIを全件ページングし、Zoho Deal ID -> Ownerメールアドレスの対応表を
     構築する（Ownerが未設定、またはメールアドレスが取得できないDealは対応表に含めない）。
+
+    Zoho CRM v3 APIは`page`パラメータでの取得を先頭2000件まで（per_page=200 x 10ページ）
+    しか許可しておらず、それ以降は`sort_by`指定の上で`info.next_page_token`を使った
+    トークン形式のページングに切り替える必要がある（実データ26,000件超で発覚、
+    2026-08-17）。`page`ベースでHTTP 400を検知したら自動でトークン形式へ切り替える。
     """
     owner_email_by_deal_id: dict[str, str] = {}
-    page = 1
     per_page = 200
+    page = 1
+    page_token: str | None = None
+    use_token_pagination = False
+
     while True:
-        url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page={per_page}&page={page}"
+        if use_token_pagination:
+            url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page={per_page}&sort_by=id&sort_order=asc"
+            if page_token:
+                url += f"&page_token={page_token}"
+        else:
+            url = f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,id&per_page={per_page}&page={page}"
+
         response = client.request("GET", url)
         if response.status_code == 204:
             break
+        if (
+            not use_token_pagination
+            and response.status_code == 400
+            and "page_token" in response.text
+        ):
+            # 先頭2000件を超えた（`page`ベースの上限に到達した）ため、トークン形式へ切り替えて
+            # 同じオフセットからではなく最初からsort_by指定で取り直す。取得済み分は
+            # dictへ格納済みのためやり直しても重複キーで上書きされるだけで安全。
+            use_token_pagination = True
+            page_token = None
+            continue
         raise_for_error(response, ZohoApiError)
         body = response.json()
         for deal in body.get("data") or []:
@@ -195,7 +220,12 @@ def fetch_zoho_deal_owner_emails(client: HttpZohoClient) -> dict[str, str]:
         info = body.get("info") or {}
         if not info.get("more_records"):
             break
-        page += 1
+        if use_token_pagination:
+            page_token = info.get("next_page_token")
+            if not page_token:
+                break
+        else:
+            page += 1
     return owner_email_by_deal_id
 
 
