@@ -142,14 +142,20 @@ body {
     @apply rounded-[6px] border border-(--border-subtle) bg-(--color-surface) px-2 py-2 text-base text-(--color-foreground) outline-none transition-colors focus:border-(--brand-blue) focus:ring-2 focus:ring-(--brand-blue-light)/40;
   }
 
+  /* smartHR公式のStatusLabel/Chipは塗りつぶしでなく「白背景+色付きボーダー」という
+     視覚言語だったため採用したが、Chipの文字色固定(黒)には倣わず、業務一覧での
+     ステータス識別性(スキャン性)を優先して文字色・色の意味づけは維持している。 */
   .badge-blue {
-    @apply inline-flex items-center rounded-full bg-(--brand-blue-light)/25 px-2.5 py-0.5 text-xs font-medium text-(--brand-blue-dark);
+    @apply inline-flex items-center rounded-full border border-(--brand-blue) bg-(--color-surface) px-2 py-1 text-sm font-medium text-(--brand-blue-dark);
   }
   .badge-gold {
-    @apply inline-flex items-center rounded-full bg-(--brand-gold-light)/40 px-2.5 py-0.5 text-xs font-medium text-[#7a5c06];
+    @apply inline-flex items-center rounded-full border border-(--brand-gold) bg-(--color-surface) px-2 py-1 text-sm font-medium text-[#7a5c06];
   }
   .badge-muted {
-    @apply inline-flex items-center rounded-full bg-(--color-surface-muted) px-2.5 py-0.5 text-xs font-medium text-(--text-grey);
+    /* borderに--border-subtleを使うとアプリ全体のデフォルト枠線色と同一になり、
+       白背景上でほぼ見えなくなる(コントラスト比約1.3-1.5:1)。文字と同じ--text-greyを
+       ボーダーにも使うことで視認性を確保している。 */
+    @apply inline-flex items-center rounded-full border border-(--text-grey) bg-(--color-surface) px-2 py-1 text-sm font-medium text-(--text-grey);
   }
 
   .link {
