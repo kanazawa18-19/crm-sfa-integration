@@ -8,21 +8,45 @@ import BrandLogo from "@/components/BrandLogo";
 import ThemeToggle from "@/components/ThemeToggle";
 
 // web-engagement-tool(MA)のAdminNav.tsxのサイドバーUXを移植(2026-08-15)。ただし
-// ダッシュボード側はナビ項目が少なくグルーピングの必要が無いため、折りたたみ
-// グループの無い簡略版とする。
+// ダッシュボード側はナビ項目が少ないため、見出しによるグルーピングは行うが
+// アコーディオン式の折りたたみ機能は省略する。2026-08-17: 「個人の設定」と
+// 「組織/共通の設定」を分離するsmartHRのIAパターンに倣い、フラットな一覧を
+// グループ分けに変更。
+//
+// NavGroup.id はサイドバー内部の安定した識別子(表示ラベル変更の影響を受けない)。
+// master限定リンクの注入判定にはこの id を用いる。
 
 type NavLink = { href: string; label: string; exact?: boolean };
+type NavGroup = { id: string; label: string; links: NavLink[] };
 
-const NAV_LINKS: NavLink[] = [
-  { href: "/", label: "ダッシュボード", exact: true },
-  { href: "/alerts", label: "マネージャー通知" },
-  { href: "/reports", label: "日報" },
-  { href: "/members", label: "メンバー実績" },
-  { href: "/tasks", label: "タスク" },
-  { href: "/documents", label: "書類作成" },
-  { href: "/settings/gmail", label: "Gmail連携" },
-  { href: "/settings/profile", label: "プロフィール編集" },
-  { href: "/settings", label: "設定" },
+// Pinned outside any group — always one click away.
+const HOME_LINK: NavLink = { href: "/", label: "ダッシュボード", exact: true };
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "sales",
+    label: "営業管理",
+    links: [
+      { href: "/alerts", label: "マネージャー通知" },
+      { href: "/reports", label: "日報" },
+      { href: "/members", label: "メンバー実績" },
+      { href: "/tasks", label: "タスク" },
+      { href: "/documents", label: "書類作成" },
+    ],
+  },
+  {
+    id: "personal-settings",
+    label: "個人設定",
+    links: [
+      { href: "/settings/profile", label: "プロフィール編集" },
+      { href: "/settings/gmail", label: "Gmail連携" },
+    ],
+  },
+  {
+    id: "org-settings",
+    label: "共通設定",
+    links: [{ href: "/settings", label: "設定" }],
+  },
 ];
 
 const MASTER_ONLY_NAV_LINKS: NavLink[] = [
@@ -67,11 +91,39 @@ function NavLinkItem({
   );
 }
 
+function NavGroupSection({
+  group,
+  pathname,
+  onNavigate,
+}: {
+  group: NavGroup;
+  pathname: string | null;
+  onNavigate?: () => void;
+}) {
+  return (
+    <div>
+      <p className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-(--color-foreground)/40 uppercase">
+        {group.label}
+      </p>
+      <div className="flex flex-col gap-0.5 pb-1">
+        {group.links.map((link) => (
+          <NavLinkItem key={link.href} link={link} pathname={pathname} onNavigate={onNavigate} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Sidebar({ role, email }: { role: "master" | "editor" | "viewer"; email: string }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
-  const links = role === "master" ? [...NAV_LINKS, ...MASTER_ONLY_NAV_LINKS] : NAV_LINKS;
+  const groups =
+    role === "master"
+      ? NAV_GROUPS.map((g) =>
+          g.id === "org-settings" ? { ...g, links: [...g.links, ...MASTER_ONLY_NAV_LINKS] } : g
+        )
+      : NAV_GROUPS;
   // Closing the drawer on link click (rather than reacting to pathname changes
   // in an effect) avoids the cascading-render anti-pattern flagged by
   // react-hooks/set-state-in-effect. Harmless to pass on the desktop sidebar
@@ -87,8 +139,9 @@ export default function Sidebar({ role, email }: { role: "master" | "editor" | "
         </span>
       </Link>
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3">
-        {links.map((link) => (
-          <NavLinkItem key={link.href} link={link} pathname={pathname} onNavigate={closeDrawer} />
+        <NavLinkItem link={HOME_LINK} pathname={pathname} onNavigate={closeDrawer} />
+        {groups.map((group) => (
+          <NavGroupSection key={group.id} group={group} pathname={pathname} onNavigate={closeDrawer} />
         ))}
       </nav>
       <div className="border-t border-(--border-subtle) px-4 py-3">
