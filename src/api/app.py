@@ -734,38 +734,19 @@ def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -
 
 @app.get("/api/_temp/id-mapping-audit", dependencies=[Depends(_verify_temp_audit_token)])
 def _temp_id_mapping_audit() -> dict[str, Any]:
-    # scripts/audit_id_mapping_collisions.pyと同じロジック(Vercelのデプロイバンドルに
-    # scripts/が含まれないため、ここへ直接インライン化)。
-    from src.db_schema.registry import ALL_SCHEMAS
-    from src.db_schema.base import Tool
-
-    all_db_keys = tuple(schema.key for schema in ALL_SCHEMAS)
-    external_id_fields = (
-        (Tool.KINTONE, "kintone_id"),
-        (Tool.ZOHO, "zoho_id"),
-        (Tool.SPREADSHEET, "spreadsheet_row"),
-    )
+    from scripts.audit_id_mapping_collisions import find_cross_db_key_collisions
 
     store = build_id_mapping_store()
-    seen: dict[Any, dict[str, dict[str, str]]] = {tool: {} for tool, _ in external_id_fields}
-    for db_key in all_db_keys:
-        for mapping in store.list_by_db(db_key):
-            for tool, field_name in external_id_fields:
-                value = getattr(mapping, field_name)
-                if value is None:
-                    continue
-                seen[tool].setdefault(str(value), {})[db_key] = mapping.notion_key
-
-    collisions = []
-    for tool, _ in external_id_fields:
-        for external_id, notion_keys_by_db_key in seen[tool].items():
-            if len(notion_keys_by_db_key) > 1:
-                collisions.append(
-                    {
-                        "tool": tool.value,
-                        "external_id": external_id,
-                        "notion_keys_by_db_key": notion_keys_by_db_key,
-                    }
-                )
-    return {"db_keys_checked": list(all_db_keys), "collision_count": len(collisions), "collisions": collisions}
+    collisions = find_cross_db_key_collisions(store)
+    return {
+        "collision_count": len(collisions),
+        "collisions": [
+            {
+                "tool": c.tool.value,
+                "external_id": c.external_id,
+                "notion_keys_by_db_key": c.notion_keys_by_db_key,
+            }
+            for c in collisions
+        ],
+    }
 
