@@ -7,7 +7,6 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -714,109 +713,5 @@ def save_revenue_target_sheet_settings(
         "mrr_month_count": mrr_month_count,
         "unit_count_month_count": unit_count_month_count,
     }
-
-
-# --- TEMPORARY: 案件管理DB(担当メンバー)に加え、チェーンDB(担当)・連絡先DB(担当メンバー)の
-# people型プロパティも横断的にスキャンし、Zoho Owner(=「案件/連絡先/チェーンの担当者」)の
-# 残り5人のNotionゲストユーザーIDを発見できるか確認する使い捨てエンドポイント(2026-08-17)。
-# 書き込みは一切行わない。確認後、このエンドポイントとTEMP_AUDIT_TOKEN環境変数は撤去する。
-def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("TEMP_AUDIT_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/api/_temp/notion-guest-user-scan-all-dbs", dependencies=[Depends(_verify_temp_audit_token)])
-def _temp_notion_guest_user_scan_all_dbs() -> dict[str, Any]:
-    import traceback
-
-    try:
-        from src.db_schema.chain import CHAIN_SCHEMA
-        from src.db_schema.contact import CONTACT_SCHEMA
-        from src.db_schema.project import PROJECT_SCHEMA
-        from src.sync_engine.clients._http import request_with_retry
-        from src.sync_engine.clients.notion_client import HttpNotionClient
-
-        notion_api_key = os.environ.get("NOTION_API_KEY")
-        headers = {"Authorization": f"Bearer {notion_api_key}", "Notion-Version": "2022-06-28"}
-
-        targets = [
-            (PROJECT_SCHEMA, "担当メンバー"),
-            (CHAIN_SCHEMA, "担当"),
-            (CONTACT_SCHEMA, "担当メンバー"),
-        ]
-
-        user_ids: set[str] = set()
-        pages_scanned_by_db: dict[str, int] = {}
-        for schema, prop_name in targets:
-            client = HttpNotionClient(schema.key, schema.notion_database_id)
-            pages = client.query_all_pages(
-                page_size=50, filter={"property": prop_name, "people": {"is_not_empty": True}}
-            )
-            pages_scanned_by_db[schema.key] = len(pages)
-            for page in pages:
-                prop = (page.get("properties") or {}).get(prop_name) or {}
-                for person in prop.get("people") or []:
-                    if person.get("id"):
-                        user_ids.add(person["id"])
-
-        resolved_users = []
-        resolve_error_count = 0
-        for uid in user_ids:
-            resp = request_with_retry(
-                "GET",
-                f"https://api.notion.com/v1/users/{uid}",
-                headers=headers,
-                timeout=30.0,
-                max_retries=3,
-                max_rate_limit_retries=3,
-                backoff_base=1.0,
-                idempotent=True,
-            )
-            if resp.status_code >= 400:
-                resolve_error_count += 1
-                continue
-            u = resp.json()
-            resolved_users.append(
-                {
-                    "id": u.get("id"),
-                    "name": u.get("name"),
-                    "type": u.get("type"),
-                    "email": (u.get("person") or {}).get("email"),
-                }
-            )
-
-        zoho_owner_emails = {
-            "kunikata@cnctor.jp": "國方勇樹",
-            "ono.sh@cnctor.jp": "大野駿太郎",
-            "sugimoto@cnctor.jp": "杉本健介",
-            "kanazawa@cnctor.jp": "金沢裕貴",
-            "terada@cnctor.jp": "寺田亘平",
-            "ito.t@cnctor.jp": "伊藤翼",
-            "suenaga@cnctor.jp": "末永琢磨",
-            "masuda@cnctor.jp": "増田崚士",
-            "hiramoto@cnctor.jp": "平本來輝",
-        }
-        resolved_by_email = {u["email"]: u for u in resolved_users if u.get("email")}
-
-        matched = {
-            email: {"zoho_name": name, "notion_user_id": resolved_by_email[email]["id"]}
-            for email, name in zoho_owner_emails.items()
-            if email in resolved_by_email
-        }
-        unmatched = [name for email, name in zoho_owner_emails.items() if email not in resolved_by_email]
-
-        return {
-            "pages_scanned_by_db": pages_scanned_by_db,
-            "unique_user_id_count": len(user_ids),
-            "resolve_error_count": resolve_error_count,
-            "resolved_user_count": len(resolved_users),
-            "zoho_owner_matched": matched,
-            "zoho_owner_unmatched": unmatched,
-        }
-    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
-        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
 
 
