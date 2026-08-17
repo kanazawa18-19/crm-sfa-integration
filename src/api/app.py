@@ -7,7 +7,6 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -713,141 +712,5 @@ def save_revenue_target_sheet_settings(
         "validation_error": validation_error,
         "mrr_month_count": mrr_month_count,
         "unit_count_month_count": unit_count_month_count,
-    }
-
-
-# --- TEMPORARY: 担当メンバー一括割当バッチのdry-run結果を本番相当環境で確認するための
-# 使い捨てエンドポイント(2026-08-17)。書き込みは一切行わない(plan_backfillは純粋関数、
-# Notionへの読み取りのみ)。確認後、このエンドポイントとTEMP_AUDIT_TOKEN環境変数は撤去する。
-def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("TEMP_AUDIT_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/api/_temp/backfill-assignees-dry-run", dependencies=[Depends(_verify_temp_audit_token)])
-def _temp_backfill_assignees_dry_run() -> dict[str, Any]:
-    # NOTE: Vercelのpython関数バンドルはリポジトリ直下scripts/を含まないため、
-    # scripts/backfill_project_assignees.pyのplan_backfill/build_name_to_user_idsを
-    # importせず、同じ純粋ロジックをここに直接インライン化している
-    # (/api/_temp/id-mapping-audit で確認済みの同種の回避策)。
-    import unicodedata
-
-    from src.api.notion_display import page_to_display_dict
-    from src.api.user_directory import NotionUserDirectory
-    from src.db_schema.project import PROJECT_SCHEMA
-    from src.migration._utils import parse_multi_value
-    from src.sync_engine.clients.notion_client import HttpNotionClient
-
-    PROP_担当メンバー = "担当メンバー"
-    PROP_担当者名 = "担当者名"
-    PROP_案件名 = "案件名"
-
-    def _normalize_name(name: str) -> str:
-        return unicodedata.normalize("NFKC", name).strip()
-
-    def _build_name_to_user_ids(user_directory: NotionUserDirectory) -> dict[str, list[str]]:
-        mapping: dict[str, list[str]] = {}
-        for user_id, name in user_directory.all_names_by_id().items():
-            mapping.setdefault(_normalize_name(name), []).append(user_id)
-        return mapping
-
-    class _AutoAssignCandidate:
-        def __init__(self, project_name: str, raw_assignee_name: str, resolved_user_name: str) -> None:
-            self.project_name = project_name
-            self.raw_assignee_name = raw_assignee_name
-            self.resolved_user_name = resolved_user_name
-
-    class _NeedsReviewEntry:
-        def __init__(self, project_name: str, raw_assignee_name: str, reason: str) -> None:
-            self.project_name = project_name
-            self.raw_assignee_name = raw_assignee_name
-            self.reason = reason
-
-    class _Plan:
-        def __init__(self) -> None:
-            self.auto_assign: list[_AutoAssignCandidate] = []
-            self.needs_review: list[_NeedsReviewEntry] = []
-
-    def _plan_backfill(pages: list[dict[str, Any]], name_to_user_ids: dict[str, list[str]]) -> _Plan:
-        plan = _Plan()
-        for page in pages:
-            record, _skipped = page_to_display_dict(page, PROJECT_SCHEMA)
-            assignees = record.get(PROP_担当メンバー) or []
-            if assignees:
-                continue
-            raw_name = record.get(PROP_担当者名)
-            if not raw_name or not raw_name.strip():
-                continue
-            project_name = record.get(PROP_案件名) or ""
-            names = parse_multi_value(raw_name)
-            if len(names) != 1:
-                plan.needs_review.append(
-                    _NeedsReviewEntry(
-                        project_name,
-                        raw_name,
-                        f"担当者名から{len(names)}名分の氏名を検知しました（複数名、または解析不能）",
-                    )
-                )
-                continue
-            candidates = name_to_user_ids.get(_normalize_name(names[0]), [])
-            if not candidates:
-                plan.needs_review.append(
-                    _NeedsReviewEntry(project_name, raw_name, "ワークスペースに該当するユーザーが見つかりません")
-                )
-            elif len(candidates) > 1:
-                plan.needs_review.append(
-                    _NeedsReviewEntry(
-                        project_name, raw_name, f"同姓同名の候補が{len(candidates)}名見つかりました（自動確定できません）"
-                    )
-                )
-            else:
-                plan.auto_assign.append(_AutoAssignCandidate(project_name, raw_name, names[0]))
-        return plan
-
-    import traceback
-
-    try:
-        user_directory = NotionUserDirectory()
-        name_to_user_ids = _build_name_to_user_ids(user_directory)
-        project_client = HttpNotionClient(PROJECT_SCHEMA.key, PROJECT_SCHEMA.notion_database_id)
-        pages = project_client.query_all_pages()
-        plan = _plan_backfill(pages, name_to_user_ids)
-    except Exception as exc:  # noqa: BLE001 - 一時診断エンドポイント、トレースバックをそのまま返して調査する
-        return {"temp_debug_error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
-
-    return {
-        "total_pages": len(pages),
-        "auto_assign_count": len(plan.auto_assign),
-        "needs_review_count": len(plan.needs_review),
-        "auto_assign_sample": [
-            {
-                "project_name": c.project_name,
-                "raw_assignee_name": c.raw_assignee_name,
-                "resolved_user_name": c.resolved_user_name,
-            }
-            for c in plan.auto_assign[:15]
-        ],
-        "needs_review_sample": [
-            {
-                "project_name": r.project_name,
-                "raw_assignee_name": r.raw_assignee_name,
-                "reason": r.reason,
-            }
-            for r in plan.needs_review[:15]
-        ],
-        "needs_review_reason_breakdown": {
-            "multiple_or_unparseable_names": sum(
-                1 for r in plan.needs_review if r.reason.startswith("担当者名から")
-            ),
-            "no_matching_user": sum(
-                1 for r in plan.needs_review if r.reason == "ワークスペースに該当するユーザーが見つかりません"
-            ),
-            "ambiguous_same_name": sum(
-                1 for r in plan.needs_review if r.reason.startswith("同姓同名の候補が")
-            ),
-        },
     }
 
