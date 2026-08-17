@@ -7,6 +7,7 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -15,11 +16,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.auth import verify_cron_secret, verify_dashboard_api_token, verify_email_reminder_cron_secret
+from src.sync_engine.production_wiring import build_id_mapping_store
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -712,5 +714,39 @@ def save_revenue_target_sheet_settings(
         "validation_error": validation_error,
         "mrr_month_count": mrr_month_count,
         "unit_count_month_count": unit_count_month_count,
+    }
+
+
+# --- TEMPORARY: リファクタリング前の連携健全性診断(2026-08-17)。金沢さんの依頼で
+# 「異なるDB間のアイテムのリレーションが正しく連携・同期できているか」を実地確認するための
+# 使い捨てエンドポイント。scripts/audit_id_mapping_collisions.pyのロジックはローカルから
+# 本番Notion/kintone/Zohoの認証情報(Vercelでは"Sensitive"設定のためvercel env pullでは
+# 平文取得不可)へアクセスできないため、2026-08-14の同種調査と同じ「一時APIエンドポイント
+# 経由で本番環境内から実行する」方式を踏襲する。確認後、このエンドポイントとTEMP_AUDIT_TOKEN
+# 環境変数は撤去する。
+def _verify_temp_audit_token(authorization: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("TEMP_AUDIT_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@app.get("/api/_temp/id-mapping-audit", dependencies=[Depends(_verify_temp_audit_token)])
+def _temp_id_mapping_audit() -> dict[str, Any]:
+    from scripts.audit_id_mapping_collisions import find_cross_db_key_collisions
+
+    store = build_id_mapping_store()
+    collisions = find_cross_db_key_collisions(store)
+    return {
+        "collision_count": len(collisions),
+        "collisions": [
+            {
+                "tool": c.tool.value,
+                "external_id": c.external_id,
+                "notion_keys_by_db_key": c.notion_keys_by_db_key,
+            }
+            for c in collisions
+        ],
     }
 
