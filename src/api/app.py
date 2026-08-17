@@ -773,16 +773,23 @@ def _temp_zoho_owner_email_match_check() -> dict[str, Any]:
             u["email"].strip().lower(): u for u in notion_users if u.get("email")
         }
 
-        # Zoho Deals の Owner フィールドをサンプル取得(200件、書き込みなし)。
+        # Zoho Deals の Owner フィールドを取得(書き込みなし、最大5ページ=1000件まで)。
         zoho_client = build_zoho_client_from_env()
-        zoho_resp = zoho_client.request(
-            "GET", f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,Deal_Name&per_page=200"
-        )
-        raise_for_error(zoho_resp, RuntimeError)
-        zoho_deals = zoho_resp.json().get("data") or []
+        zoho_deals: list[dict[str, Any]] = []
+        for page in range(1, 6):
+            zoho_resp = zoho_client.request(
+                "GET",
+                f"{DEFAULT_WATCH_API_BASE_URL}/Deals?fields=Owner,Deal_Name&per_page=200&page={page}",
+            )
+            raise_for_error(zoho_resp, RuntimeError)
+            body = zoho_resp.json()
+            zoho_deals.extend(body.get("data") or [])
+            if not (body.get("info") or {}).get("more_records"):
+                break
 
         matched = []
         unmatched = []
+        owner_counts: dict[str, dict[str, Any]] = {}
         for d in zoho_deals:
             owner = d.get("Owner") or {}
             owner_email = (owner.get("email") or "").strip().lower()
@@ -791,11 +798,26 @@ def _temp_zoho_owner_email_match_check() -> dict[str, Any]:
                 "owner_name": owner.get("name"),
                 "owner_email": owner.get("email"),
             }
+            key = owner_email or f"(no-email:{owner.get('name')})"
+            stat = owner_counts.setdefault(
+                key,
+                {
+                    "owner_name": owner.get("name"),
+                    "owner_email": owner.get("email"),
+                    "deal_count": 0,
+                    "matched_notion_user": notion_email_to_user.get(owner_email, {}).get("name")
+                    if owner_email
+                    else None,
+                },
+            )
+            stat["deal_count"] += 1
             if owner_email and owner_email in notion_email_to_user:
                 entry["matched_notion_user"] = notion_email_to_user[owner_email]["name"]
                 matched.append(entry)
             else:
                 unmatched.append(entry)
+
+        owner_breakdown = sorted(owner_counts.values(), key=lambda x: -x["deal_count"])
 
         return {
             "notion_user_count": len(notion_users),
@@ -803,6 +825,9 @@ def _temp_zoho_owner_email_match_check() -> dict[str, Any]:
             "zoho_deal_sample_count": len(zoho_deals),
             "matched_count": len(matched),
             "unmatched_count": len(unmatched),
+            "unique_owner_count": len(owner_counts),
+            "unique_owner_matched_count": sum(1 for o in owner_counts.values() if o["matched_notion_user"]),
+            "owner_breakdown": owner_breakdown,
             "matched_sample": matched[:15],
             "unmatched_sample": unmatched[:15],
         }
