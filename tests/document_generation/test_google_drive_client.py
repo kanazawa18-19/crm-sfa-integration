@@ -176,13 +176,39 @@ def test_start_approval_falls_back_to_list_approvals_when_response_has_no_approv
 
 
 def test_start_approval_raises_when_no_approval_id_anywhere(
-    requests_mock, client: GoogleDriveDocClient
+    requests_mock, client: GoogleDriveDocClient, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        "src.document_generation.google_drive_client.time.sleep", lambda seconds: None
+    )
     requests_mock.post(f"{BASE}/file-1/approvals:start", json={})
     requests_mock.get(f"{BASE}/file-1/approvals", json={"items": []})
 
     with pytest.raises(GoogleDriveApiError):
         client.start_approval("file-1", reviewer_email="approver@example.com")
+
+
+def test_start_approval_retries_list_approvals_until_found(
+    requests_mock, client: GoogleDriveDocClient, monkeypatch
+) -> None:
+    """list_approvals()側も直後は結果整合性により空を返すことがあるため、数回リトライ
+    してから見つかるケースをカバーする(2026-08-18実機テストで確認)。"""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        "src.document_generation.google_drive_client.time.sleep", sleep_calls.append
+    )
+    requests_mock.post(f"{BASE}/file-1/approvals:start", json={"kind": "drive#approval"})
+    responses = [
+        {"json": {"items": []}},
+        {"json": {"items": []}},
+        {"json": {"items": [{"approvalId": "approval-1", "status": "IN_PROGRESS"}]}},
+    ]
+    requests_mock.get(f"{BASE}/file-1/approvals", responses)
+
+    approval_id = client.start_approval("file-1", reviewer_email="approver@example.com")
+
+    assert approval_id == "approval-1"
+    assert len(sleep_calls) == 2
 
 
 def test_list_approvals_returns_items(requests_mock, client: GoogleDriveDocClient) -> None:

@@ -14,6 +14,7 @@ mimeTypeが判明していても404 File not foundになる）。
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import requests
@@ -31,6 +32,11 @@ from src.sync_engine.clients._http import (
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.googleapis.com/drive/v3/files"
+
+# start_approval()のapprovalIdフォールバック(list_approvals())のリトライ回数・間隔。
+# Drive Approvals APIの結果整合性(eventual consistency)対策(2026-08-18実機確認)。
+_START_APPROVAL_FALLBACK_ATTEMPTS = 4
+_START_APPROVAL_FALLBACK_DELAY_SECONDS = 1.5
 
 
 class GoogleDriveApiError(ApiError):
@@ -184,15 +190,23 @@ class GoogleDriveDocClient:
         if approval_id:
             return approval_id
 
-        for approval in self.list_approvals(file_id):
-            if approval.get("status") == "IN_PROGRESS":
-                fallback_id = approval.get("approvalId")
-                if fallback_id:
-                    return fallback_id
+        # list_approvals()側も直後は結果整合性(eventual consistency)により空を返すことが
+        # ある(2026-08-18実機テストで確認)。数回リトライしてから諦める。
+        last_seen: list[dict[str, Any]] = []
+        for attempt in range(_START_APPROVAL_FALLBACK_ATTEMPTS):
+            if attempt > 0:
+                time.sleep(_START_APPROVAL_FALLBACK_DELAY_SECONDS)
+            last_seen = self.list_approvals(file_id)
+            for approval in last_seen:
+                if approval.get("status") == "IN_PROGRESS":
+                    fallback_id = approval.get("approvalId")
+                    if fallback_id:
+                        return fallback_id
 
         raise GoogleDriveApiError(
             response.status_code,
-            f"no approvalId in start_approval response and none found via list_approvals: {data!r}",
+            f"no approvalId in start_approval response ({data!r}) and none found via "
+            f"list_approvals after {_START_APPROVAL_FALLBACK_ATTEMPTS} attempts: {last_seen!r}",
         )
 
     def list_approvals(self, file_id: str) -> list[dict[str, Any]]:
