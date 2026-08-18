@@ -15,6 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "営業管理ダッシュボード",
   description: "CRM/SFA 社内管理画面",
+  robots: { index: false, follow: false, nocache: true },
 };
 
 // web-engagement-tool(MA)のapp/layout.tsxと同じ仕組み(2026-08-15移植)。Resolves the
