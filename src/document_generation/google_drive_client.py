@@ -67,8 +67,16 @@ class GoogleDriveDocClient:
         json_body: Any | None = None,
         params: dict[str, Any] | None = None,
         idempotent: bool = True,
+        include_shared_drive_support: bool = True,
     ) -> requests.Response:
-        params_with_shared_drive = {"supportsAllDrives": "true", **(params or {})}
+        # `supportsAllDrives`は`files`リソース(copy/get/update等)向けのクエリパラメータで、
+        # `approvals:start`等のApprovals系エンドポイントには存在しない(2026-08-18実機確認、
+        # 付与すると`HTTP 400: Unknown name "supportsAllDrives"`になる)。Approvals系メソッド
+        # (start_approval/get_approval/cancel_approval)は`include_shared_drive_support=False`
+        # で呼ぶこと。
+        params_with_shared_drive = (
+            {"supportsAllDrives": "true", **(params or {})} if include_shared_drive_support else (params or {})
+        )
         return request_with_retry(
             method,
             f"{self._base_url}{path}",
@@ -164,6 +172,7 @@ class GoogleDriveDocClient:
             f"/{file_id}/approvals:start",
             json_body=json_body,
             idempotent=False,
+            include_shared_drive_support=False,
         )
         raise_for_error(response, GoogleDriveApiError)
         data = response.json()
@@ -176,7 +185,9 @@ class GoogleDriveDocClient:
         """承認リクエストの現在の状態(レスポンスの`status`フィールド: `IN_PROGRESS`/
         `APPROVED`/`DECLINED`/`CANCELLED`)を取得する(2026-08-18、承認状態ポーリングcron向け、
         フィールド名は公式REST referenceで確認済み)。"""
-        response = self._request("GET", f"/{file_id}/approvals/{approval_id}")
+        response = self._request(
+            "GET", f"/{file_id}/approvals/{approval_id}", include_shared_drive_support=False
+        )
         raise_for_error(response, GoogleDriveApiError)
         return response.json()
 
@@ -190,5 +201,6 @@ class GoogleDriveDocClient:
             "POST",
             f"/{file_id}/approvals/{approval_id}:cancel",
             idempotent=False,
+            include_shared_drive_support=False,
         )
         raise_for_error(response, GoogleDriveApiError)

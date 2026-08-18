@@ -143,6 +143,7 @@ def test_start_approval_sends_reviewer_and_message_and_returns_approval_id(
         "reviewerEmails": ["approver@example.com"],
         "message": "ご確認お願いします",
     }
+    assert "supportsalldrives" not in requests_mock.last_request.qs
 
 
 def test_start_approval_omits_review_instructions_when_message_empty(
@@ -171,7 +172,9 @@ def test_get_approval_returns_status(requests_mock, client: GoogleDriveDocClient
     approval = client.get_approval("file-1", "approval-1")
 
     assert approval == {"status": "APPROVED"}
-    assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
+    # approvals系エンドポイントはsupportsAllDrivesを受け付けない(HTTP 400になる、
+    # 2026-08-18実機確認)。
+    assert "supportsalldrives" not in requests_mock.last_request.qs
 
 
 def test_cancel_approval_sends_post_to_cancel_endpoint(
@@ -182,7 +185,7 @@ def test_cancel_approval_sends_post_to_cancel_endpoint(
     client.cancel_approval("file-1", "approval-1")
 
     assert cancel_mock.call_count == 1
-    assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
+    assert "supportsalldrives" not in requests_mock.last_request.qs
 
 
 def test_cancel_approval_raises_on_error(requests_mock, client: GoogleDriveDocClient) -> None:
