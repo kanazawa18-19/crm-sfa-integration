@@ -38,6 +38,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/members", label: "メンバー実績" },
       { href: "/tasks", label: "タスク" },
       { href: "/documents", label: "書類作成" },
+      { href: "/clients", label: "取引先(360度ビュー)" },
     ],
   },
   {

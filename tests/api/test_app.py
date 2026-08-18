@@ -315,6 +315,137 @@ def test_search_projects_returns_matched_projects(
     assert response.json()["total_matched"] == 1
 
 
+# --- /api/clients/search -----------------------------------------------------------------------
+
+
+def test_search_clients_returns_401_when_token_not_set(client: TestClient) -> None:
+    response = client.get("/api/clients/search?q=サンプル")
+
+    assert response.status_code == 401
+
+
+def test_search_clients_returns_empty_when_q_blank(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.get(
+        "/api/clients/search?q=", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"clients": [], "truncated": False}
+
+
+def test_search_clients_returns_matched_clients(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def fake_search_clients(query: str) -> dict[str, object]:
+        assert query == "サンプル"
+        return {
+            "clients": [{"notion_page_id": "c1", "取引先名": "サンプルホテル"}],
+            "truncated": True,
+        }
+
+    monkeypatch.setattr("src.api.app.search_clients", fake_search_clients)
+
+    response = client.get(
+        "/api/clients/search?q=サンプル", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["truncated"] is True
+
+
+# --- /api/contacts/search ----------------------------------------------------------------------
+
+
+def test_search_contacts_returns_401_when_token_not_set(client: TestClient) -> None:
+    response = client.get("/api/contacts/search?q=山田")
+
+    assert response.status_code == 401
+
+
+def test_search_contacts_returns_empty_when_q_blank(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    response = client.get(
+        "/api/contacts/search?q=", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"contacts": [], "truncated": False}
+
+
+def test_search_contacts_returns_matched_contacts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def fake_search_contacts(query: str) -> dict[str, object]:
+        assert query == "山田"
+        return {"contacts": [{"notion_page_id": "cnt1", "名前": "山田太郎"}], "truncated": False}
+
+    monkeypatch.setattr("src.api.app.search_contacts", fake_search_contacts)
+
+    response = client.get(
+        "/api/contacts/search?q=山田", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["truncated"] is False
+
+
+# --- /api/clients/{client_id}/360 ----------------------------------------------------------------
+
+
+def test_get_client_360_returns_401_when_token_not_set(client: TestClient) -> None:
+    response = client.get("/api/clients/cli-1/360")
+
+    assert response.status_code == 401
+
+
+def test_get_client_360_returns_404_when_client_not_found(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    monkeypatch.setattr("src.api.app.get_client_360", lambda client_id: None)
+
+    response = client.get(
+        "/api/clients/cli-1/360", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_get_client_360_returns_result_on_success(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def fake_get_client_360(client_id: str) -> dict[str, object]:
+        assert client_id == "cli-1"
+        return {
+            "client": {"notion_page_id": "cli-1", "取引先名": "サンプルホテル"},
+            "projects": [],
+            "contacts": [],
+            "actions": [],
+        }
+
+    monkeypatch.setattr("src.api.app.get_client_360", fake_get_client_360)
+
+    response = client.get(
+        "/api/clients/cli-1/360", headers={"Authorization": "Bearer correct-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["client"]["取引先名"] == "サンプルホテル"
+
+
 # --- /api/documents/generate -------------------------------------------------------------------
 
 

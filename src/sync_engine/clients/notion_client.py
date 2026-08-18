@@ -271,6 +271,32 @@ class HttpNotionClient:
                 break
         return pages
 
+    def query_page(
+        self,
+        *,
+        page_size: int = 100,
+        filter: dict[str, Any] | None = None,
+        sorts: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Notion API `POST /v1/databases/{database_id}/query` を1回だけ呼び、ページングしない。
+
+        `query_all_pages`と異なり`has_more`を追わず、先頭`page_size`件で打ち切る（生ページ
+        オブジェクトのリストをそのまま返す点は`query_all_pages`と同じ）。取引先マスターDB
+        （実測約6.2万件）・連絡先DBのような大規模DBを都度全件取得するのは重すぎる、
+        検索UI・1社スコープの関連レコード取得のような「上位N件だけ分かればよい」用途向け
+        （`src/api/client_360_service.py`参照）。読み取り専用の冪等操作のためidempotent=True
+        （既定）で呼ぶ。
+        """
+        body: dict[str, Any] = {"page_size": page_size}
+        if filter is not None:
+            body["filter"] = filter
+        if sorts is not None:
+            body["sorts"] = sorts
+        response = self._request("POST", f"/databases/{self._database_id}/query", json_body=body)
+        raise_for_error(response, NotionApiError)
+        data = response.json()
+        return data.get("results") or []
+
     def get_raw_page(self, page_id: str) -> dict[str, Any]:
         """Notion API `GET /v1/pages/{page_id}` の生レスポンスJSONをそのまま返す。
 

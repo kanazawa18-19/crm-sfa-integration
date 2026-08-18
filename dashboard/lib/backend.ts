@@ -179,6 +179,109 @@ export function searchProjects(query: string): Promise<ProjectSearchResponse> {
   return fetchBackend<ProjectSearchResponse>(`/api/projects/search?q=${encodeURIComponent(query)}`);
 }
 
+// 顧客360度ビュー（取引先1社の案件・連絡先・アクション履歴・メール履歴・変更履歴を1画面に
+// 集約する営業向け画面）。取引先検索・連絡先検索は`src/api/client_360_service.py`の
+// `search_clients`/`search_contacts`と同じくNotion API側で絞り込んだ先頭件のみを返す
+// （取引先マスターDB・連絡先DBは大規模なため全件は返さない）。
+
+export interface ClientSearchResult {
+  notion_page_id: string;
+  取引先名: string;
+}
+
+export interface ClientSearchResponse {
+  clients: ClientSearchResult[];
+  // 検索結果が上限件数(バックエンド側`_MAX_SEARCH_RESULTS`)を超えて一致した可能性が
+  // あるかどうか。`query_page()`は1回のクエリで打ち切る設計のため正確な一致件数は
+  // 分からず、「あるかないか」のみ返す(obasan-qualityレビューBLOCKER対応、2026-08-18。
+  // 元は`total_matched = clients.length`が常に成り立ち、「他に◯件該当」表示が
+  // 実質デッドコードになっていた)。
+  truncated: boolean;
+}
+
+export function searchClients(query: string): Promise<ClientSearchResponse> {
+  return fetchBackend<ClientSearchResponse>(`/api/clients/search?q=${encodeURIComponent(query)}`);
+}
+
+export interface ContactSearchResult {
+  notion_page_id: string;
+  名前: string;
+}
+
+export interface ContactSearchResponse {
+  contacts: ContactSearchResult[];
+  truncated: boolean;
+}
+
+// 現行UIの360ビューは取引先検索から入るのみで連絡先検索は未使用だが、将来の拡張用に
+// バックエンド側の`/api/contacts/search`ラッパーとして残しておく。
+export function searchContacts(query: string): Promise<ContactSearchResponse> {
+  return fetchBackend<ContactSearchResponse>(`/api/contacts/search?q=${encodeURIComponent(query)}`);
+}
+
+// `src/api/client_360_service.py`の各`page_to_display_dict`/`project_page_to_mirror_record`
+// はスキーマ全プロパティを表示用dictへ変換して返すため、実際のレスポンスにはここで挙げた
+// 項目以外も含まれる。360ビューで実際に表示する項目のみ明示的に型付けし、それ以外は
+// インデックスシグネチャで受け止める。
+export interface Client360Client {
+  notion_page_id: string;
+  取引先名: string;
+  顧客種別: string | null;
+  都道府県: string | null;
+  住所: string | null;
+  TEL: string | null;
+  FAX: string | null;
+  備考: string | null;
+  [key: string]: unknown;
+}
+
+export interface Client360Project {
+  notion_page_id: string;
+  案件名: string;
+  営業ステータス: string | null;
+  確度: string | null;
+  初期費用: number | null;
+  月額費用: number | null;
+  担当メンバー: string[];
+  次回アクション日: string | null;
+  提案サービス: string[];
+  [key: string]: unknown;
+}
+
+export interface Client360Contact {
+  notion_page_id: string;
+  名前: string;
+  部署: string | null;
+  役職: string | null;
+  メールアドレス: string | null;
+  携帯番号: string | null;
+  直通TEL: string | null;
+  担当メンバー: unknown;
+  [key: string]: unknown;
+}
+
+export interface Client360Action {
+  notion_page_id: string;
+  "商談回数・電話回数・メール回数（何回目）": string | null;
+  アクション種別: string | null;
+  アクション日: string | null;
+  履歴メモ: string | null;
+  先方担当者: string | null;
+  担当営業: string | null;
+  [key: string]: unknown;
+}
+
+export interface Client360 {
+  client: Client360Client;
+  projects: Client360Project[];
+  contacts: Client360Contact[];
+  actions: Client360Action[];
+}
+
+export function getClient360(clientId: string): Promise<Client360> {
+  return fetchBackend<Client360>(`/api/clients/${encodeURIComponent(clientId)}/360`);
+}
+
 export interface Task {
   notion_page_id: string;
   title_summary: string;

@@ -25,6 +25,7 @@ from src.api.auth import (
     verify_document_approval_cron_secret,
     verify_email_reminder_cron_secret,
 )
+from src.api.client_360_service import get_client_360, search_clients, search_contacts
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -567,6 +568,31 @@ def get_project_search(q: str = "") -> dict[str, Any]:
     if not q.strip():
         return {"projects": [], "total_matched": 0}
     return search_projects(q)
+
+
+@app.get("/api/clients/search", dependencies=[Depends(verify_dashboard_api_token)])
+def get_client_search(q: str = "") -> dict[str, Any]:
+    """顧客360度ビュー画面の取引先選択UIから呼ばれる、取引先名の部分一致検索。"""
+    if not q.strip():
+        return {"clients": [], "truncated": False}
+    return search_clients(q)
+
+
+@app.get("/api/contacts/search", dependencies=[Depends(verify_dashboard_api_token)])
+def get_contact_search(q: str = "") -> dict[str, Any]:
+    """連絡先名の部分一致検索（将来の拡張用。現行UIでは未使用）。"""
+    if not q.strip():
+        return {"contacts": [], "truncated": False}
+    return search_contacts(q)
+
+
+@app.get("/api/clients/{client_id}/360", dependencies=[Depends(verify_dashboard_api_token)])
+def get_client_360_view(client_id: str) -> dict[str, Any]:
+    """顧客360度ビュー: 取引先1社の概要・案件・連絡先・アクション履歴をまとめて返す。"""
+    result = get_client_360(client_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="取引先が見つかりません")
+    return result
 
 
 @app.get("/api/documents/generate", dependencies=[Depends(verify_dashboard_api_token)])

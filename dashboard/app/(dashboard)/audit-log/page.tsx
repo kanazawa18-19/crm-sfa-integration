@@ -1,6 +1,7 @@
 import prisma from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import { requireRole } from "@/lib/auth";
+import { formatDateTime, formatChangedFields } from "@/lib/auditLogFormat";
 
 // バックエンド(Python)が書き込んだ最新のログを毎リクエスト取得するため、静的
 // プリレンダリングを無効化する(他の一覧ページと同じ方針)。
@@ -38,31 +39,6 @@ const MAX_ROWS = 200;
 function singleParam(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] ?? "";
   return value ?? "";
-}
-
-function formatDateTime(value: Date): string {
-  return new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(value);
-}
-
-function formatChangedFields(changedFields: Prisma.JsonValue): string {
-  if (
-    typeof changedFields !== "object" ||
-    changedFields === null ||
-    Array.isArray(changedFields)
-  ) {
-    return String(changedFields);
-  }
-  return Object.entries(changedFields as Record<string, unknown>)
-    .map(([name, diff]) => {
-      const before = diff && typeof diff === "object" ? (diff as Record<string, unknown>).before : undefined;
-      const after = diff && typeof diff === "object" ? (diff as Record<string, unknown>).after : undefined;
-      return `${name}: ${JSON.stringify(before)} → ${JSON.stringify(after)}`;
-    })
-    .join("\n");
 }
 
 export default async function AuditLogPage(props: PageProps<"/audit-log">) {
