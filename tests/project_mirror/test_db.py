@@ -235,3 +235,15 @@ def test_list_projects_returns_data_column_values(monkeypatch: pytest.MonkeyPatc
     result = db.list_projects()
 
     assert result == [{"案件名": "A"}, {"案件名": "B"}]
+
+
+# --- get_project_count ----------------------------------------------------------------------
+
+
+def test_get_project_count_returns_row_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = _FakeCursor(fetch_one_rows=[{"n": 10000}])
+    _patch_connect(monkeypatch, cursor)
+
+    result = db.get_project_count()
+
+    assert result == 10000

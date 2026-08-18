@@ -158,6 +158,14 @@ def _upsert_batch(
     )
 
 
+def get_project_count() -> int:
+    """`ProjectMirror`の現在の行数。`refresh_all_projects()`が新規取得件数と比較し、
+    異常な急減(部分取得によるsweep事故)を検知するために使う(2026-08-18)。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT count(*) AS n FROM "ProjectMirror"')
+        return cur.fetchone()["n"]
+
+
 def list_projects() -> list[dict[str, Any]]:
     """ミラー全件を読み取る。`data`カラムをそのまま`list[dict]`で返す。
 

@@ -12,11 +12,15 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Mapping, Protocol
+
+import requests
 
 from src.api.notion_display import project_page_to_mirror_record
 from src.db_schema.project import PROJECT_SCHEMA
 from src.project_mirror.db import (
+    get_project_count,
     release_refresh_lock,
     try_acquire_refresh_lock,
     upsert_project,
@@ -25,6 +29,11 @@ from src.project_mirror.db import (
 from src.sync_engine.webhook_handlers._common import parse_iso_datetime
 
 logger = logging.getLogger(__name__)
+
+# 新規取得件数が既存ミラー件数のこの割合を下回った場合、部分取得(Notion側のページング
+# 中断・レート制限等)の疑いが強いとしてsweepを中止する(2026-08-18、実際に発生した
+# 「ミラーが全件0件になる」事故への対策)。
+_MIN_SYNC_RATIO = 0.5
 
 
 class ProjectMirrorNotionClient(Protocol):
@@ -97,7 +106,45 @@ def refresh_all_projects(
     try:
         pages = notion_client.query_all_pages()
         rows = [_page_to_mirror_row(page, user_directory=user_directory) for page in pages]
+
+        # `query_all_pages()`は、Notion APIが`has_more=True`なのに`next_cursor`を返さない
+        # という契約違反のレスポンスに遭遇した場合、例外を投げず警告ログのみでページングを
+        # 打ち切り、それまでに取得できた分だけを返す設計になっている（無限ループを避ける
+        # ための意図的な挙動）。このモジュールの docstring は「全件取得が完了するまで
+        # DB書き込みを開始しない」ことを前提にしていたが、実際には`query_all_pages()`側の
+        # この挙動により「部分取得なのに正常応答に見える」ケースがあり得る。2026-08-18、
+        # 実際にこれが原因と見られる事故（ミラーが1晩で0件になった）が発生したため、
+        # 新規取得件数が既存ミラー件数に比べて急減している場合はsweepを中止して既存データを
+        # 保護する（既存件数が少ない場合の誤検知を避けるため、既存件数が極端に小さい時は
+        # このチェック自体を素通りさせる）。
+        current_count = get_project_count()
+        if current_count >= 20 and len(rows) < current_count * _MIN_SYNC_RATIO:
+            message = (
+                f"refresh_all_projects: 新規取得件数({len(rows)}件)が既存ミラー件数"
+                f"({current_count}件)より大幅に少ないため、部分取得の疑いがありsweepを"
+                "中止しました（既存データは変更していません）。"
+            )
+            logger.error(message)
+            _notify_slack_alert(message)
+            return {
+                "synced_count": len(rows),
+                "deleted_count": 0,
+                "skipped": "suspected_partial_fetch",
+            }
+
         deleted_count = upsert_projects_and_sweep(rows)
         return {"synced_count": len(rows), "deleted_count": deleted_count}
     finally:
         release_refresh_lock(lock_conn)
+
+
+def _notify_slack_alert(message: str) -> None:
+    """`src/incident_detection/notify.py`の日次ダイジェストと同じ`SLACK_WEBHOOK_URL_ALERT`
+    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。"""
+    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
+    if not url:
+        return
+    try:
+        requests.post(url, json={"text": message}, timeout=10)
+    except Exception:
+        logger.exception("refresh_all_projects: failed to post alert to slack")
