@@ -169,10 +169,13 @@ class GoogleDriveDocClient:
         `{"reviewerEmails": [...], "message": "..."}`。
 
         公式ドキュメント上は`approvals:start`のレスポンスにも`approvalId`が含まれる想定だが、
-        2026-08-18の実機テストでは`{"kind": "drive#approval"}`のみの空に近いレスポンスが
-        返ってきた(ドキュメントと実挙動の乖離)。そのため、レスポンスに`approvalId`が
-        無い場合は`list_approvals()`(`GET /files/{fileId}/approvals`)で直後に作成された
-        `IN_PROGRESS`状態の承認を探すフォールバックを行う。
+        2026-08-18の実機テストでは`fields`クエリパラメータを指定しない場合`{"kind":
+        "drive#approval"}`のみの部分レスポンス(Google APIのデフォルト projection)しか
+        返ってこなかった(`list_approvals()`/`get_approval()`も同様)。Drive APIは`fields`を
+        明示しないと必要なフィールドが省略されることがあるため、`fields=*`を明示的に付与する。
+        なお`fields=*`指定後も念のため、レスポンスに`approvalId`が無い場合は
+        `list_approvals()`で直後に作成された`IN_PROGRESS`状態の承認を探すフォールバックを
+        行う(結果整合性対策)。
         """
         json_body: dict[str, Any] = {"reviewerEmails": [reviewer_email]}
         if message:
@@ -181,6 +184,7 @@ class GoogleDriveDocClient:
             "POST",
             f"/{file_id}/approvals:start",
             json_body=json_body,
+            params={"fields": "*"},
             idempotent=False,
             include_shared_drive_support=False,
         )
@@ -213,7 +217,10 @@ class GoogleDriveDocClient:
         """`file_id`上の承認リクエスト一覧を取得する(`GET /files/{fileId}/approvals`、
         公式REST referenceで確認済み)。`start_approval()`のフォールバック用。"""
         response = self._request(
-            "GET", f"/{file_id}/approvals", include_shared_drive_support=False
+            "GET",
+            f"/{file_id}/approvals",
+            params={"fields": "*"},
+            include_shared_drive_support=False,
         )
         raise_for_error(response, GoogleDriveApiError)
         return response.json().get("items", [])
@@ -223,7 +230,10 @@ class GoogleDriveDocClient:
         `APPROVED`/`DECLINED`/`CANCELLED`)を取得する(2026-08-18、承認状態ポーリングcron向け、
         フィールド名は公式REST referenceで確認済み)。"""
         response = self._request(
-            "GET", f"/{file_id}/approvals/{approval_id}", include_shared_drive_support=False
+            "GET",
+            f"/{file_id}/approvals/{approval_id}",
+            params={"fields": "*"},
+            include_shared_drive_support=False,
         )
         raise_for_error(response, GoogleDriveApiError)
         return response.json()

@@ -144,6 +144,9 @@ def test_start_approval_sends_reviewer_and_message_and_returns_approval_id(
         "message": "ご確認お願いします",
     }
     assert "supportsalldrives" not in requests_mock.last_request.qs
+    # fields未指定だとGoogle APIがデフォルトでkindのみの部分レスポンスを返すことが
+    # 実機テストで判明したため、明示的に指定していることを確認する(2026-08-18)。
+    assert requests_mock.last_request.qs["fields"] == ["*"]
 
 
 def test_start_approval_omits_review_instructions_when_message_empty(
@@ -173,6 +176,7 @@ def test_start_approval_falls_back_to_list_approvals_when_response_has_no_approv
 
     assert approval_id == "approval-1"
     assert "supportsalldrives" not in requests_mock.last_request.qs
+    assert requests_mock.last_request.qs["fields"] == ["*"]
 
 
 def test_start_approval_raises_when_no_approval_id_anywhere(
@@ -221,6 +225,7 @@ def test_list_approvals_returns_items(requests_mock, client: GoogleDriveDocClien
 
     assert approvals == [{"approvalId": "approval-1", "status": "APPROVED"}]
     assert "supportsalldrives" not in requests_mock.last_request.qs
+    assert requests_mock.last_request.qs["fields"] == ["*"]
 
 
 def test_get_approval_returns_status(requests_mock, client: GoogleDriveDocClient) -> None:
@@ -232,6 +237,7 @@ def test_get_approval_returns_status(requests_mock, client: GoogleDriveDocClient
     # approvals系エンドポイントはsupportsAllDrivesを受け付けない(HTTP 400になる、
     # 2026-08-18実機確認)。
     assert "supportsalldrives" not in requests_mock.last_request.qs
+    assert requests_mock.last_request.qs["fields"] == ["*"]
 
 
 def test_cancel_approval_sends_post_to_cancel_endpoint(
