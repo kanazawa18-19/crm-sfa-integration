@@ -178,7 +178,12 @@ class GoogleDriveDocClient:
         data = response.json()
         approval_id = data.get("approvalId")
         if not approval_id:
-            raise GoogleDriveApiError(response.status_code, "no approvalId in start_approval response")
+            # レスポンス本文をエラーメッセージに含める(2026-08-18実機テストで発生。
+            # 公式REST reference上はapprovalIdが返る想定だったが実際のレスポンス形状が
+            # 異なっていたため、次回同種の問題が起きた際に即座に原因特定できるようにする)。
+            raise GoogleDriveApiError(
+                response.status_code, f"no approvalId in start_approval response: {data!r}"
+            )
         return approval_id
 
     def get_approval(self, file_id: str, approval_id: str) -> dict[str, Any]:
