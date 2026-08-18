@@ -1,15 +1,23 @@
 "use client";
 
 import { useActionState } from "react";
-import { updateOwnName } from "@/app/actions";
+import { updateOwnProfile } from "@/app/actions";
 
-export default function NameForm({ initialName }: { initialName: string }) {
-  const [state, formAction, pending] = useActionState(updateOwnName, undefined);
+export default function NameForm({
+  initialName,
+  initialTitle,
+  initialDepartment,
+}: {
+  initialName: string;
+  initialTitle: string;
+  initialDepartment: string;
+}) {
+  const [state, formAction, pending] = useActionState(updateOwnProfile, undefined);
 
   return (
     <form action={formAction} className="flex flex-col gap-3">
       <label className="flex flex-col gap-1 text-sm text-(--color-foreground)">
-        表示名
+        表示名(任意)
         <input
           type="text"
           name="name"
@@ -19,9 +27,31 @@ export default function NameForm({ initialName }: { initialName: string }) {
           className="input"
         />
       </label>
+      <label className="flex flex-col gap-1 text-sm text-(--color-foreground)">
+        役職(任意)
+        <input
+          type="text"
+          name="title"
+          defaultValue={initialTitle}
+          maxLength={100}
+          placeholder="マーケティング本部長"
+          className="input"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-sm text-(--color-foreground)">
+        部署(任意)
+        <input
+          type="text"
+          name="department"
+          defaultValue={initialDepartment}
+          maxLength={100}
+          placeholder="営業部"
+          className="input"
+        />
+      </label>
       <div>
         <button type="submit" disabled={pending} className="btn-primary">
-          {pending ? "保存中..." : "表示名を保存"}
+          {pending ? "保存中..." : "保存"}
         </button>
       </div>
       {state?.error && <p className="text-sm text-(--brand-danger)">{state.error}</p>}

@@ -46,6 +46,10 @@ model User {
   name      String?
   avatarUrl String?
 
+  // 役職・部署名(2026-08-18)。web-engagement-tool側と同じ追加、どちらも任意項目。
+  title      String?
+  department String?
+
   // TOTP two-factor auth (only relevant when AppSettings.twoFactorEnabled is
   // on). totpSecretEnc is set once the user completes enrollment; until
   // then totpEnabled stays false and login forces them through the

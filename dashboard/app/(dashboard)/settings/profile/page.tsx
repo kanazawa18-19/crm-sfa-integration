@@ -37,9 +37,9 @@ export default async function ProfilePage({
       </section>
 
       <section className="surface-card p-6">
-        <h2 className="text-sm font-semibold text-(--color-foreground)/70">表示名</h2>
+        <h2 className="text-sm font-semibold text-(--color-foreground)/70">表示名・役職・部署</h2>
         <div className="mt-3">
-          <NameForm initialName={user.name ?? ""} />
+          <NameForm initialName={user.name ?? ""} initialTitle={user.title ?? ""} initialDepartment={user.department ?? ""} />
         </div>
       </section>
 

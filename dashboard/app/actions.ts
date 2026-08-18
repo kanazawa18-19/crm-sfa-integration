@@ -389,19 +389,24 @@ export async function updateEmailReminderSettings(formData: FormData) {
 
 export type ProfileActionState = { error?: string; success?: string };
 
-export async function updateOwnName(
+export async function updateOwnProfile(
   _prevState: ProfileActionState | undefined,
   formData: FormData
 ): Promise<ProfileActionState> {
   const user = await requireRole("viewer");
   const name = String(formData.get("name") ?? "").trim();
-  if (name.length > 100) {
-    return { error: "表示名は100文字以内で入力してください" };
+  const title = String(formData.get("title") ?? "").trim();
+  const department = String(formData.get("department") ?? "").trim();
+  if (name.length > 100 || title.length > 100 || department.length > 100) {
+    return { error: "各項目は100文字以内で入力してください" };
   }
 
-  await prisma.user.update({ where: { id: user.id }, data: { name: name || null } });
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { name: name || null, title: title || null, department: department || null },
+  });
   revalidatePath("/settings/profile");
-  return { success: "表示名を更新しました" };
+  return { success: "プロフィールを更新しました" };
 }
 
 const EMAIL_CHANGE_TOKEN_TTL_MS = 1000 * 60 * 60; // 1 hour、パスワード再設定と同じ有効期限
