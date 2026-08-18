@@ -10,6 +10,10 @@
       "schedule": "0 20 * * *"
     },
     {
+      "path": "/api/cron/token-encryption-healthcheck",
+      "schedule": "0 1 * * *"
+    },
+    {
       "path": "/api/cron/gmail-sync",
       "schedule": "0 3 * * *"
     },

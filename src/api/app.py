@@ -26,6 +26,7 @@ from src.api.auth import (
     verify_email_reminder_cron_secret,
 )
 from src.api.client_360_service import get_client_360, search_clients, search_contacts
+from src.api.token_encryption_healthcheck import run_token_encryption_healthcheck
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -369,6 +370,14 @@ def run_daily_batch() -> dict[str, Any]:
     日報は毎日、週報は金曜日のみ配信する（`src.reports.batch.run_report_batch`参照）。
     """
     return run_report_batch()
+
+
+@app.get("/api/cron/token-encryption-healthcheck", dependencies=[Depends(verify_cron_secret)])
+def run_token_encryption_healthcheck_cron() -> dict[str, Any]:
+    """Vercel Cronから1日1回呼ばれる、`TOKEN_ENCRYPTION_KEY`の自己診断エントリポイント
+    (2026-08-18)。詳細は`src/api/token_encryption_healthcheck.py`のモジュールdocstring参照。
+    """
+    return run_token_encryption_healthcheck()
 
 
 @app.get("/api/cron/gmail-sync", dependencies=[Depends(verify_cron_secret)])
