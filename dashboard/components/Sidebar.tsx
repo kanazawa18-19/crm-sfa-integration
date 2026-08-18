@@ -60,6 +60,7 @@ const NAV_GROUPS: NavGroup[] = [
 const MASTER_ONLY_NAV_LINKS: NavLink[] = [
   { href: "/users", label: "ユーザー管理" },
   { href: "/audit-log", label: "データ監査ログ" },
+  { href: "/email-log", label: "メールログ" },
   { href: "/settings/security", label: "セキュリティ設定" },
   { href: "/settings/email-reminders", label: "未返信メールリマインド設定" },
   { href: "/settings/document-approvers", label: "見積書承認者管理" },
