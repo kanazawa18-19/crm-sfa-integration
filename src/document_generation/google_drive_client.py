@@ -158,11 +158,15 @@ class GoogleDriveDocClient:
         承認リクエストID(`approvalId`)。
 
         リクエスト形状は公式REST référence
-        (https://developers.google.com/workspace/drive/api/reference/rest/v3/approvals/start、
-        https://developers.google.com/workspace/drive/api/reference/rest/v3/approvals)で
+        (https://developers.google.com/workspace/drive/api/reference/rest/v3/approvals/start)で
         確認済み: `POST /files/{fileId}/approvals:start`、body は
-        `{"reviewerEmails": [...], "message": "..."}`。ただし個人OAuthトークンでの
-        実リクエスト送信は本番投入前に実機確認すること(計画書「検証方法」1.)。
+        `{"reviewerEmails": [...], "message": "..."}`。
+
+        公式ドキュメント上は`approvals:start`のレスポンスにも`approvalId`が含まれる想定だが、
+        2026-08-18の実機テストでは`{"kind": "drive#approval"}`のみの空に近いレスポンスが
+        返ってきた(ドキュメントと実挙動の乖離)。そのため、レスポンスに`approvalId`が
+        無い場合は`list_approvals()`(`GET /files/{fileId}/approvals`)で直後に作成された
+        `IN_PROGRESS`状態の承認を探すフォールバックを行う。
         """
         json_body: dict[str, Any] = {"reviewerEmails": [reviewer_email]}
         if message:
@@ -177,14 +181,28 @@ class GoogleDriveDocClient:
         raise_for_error(response, GoogleDriveApiError)
         data = response.json()
         approval_id = data.get("approvalId")
-        if not approval_id:
-            # レスポンス本文をエラーメッセージに含める(2026-08-18実機テストで発生。
-            # 公式REST reference上はapprovalIdが返る想定だったが実際のレスポンス形状が
-            # 異なっていたため、次回同種の問題が起きた際に即座に原因特定できるようにする)。
-            raise GoogleDriveApiError(
-                response.status_code, f"no approvalId in start_approval response: {data!r}"
-            )
-        return approval_id
+        if approval_id:
+            return approval_id
+
+        for approval in self.list_approvals(file_id):
+            if approval.get("status") == "IN_PROGRESS":
+                fallback_id = approval.get("approvalId")
+                if fallback_id:
+                    return fallback_id
+
+        raise GoogleDriveApiError(
+            response.status_code,
+            f"no approvalId in start_approval response and none found via list_approvals: {data!r}",
+        )
+
+    def list_approvals(self, file_id: str) -> list[dict[str, Any]]:
+        """`file_id`上の承認リクエスト一覧を取得する(`GET /files/{fileId}/approvals`、
+        公式REST referenceで確認済み)。`start_approval()`のフォールバック用。"""
+        response = self._request(
+            "GET", f"/{file_id}/approvals", include_shared_drive_support=False
+        )
+        raise_for_error(response, GoogleDriveApiError)
+        return response.json().get("items", [])
 
     def get_approval(self, file_id: str, approval_id: str) -> dict[str, Any]:
         """承認リクエストの現在の状態(レスポンスの`status`フィールド: `IN_PROGRESS`/

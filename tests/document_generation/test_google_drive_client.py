@@ -157,13 +157,44 @@ def test_start_approval_omits_review_instructions_when_message_empty(
     assert "message" not in sent_body
 
 
-def test_start_approval_raises_when_response_has_no_approval_id(
+def test_start_approval_falls_back_to_list_approvals_when_response_has_no_approval_id(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    # 2026-08-18実機テストで確認: approvals:startのレスポンスは{"kind": "drive#approval"}
+    # のみでapprovalIdを含まないことがある。この場合list_approvals()でIN_PROGRESSの
+    # 承認を探すフォールバックが働くこと。
+    requests_mock.post(f"{BASE}/file-1/approvals:start", json={"kind": "drive#approval"})
+    requests_mock.get(
+        f"{BASE}/file-1/approvals",
+        json={"items": [{"approvalId": "approval-1", "status": "IN_PROGRESS"}]},
+    )
+
+    approval_id = client.start_approval("file-1", reviewer_email="approver@example.com")
+
+    assert approval_id == "approval-1"
+    assert "supportsalldrives" not in requests_mock.last_request.qs
+
+
+def test_start_approval_raises_when_no_approval_id_anywhere(
     requests_mock, client: GoogleDriveDocClient
 ) -> None:
     requests_mock.post(f"{BASE}/file-1/approvals:start", json={})
+    requests_mock.get(f"{BASE}/file-1/approvals", json={"items": []})
 
     with pytest.raises(GoogleDriveApiError):
         client.start_approval("file-1", reviewer_email="approver@example.com")
+
+
+def test_list_approvals_returns_items(requests_mock, client: GoogleDriveDocClient) -> None:
+    requests_mock.get(
+        f"{BASE}/file-1/approvals",
+        json={"items": [{"approvalId": "approval-1", "status": "APPROVED"}]},
+    )
+
+    approvals = client.list_approvals("file-1")
+
+    assert approvals == [{"approvalId": "approval-1", "status": "APPROVED"}]
+    assert "supportsalldrives" not in requests_mock.last_request.qs
 
 
 def test_get_approval_returns_status(requests_mock, client: GoogleDriveDocClient) -> None:
