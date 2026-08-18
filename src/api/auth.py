@@ -64,3 +64,20 @@ def verify_email_reminder_cron_secret(authorization: str | None = Header(default
 
     if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def verify_document_approval_cron_secret(authorization: str | None = Header(default=None)) -> None:
+    """`GET /api/cron/document-approval-poll`専用のFastAPI依存性(2026-08-18)。
+
+    `verify_email_reminder_cron_secret`と同じ理由: 見積書承認リクエストの状態確認は
+    Vercel Cron（1日1回までのHobbyプラン制約）では組めない1時間おきのポーリングが必要なため、
+    GitHub Actionsのscheduled workflowから専用の`DOCUMENT_APPROVAL_CRON_SECRET`
+    （GitHub Secrets側と対になる値）付きで呼ぶ方式にする（`vercel.json`のcronsには登録しない）。
+    `verify_cron_secret`と同様fail-closed・定数時間比較。
+    """
+    expected = os.environ.get("DOCUMENT_APPROVAL_CRON_SECRET")
+    if not expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="unauthorized")

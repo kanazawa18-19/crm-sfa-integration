@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
 from src.document_generation.common import TemplateNotFoundError, TemplateSheetNotFoundError
-from src.document_generation.quote_generator import generate_quote
+from src.document_generation.drive_connection_db import RepDriveConnection
+from src.document_generation.quote_generator import (
+    DriveNotConnectedError,
+    DuplicateApprovalRequestError,
+    InvalidApproverEmailError,
+    QUOTE_PENDING_APPROVAL_FOLDER_ID,
+    generate_quote,
+    request_quote_approval,
+)
 from src.document_generation.template_registry import TemplateInfo
 from tests.document_generation._fakes import (
     FakeClientMasterClient,
@@ -49,6 +57,7 @@ def test_generate_quote_copies_fills_exports_and_deletes(monkeypatch: pytest.Mon
             "file_id": "TEMPLATE_ID",
             "target_mime_type": "application/vnd.google-apps.spreadsheet",
             "new_name": f"__tmp_quote_{PAGE_ID}",
+            "parents": None,
         }
     ]
     assert drive_client.export_calls == [{"file_id": "copy-123", "mime_type": "application/pdf"}]
@@ -171,3 +180,368 @@ def test_generate_quote_adds_note_when_client_name_missing() -> None:
     )
 
     assert any("取引先名" in note for note in result.notes)
+
+
+# --- request_quote_approval (見積書 承認フロー、2026-08-18) ----------------------------------
+
+
+def _patch_drive_connection(
+    monkeypatch: pytest.MonkeyPatch, *, connection: RepDriveConnection | None
+) -> None:
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.get_rep_drive_connection", lambda rep_email: connection
+    )
+
+
+def _patch_approver_and_duplicate_checks(
+    monkeypatch: pytest.MonkeyPatch, *, approver_active: bool = True, duplicate: bool = False
+) -> None:
+    """`is_active_document_approver`/`find_in_progress_approval`はDBアクセスを伴うため、
+    request_quote_approval()を呼ぶテストでは既定でパスする値に固定しておく
+    （どちらも異常系専用のテストで個別に上書きする）。"""
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.is_active_document_approver",
+        lambda email: approver_active,
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.find_in_progress_approval",
+        lambda notion_page_id, category: "existing-row-id" if duplicate else None,
+    )
+
+
+def test_request_quote_approval_raises_when_approver_not_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """approver_emailがDocumentApproverに未登録(active=trueで存在しない)の場合、Driveへは
+    一切アクセスせずInvalidApproverEmailErrorを送出する(shirokuma-secレビューBLOCKER対応)。"""
+    _patch_approver_and_duplicate_checks(monkeypatch, approver_active=False)
+    drive_client = FakeGoogleDriveDocClient()
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+
+    with pytest.raises(InvalidApproverEmailError, match="approver@example.com"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=FakeTemplateRegistry({}),
+        )
+
+    assert drive_client.copy_calls == []
+
+
+def test_request_quote_approval_raises_when_duplicate_in_progress_request_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同じ案件・カテゴリで既にin_progressの承認リクエストがある場合、Driveへは一切
+    アクセスせずDuplicateApprovalRequestErrorを送出する。"""
+    _patch_approver_and_duplicate_checks(monkeypatch, duplicate=True)
+    drive_client = FakeGoogleDriveDocClient()
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+
+    with pytest.raises(DuplicateApprovalRequestError, match=PAGE_ID):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=FakeTemplateRegistry({}),
+        )
+
+    assert drive_client.copy_calls == []
+
+
+def test_request_quote_approval_raises_when_rep_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """依頼者本人がDrive連携(RepDriveConnection)未接続の場合、Driveへは一切アクセスせず
+    DriveNotConnectedErrorを送出する。"""
+    _patch_approver_and_duplicate_checks(monkeypatch)
+    _patch_drive_connection(monkeypatch, connection=None)
+    drive_client = FakeGoogleDriveDocClient()
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+
+    with pytest.raises(DriveNotConnectedError, match="rep@example.com"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=FakeTemplateRegistry({}),
+        )
+
+    assert drive_client.copy_calls == []
+
+
+def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("src.document_generation.quote_generator._today_jst", lambda: date(2026, 8, 18))
+    _patch_approver_and_duplicate_checks(monkeypatch)
+    connection = RepDriveConnection(
+        rep_email="rep@example.com",
+        refresh_token_enc="encrypted-refresh-token",
+        connected_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+    _patch_drive_connection(monkeypatch, connection=connection)
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.decrypt_token", lambda enc: f"decrypted:{enc}"
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.refresh_access_token",
+        lambda refresh_token: f"access-token-for:{refresh_token}",
+    )
+    captured_access_tokens: list[str | None] = []
+
+    def _fake_drive_client(*, access_token: str | None = None) -> FakeGoogleDriveDocClient:
+        captured_access_tokens.append(access_token)
+        return drive_client
+
+    def _fake_sheets_client(*, access_token: str | None = None) -> "FakeSheetsClient":
+        captured_access_tokens.append(access_token)
+        return sheets_client
+
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="リピッテホテル_見積書.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    sheets_client = FakeSheetsClient([], sheet_title=SHEET_NAME)
+    monkeypatch.setattr("src.document_generation.quote_generator.GoogleDriveDocClient", _fake_drive_client)
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.HttpSheetsValuesClient", _fake_sheets_client
+    )
+
+    inserted_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval",
+        lambda **kwargs: inserted_calls.append(kwargs) or "approval-row-id",
+    )
+
+    result = request_quote_approval(
+        PAGE_ID,
+        approver_email="approver@example.com",
+        requested_by_email="rep@example.com",
+        message="ご確認お願いします",
+        registry=registry,
+        notion_client=FakeProjectNotionClient(raw_page),
+        client_master_client=FakeClientMasterClient("テスト商店"),
+    )
+
+    # 依頼者本人のリフレッシュトークンを復号・更新して取得したアクセストークンで
+    # Drive/Sheetsクライアントを構築していること(サービスアカウントを使わないこと)。
+    assert captured_access_tokens == [
+        "access-token-for:decrypted:encrypted-refresh-token",
+        "access-token-for:decrypted:encrypted-refresh-token",
+    ]
+
+    # コピーは一時格納フォルダへ直接作成する(移動ではなく、コピー時にparentsを指定する
+    # 実装方針。テンプレートの元の親フォルダIDが分からずmove()のremove_parentを特定できない
+    # ため——計画書は「コピー→move()」としていたが、実装ではcopy_as_native(parents=...)を
+    # 使う形に変更した。詳細は本ファイル冒頭のコミットメッセージ/報告を参照)。
+    # ファイル名は案件名ベース(承認フローの成果物として永久保存されるため、内部的な
+    # `__tmp_quote_{id}`のままにはしない。shirokuma-secレビューBLOCKER対応)。
+    assert drive_client.copy_calls == [
+        {
+            "file_id": "TEMPLATE_ID",
+            "target_mime_type": "application/vnd.google-apps.spreadsheet",
+            "new_name": "テスト案件_見積書",
+            "parents": [QUOTE_PENDING_APPROVAL_FOLDER_ID],
+        }
+    ]
+    # exportもdeleteも行わない(コピー自体が承認対象の成果物のため)。
+    assert drive_client.export_calls == []
+    assert drive_client.deleted_ids == []
+
+    assert drive_client.start_approval_calls == [
+        {"file_id": "copy-123", "reviewer_email": "approver@example.com", "message": "ご確認お願いします"}
+    ]
+
+    assert inserted_calls == [
+        {
+            "notion_project_id": PAGE_ID,
+            "category": "見積書",
+            "drive_file_id": "copy-123",
+            "drive_approval_id": "approval-1",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+        }
+    ]
+
+    assert result.drive_file_id == "copy-123"
+    assert result.drive_approval_id == "approval-1"
+    assert result.document_approval_id == "approval-row-id"
+
+
+def test_request_quote_approval_deletes_copy_and_does_not_create_approval_row_when_fill_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """コピー・差し込みロジック自体が失敗した場合(雛形タブ未検出等)は、一時コピーを削除し、
+    DocumentApproval行も作らない(generate_quoteと同じ後片付け方針を共有する)。"""
+    _patch_approver_and_duplicate_checks(monkeypatch)
+    connection = RepDriveConnection(
+        rep_email="rep@example.com",
+        refresh_token_enc="enc",
+        connected_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+    _patch_drive_connection(monkeypatch, connection=connection)
+    monkeypatch.setattr("src.document_generation.quote_generator.decrypt_token", lambda enc: "token")
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.refresh_access_token", lambda refresh_token: "access-token"
+    )
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    sheets_client = FakeSheetsClient(has_template_sheet=False)
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.HttpSheetsValuesClient", lambda **kwargs: sheets_client
+    )
+    insert_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval",
+        lambda **kwargs: insert_calls.append(kwargs),
+    )
+
+    with pytest.raises(TemplateSheetNotFoundError):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=registry,
+            notion_client=FakeProjectNotionClient(raw_page),
+            client_master_client=FakeClientMasterClient(),
+        )
+
+    assert drive_client.deleted_ids == ["copy-123"]
+    assert drive_client.start_approval_calls == []
+    assert insert_calls == []
+
+
+def _setup_request_quote_approval_success_dependencies(
+    monkeypatch: pytest.MonkeyPatch, *, drive_client: FakeGoogleDriveDocClient
+) -> None:
+    """コピー・差し込みまでは成功させ、`start_approval`/DB書き込み以降の異常系だけを
+    テストしたい場合の共通セットアップ。"""
+    _patch_approver_and_duplicate_checks(monkeypatch)
+    connection = RepDriveConnection(
+        rep_email="rep@example.com",
+        refresh_token_enc="enc",
+        connected_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+    _patch_drive_connection(monkeypatch, connection=connection)
+    monkeypatch.setattr("src.document_generation.quote_generator.decrypt_token", lambda enc: "token")
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.refresh_access_token", lambda refresh_token: "access-token"
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.HttpSheetsValuesClient",
+        lambda **kwargs: FakeSheetsClient([], sheet_title=SHEET_NAME),
+    )
+
+
+def test_request_quote_approval_deletes_copy_when_start_approval_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start_approval()自体が失敗した場合、Drive上にコピーだけが孤立しないよう削除してから
+    例外を再送出する(shirokuma-secレビューBLOCKER対応)。"""
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+
+    def _raise_start_approval(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("start_approval failed")
+
+    drive_client.start_approval = _raise_start_approval  # type: ignore[assignment]
+    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    insert_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval",
+        lambda **kwargs: insert_calls.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="start_approval failed"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=registry,
+            notion_client=FakeProjectNotionClient(raw_page),
+            client_master_client=FakeClientMasterClient(),
+        )
+
+    assert drive_client.deleted_ids == ["copy-123"]
+    assert insert_calls == []
+
+
+def test_request_quote_approval_cancels_drive_approval_when_db_insert_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start_approval()成功後にDB書き込み(insert_document_approval)が失敗した場合、Drive側に
+    記録なしのin_progress承認リクエストが残り続けないようcancel_approval()で取り消す
+    (shirokuma-secレビューBLOCKER対応)。"""
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+
+    def _raise_insert(**kwargs: object) -> str:
+        raise RuntimeError("db insert failed")
+
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval", _raise_insert
+    )
+
+    with pytest.raises(RuntimeError, match="db insert failed"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=registry,
+            notion_client=FakeProjectNotionClient(raw_page),
+            client_master_client=FakeClientMasterClient(),
+        )
+
+    assert drive_client.start_approval_calls == [
+        {"file_id": "copy-123", "reviewer_email": "approver@example.com", "message": ""}
+    ]
+    assert drive_client.cancel_approval_calls == [{"file_id": "copy-123", "approval_id": "approval-1"}]
+
+
+def test_request_quote_approval_still_raises_original_error_when_cancel_approval_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cancel_approval()自体も失敗した場合でも、DB書き込み失敗という本来の例外を握りつぶさず
+    再送出する。"""
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+
+    def _raise_cancel_approval(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("cancel_approval also failed")
+
+    drive_client.cancel_approval = _raise_cancel_approval  # type: ignore[assignment]
+    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("db insert failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="db insert failed"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=registry,
+            notion_client=FakeProjectNotionClient(raw_page),
+            client_master_client=FakeClientMasterClient(),
+        )

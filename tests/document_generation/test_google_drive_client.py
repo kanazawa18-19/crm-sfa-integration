@@ -96,3 +96,97 @@ def test_delete_does_not_raise_when_deletion_fails(
     requests_mock.delete(f"{BASE}/file-1", status_code=500, json={"error": "boom"})
 
     client.delete("file-1")  # 例外を送出しないことを確認
+
+
+def test_copy_as_native_sends_parents_when_specified(requests_mock, client: GoogleDriveDocClient) -> None:
+    """見積書承認フロー(2026-08-18)向け: コピー先を指定フォルダ直下に作成する。"""
+    requests_mock.post(f"{BASE}/file-1/copy", json={"id": "copy-99"})
+
+    client.copy_as_native(
+        "file-1",
+        target_mime_type="application/vnd.google-apps.spreadsheet",
+        new_name="__tmp_x",
+        parents=["folder-1"],
+    )
+
+    sent_body = requests_mock.last_request.json()
+    assert sent_body == {
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "name": "__tmp_x",
+        "parents": ["folder-1"],
+    }
+
+
+def test_move_sends_add_and_remove_parents_and_supports_all_drives(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    move_mock = requests_mock.patch(f"{BASE}/file-1", json={"id": "file-1"})
+
+    client.move("file-1", add_parent="folder-sent", remove_parent="folder-pending")
+
+    assert move_mock.call_count == 1
+    assert requests_mock.last_request.qs["addparents"] == ["folder-sent"]
+    assert requests_mock.last_request.qs["removeparents"] == ["folder-pending"]
+    assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
+
+
+def test_start_approval_sends_reviewer_and_message_and_returns_approval_id(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    requests_mock.post(f"{BASE}/file-1/approvals:start", json={"approvalId": "approval-1"})
+
+    approval_id = client.start_approval("file-1", reviewer_email="approver@example.com", message="ご確認お願いします")
+
+    assert approval_id == "approval-1"
+    sent_body = requests_mock.last_request.json()
+    assert sent_body == {
+        "reviewerEmails": ["approver@example.com"],
+        "message": "ご確認お願いします",
+    }
+
+
+def test_start_approval_omits_review_instructions_when_message_empty(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    requests_mock.post(f"{BASE}/file-1/approvals:start", json={"approvalId": "approval-1"})
+
+    client.start_approval("file-1", reviewer_email="approver@example.com")
+
+    sent_body = requests_mock.last_request.json()
+    assert "message" not in sent_body
+
+
+def test_start_approval_raises_when_response_has_no_approval_id(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    requests_mock.post(f"{BASE}/file-1/approvals:start", json={})
+
+    with pytest.raises(GoogleDriveApiError):
+        client.start_approval("file-1", reviewer_email="approver@example.com")
+
+
+def test_get_approval_returns_status(requests_mock, client: GoogleDriveDocClient) -> None:
+    requests_mock.get(f"{BASE}/file-1/approvals/approval-1", json={"status": "APPROVED"})
+
+    approval = client.get_approval("file-1", "approval-1")
+
+    assert approval == {"status": "APPROVED"}
+    assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
+
+
+def test_cancel_approval_sends_post_to_cancel_endpoint(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    cancel_mock = requests_mock.post(f"{BASE}/file-1/approvals/approval-1:cancel", json={})
+
+    client.cancel_approval("file-1", "approval-1")
+
+    assert cancel_mock.call_count == 1
+    assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
+
+
+def test_cancel_approval_raises_on_error(requests_mock, client: GoogleDriveDocClient) -> None:
+    requests_mock.post(f"{BASE}/file-1/approvals/approval-1:cancel", status_code=404, json={"error": "boom"})
+
+    with pytest.raises(GoogleDriveApiError):
+        client.cancel_approval("file-1", "approval-1")

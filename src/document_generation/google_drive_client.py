@@ -86,18 +86,27 @@ class GoogleDriveDocClient:
         raise_for_error(response, GoogleDriveApiError)
         return response.json()["mimeType"]
 
-    def copy_as_native(self, file_id: str, *, target_mime_type: str, new_name: str) -> str:
+    def copy_as_native(
+        self, file_id: str, *, target_mime_type: str, new_name: str, parents: list[str] | None = None
+    ) -> str:
         """テンプレートをコピーしつつ、指定したGoogle native形式(`target_mime_type`)へ変換する。
 
         Office形式(.xlsx/.docx)→native変換にも、ネイティブ同士のコピーにも使える
         （実データで動作確認済み: `files.copy`のリクエストボディにnative形式のmimeTypeを
         明示指定すると、コピー時に自動変換される）。コピー系（非冪等）操作のため、
         5xx/タイムアウト時の重複コピー生成を避けリトライしない。コピー先のfile_idを返す。
+
+        `parents`(2026-08-18、見積書承認リクエストフロー向けに追加)を指定すると、コピー先を
+        テンプレートと同じ場所ではなく指定フォルダ直下に作成する。省略時（既存呼び出し元、
+        使い捨ての一時コピー用途）はテンプレートと同じ場所にコピーされる従来通りの挙動のまま。
         """
+        json_body: dict[str, Any] = {"mimeType": target_mime_type, "name": new_name}
+        if parents is not None:
+            json_body["parents"] = parents
         response = self._request(
             "POST",
             f"/{file_id}/copy",
-            json_body={"mimeType": target_mime_type, "name": new_name},
+            json_body=json_body,
             idempotent=False,
         )
         raise_for_error(response, GoogleDriveApiError)
@@ -120,3 +129,66 @@ class GoogleDriveDocClient:
             raise_for_error(response, GoogleDriveApiError)
         except (GoogleDriveApiError, requests.exceptions.RequestException) as exc:
             logger.warning("failed to delete temporary Drive copy file_id=%r: %s", file_id, exc)
+
+    def move(self, file_id: str, *, add_parent: str, remove_parent: str) -> None:
+        """`file_id`を`remove_parent`フォルダから`add_parent`フォルダへ移動する(2026-08-18、
+        見積書承認フローの「一時格納フォルダ→送付済みフォルダ」移動向けに新設)。
+
+        `PATCH /files/{id}?addParents=...&removeParents=...`はファイル本体を書き換えない
+        冪等な操作のため、他メソッドと同様リトライを許容する(idempotent=Trueが既定)。
+        """
+        response = self._request(
+            "PATCH",
+            f"/{file_id}",
+            params={"addParents": add_parent, "removeParents": remove_parent},
+        )
+        raise_for_error(response, GoogleDriveApiError)
+
+    def start_approval(self, file_id: str, *, reviewer_email: str, message: str = "") -> str:
+        """Google Driveの純正「承認をリクエスト」機能(Drive Approvals)で、`reviewer_email`宛に
+        承認リクエストを送信する(2026-08-18)。返り値はポーリング(`get_approval()`)に使う
+        承認リクエストID(`approvalId`)。
+
+        リクエスト形状は公式REST référence
+        (https://developers.google.com/workspace/drive/api/reference/rest/v3/approvals/start、
+        https://developers.google.com/workspace/drive/api/reference/rest/v3/approvals)で
+        確認済み: `POST /files/{fileId}/approvals:start`、body は
+        `{"reviewerEmails": [...], "message": "..."}`。ただし個人OAuthトークンでの
+        実リクエスト送信は本番投入前に実機確認すること(計画書「検証方法」1.)。
+        """
+        json_body: dict[str, Any] = {"reviewerEmails": [reviewer_email]}
+        if message:
+            json_body["message"] = message
+        response = self._request(
+            "POST",
+            f"/{file_id}/approvals:start",
+            json_body=json_body,
+            idempotent=False,
+        )
+        raise_for_error(response, GoogleDriveApiError)
+        data = response.json()
+        approval_id = data.get("approvalId")
+        if not approval_id:
+            raise GoogleDriveApiError(response.status_code, "no approvalId in start_approval response")
+        return approval_id
+
+    def get_approval(self, file_id: str, approval_id: str) -> dict[str, Any]:
+        """承認リクエストの現在の状態(レスポンスの`status`フィールド: `IN_PROGRESS`/
+        `APPROVED`/`DECLINED`/`CANCELLED`)を取得する(2026-08-18、承認状態ポーリングcron向け、
+        フィールド名は公式REST referenceで確認済み)。"""
+        response = self._request("GET", f"/{file_id}/approvals/{approval_id}")
+        raise_for_error(response, GoogleDriveApiError)
+        return response.json()
+
+    def cancel_approval(self, file_id: str, approval_id: str) -> None:
+        """進行中の承認リクエストを取り消す(2026-08-18、`start_approval()`成功後にDB書き込み
+        (`insert_document_approval()`)が失敗した場合の後片付け向けに追加。放置すると
+        Drive上には承認リクエストが送信済みなのにシステム側に一切記録が残らない状態になる)。
+        `POST /files/{fileId}/approvals/{approvalId}:cancel`(approvals.cancel、公式REST
+        referenceで確認済み)。"""
+        response = self._request(
+            "POST",
+            f"/{file_id}/approvals/{approval_id}:cancel",
+            idempotent=False,
+        )
+        raise_for_error(response, GoogleDriveApiError)

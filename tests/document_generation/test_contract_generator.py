@@ -43,6 +43,7 @@ def test_generate_contract_copies_replaces_placeholder_exports_and_deletes() -> 
             "file_id": "TEMPLATE_ID",
             "target_mime_type": "application/vnd.google-apps.document",
             "new_name": f"__tmp_contract_{PAGE_ID}",
+            "parents": None,
         }
     ]
     assert docs_client.replace_calls == [

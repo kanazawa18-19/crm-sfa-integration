@@ -95,6 +95,14 @@ export default function AvatarMenu({ user }: { user: CurrentUser }) {
             >
               Gmail連携
             </Link>
+            <Link
+              href="/settings/drive"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="rounded-[6px] px-3 py-2 text-sm font-medium text-(--color-foreground)/70 transition-colors hover:bg-(--color-surface-muted)"
+            >
+              Drive連携
+            </Link>
           </div>
         </div>
       )}

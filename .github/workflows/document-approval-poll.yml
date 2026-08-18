@@ -1,0 +1,29 @@
+name: Document approval poll
+
+# Vercel Hobbyプランのcron制約(1日1回まで)では見積書承認リクエストの状態確認
+# (1時間おきのポーリングが必要、Drive Approvalsはpush通知を持たないため)を組めないため、
+# GitHub Actionsのscheduled workflowから /api/cron/document-approval-poll を叩く方式にする
+# (vercel.jsonのcronsには登録しない。.github/workflows/email-reminder-check.ymlと同じ方針)。
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 前回実行が長引いて次のscheduled runと重なる多重起動を抑止する(email-reminder-check.ymlと
+# 同じ保険的対策)。
+concurrency:
+  group: document-approval-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call document-approval-poll endpoint
+        run: |
+          curl -f -sS \
+            -H "Authorization: Bearer ${{ secrets.DOCUMENT_APPROVAL_CRON_SECRET }}" \
+            "https://crm-sfa-integration.vercel.app/api/cron/document-approval-poll"

@@ -517,6 +517,170 @@ def test_generate_document_exposes_notes_via_response_header(
     assert decoded_notes == expected_notes
 
 
+# --- /api/documents/quote/request-approval ------------------------------------------------------
+
+
+def test_request_quote_approval_returns_401_when_token_not_set(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_DASHBOARD_API", raising=False)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        json={
+            "project_id": "abc123",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_request_quote_approval_returns_422_when_drive_not_connected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    from src.document_generation.quote_generator import DriveNotConnectedError
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> None:
+        raise DriveNotConnectedError("rep@example.comのDrive連携が未接続です。")
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Drive連携" in response.json()["detail"]
+
+
+def test_request_quote_approval_returns_422_when_approver_email_invalid(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    from src.document_generation.quote_generator import InvalidApproverEmailError
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> None:
+        raise InvalidApproverEmailError("outsider@example.comは承認者として登録されていません。")
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_email": "outsider@example.com",
+            "requested_by_email": "rep@example.com",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "承認者として登録されていません" in response.json()["detail"]
+
+
+def test_request_quote_approval_returns_422_when_duplicate_in_progress_request(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    from src.document_generation.quote_generator import DuplicateApprovalRequestError
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> None:
+        raise DuplicateApprovalRequestError("この案件の見積書は既に承認リクエストが進行中です。")
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "進行中" in response.json()["detail"]
+
+
+def test_request_quote_approval_returns_500_for_unexpected_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+        },
+    )
+
+    assert response.status_code == 500
+
+
+def test_request_quote_approval_returns_ids_on_success(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.document_generation.quote_generator import QuoteApprovalResult
+
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    captured: dict[str, object] = {}
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> QuoteApprovalResult:
+        captured["notion_project_id"] = notion_project_id
+        captured.update(kwargs)
+        return QuoteApprovalResult(
+            drive_file_id="file-1", drive_approval_id="approval-1", document_approval_id="row-1"
+        )
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+            "message": "ご確認お願いします",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "drive_file_id": "file-1",
+        "drive_approval_id": "approval-1",
+        "document_approval_id": "row-1",
+    }
+    assert captured == {
+        "notion_project_id": "abc123",
+        "approver_email": "approver@example.com",
+        "requested_by_email": "rep@example.com",
+        "message": "ご確認お願いします",
+    }
+
+
 # --- /api/settings/revenue-target-sheet -------------------------------------------------------
 
 

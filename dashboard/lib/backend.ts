@@ -271,6 +271,36 @@ export interface SaveRevenueTargetSheetSettingsResponse {
   unit_count_month_count: number | null;
 }
 
+// 見積書 承認フロー(2026-08-18)。承認者一覧(DocumentApprover)はこのdashboard側の
+// Prismaで直接扱う(下記documents/page.tsxのServer Component参照)ため、ここでは
+// バックエンドの request-approval エンドポイントのみをラップする。
+export interface QuoteApprovalRequest {
+  projectId: string;
+  approverEmail: string;
+  requestedByEmail: string;
+  message?: string;
+}
+
+export interface QuoteApprovalResponse {
+  drive_file_id: string;
+  drive_approval_id: string;
+  document_approval_id: string;
+}
+
+export function requestQuoteApproval(
+  request: QuoteApprovalRequest
+): Promise<QuoteApprovalResponse> {
+  return fetchBackend<QuoteApprovalResponse>("/api/documents/quote/request-approval", {
+    method: "POST",
+    body: {
+      project_id: request.projectId,
+      approver_email: request.approverEmail,
+      requested_by_email: request.requestedByEmail,
+      message: request.message ?? "",
+    },
+  });
+}
+
 export function saveRevenueTargetSheetSettings(
   payload: SaveRevenueTargetSheetSettingsRequest
 ): Promise<SaveRevenueTargetSheetSettingsResponse> {

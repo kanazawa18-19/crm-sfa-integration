@@ -4,6 +4,7 @@ import {
   getDashboardSummary,
   getManagerAlerts,
   getRevenueTargetSheetSettings,
+  requestQuoteApproval,
   saveRevenueTargetSheetSettings,
 } from "@/lib/backend";
 
@@ -243,5 +244,55 @@ describe("revenue target sheet settings", () => {
         unit_count_sheet_name: null,
       })
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("requestQuoteApproval: snake_caseへ変換してPOSTし、レスポンスをそのまま返す", async () => {
+    const responseBody = {
+      drive_file_id: "file-1",
+      drive_approval_id: "approval-1",
+      document_approval_id: "row-1",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(responseBody), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await requestQuoteApproval({
+      projectId: "abc123",
+      approverEmail: "approver@example.com",
+      requestedByEmail: "rep@example.com",
+      message: "ご確認お願いします",
+    });
+
+    expect(result).toEqual(responseBody);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/documents/quote/request-approval",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          project_id: "abc123",
+          approver_email: "approver@example.com",
+          requested_by_email: "rep@example.com",
+          message: "ご確認お願いします",
+        }),
+      })
+    );
+  });
+
+  it("requestQuoteApproval: 422はBackendApiErrorとしてdetailを保持する", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "rep@example.comのDrive連携が未接続です。" }), {
+        status: 422,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      requestQuoteApproval({
+        projectId: "abc123",
+        approverEmail: "approver@example.com",
+        requestedByEmail: "rep@example.com",
+      })
+    ).rejects.toMatchObject({ status: 422, message: "rep@example.comのDrive連携が未接続です。" });
   });
 });

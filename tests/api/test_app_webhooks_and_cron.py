@@ -903,3 +903,47 @@ def test_cron_project_mirror_reconcile_returns_500_when_notion_not_configured(
     )
 
     assert response.status_code == 500
+
+
+# --- /api/cron/document-approval-poll --------------------------------------------------------
+# GitHub Actionsのscheduled workflow(1時間おき)から呼ばれ、vercel.jsonのcronsには登録しない
+# (Vercel Hobbyプランの1日1回制約のため、email-reminder-checkと同じ方針)。専用シークレット
+# DOCUMENT_APPROVAL_CRON_SECRETで認証する(CRON_SECRETは使わない)。
+
+
+def test_cron_document_approval_poll_returns_401_without_secret_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOCUMENT_APPROVAL_CRON_SECRET", raising=False)
+
+    response = client.get("/api/cron/document-approval-poll")
+
+    assert response.status_code == 401
+
+
+def test_cron_document_approval_poll_returns_401_with_wrong_secret(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOCUMENT_APPROVAL_CRON_SECRET", "correct-secret")
+
+    response = client.get(
+        "/api/cron/document-approval-poll", headers={"Authorization": "Bearer wrong-secret"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_cron_document_approval_poll_runs_poll_when_secret_matches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOCUMENT_APPROVAL_CRON_SECRET", "correct-secret")
+    monkeypatch.setattr(
+        "src.api.app.poll_document_approvals", lambda: {"checked": 2, "resolved": 1, "errors": 0}
+    )
+
+    response = client.get(
+        "/api/cron/document-approval-poll", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"checked": 2, "resolved": 1, "errors": 0}

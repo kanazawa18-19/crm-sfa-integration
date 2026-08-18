@@ -45,9 +45,13 @@ def build_raw_project_page(
 class FakeProjectNotionClient:
     def __init__(self, raw_page: dict[str, Any]) -> None:
         self._raw_page = raw_page
+        self.update_calls: list[dict[str, Any]] = []
 
     def get_raw_page(self, page_id: str) -> dict[str, Any]:
         return self._raw_page
+
+    def update_page(self, page_id: str, properties: dict[str, Any]) -> None:
+        self.update_calls.append({"page_id": page_id, "properties": properties})
 
 
 class FakeClientMasterClient:
@@ -71,16 +75,36 @@ class FakeTemplateRegistry:
 
 
 class FakeGoogleDriveDocClient:
-    def __init__(self, *, copy_id: str = "copy-123", exported_content: bytes = b"binary-content") -> None:
+    def __init__(
+        self,
+        *,
+        copy_id: str = "copy-123",
+        exported_content: bytes = b"binary-content",
+        approval_id: str = "approval-1",
+        approval_state: dict[str, Any] | None = None,
+    ) -> None:
         self.copy_id = copy_id
         self.exported_content = exported_content
+        self.approval_id = approval_id
+        self.approval_state = approval_state if approval_state is not None else {"state": "APPROVED"}
         self.copy_calls: list[dict[str, Any]] = []
         self.export_calls: list[dict[str, Any]] = []
         self.deleted_ids: list[str] = []
+        self.move_calls: list[dict[str, Any]] = []
+        self.start_approval_calls: list[dict[str, Any]] = []
+        self.get_approval_calls: list[dict[str, Any]] = []
+        self.cancel_approval_calls: list[dict[str, Any]] = []
 
-    def copy_as_native(self, file_id: str, *, target_mime_type: str, new_name: str) -> str:
+    def copy_as_native(
+        self, file_id: str, *, target_mime_type: str, new_name: str, parents: list[str] | None = None
+    ) -> str:
         self.copy_calls.append(
-            {"file_id": file_id, "target_mime_type": target_mime_type, "new_name": new_name}
+            {
+                "file_id": file_id,
+                "target_mime_type": target_mime_type,
+                "new_name": new_name,
+                "parents": parents,
+            }
         )
         return self.copy_id
 
@@ -90,6 +114,22 @@ class FakeGoogleDriveDocClient:
 
     def delete(self, file_id: str) -> None:
         self.deleted_ids.append(file_id)
+
+    def move(self, file_id: str, *, add_parent: str, remove_parent: str) -> None:
+        self.move_calls.append({"file_id": file_id, "add_parent": add_parent, "remove_parent": remove_parent})
+
+    def start_approval(self, file_id: str, *, reviewer_email: str, message: str = "") -> str:
+        self.start_approval_calls.append(
+            {"file_id": file_id, "reviewer_email": reviewer_email, "message": message}
+        )
+        return self.approval_id
+
+    def get_approval(self, file_id: str, approval_id: str) -> dict[str, Any]:
+        self.get_approval_calls.append({"file_id": file_id, "approval_id": approval_id})
+        return self.approval_state
+
+    def cancel_approval(self, file_id: str, approval_id: str) -> None:
+        self.cancel_approval_calls.append({"file_id": file_id, "approval_id": approval_id})
 
 
 class FakeSheetsClient:

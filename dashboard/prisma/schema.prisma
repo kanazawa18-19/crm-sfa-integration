@@ -267,3 +267,51 @@ model ProjectMirror {
 
   @@index([syncedAt])
 }
+
+// 見積書 承認フロー(Google Drive Approvals連携、営業担当者個人OAuth方式、2026-08-18)。
+//
+// サービスアカウント(GOOGLE_SERVICE_ACCOUNT_JSON、ドメイン全体委任なし)ではDrive
+// Approvals APIのcanStartApprovalがfalseであることを実機検証済みのため、RepGmailConnection
+// と全く同じ「個人OAuth同意」方式を採用する(経緯は計画書「認証方式の紆余曲折」参照)。
+// スコープはGmail連携(gmail.readonly)より広いdrive(読み書き)。
+model RepDriveConnection {
+  id              String   @id @default(cuid())
+  repEmail        String   @unique
+  refreshTokenEnc String
+  connectedAt     DateTime @default(now())
+}
+
+// 見積書の承認者候補(平本さん・黒井さん等、案件ごとに選択する)。管理はこのdashboard側の
+// Prisma CRUDで完結し(RepGmailConnection等と異なりPythonバックエンド側は読み書きしない
+// ——承認リクエスト送信時は選択済みのapprover_emailのみがPython側へ渡される)、
+// app/(dashboard)/settings/document-approvers/で管理者が編集する。
+model DocumentApprover {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  title     String? // 役職(例: マーケティング本部長)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// 見積書の承認リクエスト1件ごとの状態(2026-08-18)。スキーマ管理はこのPrismaに一本化し、
+// 実際の読み書きはPython側(src/document_generation/approval_db.py、psycopg直接アクセス、
+// AuditLog等と同じ方針)が行う。categoryを文字列にしているのは、将来「申込書」「契約書」にも
+// 同じ仕組みを広げやすくするため(今回のスコープは見積書のみ)。
+model DocumentApproval {
+  id               String    @id @default(cuid())
+  notionProjectId  String
+  category         String
+  driveFileId      String
+  driveApprovalId  String
+  approverEmail    String
+  // 承認リクエストを送った営業担当者のメール(RepDriveConnection.repEmailと対応)。
+  requestedByEmail String
+  // "in_progress" | "approved" | "declined" | "cancelled"
+  status           String
+  createdAt        DateTime  @default(now())
+  resolvedAt       DateTime?
+
+  @@index([status])
+  @@index([notionProjectId])
+}

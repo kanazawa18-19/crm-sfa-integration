@@ -19,7 +19,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.api.auth import verify_cron_secret, verify_dashboard_api_token, verify_email_reminder_cron_secret
+from src.api.auth import (
+    verify_cron_secret,
+    verify_dashboard_api_token,
+    verify_document_approval_cron_secret,
+    verify_email_reminder_cron_secret,
+)
 from src.api.dashboard_service import (
     build_daily_report,
     build_dashboard_summary,
@@ -30,13 +35,20 @@ from src.api.dashboard_service import (
 from src.api.task_service import build_tasks
 from src.api.user_directory import NotionUserDirectory
 from src.document_generation.application_generator import generate_application
+from src.document_generation.approval_poll import poll_document_approvals
 from src.document_generation.common import (
     ContractGenerationError,
     TemplateNotFoundError,
     TemplateSheetNotFoundError,
 )
 from src.document_generation.contract_generator import generate_contract
-from src.document_generation.quote_generator import generate_quote
+from src.document_generation.quote_generator import (
+    DriveNotConnectedError,
+    DuplicateApprovalRequestError,
+    InvalidApproverEmailError,
+    generate_quote,
+    request_quote_approval,
+)
 from src.email_reminders.reminder_check import run_reminder_check
 from src.gmail_sync.sync import sync_all
 from src.gmail_sync.watch_registration import (
@@ -416,6 +428,23 @@ def run_email_reminder_check() -> dict[str, Any]:
     return run_reminder_check()
 
 
+@app.get(
+    "/api/cron/document-approval-poll",
+    dependencies=[Depends(verify_document_approval_cron_secret)],
+)
+def run_document_approval_poll() -> dict[str, Any]:
+    """GitHub Actionsのscheduled workflow(`.github/workflows/document-approval-poll.yml`、
+    1時間おき)から呼ばれる、見積書承認リクエスト(`src/document_generation/approval_poll.py`)の
+    状態確定ポーリングエントリポイント(2026-08-18)。
+
+    Drive Approvalsはpush通知を持たないため、`email-reminder-check`と同じ理由
+    （Vercel Hobbyプランのcron制約(1日1回まで)では1時間おきの実行が組めない）で
+    `vercel.json`には登録せず、GitHub Actions側から専用シークレット
+    (`DOCUMENT_APPROVAL_CRON_SECRET`)付きで直接叩く方式にする。
+    """
+    return poll_document_approvals()
+
+
 @app.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])
 def run_zoho_webhook_renewal() -> dict[str, Any]:
     """Vercel Cronから1日1回呼ばれる、Zoho CRM Notifications（watch）チャンネルの
@@ -595,6 +624,65 @@ def generate_document(notion_project_id: str, category: str) -> Response:
             "X-Document-Notes": encoded_notes,
         },
     )
+
+
+class QuoteApprovalRequest(BaseModel):
+    """`POST /api/documents/quote/request-approval`のリクエストボディ。
+
+    `requested_by_email`はダッシュボード側(Next.js)がログイン中セッションから注入する値を
+    信頼する想定（クライアントが任意のメールアドレスを詐称してDrive接続を借用できないよう、
+    ダッシュボード側プロキシルートでサーバーセッションの値へ上書きする設計。
+    `dashboard/app/gmail/oauth/callback/route.ts`のrepEmail扱いと同じ方針）。
+    """
+
+    project_id: str
+    approver_email: str
+    requested_by_email: str
+    message: str = ""
+
+
+@app.post(
+    "/api/documents/quote/request-approval", dependencies=[Depends(verify_dashboard_api_token)]
+)
+def request_document_quote_approval(payload: QuoteApprovalRequest) -> dict[str, Any]:
+    """見積書を生成して一時格納フォルダへ保存し、Google Drive純正の「承認をリクエスト」機能で
+    承認者へ送信する(2026-08-18、`src/document_generation/quote_generator.request_quote_approval`
+    参照)。
+    """
+    try:
+        result = request_quote_approval(
+            payload.project_id,
+            approver_email=payload.approver_email,
+            requested_by_email=payload.requested_by_email,
+            message=payload.message,
+        )
+    except DriveNotConnectedError as exc:
+        # 依頼者本人のDrive OAuth接続(RepDriveConnection)が未接続の場合。フロント側で
+        # 「Drive連携が必要です」+設定画面への導線を出せるよう、422で明確に区別する。
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidApproverEmailError as exc:
+        # approver_emailがDocumentApproverに未登録(active=trueで存在しない)の場合。
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DuplicateApprovalRequestError as exc:
+        # 同じ案件・カテゴリで既にin_progressの承認リクエストが存在する場合。
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TemplateNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TemplateSheetNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NotionApiError as exc:
+        status_code = 404 if exc.status_code == 404 else 422
+        raise HTTPException(status_code=status_code, detail=f"notion api error: {exc}") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="failed to request quote approval") from exc
+
+    return {
+        "drive_file_id": result.drive_file_id,
+        "drive_approval_id": result.drive_approval_id,
+        "document_approval_id": result.document_approval_id,
+    }
 
 
 # --- 事業計画スプレッドシート連携設定（/api/settings/revenue-target-sheet） -----------------------

@@ -47,6 +47,7 @@ const NAV_GROUPS: NavGroup[] = [
     links: [
       { href: "/settings/profile", label: "プロフィール編集" },
       { href: "/settings/gmail", label: "Gmail連携" },
+      { href: "/settings/drive", label: "Drive連携" },
     ],
   },
   {
@@ -61,6 +62,7 @@ const MASTER_ONLY_NAV_LINKS: NavLink[] = [
   { href: "/audit-log", label: "データ監査ログ" },
   { href: "/settings/security", label: "セキュリティ設定" },
   { href: "/settings/email-reminders", label: "未返信メールリマインド設定" },
+  { href: "/settings/document-approvers", label: "見積書承認者管理" },
 ];
 
 function isLinkActive(link: NavLink, pathname: string | null) {

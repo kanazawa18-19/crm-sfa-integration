@@ -51,6 +51,7 @@ def test_generate_application_copies_fills_exports_and_deletes(
             "file_id": "TEMPLATE_ID",
             "target_mime_type": "application/vnd.google-apps.spreadsheet",
             "new_name": f"__tmp_application_{PAGE_ID}",
+            "parents": None,
         }
     ]
     assert drive_client.export_calls == [
