@@ -236,9 +236,10 @@ def request_quote_approval(
     同じ個人OAuth同意方式）のアクセストークンを使う。未接続の場合は`DriveNotConnectedError`
     を送出する。
 
-    生成したコピーは（`generate_quote`とは異なり）exportもdeleteもしない
-    ——コピー自体が承認対象の成果物であり、一時格納フォルダに残したまま
-    `DocumentApproval`行を作成して返す（状態確定後の移動は`approval_poll`が行う）。
+    生成したコピーはセル差し込み後にPDFへ変換し(`replace_content()`で同じfile_idのまま中身を
+    置き換える、2026-08-19)、`generate_quote`と異なりdeleteはしない——コピー自体(PDF化後)が
+    承認対象の成果物であり、一時格納フォルダに残したまま`DocumentApproval`行を作成して返す
+    （状態確定後の移動は`approval_poll`が行う）。
 
     `start_approval()`失敗時は孤立したコピーをDriveから削除する。`start_approval()`成功後に
     DB書き込み(`insert_document_approval()`)が失敗した場合は、Drive上に送信済みの承認
@@ -272,15 +273,33 @@ def request_quote_approval(
     drive_client = GoogleDriveDocClient(access_token=access_token)
     sheets_client = HttpSheetsValuesClient(access_token=access_token)
 
+    quote_name = f"{project_data.project_name or notion_page_id}_見積書"
     copy_id, _notes = _build_quote_copy(
         notion_page_id,
         project_data,
         template,
         drive_client=drive_client,
         sheets_client=sheets_client,
-        new_name=f"{project_data.project_name or notion_page_id}_見積書",
+        new_name=quote_name,
         parents=[QUOTE_PENDING_APPROVAL_FOLDER_ID],
     )
+
+    try:
+        # セル差し込みまで終えたSheetsコピーをPDFへ変換する(2026-08-19)。承認リクエストは
+        # 編集可能なSheets形式ではなくPDFで送るのが既存の運用実態だったため(過去の承認
+        # メール履歴で確認)、同じfile_idのまま中身をPDFへ置き換えてから承認をリクエストする。
+        pdf_bytes = drive_client.export(copy_id, mime_type=_PDF_MIME_TYPE)
+        drive_client.replace_content(copy_id, content=pdf_bytes, mime_type=_PDF_MIME_TYPE)
+        drive_client.rename(copy_id, name=f"{quote_name}.pdf")
+    except Exception:
+        logger.exception(
+            "failed to convert quote copy to PDF for notion_page_id=%r; deleting orphaned "
+            "Drive copy file_id=%r",
+            notion_page_id,
+            copy_id,
+        )
+        drive_client.delete(copy_id)
+        raise
 
     try:
         drive_approval_id = drive_client.start_approval(

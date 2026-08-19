@@ -130,6 +130,36 @@ def test_move_sends_add_and_remove_parents_and_supports_all_drives(
     assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
 
 
+def test_rename_sends_patch_with_name(requests_mock, client: GoogleDriveDocClient) -> None:
+    rename_mock = requests_mock.patch(f"{BASE}/file-1", json={"id": "file-1"})
+
+    client.rename("file-1", name="見積書.pdf")
+
+    assert rename_mock.call_count == 1
+    assert requests_mock.last_request.json() == {"name": "見積書.pdf"}
+    assert requests_mock.last_request.qs["supportsalldrives"] == ["true"]
+
+
+def test_replace_content_sends_media_upload_with_content_type(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    upload_mock = requests_mock.patch(
+        "https://www.googleapis.com/upload/drive/v3/files/file-1", json={"id": "file-1"}
+    )
+
+    client.replace_content("file-1", content=b"%PDF-1.4 fake pdf bytes", mime_type="application/pdf")
+
+    assert upload_mock.call_count == 1
+    request = requests_mock.last_request
+    assert request.qs["uploadtype"] == ["media"]
+    assert request.headers["Content-Type"] == "application/pdf"
+    assert request.headers["Authorization"] == "Bearer secret-access-token"
+    assert request.body == b"%PDF-1.4 fake pdf bytes"
+    # アップロード系エンドポイントはsupportsAllDrivesを受け付けない想定
+    # (files系エンドポイントとは別のURL space)。
+    assert "supportsalldrives" not in request.qs
+
+
 def test_start_approval_sends_reviewer_and_message_and_returns_approval_id(
     requests_mock, client: GoogleDriveDocClient
 ) -> None:

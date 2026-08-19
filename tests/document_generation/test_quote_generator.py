@@ -349,8 +349,14 @@ def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
             "parents": [QUOTE_PENDING_APPROVAL_FOLDER_ID],
         }
     ]
-    # exportもdeleteも行わない(コピー自体が承認対象の成果物のため)。
-    assert drive_client.export_calls == []
+    # セル差し込み後のSheetsコピーをPDFへ変換してから承認をリクエストする(2026-08-19、
+    # 過去の承認履歴でPDFが送られていた運用実態に合わせた)。deleteはしない
+    # (PDF化後のコピー自体が承認対象の成果物のため)。
+    assert drive_client.export_calls == [{"file_id": "copy-123", "mime_type": "application/pdf"}]
+    assert drive_client.replace_content_calls == [
+        {"file_id": "copy-123", "content": b"binary-content", "mime_type": "application/pdf"}
+    ]
+    assert drive_client.rename_calls == [{"file_id": "copy-123", "name": "テスト案件_見積書.pdf"}]
     assert drive_client.deleted_ids == []
 
     assert drive_client.start_approval_calls == [
@@ -444,6 +450,42 @@ def _setup_request_quote_approval_success_dependencies(
         "src.document_generation.quote_generator.HttpSheetsValuesClient",
         lambda **kwargs: FakeSheetsClient([], sheet_title=SHEET_NAME),
     )
+
+
+def test_request_quote_approval_deletes_copy_when_pdf_conversion_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sheets→PDF変換(export/replace_content)が失敗した場合も、孤立したコピーを削除して
+    から例外を再送出する(start_approval失敗時と同じ後片付け方針、2026-08-19)。"""
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+
+    def _raise_export(*args: object, **kwargs: object) -> bytes:
+        raise RuntimeError("export failed")
+
+    drive_client.export = _raise_export  # type: ignore[assignment]
+    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    insert_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval",
+        lambda **kwargs: insert_calls.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="export failed"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_email="approver@example.com",
+            requested_by_email="rep@example.com",
+            registry=registry,
+            notion_client=FakeProjectNotionClient(raw_page),
+            client_master_client=FakeClientMasterClient(),
+        )
+
+    assert drive_client.deleted_ids == ["copy-123"]
+    assert drive_client.start_approval_calls == []
+    assert insert_calls == []
 
 
 def test_request_quote_approval_deletes_copy_when_start_approval_fails(

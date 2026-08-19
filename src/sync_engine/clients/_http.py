@@ -83,6 +83,7 @@ def request_with_retry(
     *,
     headers: Mapping[str, str] | None = None,
     json_body: Any | None = None,
+    data: bytes | None = None,
     params: Mapping[str, Any] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -115,6 +116,10 @@ def request_with_retry(
     直接束縛すると、モジュールロード時点の関数オブジェクトが固定され、テストでの
     `monkeypatch.setattr("...clients._http.time.sleep", ...)` によるパッチが効かず
     テストが実際に待機してしまうため、呼び出しのたびにtime.sleepを動的に参照する）。
+
+    `data`（生バイト列）は`json_body`と排他（Google Drive APIのメディアアップロード
+    (`uploadType=media`) 等、JSON以外のバイナリボディを送る必要がある呼び出し元向け、
+    2026-08-19）。呼び出し元がどちらか一方のみを指定すること。
     """
     effective_max_retries = max_retries if idempotent else 0
     _sleep = sleep if sleep is not None else time.sleep
@@ -127,6 +132,7 @@ def request_with_retry(
                 url,
                 headers=dict(headers) if headers is not None else None,
                 json=json_body,
+                data=data,
                 params=dict(params) if params is not None else None,
                 timeout=timeout,
             )

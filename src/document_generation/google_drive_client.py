@@ -32,6 +32,7 @@ from src.sync_engine.clients._http import (
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.googleapis.com/drive/v3/files"
+_UPLOAD_BASE_URL = "https://www.googleapis.com/upload/drive/v3/files"
 
 # start_approval()のapprovalIdフォールバック(list_approvals())のリトライ回数・間隔。
 # Drive Approvals APIの結果整合性(eventual consistency)対策(2026-08-18実機確認)。
@@ -155,6 +156,35 @@ class GoogleDriveDocClient:
             "PATCH",
             f"/{file_id}",
             params={"addParents": add_parent, "removeParents": remove_parent},
+        )
+        raise_for_error(response, GoogleDriveApiError)
+
+    def rename(self, file_id: str, *, name: str) -> None:
+        """`file_id`の表示名を変更する(2026-08-19、`replace_content()`でPDFへ内容変換した
+        コピーの名前を`.pdf`拡張子付きに揃えるために新設)。"""
+        response = self._request("PATCH", f"/{file_id}", json_body={"name": name})
+        raise_for_error(response, GoogleDriveApiError)
+
+    def replace_content(self, file_id: str, *, content: bytes, mime_type: str) -> None:
+        """`file_id`の中身をまるごと置き換える(単純メディアアップロード、`uploadType=media`、
+        2026-08-19)。Sheets形式のコピーをPDFへ変換する用途向け——`export()`で取得したPDF
+        バイト列をそのまま同じfile_idへ書き戻すことで、承認対象ファイル自体をPDF化する
+        (承認リクエストは編集可能なファイルではなくPDFで送るのが既存の運用実態だったため)。
+
+        通常の`_request()`とは異なる`/upload/drive/v3/files/{id}`エンドポイントを使うため、
+        ここだけ`request_with_retry`を直接呼ぶ(`supportsAllDrives`もこのアップロード系
+        エンドポイントには存在しない)。
+        """
+        response = request_with_retry(
+            "PATCH",
+            f"{_UPLOAD_BASE_URL}/{file_id}",
+            headers={**self._headers(), "Content-Type": mime_type},
+            data=content,
+            params={"uploadType": "media"},
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+            idempotent=False,
         )
         raise_for_error(response, GoogleDriveApiError)
 

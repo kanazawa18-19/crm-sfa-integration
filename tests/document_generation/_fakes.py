@@ -91,6 +91,8 @@ class FakeGoogleDriveDocClient:
         self.export_calls: list[dict[str, Any]] = []
         self.deleted_ids: list[str] = []
         self.move_calls: list[dict[str, Any]] = []
+        self.rename_calls: list[dict[str, Any]] = []
+        self.replace_content_calls: list[dict[str, Any]] = []
         self.start_approval_calls: list[dict[str, Any]] = []
         self.get_approval_calls: list[dict[str, Any]] = []
         self.cancel_approval_calls: list[dict[str, Any]] = []
@@ -117,6 +119,12 @@ class FakeGoogleDriveDocClient:
 
     def move(self, file_id: str, *, add_parent: str, remove_parent: str) -> None:
         self.move_calls.append({"file_id": file_id, "add_parent": add_parent, "remove_parent": remove_parent})
+
+    def rename(self, file_id: str, *, name: str) -> None:
+        self.rename_calls.append({"file_id": file_id, "name": name})
+
+    def replace_content(self, file_id: str, *, content: bytes, mime_type: str) -> None:
+        self.replace_content_calls.append({"file_id": file_id, "content": content, "mime_type": mime_type})
 
     def start_approval(self, file_id: str, *, reviewer_email: str, message: str = "") -> str:
         self.start_approval_calls.append(
