@@ -34,7 +34,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const body = payload as { project_id: string; approver_email: string; message?: string };
+  const body = payload as {
+    project_id: string;
+    approver_email: string;
+    message?: string;
+    memo?: string;
+    client_name?: string;
+    service_name?: string;
+    initial_fee?: string;
+    monthly_fee?: string;
+    creator_name?: string;
+  };
 
   try {
     const result = await requestQuoteApproval({
@@ -42,6 +52,14 @@ export async function POST(request: NextRequest) {
       approverEmail: body.approver_email,
       requestedByEmail: user.email,
       message: body.message ?? "",
+      overrides: {
+        memo: body.memo,
+        clientName: body.client_name,
+        serviceName: body.service_name,
+        initialFee: body.initial_fee,
+        monthlyFee: body.monthly_fee,
+        creatorName: body.creator_name,
+      },
     });
     return NextResponse.json(result);
   } catch (error) {

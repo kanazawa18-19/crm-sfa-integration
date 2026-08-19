@@ -74,6 +74,27 @@ describe("GET /api/documents/generate", () => {
     expect(body.detail).toBe("テンプレート未対応です");
   });
 
+  it("手動入力欄(overrides)は値が入っているものだけクエリへ中継する", async () => {
+    const fakeFetch = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]).buffer, {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      })
+    );
+    vi.stubGlobal("fetch", fakeFetch);
+
+    await GET(
+      makeRequest(
+        "?notion_project_id=abc&category=見積書&memo=特記事項&creator_name=金沢&client_name="
+      )
+    );
+
+    const calledUrl = fakeFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toContain("memo=%E7%89%B9%E8%A8%98%E4%BA%8B%E9%A0%85");
+    expect(calledUrl).toContain("creator_name=%E9%87%91%E6%B2%A2");
+    expect(calledUrl).not.toContain("client_name=");
+  });
+
   it("バックエンドへの接続自体に失敗した場合は502を返す", async () => {
     vi.stubGlobal(
       "fetch",

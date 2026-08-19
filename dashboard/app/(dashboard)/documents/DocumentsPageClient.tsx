@@ -26,9 +26,11 @@ export interface DocumentApproverOption {
 export default function DocumentsPageClient({
   driveConnected,
   approvers,
+  creatorNameDefault,
 }: {
   driveConnected: boolean;
   approvers: DocumentApproverOption[];
+  creatorNameDefault: string;
 }) {
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState<ProjectSearchResult[]>([]);
@@ -42,6 +44,18 @@ export default function DocumentsPageClient({
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [documentNotes, setDocumentNotes] = useState<string[] | null>(null);
   const [generatedFilename, setGeneratedFilename] = useState<string | null>(null);
+
+  // 見積書の手動入力欄(2026-08-19追加)。Notion案件データを上書きしたい場合や、Notion側に
+  // 対応項目が無い商材名・初期費用・月額費用を差し込みたい場合に使う。全項目任意。
+  // 作成者はログイン中ユーザーの表示名で初期値を入れる(見積書NOの採番に使われる——
+  // src/document_generation/quote_generator._generate_quote_number参照)が、他の担当者が
+  // 代理作成する場合等に備えて編集可能にしてある。
+  const [memo, setMemo] = useState("");
+  const [initialFee, setInitialFee] = useState("");
+  const [monthlyFee, setMonthlyFee] = useState("");
+  const [clientNameOverride, setClientNameOverride] = useState("");
+  const [serviceName, setServiceName] = useState("");
+  const [creatorName, setCreatorName] = useState(creatorNameDefault);
 
   // 見積書の承認リクエスト送信(2026-08-18)。
   // 先頭の承認者を自動選択すると誤って別の承認者へ送るリスクがあるため、初期値は
@@ -159,12 +173,28 @@ export default function DocumentsPageClient({
     setGeneratedFilename(null);
 
     try {
-      const response = await fetch(
-        `/api/documents/generate?notion_project_id=${encodeURIComponent(
-          selectedProject.notion_page_id
-        )}&category=${encodeURIComponent(category)}`,
-        { redirect: "manual" }
-      );
+      const params = new URLSearchParams({
+        notion_project_id: selectedProject.notion_page_id,
+        category,
+      });
+      if (category === "見積書") {
+        const overrideEntries: [string, string][] = [
+          ["memo", memo],
+          ["initial_fee", initialFee],
+          ["monthly_fee", monthlyFee],
+          ["client_name", clientNameOverride],
+          ["service_name", serviceName],
+          ["creator_name", creatorName],
+        ];
+        for (const [key, value] of overrideEntries) {
+          if (value.trim() !== "") {
+            params.set(key, value.trim());
+          }
+        }
+      }
+      const response = await fetch(`/api/documents/generate?${params.toString()}`, {
+        redirect: "manual",
+      });
 
       // BLOCKER相当の実バグ修正: デフォルトのfetchはリダイレクトを追従するため、
       // セッション切れ時に/loginのHTMLがそのまま「見積書.pdf」等としてダウンロード
@@ -221,6 +251,12 @@ export default function DocumentsPageClient({
           project_id: selectedProject.notion_page_id,
           approver_email: approverEmail,
           message: approvalMessage,
+          memo,
+          initial_fee: initialFee,
+          monthly_fee: monthlyFee,
+          client_name: clientNameOverride,
+          service_name: serviceName,
+          creator_name: creatorName,
         }),
       });
 
@@ -343,6 +379,78 @@ export default function DocumentsPageClient({
           ))}
         </div>
       </section>
+
+      {selectedProject && category === "見積書" && (
+        <section>
+          <h2 className="mb-3 text-lg font-semibold text-gray-900">詳細情報（任意）</h2>
+          <p className="mb-3 text-sm text-gray-500">
+            未入力の項目は案件データ（Notion）の値をそのまま使用します。
+          </p>
+          <div className="grid max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-sm text-gray-700">
+              クライアント名
+              <input
+                type="text"
+                value={clientNameOverride}
+                onChange={(event) => setClientNameOverride(event.target.value)}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-gray-700">
+              商材名
+              <input
+                type="text"
+                value={serviceName}
+                onChange={(event) => setServiceName(event.target.value)}
+                placeholder="例: リピッテ"
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-gray-700">
+              初期費用
+              <input
+                type="text"
+                value={initialFee}
+                onChange={(event) => setInitialFee(event.target.value)}
+                placeholder="例: 100,000円"
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-gray-700">
+              月額費用
+              <input
+                type="text"
+                value={monthlyFee}
+                onChange={(event) => setMonthlyFee(event.target.value)}
+                placeholder="例: 30,000円"
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-gray-700">
+              作成者
+              <input
+                type="text"
+                value={creatorName}
+                onChange={(event) => setCreatorName(event.target.value)}
+                placeholder="例: Kanazawa"
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              />
+              <span className="text-xs text-gray-400">
+                見積書の「担当」欄と見積書NOの先頭1文字に使われます。見積書NOをアルファベット表記にしたい場合は半角英字（ローマ字）で入力してください（自動変換はされません）。
+              </span>
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-gray-700 sm:col-span-2">
+              備考
+              <textarea
+                value={memo}
+                onChange={(event) => setMemo(event.target.value)}
+                rows={2}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              />
+            </label>
+          </div>
+        </section>
+      )}
 
       <section>
         <button

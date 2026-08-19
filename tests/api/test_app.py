@@ -487,12 +487,46 @@ def test_generate_document_returns_422_for_invalid_category(
     assert response.status_code == 422
 
 
+def test_generate_document_passes_overrides_only_for_quote_category(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """手動入力欄(overrides)は見積書カテゴリの場合のみQuoteOverridesとして渡される。"""
+    from src.document_generation.quote_generator import QuoteOverrides
+
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    captured: dict[str, object] = {}
+
+    def fake_generate_quote(notion_project_id: str, *, overrides: object = None) -> DocumentResult:
+        captured["overrides"] = overrides
+        return DocumentResult(content=b"x", file_name="x.pdf", mime_type="application/pdf", notes=[])
+
+    monkeypatch.setattr("src.api.app.generate_quote", fake_generate_quote)
+
+    response = client.get(
+        "/api/documents/generate"
+        "?notion_project_id=abc123&category=見積書"
+        "&memo=特記事項&client_name=上書き商店&service_name=リピッテ"
+        "&initial_fee=100000&monthly_fee=30000&creator_name=Kanazawa",
+        headers={"Authorization": "Bearer correct-token"},
+    )
+
+    assert response.status_code == 200
+    assert captured["overrides"] == QuoteOverrides(
+        memo="特記事項",
+        client_name="上書き商店",
+        service_name="リピッテ",
+        initial_fee="100000",
+        monthly_fee="30000",
+        creator_name="Kanazawa",
+    )
+
+
 def test_generate_document_returns_422_when_template_not_found(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
 
-    def fake_generate_quote(notion_project_id: str) -> DocumentResult:
+    def fake_generate_quote(notion_project_id: str, *, overrides: object = None) -> DocumentResult:
         raise TemplateNotFoundError("no template found")
 
     monkeypatch.setattr("src.api.app.generate_quote", fake_generate_quote)
@@ -528,7 +562,7 @@ def test_generate_document_returns_404_when_notion_page_not_found(
 ) -> None:
     monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
 
-    def fake_generate_quote(notion_project_id: str) -> DocumentResult:
+    def fake_generate_quote(notion_project_id: str, *, overrides: object = None) -> DocumentResult:
         raise NotionApiError(404, "page not found")
 
     monkeypatch.setattr("src.api.app.generate_quote", fake_generate_quote)
@@ -546,7 +580,7 @@ def test_generate_document_returns_422_for_other_notion_api_errors(
 ) -> None:
     monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
 
-    def fake_generate_quote(notion_project_id: str) -> DocumentResult:
+    def fake_generate_quote(notion_project_id: str, *, overrides: object = None) -> DocumentResult:
         raise NotionApiError(400, "bad request")
 
     monkeypatch.setattr("src.api.app.generate_quote", fake_generate_quote)
@@ -627,7 +661,7 @@ def test_generate_document_exposes_notes_via_response_header(
         "テンプレートの「福住旅館」タブを複製して使用しました。実案件データが入ったタブを誤って複製していないか確認してください。",
     ]
 
-    def fake_generate_quote(notion_project_id: str) -> DocumentResult:
+    def fake_generate_quote(notion_project_id: str, *, overrides: object = None) -> DocumentResult:
         return DocumentResult(
             content=b"fake pdf bytes",
             file_name="テスト案件_見積書.pdf",
@@ -804,12 +838,58 @@ def test_request_quote_approval_returns_ids_on_success(
         "drive_approval_id": "approval-1",
         "document_approval_id": "row-1",
     }
+    from src.document_generation.quote_generator import QuoteOverrides
+
     assert captured == {
         "notion_project_id": "abc123",
         "approver_email": "approver@example.com",
         "requested_by_email": "rep@example.com",
         "message": "ご確認お願いします",
+        "overrides": QuoteOverrides(),
     }
+
+
+def test_request_quote_approval_passes_overrides(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.document_generation.quote_generator import QuoteApprovalResult, QuoteOverrides
+
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    captured: dict[str, object] = {}
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> QuoteApprovalResult:
+        captured.update(kwargs)
+        return QuoteApprovalResult(
+            drive_file_id="file-1", drive_approval_id="approval-1", document_approval_id="row-1"
+        )
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_email": "approver@example.com",
+            "requested_by_email": "rep@example.com",
+            "memo": "特記事項",
+            "client_name": "上書き商店",
+            "service_name": "リピッテ",
+            "initial_fee": "100000",
+            "monthly_fee": "30000",
+            "creator_name": "Kanazawa",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["overrides"] == QuoteOverrides(
+        memo="特記事項",
+        client_name="上書き商店",
+        service_name="リピッテ",
+        initial_fee="100000",
+        monthly_fee="30000",
+        creator_name="Kanazawa",
+    )
 
 
 # --- /api/settings/revenue-target-sheet -------------------------------------------------------

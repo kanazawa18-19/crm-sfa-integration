@@ -80,7 +80,50 @@ describe("POST /api/documents/quote/request-approval", () => {
       approverEmail: "approver@example.com",
       requestedByEmail: "rep@example.com",
       message: "ご確認お願いします",
+      overrides: {
+        memo: undefined,
+        clientName: undefined,
+        serviceName: undefined,
+        initialFee: undefined,
+        monthlyFee: undefined,
+        creatorName: undefined,
+      },
     });
+  });
+
+  it("手動入力欄(overrides)をそのまま中継する", async () => {
+    getCurrentUserMock.mockResolvedValue({ email: "rep@example.com" });
+    requestQuoteApprovalMock.mockResolvedValue({
+      drive_file_id: "file-1",
+      drive_approval_id: "approval-1",
+      document_approval_id: "row-1",
+    });
+
+    await POST(
+      makeRequest({
+        project_id: "abc",
+        approver_email: "approver@example.com",
+        memo: "特記事項です",
+        client_name: "テスト商店",
+        service_name: "リピッテ",
+        initial_fee: "100,000",
+        monthly_fee: "30,000",
+        creator_name: "金沢",
+      })
+    );
+
+    expect(requestQuoteApprovalMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        overrides: {
+          memo: "特記事項です",
+          clientName: "テスト商店",
+          serviceName: "リピッテ",
+          initialFee: "100,000",
+          monthlyFee: "30,000",
+          creatorName: "金沢",
+        },
+      })
+    );
   });
 
   it("バックエンドのエラーステータス・メッセージをそのまま中継する", async () => {

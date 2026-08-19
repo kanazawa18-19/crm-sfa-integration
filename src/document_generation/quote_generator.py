@@ -1,8 +1,8 @@
 """案件データから見積書(PDF)を生成する。
 
-見積書NOの既存の採番規則（実データ例: "CN20251001K01", "CN2026071301K", "CN2025081501KY"）は
-表記ゆれがあり完全な再現は困難なため、簡略化した独自ルールで新規採番する
-（`CN{YYYYMMDD}{Notion案件IDの先頭4文字を大文字化}`）。
+見積書NOは正式な採番ルール（`CN{YYYYMMDD}{作成者頭文字1字}{当日発行連番2桁}`、例:
+"CN20260819K01"、2026-08-19に金沢さんから共有）で採番する。当日発行連番は
+`quote_number_db.next_sequence_for_date`が日付ごとに原子的に払い出す。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from src.document_generation.common import (
 from src.document_generation.drive_connection_db import get_rep_drive_connection
 from src.document_generation.google_drive_client import GoogleDriveDocClient
 from src.document_generation.project_data import ProjectDocumentData, fetch_project_document_data
+from src.document_generation.quote_number_db import next_sequence_for_date
 from src.document_generation.sheet_filler import (
     HttpSheetsValuesClient,
     LabelSheetsClient,
@@ -76,11 +77,63 @@ def _today_jst() -> date:
     return datetime.now(_JST).date()
 
 
-def _generate_quote_number(notion_page_id: str, *, today: date | None = None) -> str:
-    """見積書NOを新規採番する（既存の採番規則は完全には解明できていないため簡略化した
-    独自ルールを採用している）。"""
+def _generate_quote_number(*, creator_name: str | None, today: date | None = None) -> str:
+    """見積書NOを正式ルールで採番する: `CN{YYYYMMDD}{作成者頭文字1字}{当日発行連番2桁}`
+    （例: "CN20260819K01"）。
+
+    「当日発行連番」は`quote_number_db.next_sequence_for_date`が日付ごとに1から原子的に
+    払い出す（同時に複数の見積書が生成されても重複しない）。「作成者頭文字」は`creator_name`
+    の先頭1文字を大文字化したもの。`creator_name`が未指定・空文字の場合は"X"で埋める
+    （担当者名がNotion側にも手動入力欄にも無い異常系での採番失敗を避けるため）。
+    """
     resolved_today = today or _today_jst()
-    return f"CN{resolved_today.strftime('%Y%m%d')}{notion_page_id[:4].upper()}"
+    date_prefix = resolved_today.strftime("%Y%m%d")
+    initial = (creator_name or "").strip()[:1].upper() or "X"
+    seq = next_sequence_for_date(date_prefix)
+    # 連番は2桁を想定しているが、同日100件目以降は`f"{100:02d}"`が"100"になるだけで
+    # クラッシュはしない（3桁になり仕様の「2桁」からは逸脱するが、現実的な発行件数では
+    # 起こらない想定。shirokuma-secレビューINFO対応のコメント）。
+    return f"CN{date_prefix}{initial}{seq:02d}"
+
+
+@dataclass(frozen=True)
+class QuoteOverrides:
+    """書類作成画面の手動入力欄(2026-08-19、金沢さんの依頼で追加)。
+
+    Notion案件データから自動取得される値（件名・取引先名・メモ・担当者名）を人手で
+    上書きしたい場合や、Notion側に元々存在しない項目（初期費用・月額費用・商材名）を
+    見積書へ差し込みたい場合に使う。全項目任意。空文字列はNone同様「未入力（上書きしない）」
+    として扱う（`_resolve`参照）。
+    """
+
+    memo: str | None = None
+    client_name: str | None = None
+    service_name: str | None = None
+    initial_fee: str | None = None
+    monthly_fee: str | None = None
+    creator_name: str | None = None
+
+
+def _resolve(override: str | None, fallback: str | None) -> str | None:
+    """空文字列・Noneは「未入力」として扱い、`fallback`（Notion案件データ由来の値）を採用する。"""
+    if override is not None and override.strip():
+        return override.strip()
+    return fallback
+
+
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@")
+
+
+def _sanitize_sheet_cell_value(value: str) -> str:
+    """Google Sheets APIへの書き込みは`valueInputOption=USER_ENTERED`（人間が入力したのと
+    同じ扱い）のため、`=`/`+`/`-`/`@`で始まる文字列はテキストではなく数式として評価されて
+    しまう（formula injection）。手動入力欄はブラウザからの自由入力を経由するため、
+    該当する場合は先頭に`'`を付けてテキストとして強制する
+    （shirokuma-secレビューWARN対応: 初期費用・月額費用・商材名等の新設フリーテキスト欄が
+    数式インジェクションの新しい経路になっていた）。"""
+    if value and value[0] in _FORMULA_TRIGGER_CHARS:
+        return f"'{value}"
+    return value
 
 
 def _build_quote_copy(
@@ -92,6 +145,7 @@ def _build_quote_copy(
     sheets_client: LabelSheetsClient,
     new_name: str,
     parents: list[str] | None = None,
+    overrides: QuoteOverrides | None = None,
 ) -> tuple[str, list[str]]:
     """テンプレートをコピーし、ラベル駆動でセルを差し込むところまでを行う共通処理
     （`generate_quote`のその場ダウンロード用途・`request_quote_approval`の承認リクエスト用途、
@@ -128,26 +182,60 @@ def _build_quote_copy(
         # （実データ確認で判明した重大な情報漏洩リスクへの対応）。
         sheets_client.keep_only_sheet(copy_id, sheet_id=sheet_id)
 
+        resolved_today = _today_jst()
+        resolved_memo = _resolve(overrides.memo if overrides else None, project_data.memo)
+        resolved_client_name = _resolve(
+            overrides.client_name if overrides else None, project_data.client_name
+        )
+        resolved_creator_name = _resolve(
+            overrides.creator_name if overrides else None, project_data.assignee_name
+        )
+        resolved_service_name = _resolve(overrides.service_name if overrides else None, None)
+        resolved_initial_fee = _resolve(overrides.initial_fee if overrides else None, None)
+        resolved_monthly_fee = _resolve(overrides.monthly_fee if overrides else None, None)
+
+        if not resolved_creator_name:
+            # 作成者頭文字が特定できず"X"で採番される（Notion案件データの担当メンバー未設定・
+            # 手動入力欄も空の場合）。理由が分からないまま送付されないよう、送付前確認欄に
+            # 明示する（obasan-qualityレビューWARN対応）。
+            notes.append(
+                "作成者が特定できなかったため、見積書NOの先頭文字は仮の「X」で採番されました。"
+                "正しい担当者名を手動入力欄の「作成者」に入力し、再生成することを推奨します。"
+            )
+
         values_by_label: dict[str, str] = {
-            "見積書NO": _generate_quote_number(notion_page_id),
-            "発行日": _today_jst().strftime("%Y/%m/%d"),
+            "見積書NO": _generate_quote_number(creator_name=resolved_creator_name, today=resolved_today),
+            "発行日": resolved_today.strftime("%Y/%m/%d"),
         }
         if project_data.project_name:
             values_by_label["件名"] = project_data.project_name
-        if project_data.memo:
-            values_by_label["注意事項"] = project_data.memo
-        if project_data.assignee_name:
-            values_by_label["担当"] = project_data.assignee_name
+        if resolved_memo:
+            values_by_label["注意事項"] = resolved_memo
+        if resolved_creator_name:
+            values_by_label["担当"] = resolved_creator_name
+        # 商材名・初期費用・月額費用はNotion案件データ側に対応項目が無いため、手動入力欄
+        # (`overrides`)からのみ差し込む。`fill_labeled_cells`はラベルがテンプレートに
+        # 存在しない場合でもエラーにせず警告ログのみ出すため、対応ラベルの無いテンプレートに
+        # 差し込もうとしても安全（sheet_filler.fill_labeled_cells参照）。
+        if resolved_service_name:
+            values_by_label["商材名"] = resolved_service_name
+        if resolved_initial_fee:
+            values_by_label["初期費用"] = resolved_initial_fee
+        if resolved_monthly_fee:
+            values_by_label["月額費用"] = resolved_monthly_fee
 
+        values_by_label = {
+            label: _sanitize_sheet_cell_value(value) for label, value in values_by_label.items()
+        }
         fill_labeled_cells(sheets_client, copy_id, sheet_name, values_by_label)
 
-        if project_data.client_name:
+        if resolved_client_name:
             addressee_found = fill_cell_containing(
                 sheets_client,
                 copy_id,
                 sheet_name,
                 _ADDRESSEE_MARKER,
-                f"{project_data.client_name}　{_ADDRESSEE_MARKER}",
+                _sanitize_sheet_cell_value(f"{resolved_client_name}　{_ADDRESSEE_MARKER}"),
             )
             if not addressee_found:
                 notes.append("宛先セル（「御中」を含むセル）が見つからず、宛先の差し込みは未反映です。")
@@ -167,6 +255,7 @@ def generate_quote(
     sheets_client: LabelSheetsClient | None = None,
     notion_client: Any | None = None,
     client_master_client: Any | None = None,
+    overrides: QuoteOverrides | None = None,
 ) -> DocumentResult:
     """案件データを取得し、テンプレートを解決・コピーしてラベル駆動でセルを差し込み、
     PDFとしてexportする。生成完了後、Drive上の一時コピーは削除する。"""
@@ -186,6 +275,7 @@ def generate_quote(
         drive_client=resolved_drive_client,
         sheets_client=resolved_sheets_client,
         new_name=f"__tmp_quote_{notion_page_id}",
+        overrides=overrides,
     )
     try:
         content = resolved_drive_client.export(copy_id, mime_type=_PDF_MIME_TYPE)
@@ -216,6 +306,7 @@ def request_quote_approval(
     registry: TemplateRegistry | None = None,
     notion_client: Any | None = None,
     client_master_client: Any | None = None,
+    overrides: QuoteOverrides | None = None,
 ) -> QuoteApprovalResult:
     """見積書を生成して一時格納フォルダ(`QUOTE_PENDING_APPROVAL_FOLDER_ID`)へ保存し、
     Drive純正の「承認をリクエスト」機能で`approver_email`宛に承認リクエストを送信する
@@ -282,6 +373,7 @@ def request_quote_approval(
         sheets_client=sheets_client,
         new_name=quote_name,
         parents=[QUOTE_PENDING_APPROVAL_FOLDER_ID],
+        overrides=overrides,
     )
 
     try:

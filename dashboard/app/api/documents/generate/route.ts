@@ -3,6 +3,17 @@ import type { NextRequest } from "next/server";
 
 // バックエンドの `GET /api/documents/generate` をそのまま中継する。
 // BACKEND_API_URL / BACKEND_API_TOKEN の参照方法は lib/backend.ts の fetchBackend に揃える。
+// 手動入力欄(2026-08-19追加、見積書のみ適用)。全項目任意なので、値が入っている
+// パラメータだけをそのままバックエンドへ中継する。
+const OVERRIDE_PARAM_NAMES = [
+  "memo",
+  "client_name",
+  "service_name",
+  "initial_fee",
+  "monthly_fee",
+  "creator_name",
+] as const;
+
 export async function GET(request: NextRequest) {
   const notionProjectId = request.nextUrl.searchParams.get("notion_project_id");
   const category = request.nextUrl.searchParams.get("category");
@@ -24,6 +35,12 @@ export async function GET(request: NextRequest) {
     notion_project_id: notionProjectId,
     category,
   });
+  for (const name of OVERRIDE_PARAM_NAMES) {
+    const value = request.nextUrl.searchParams.get(name);
+    if (value) {
+      query.set(name, value);
+    }
+  }
 
   let backendResponse: Response;
   try {

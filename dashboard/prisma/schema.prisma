@@ -319,3 +319,13 @@ model DocumentApproval {
   @@index([status])
   @@index([notionProjectId])
 }
+
+// 見積書NOの当日発行連番(2026-08-19、正式採番ルール「CN{YYYYMMDD}{作成者頭文字1字}
+// {当日発行連番2桁}」対応、例: CN20260819K01)。datePrefixは"YYYYMMDD"文字列（JST基準）。
+// 実際の読み書きはPython側(src/document_generation/quote_number_db.py)が
+// INSERT...ON CONFLICT DO UPDATE...RETURNINGで原子的にインクリメントする
+// (DocumentApproval等と同じraw SQL直接アクセスの方針)。
+model QuoteNumberSequence {
+  datePrefix String @id
+  lastSeq    Int    @default(0)
+}

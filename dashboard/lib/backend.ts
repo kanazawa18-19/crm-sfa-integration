@@ -377,11 +377,22 @@ export interface SaveRevenueTargetSheetSettingsResponse {
 // 見積書 承認フロー(2026-08-18)。承認者一覧(DocumentApprover)はこのdashboard側の
 // Prismaで直接扱う(下記documents/page.tsxのServer Component参照)ため、ここでは
 // バックエンドの request-approval エンドポイントのみをラップする。
+// 書類作成画面の手動入力欄(2026-08-19追加)。全項目任意。
+export interface QuoteOverridesInput {
+  memo?: string;
+  clientName?: string;
+  serviceName?: string;
+  initialFee?: string;
+  monthlyFee?: string;
+  creatorName?: string;
+}
+
 export interface QuoteApprovalRequest {
   projectId: string;
   approverEmail: string;
   requestedByEmail: string;
   message?: string;
+  overrides?: QuoteOverridesInput;
 }
 
 export interface QuoteApprovalResponse {
@@ -400,6 +411,12 @@ export function requestQuoteApproval(
       approver_email: request.approverEmail,
       requested_by_email: request.requestedByEmail,
       message: request.message ?? "",
+      memo: request.overrides?.memo,
+      client_name: request.overrides?.clientName,
+      service_name: request.overrides?.serviceName,
+      initial_fee: request.overrides?.initialFee,
+      monthly_fee: request.overrides?.monthlyFee,
+      creator_name: request.overrides?.creatorName,
     },
   });
 }

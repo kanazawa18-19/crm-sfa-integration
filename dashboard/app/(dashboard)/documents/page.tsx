@@ -29,5 +29,23 @@ export default async function DocumentsPage() {
     console.error("failed to load drive connection / document approvers", error);
   }
 
-  return <DocumentsPageClient driveConnected={driveConnected} approvers={approvers} />;
+  return (
+    <DocumentsPageClient
+      driveConnected={driveConnected}
+      approvers={approvers}
+      creatorNameDefault={buildCreatorNameDefault(user.email)}
+    />
+  );
+}
+
+// 見積書NOの採番（`CN{YYYYMMDD}{作成者頭文字1字}{連番}`）は先頭1文字をそのまま使うため、
+// 日本語の表示名(User.name)を初期値にすると「金沢」→「金」のように意図しない文字になる
+// (obasan-qualityレビューBLOCKER対応)。社内のメールアドレスはローマ字の姓が使われている
+// 慣例（kanazawa@cnctor.jp等）のため、メールのローカル部を先頭大文字化した値を初期値にする。
+function buildCreatorNameDefault(email: string): string {
+  const localPart = email.split("@")[0] ?? "";
+  if (!localPart) {
+    return "";
+  }
+  return localPart.charAt(0).toUpperCase() + localPart.slice(1);
 }

@@ -7,6 +7,7 @@ fail-closed設計（未設定時は一切許可しない）。
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ from src.document_generation.quote_generator import (
     DriveNotConnectedError,
     DuplicateApprovalRequestError,
     InvalidApproverEmailError,
+    QuoteOverrides,
     generate_quote,
     request_quote_approval,
 )
@@ -605,10 +607,32 @@ def get_client_360_view(client_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/documents/generate", dependencies=[Depends(verify_dashboard_api_token)])
-def generate_document(notion_project_id: str, category: str) -> Response:
-    """案件データから見積書(PDF)・申込書(Excel)・契約書(Word)を生成し、バイナリを返す。"""
+def generate_document(
+    notion_project_id: str,
+    category: str,
+    memo: str | None = None,
+    client_name: str | None = None,
+    service_name: str | None = None,
+    initial_fee: str | None = None,
+    monthly_fee: str | None = None,
+    creator_name: str | None = None,
+) -> Response:
+    """案件データから見積書(PDF)・申込書(Excel)・契約書(Word)を生成し、バイナリを返す。
+
+    `memo`〜`creator_name`は書類作成画面の手動入力欄(2026-08-19追加)。見積書
+    (`category == "見積書"`)にのみ適用され、他カテゴリでは無視する（申込書・契約書は
+    このスコープ外のため、`QuoteOverrides`を渡さずNotion案件データのみで生成する）。
+    """
     if category == "見積書":
-        generator = generate_quote
+        overrides = QuoteOverrides(
+            memo=memo,
+            client_name=client_name,
+            service_name=service_name,
+            initial_fee=initial_fee,
+            monthly_fee=monthly_fee,
+            creator_name=creator_name,
+        )
+        generator = functools.partial(generate_quote, overrides=overrides)
     elif category == "申込書":
         generator = generate_application
     elif category == "契約書":
@@ -674,6 +698,13 @@ class QuoteApprovalRequest(BaseModel):
     approver_email: str
     requested_by_email: str
     message: str = ""
+    # 書類作成画面の手動入力欄(2026-08-19追加)。全項目任意。
+    memo: str | None = None
+    client_name: str | None = None
+    service_name: str | None = None
+    initial_fee: str | None = None
+    monthly_fee: str | None = None
+    creator_name: str | None = None
 
 
 @app.post(
@@ -684,12 +715,21 @@ def request_document_quote_approval(payload: QuoteApprovalRequest) -> dict[str, 
     承認者へ送信する(2026-08-18、`src/document_generation/quote_generator.request_quote_approval`
     参照)。
     """
+    overrides = QuoteOverrides(
+        memo=payload.memo,
+        client_name=payload.client_name,
+        service_name=payload.service_name,
+        initial_fee=payload.initial_fee,
+        monthly_fee=payload.monthly_fee,
+        creator_name=payload.creator_name,
+    )
     try:
         result = request_quote_approval(
             payload.project_id,
             approver_email=payload.approver_email,
             requested_by_email=payload.requested_by_email,
             message=payload.message,
+            overrides=overrides,
         )
     except DriveNotConnectedError as exc:
         # 依頼者本人のDrive OAuth接続(RepDriveConnection)が未接続の場合。フロント側で
