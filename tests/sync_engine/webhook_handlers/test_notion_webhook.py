@@ -918,6 +918,143 @@ def test_handler_with_proxy_without_project_mirror_sync_behaves_as_before(
     assert json.loads(response["body"]) == {"skipped": None}
 
 
+# --- client_name_index_sync フック（2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER対応）---
+
+_CLIENT_MASTER_DB_ID_MAP = {"36d6f1e2-2222-2222-2222-222222222222": "client_master"}
+
+
+def _client_master_lightweight_payload() -> dict:
+    return {
+        "id": "evt_yyy",
+        "timestamp": "2026-08-25T09:00:00.000Z",
+        "workspace_id": "ws_xxx",
+        "type": "page.properties_updated",
+        "entity": {"id": "36d6f1e2-0000-0000-0000-000000000000", "type": "page"},
+        "data": {
+            "parent": {"id": "36d6f1e2-2222-2222-2222-222222222222", "type": "database"},
+            "updated_properties": ["title"],
+        },
+    }
+
+
+def _raw_client_master_notion_page() -> dict:
+    return {
+        "id": "36d6f1e2-0000-0000-0000-000000000000",
+        "parent": {
+            "type": "database_id",
+            "database_id": "36d6f1e2-2222-2222-2222-222222222222",
+        },
+        "last_edited_time": "2026-08-25T09:00:00.000Z",
+        "properties": {
+            "取引先名": {"type": "title", "title": [{"plain_text": "テスト商事株式会社"}]},
+        },
+    }
+
+
+def test_handler_with_proxy_calls_client_name_index_sync_when_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: _CLIENT_MASTER_DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_client_master_notion_page())
+    calls: list[tuple[dict, str]] = []
+
+    def _client_name_index_sync(properties: dict, page_id: str) -> None:
+        calls.append((dict(properties), page_id))
+
+    event = {"body": json.dumps(_client_master_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(
+        event,
+        context=None,
+        notion_client=client,
+        client_name_index_sync=_client_name_index_sync,
+    )
+
+    assert response["statusCode"] == 200
+    assert len(calls) == 1
+    called_properties, called_page_id = calls[0]
+    assert called_page_id == "36d6f1e2-0000-0000-0000-000000000000"
+    assert called_properties == {"取引先名": "テスト商事株式会社"}
+
+
+def test_handler_with_proxy_returns_200_even_when_client_name_index_sync_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: _CLIENT_MASTER_DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_client_master_notion_page())
+
+    def _failing_client_name_index_sync(properties: dict, page_id: str) -> None:
+        raise RuntimeError("client name index sync boom")
+
+    event = {"body": json.dumps(_client_master_lightweight_payload()), "headers": {}}
+
+    with caplog.at_level("ERROR"):
+        response = handler_with_proxy(
+            event,
+            context=None,
+            notion_client=client,
+            client_name_index_sync=_failing_client_name_index_sync,
+        )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+    assert any("client name index" in record.getMessage() for record in caplog.records)
+
+
+def test_handler_with_proxy_without_client_name_index_sync_behaves_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """client_name_index_sync未注入時は既存の挙動と変わらないことを確認する。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: _CLIENT_MASTER_DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_client_master_notion_page())
+    event = {"body": json.dumps(_client_master_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(event, context=None, notion_client=client)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": None}
+
+
+def test_handler_with_proxy_does_not_call_client_name_index_sync_for_other_db_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """db_key="project"等、対象外のイベントではclient_name_index_syncを呼ばないこと。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: DB_ID_MAP,
+    )
+    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    calls: list[tuple[dict, str]] = []
+
+    def _client_name_index_sync(properties: dict, page_id: str) -> None:
+        calls.append((dict(properties), page_id))
+
+    event = {"body": json.dumps(_lightweight_payload()), "headers": {}}
+
+    response = handler_with_proxy(
+        event,
+        context=None,
+        notion_client=client,
+        client_name_index_sync=_client_name_index_sync,
+    )
+
+    assert response["statusCode"] == 200
+    assert calls == []
+
+
 # --- lead_sync フック -----------------------------------------------------------------------
 
 _CONTACT_DB_ID = "3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae"

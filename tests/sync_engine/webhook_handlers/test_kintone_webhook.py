@@ -108,6 +108,55 @@ def test_kintone_payload_to_sync_event_builds_action_event() -> None:
     assert "toPerson" not in event.properties
 
 
+def test_kintone_payload_to_sync_event_resolves_action_client_name_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 2026-08-25: 取引先マスターリレーション解決(src/relation_sync/)のkintone webhook配線。
+    from src.sync_engine.webhook_handlers import kintone_field_transforms as transforms_module
+
+    monkeypatch.setattr(
+        transforms_module,
+        "resolve_client_master_relation",
+        lambda raw_name, **kwargs: "notion-page-1" if kwargs["source_record_id"] == "77" else None,
+    )
+    record = {
+        "$id": {"type": "__ID__", "value": "77"},
+        "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
+        "client_name": {"type": "SINGLE_LINE_TEXT", "value": "テスト商事"},  # ラベル: 顧客名
+    }
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=record), {}, app_id_to_db_key=APP_ID_MAP
+    )
+
+    assert event.properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
+def test_kintone_payload_to_sync_event_skips_action_client_name_when_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 未解決(SKIP_FIELD)の場合、プロパティ自体をpropertiesへ含めない(既存リレーションを
+    # 上書き・クリアしない)。
+    from src.sync_engine.webhook_handlers import kintone_field_transforms as transforms_module
+
+    monkeypatch.setattr(
+        transforms_module, "resolve_client_master_relation", lambda raw_name, **kwargs: None
+    )
+    record = {
+        "$id": {"type": "__ID__", "value": "77"},
+        "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
+        "client_name": {"type": "SINGLE_LINE_TEXT", "value": "曖昧な会社名"},
+        "comment": {"type": "MULTI_LINE_TEXT", "value": "折り返し予定"},
+    }
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=record), {}, app_id_to_db_key=APP_ID_MAP
+    )
+
+    assert "👨‍👩‍👧‍👦 取引先マスター" not in event.properties
+    assert event.properties["履歴メモ"] == "折り返し予定"
+
+
 def test_kintone_payload_to_sync_event_skips_fields_not_in_transform_table() -> None:
     # obasan-qualityレビューWARN対応（2026-08-14）: 架空のフィールド名ではなく、実際に
     # リレーション解決が必要なため意図的に対象外とされているフィールドコード（KINTONE_

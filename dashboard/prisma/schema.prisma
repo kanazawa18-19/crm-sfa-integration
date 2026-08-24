@@ -272,6 +272,77 @@ model ProjectMirror {
   @@index([syncedAt])
 }
 
+// 取引先マスターDB(Notion)の正規化済み取引先名 → Notion page ID の高速検索用インデックス
+// (2026-08-25、「ツール間のリレーション同期が構造的にリアルタイムでは行われていない」課題
+// 対応)。ProjectMirrorと同じ設計思想: データの正本は引き続きNotionであり、このテーブルは
+// kintone/Zoho Webhookが受け取る自由入力の会社名テキストから対応するNotion取引先マスター
+// ページIDを、Notion APIを呼ばずローカルのPostgres検索のみで（Webhookの同期応答時間内に）
+// 解決するためだけに存在する(src/relation_sync/resolve.py参照)。
+//
+// このテーブルもProjectMirror等と同様、書き込みはPython側(psycopg直接アクセス、
+// src/relation_sync/db.py)が行う。
+model ClientNameIndex {
+  id           String @id @default(cuid())
+  notionPageId String @unique
+  // src/migration/notion_dedupe.pyのnormalize_company_name_strong()と同じロジックで正規化した
+  // 取引先名(完全一致検索用、find_by_normalized_name()参照)。同じ正規化キーを持つ取引先が
+  // 複数存在しうる(表記ゆれではなく実在する別会社が同名寄せされるケース)ため@uniqueにはせず
+  // @@indexのみ張る。
+  normalizedName String
+  // 元の取引先名(デバッグ用)。
+  rawName  String
+  syncedAt DateTime @default(now())
+
+  @@index([normalizedName])
+}
+
+enum RelationReviewStatus {
+  pending
+  resolved
+  dismissed
+}
+
+// リレーション解決が曖昧(複数候補ヒット・候補なし)だった場合に、自動確定させず人の確認待ち
+// として記録するキュー(2026-08-25)。src/migration/のneeds_review_clients(移行時、CSV+
+// コンソール出力していた同種の判断)と同じ考え方を、リアルタイムのWebhook処理向けに永続化
+// したもの。書き込みはPython側(src/relation_sync/review_queue.py)が行う。resolved/dismissed
+// への遷移は今回のスコープでは手動SQL操作を前提とした最小限の実装(list_pending_reviews()の
+// み用意)。
+//
+// 【DB上のみに存在するインデックス】(sourceTool, sourceRecordId, targetDbKey, rawValue)への
+// 部分ユニークインデックス(status='pendingの行のみ対象)がmigration.sql
+// (20260825060000_add_relation_sync)に存在する。同一内容の重複pending行を
+// `INSERT ... ON CONFLICT ... DO NOTHING`でDB側から原子的に防ぐために使う
+// (src/relation_sync/review_queue.pyのenqueue_for_review()参照、shirokuma-sec/
+// obasan-qualityレビューWARN対応)。Prismaのスキーマ定義言語はフィルタ条件付き(部分)
+// インデックスを表現できないため、このモデル定義には`@@unique`/`@@index`として現れない
+// (schema.prismaとmigration.sqlの間の意図的な乖離。今後このモデルへ`prisma migrate dev`等で
+// 新規マイグレーションを生成する場合、この部分インデックスを消してしまわないよう注意)。
+model RelationReviewQueue {
+  id             String @id @default(cuid())
+  // "kintone" | "zoho" 等、解決を試みたレコードの出所ツール。
+  sourceTool     String
+  sourceRecordId String
+  // 解決先DBのスキーマキー(例: "client_master"、src/db_schema/registry.py参照)。
+  targetDbKey    String
+  // 解決を試みた元の文字列(例: kintoneのclient_name列に入っていた会社名)。
+  rawValue       String
+  // 複数候補があった場合の候補Notion page ID一覧(候補なしの場合は空配列)。
+  candidateNotionPageIds Json
+  // candidateNotionPageIdsと同じ順序・同じ件数で対になる、各候補の取引先名(ClientNameIndex.
+  // rawName)一覧(2026-08-25、shirokuma-sec/obasan-qualityレビューWARN対応)。
+  // scripts/list_relation_review_queue.pyがpage IDの羅列だけでなく会社名も表示できるように
+  // するため、find_by_normalized_name()が返すraw_nameを捨てずに保持する。
+  candidateRawNames      String[]             @default([])
+  status                 RelationReviewStatus @default(pending)
+  createdAt              DateTime             @default(now())
+  resolvedAt             DateTime?
+  resolvedNotionPageId   String?
+
+  @@index([status])
+  @@index([sourceTool])
+}
+
 // 見積書 承認フロー(Google Drive Approvals連携、営業担当者個人OAuth方式、2026-08-18)。
 //
 // サービスアカウント(GOOGLE_SERVICE_ACCOUNT_JSON、ドメイン全体委任なし)ではDrive

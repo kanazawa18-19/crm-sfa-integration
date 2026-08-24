@@ -23,8 +23,10 @@ Dispatcher側で「スキーマに存在しない」として黙ってスキッ�
 実際のコードを検証し修正済み。Zoho側で2026-08-12に発覚した同種のBLOCKERと同じ落とし穴）。
 この変換は`kintone_field_transforms.KINTONE_FIELD_TRANSFORMS`（フィールドコード→
 (Notionプロパティ名, 値変換関数)、db_key別）に委譲する。リレーション解決が必要な
-フィールドや派生値フィールドは意図的に対象外（詳細は`kintone_field_transforms.py`
-のモジュールdocstring参照）。
+フィールドや派生値フィールドは大半が意図的に対象外だが、⑥アクション管理の
+「👨‍👩‍👧‍👦 取引先マスター」リレーションのみ2026-08-25に例外として対応した
+（`src/relation_sync/`によるローカルインデックス経由の同期的な名寄せ。詳細は
+`kintone_field_transforms.py`のモジュールdocstring参照）。
 
 想定ペイロード例（テストフィクスチャは tests/sync_engine/webhook_handlers/ を参照。
 フィールドコードは実際のkintone環境で検証済みの値、コメントに表示ラベルを付記する。
@@ -63,7 +65,11 @@ from src.sync_engine.webhook_handlers._common import (
     unauthorized_response,
     verify_webhook_query_param,
 )
-from src.sync_engine.webhook_handlers.kintone_field_transforms import KINTONE_FIELD_TRANSFORMS
+from src.sync_engine.webhook_handlers.kintone_field_transforms import (
+    KINTONE_FIELD_TRANSFORMS,
+    SKIP_FIELD,
+    kintone_action_record_context,
+)
 
 _UPDATED_AT_FIELD_CODE = "更新日時"
 
@@ -132,29 +138,47 @@ def kintone_payload_to_sync_event(
     # 全体は継続する）。
     field_mapping = KINTONE_FIELD_TRANSFORMS.get(db_key, {})
     properties: dict[str, Any] = {}
-    for code, field in record.items():
-        if code in _SYSTEM_FIELD_CODES:
-            continue
-        mapped = field_mapping.get(code)
-        if mapped is None:
-            logger.info(
-                "kintone webhook: ignoring field code=%r for db_key=%r "
-                "(not in KINTONE_FIELD_TRANSFORMS; excluded on purpose or not yet covered)",
-                code,
-                db_key,
-            )
-            continue
-        notion_property, transform = mapped
-        try:
-            properties[notion_property] = transform(field["value"])
-        except Exception:
-            logger.warning(
-                "kintone webhook: failed to transform field code=%r for db_key=%r; "
-                "skipping this field only",
-                code,
-                db_key,
-                exc_info=True,
-            )
+    # kintone_action_record_context(): db_key="action"の"client_name"（取引先マスター
+    # リレーション解決）がRelationReviewQueueへの記録に使うレコードIDを暗黙に伝播させる
+    # （kintone_field_transforms.pyのモジュールdocstring参照）。他db_key/フィールドは
+    # このコンテキストを参照しないため無害。
+    with kintone_action_record_context(record_id):
+        for code, field in record.items():
+            if code in _SYSTEM_FIELD_CODES:
+                continue
+            mapped = field_mapping.get(code)
+            if mapped is None:
+                logger.info(
+                    "kintone webhook: ignoring field code=%r for db_key=%r "
+                    "(not in KINTONE_FIELD_TRANSFORMS; excluded on purpose or not yet covered)",
+                    code,
+                    db_key,
+                )
+                continue
+            notion_property, transform = mapped
+            try:
+                value = transform(field["value"])
+            except Exception:
+                logger.warning(
+                    "kintone webhook: failed to transform field code=%r for db_key=%r; "
+                    "skipping this field only",
+                    code,
+                    db_key,
+                    exc_info=True,
+                )
+                continue
+            if value is SKIP_FIELD:
+                # 未解決のリレーション（例: 取引先マスターの名寄せが曖昧・候補なし）。
+                # 既存のNoneハンドリング（明示的にプロパティをクリアする）とは意味が異なり、
+                # このプロパティへの書き込み自体を行わない（既存の値を上書きしない）。
+                logger.info(
+                    "kintone webhook: relation unresolved for field code=%r for db_key=%r; "
+                    "skipping this property (not clearing existing value)",
+                    code,
+                    db_key,
+                )
+                continue
+            properties[notion_property] = value
 
     return SyncEvent(
         source_tool=Tool.KINTONE,

@@ -28,6 +28,10 @@
     {
       "path": "/api/cron/project-mirror-reconcile",
       "schedule": "0 18 * * *"
+    },
+    {
+      "path": "/api/cron/relation-sync-reconcile",
+      "schedule": "0 19 * * *"
     }
   ]
 }

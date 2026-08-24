@@ -144,10 +144,64 @@ def test_relation_dependent_fields_are_intentionally_excluded() -> None:
     # 派生値フィールド（取引先マスターの営業ステータス等）は意図的にテーブルに含めない
     # （kintone_field_transforms.pyのモジュールdocstring参照）。コードは全て2026-08-14
     # 実APIで確認済み。
+    # ただし"client_name"（取引先マスターリレーション）は2026-08-25に例外対応済み
+    # （下記test_action_client_name_field_*参照）。「案件名」は今回もスコープ外のまま
+    # （kintoneのアクション管理には案件を特定できる情報が無いため。同モジュールdocstring
+    # 参照）。
     assert "店舗名" not in KINTONE_FIELD_TRANSFORMS["project"]  # ラベル: 施設名（会社名）
     assert "cnctorMember" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 対応者
     assert "toPerson" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 担当者名
     assert "service" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 提案サービス
-    assert "client_name" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 顧客名（法人・個人・施設）
     assert "nextActionDate" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 次回アクション日
     assert "本部名" not in KINTONE_FIELD_TRANSFORMS["client_master"]  # コード==ラベル
+
+
+# --- action.client_name（取引先マスターリレーション解決、2026-08-25） --------------------
+
+
+def test_action_client_name_field_resolves_via_relation_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.sync_engine.webhook_handlers import kintone_field_transforms as module
+
+    monkeypatch.setattr(
+        module, "resolve_client_master_relation", lambda raw_name, **kwargs: "notion-page-1"
+    )
+    notion_property, transform = KINTONE_FIELD_TRANSFORMS["action"]["client_name"]
+
+    assert notion_property == "👨‍👩‍👧‍👦 取引先マスター"
+    assert transform("テスト商事") == "notion-page-1"
+
+
+def test_action_client_name_field_returns_skip_field_when_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.sync_engine.webhook_handlers import kintone_field_transforms as module
+
+    monkeypatch.setattr(module, "resolve_client_master_relation", lambda raw_name, **kwargs: None)
+    _, transform = KINTONE_FIELD_TRANSFORMS["action"]["client_name"]
+
+    assert transform("曖昧な会社名") is module.SKIP_FIELD
+
+
+def test_action_client_name_field_passes_current_record_id_via_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.sync_engine.webhook_handlers import kintone_field_transforms as module
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        module,
+        "resolve_client_master_relation",
+        lambda raw_name, **kwargs: calls.append({"raw_name": raw_name, **kwargs}) or None,
+    )
+    _, transform = KINTONE_FIELD_TRANSFORMS["action"]["client_name"]
+
+    with module.kintone_action_record_context("action-record-77"):
+        transform("テスト商事")
+
+    assert calls == [
+        {
+            "raw_name": "テスト商事",
+            "source_tool": "kintone",
+            "source_record_id": "action-record-77",
+        }
+    ]

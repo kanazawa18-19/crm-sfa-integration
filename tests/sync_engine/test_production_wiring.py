@@ -29,6 +29,7 @@ from src.sync_engine.production_wiring import (
     _MultiDbNotionSyncTarget,
     _warn_if_id_mapping_store_not_persistent,
     build_calendar_sync_callable,
+    build_client_name_index_sync_callable,
     build_id_mapping_store,
     build_kintone_targets_by_db,
     build_lead_sync_callable,
@@ -409,6 +410,66 @@ def test_production_sync_wiring_project_mirror_sync_callable_is_set_when_enabled
     wiring = ProductionSyncWiring()
 
     assert wiring.project_mirror_sync_callable is not None
+
+
+# --- build_client_name_index_sync_callable (2026-08-25、shirokuma-sec/obasan-qualityレビュー
+# BLOCKER対応: ClientNameIndexへの投入経路が本番に配線されていなかった問題への対応) -----------
+
+
+def test_build_client_name_index_sync_callable_returns_none_when_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RELATION_SYNC_ENABLED", raising=False)
+
+    assert build_client_name_index_sync_callable(_FakeNotionPageClientForWiring()) is None
+
+
+def test_build_client_name_index_sync_callable_returns_none_when_notion_client_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
+
+    assert build_client_name_index_sync_callable(None) is None
+
+
+def test_build_client_name_index_sync_callable_returns_callable_when_enabled_and_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+
+    client_name_index_sync = build_client_name_index_sync_callable(
+        _FakeNotionPageClientForWiring()
+    )
+
+    assert client_name_index_sync is not None
+    assert callable(client_name_index_sync)
+
+
+def test_production_sync_wiring_client_name_index_sync_callable_is_none_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RELATION_SYNC_ENABLED未設定（既定）ではNotion同期が構成済みでも無効のまま
+    （インフラ整備のみのロールアウト、PROJECT_MIRROR_SYNC_ENABLEDと同じ設計）。"""
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    monkeypatch.delenv("RELATION_SYNC_ENABLED", raising=False)
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.client_name_index_sync_callable is None
+
+
+def test_production_sync_wiring_client_name_index_sync_callable_is_set_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.client_name_index_sync_callable is not None
 
 
 # --- build_production_dispatcher ---------------------------------------------------------------

@@ -52,6 +52,7 @@ from src.db_schema.registry import ALL_SCHEMAS
 from src.lead_sync.service import sync_contact_to_lead
 from src.lead_sync.web_engagement_tool_client import WebEngagementToolLeadSyncClient
 from src.project_mirror.sync import sync_project_to_mirror
+from src.relation_sync.sync import sync_client_name_to_index
 from src.sync_engine.clients._http import (
     HOOK_MAX_RETRIES,
     HOOK_TIMEOUT_SECONDS,
@@ -570,6 +571,39 @@ def build_project_mirror_sync_callable(
     )
 
 
+def build_client_name_index_sync_callable(
+    notion_client: NotionPageClient | None,
+) -> Callable[[Mapping[str, Any], str], Any] | None:
+    """`notion_webhook.handler_with_proxy`の`client_name_index_sync`引数へそのまま渡せる
+    `Callable[[Mapping[str, Any], str], Any]`を組み立てる（取引先マスターDBの正規化取引先名→
+    Notion page IDインデックス（`ClientNameIndex`）を更新する
+    `src.relation_sync.sync.sync_client_name_to_index`をベースにする、2026-08-25）。
+
+    `build_project_mirror_sync_callable`と同じ「未設定なら無効化」パターンを踏襲し、
+    `RELATION_SYNC_ENABLED`環境変数（既定`false`）でロールアウトを制御する。`ClientNameIndex`
+    にはProjectMirrorのような別個の「読み取り元切り替え」フラグは無い（ダッシュボードが直接
+    読む対象ではなく、`src.relation_sync.resolve.resolve_client_master_relation`が内部的に
+    検索するだけのテーブルのため）。同関数自体も`RELATION_SYNC_ENABLED`を確認しており
+    （`resolve.py`参照）、この`build_*`関数がガードしているのは「書き込み系（Webhook反映・
+    夜間reconciliation）を動かすかどうか」のみで、resolve側の「読み取りを試みるかどうか」の
+    ガードとは責務が分かれている（shirokuma-sec/obasan-qualityレビューBLOCKER対応、
+    詳細はdocs/relation_sync_activation_note.md参照）。
+
+    `notion_client`（`ProductionSyncWiring.notion_page_client`を想定）が`None`の場合
+    （`NOTION_API_KEY`未設定でNotion同期自体が無効化されている場合）、
+    `sync_client_name_to_index`がページ全体の再取得（`get_raw_page`）に使うNotionクライアントが
+    無いため、同様に無効化し`None`を返す。
+    """
+    if os.environ.get("RELATION_SYNC_ENABLED", "").strip().lower() != "true":
+        return None
+    if notion_client is None:
+        logger.info(
+            "NOTION_API_KEYが未設定のため、取引先マスターDBのClientNameIndex同期は無効化されます"
+        )
+        return None
+    return functools.partial(sync_client_name_to_index, notion_client=notion_client)
+
+
 def build_production_dispatcher(*, id_mapping_store: IdMappingStore | None = None) -> Dispatcher:
     """本番用のDispatcher（4ツール分のSyncTarget＋IdMappingStore）を組み立てる。
 
@@ -653,13 +687,15 @@ class ProductionSyncWiring:
     `dispatcher`は`SkipTrackingDispatcher`でラップされており、部分的な同期スキップが
     発生した場合にwarningログを出す（上記docstring参照）。
 
-    `calendar_sync_callable`/`lead_sync_callable`/`project_mirror_sync_callable`は、それぞれ
-    `notion_webhook.handler_with_proxy`の`calendar_sync`/`lead_sync`/`project_mirror_sync`引数へ
-    そのまま渡せる`Callable[[Mapping[str, Any], str], Any]`
+    `calendar_sync_callable`/`lead_sync_callable`/`project_mirror_sync_callable`/
+    `client_name_index_sync_callable`は、それぞれ`notion_webhook.handler_with_proxy`の
+    `calendar_sync`/`lead_sync`/`project_mirror_sync`/`client_name_index_sync`引数へそのまま
+    渡せる`Callable[[Mapping[str, Any], str], Any]`
     （`build_calendar_sync_callable`/`build_lead_sync_callable`/
-    `build_project_mirror_sync_callable`参照）。対応する連携先の環境変数が未設定の場合は
-    `None`になる（Webhookエンドポイント側は`None`の場合当該フックを渡さない想定であり、
-    アプリ起動・Webhookリクエスト処理自体はいずれも失敗しない）。
+    `build_project_mirror_sync_callable`/`build_client_name_index_sync_callable`参照）。
+    対応する連携先の環境変数が未設定の場合は`None`になる（Webhookエンドポイント側は`None`の
+    場合当該フックを渡さない想定であり、アプリ起動・Webhookリクエスト処理自体はいずれも
+    失敗しない）。
     """
 
     def __init__(self) -> None:
@@ -682,6 +718,9 @@ class ProductionSyncWiring:
         )
         self.project_mirror_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
             build_project_mirror_sync_callable(self.notion_page_client)
+        )
+        self.client_name_index_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
+            build_client_name_index_sync_callable(self.notion_page_client)
         )
 
 
@@ -717,6 +756,7 @@ __all__ = [
     "ProductionSyncWiring",
     "SkipTrackingDispatcher",
     "build_calendar_sync_callable",
+    "build_client_name_index_sync_callable",
     "build_id_mapping_store",
     "build_kintone_targets_by_db",
     "build_lead_sync_callable",

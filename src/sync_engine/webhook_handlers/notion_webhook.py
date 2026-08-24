@@ -295,6 +295,7 @@ def handler_with_proxy(
     calendar_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
     lead_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
     project_mirror_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
+    client_name_index_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
 ) -> dict[str, Any]:
     """Lambda/Cloud Functions エントリポイント（実際のNotion API Webhooksの軽量ペイロードを
     受け取る想定。API Gateway形式のHTTPイベントを想定）。実運用ではこちらを使う。
@@ -326,6 +327,14 @@ def handler_with_proxy(
     SyncEventについて`project_mirror_sync(sync_event.properties, sync_event.external_id)`を呼び、
     案件管理DBのPostgresミラー（`ProjectMirror`）を更新する
     （`src.project_mirror.sync.sync_project_to_mirror`を想定、2026-08-17）。
+
+    `client_name_index_sync`（省略可、既定`None`）を注入すると、db_key="client_master"
+    （取引先マスターDB）のSyncEventについて
+    `client_name_index_sync(sync_event.properties, sync_event.external_id)`を呼び、
+    取引先マスターDBの正規化取引先名→Notion page IDインデックス（`ClientNameIndex`）を
+    更新する（`src.relation_sync.sync.sync_client_name_to_index`を想定、2026-08-25。
+    `src.relation_sync.resolve.resolve_client_master_relation`がkintone等からのリレーション
+    解決に使う）。
 
     いずれも`dispatcher.dispatch()`の同期処理とは独立した副作用であり、例外を送出しても
     Webhook全体としては既存の200レスポンスをそのまま返す（メインの同期処理を絶対に
@@ -394,6 +403,16 @@ def handler_with_proxy(
         except Exception:
             logger.exception(
                 "unexpected error while syncing project mirror (non-fatal, "
+                "webhook still returns 200): page_id=%s",
+                sync_event.external_id,
+            )
+
+    if client_name_index_sync is not None and sync_event.db_key == "client_master":
+        try:
+            client_name_index_sync(sync_event.properties, sync_event.external_id)
+        except Exception:
+            logger.exception(
+                "unexpected error while syncing client name index (non-fatal, "
                 "webhook still returns 200): page_id=%s",
                 sync_event.external_id,
             )

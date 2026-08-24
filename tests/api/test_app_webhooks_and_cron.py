@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import _wiring_dependency, app
 from src.db_schema.base import Tool
+from src.db_schema.client_master import CLIENT_MASTER_SCHEMA
 from src.db_schema.contact import CONTACT_SCHEMA
 from src.db_schema.project import PROJECT_SCHEMA
 from src.sync_engine.dispatcher import DispatchResult, PropertyDispatchResult
@@ -52,12 +53,14 @@ class _FakeWiring:
         calendar_sync_callable: Any = None,
         lead_sync_callable: Any = None,
         project_mirror_sync_callable: Any = None,
+        client_name_index_sync_callable: Any = None,
     ) -> None:
         self.dispatcher = dispatcher or _SpyDispatcher()
         self.notion_page_client = notion_page_client
         self.calendar_sync_callable = calendar_sync_callable
         self.lead_sync_callable = lead_sync_callable
         self.project_mirror_sync_callable = project_mirror_sync_callable
+        self.client_name_index_sync_callable = client_name_index_sync_callable
         self.id_mapping_store = None
 
 
@@ -399,6 +402,55 @@ def test_webhook_notion_invokes_project_mirror_sync_callable_for_project_event(
     called_properties, called_page_id = project_mirror_sync_calls[0]
     assert called_page_id == "page-1"
     assert called_properties == {"案件名": "MSA-PJ-001"}
+
+
+def test_webhook_notion_invokes_client_name_index_sync_callable_for_client_master_event(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本番エンドポイント（webhook_notion）がwiring.client_name_index_sync_callableを実際に
+    handler_with_proxyへ渡し、db_key="client_master"のイベントで呼び出されることを確認する
+    （2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER対応: ClientNameIndexへの投入
+    経路が本番に配線されていなかった問題への対応）。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    raw_page = {
+        "id": "client-page-1",
+        "parent": {
+            "type": "database_id",
+            "database_id": CLIENT_MASTER_SCHEMA.notion_database_id,
+        },
+        "last_edited_time": "2026-08-25T09:00:00.000Z",
+        "properties": {
+            "取引先名": {"type": "title", "title": [{"plain_text": "テスト商事株式会社"}]},
+        },
+    }
+    client_name_index_sync_calls: list[tuple[dict, str]] = []
+
+    def _client_name_index_sync(properties: dict, page_id: str) -> None:
+        client_name_index_sync_calls.append((dict(properties), page_id))
+
+    _override_wiring(
+        _FakeWiring(
+            notion_page_client=_FakeNotionPageClient(raw_page),
+            client_name_index_sync_callable=_client_name_index_sync,
+        )
+    )
+
+    response = client.post(
+        "/api/webhooks/notion",
+        json={
+            "id": "evt_yyy",
+            "timestamp": "2026-08-25T09:00:00.000Z",
+            "type": "page.properties_updated",
+            "entity": {"id": "client-page-1", "type": "page"},
+            "data": {},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(client_name_index_sync_calls) == 1
+    called_properties, called_page_id = client_name_index_sync_calls[0]
+    assert called_page_id == "client-page-1"
+    assert called_properties == {"取引先名": "テスト商事株式会社"}
 
 
 def test_webhook_notion_invokes_lead_sync_callable_for_contact_event(
@@ -900,6 +952,97 @@ def test_cron_project_mirror_reconcile_returns_500_when_notion_not_configured(
 
     response = client.get(
         "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 500
+
+
+# --- /api/cron/relation-sync-reconcile --------------------------------------------------------
+# 2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER対応: ClientNameIndexへの投入経路が
+# 本番に一切配線されていなかった問題への対応(project-mirror-reconcileと同じ設計)。
+
+
+def test_cron_relation_sync_reconcile_returns_401_without_secret_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+
+    response = client.get("/api/cron/relation-sync-reconcile")
+
+    assert response.status_code == 401
+
+
+def test_cron_relation_sync_reconcile_returns_401_with_wrong_secret(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+
+    response = client.get(
+        "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer wrong-secret"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_cron_relation_sync_reconcile_skips_when_sync_not_enabled_by_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RELATION_SYNC_ENABLED未設定(既定)の場合、cronが`vercel.json`に登録された時点(env var
+    未設定でも)で毎晩ClientNameIndexへの書き込みが始まってしまわないよう、書き込みを
+    スキップすること(project-mirror-reconcileと同じ設計)。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.delenv("RELATION_SYNC_ENABLED", raising=False)
+    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.api.app.refresh_all_client_names", lambda **kwargs: calls.append(kwargs)
+    )
+
+    response = client.get(
+        "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"skipped": "RELATION_SYNC_ENABLED is not set"}
+    assert calls == []
+
+
+def test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
+    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+
+    calls: list[dict[str, Any]] = []
+
+    def _fake_refresh_all_client_names(*, notion_client: Any) -> dict[str, Any]:
+        calls.append({"notion_client": notion_client})
+        return {"synced_count": 9914, "deleted_count": 0}
+
+    monkeypatch.setattr("src.api.app.refresh_all_client_names", _fake_refresh_all_client_names)
+
+    response = client.get(
+        "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"synced_count": 9914, "deleted_count": 0}
+    assert len(calls) == 1
+
+
+def test_cron_relation_sync_reconcile_returns_500_when_notion_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NOTION_API_KEY等が未設定でNotionクライアントが構成されていない場合、成功したように
+    見えるno-opにせず明確な500エラーとして表面化させる。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
+    _override_wiring(_FakeWiring(notion_page_client=None))
+
+    response = client.get(
+        "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer correct-secret"}
     )
 
     assert response.status_code == 500

@@ -61,6 +61,7 @@ from src.gmail_sync.watch_registration import (
 )
 from src.incident_detection.notify import run_incident_digest
 from src.project_mirror.sync import refresh_all_projects
+from src.relation_sync.sync import refresh_all_client_names
 from src.reports.batch import run_report_batch
 from src.reports.revenue_target_settings import (
     RevenueTargetSettingsStore,
@@ -266,6 +267,7 @@ async def webhook_notion(
         calendar_sync=wiring.calendar_sync_callable,
         lead_sync=wiring.lead_sync_callable,
         project_mirror_sync=wiring.project_mirror_sync_callable,
+        client_name_index_sync=wiring.client_name_index_sync_callable,
     )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
@@ -543,6 +545,35 @@ def run_project_mirror_reconcile(
     return refresh_all_projects(
         notion_client=wiring.notion_page_client, user_directory=user_directory
     )
+
+
+@app.get("/api/cron/relation-sync-reconcile", dependencies=[Depends(verify_cron_secret)])
+def run_relation_sync_reconcile(
+    wiring: ProductionSyncWiring = Depends(_wiring_dependency),
+) -> dict[str, Any]:
+    """Vercel Cronから1日1回呼ばれる、取引先マスターDBの正規化取引先名→Notion page ID
+    インデックス（`ClientNameIndex`）の夜間reconciliationエントリポイント（2026-08-25、
+    shirokuma-sec/obasan-qualityレビューBLOCKER対応: ClientNameIndexへの投入経路が本番に
+    一切配線されていなかった問題への対応。`run_project_mirror_reconcile`と同じ設計）。
+
+    Webhook経由のリアルタイム同期（`client_name_index_sync`）だけでは、Webhook購読登録前の
+    既存データ・Webhook配信失敗・ページ削除等を取りこぼしうるため、`refresh_all_client_names()`
+    （初回バックフィルと共通の全件反映処理）をフル実行して整合させる。
+
+    `RELATION_SYNC_ENABLED`（既定false）が未設定の場合は書き込みをスキップする
+    （`run_project_mirror_reconcile`と同じ理由: cronの`vercel.json`登録自体は「インフラ整備
+    のみ」段階でも行うため、このガードが無いと環境変数を何も設定していなくてもcron登録した
+    時点で毎晩`ClientNameIndex`への書き込みが始まってしまい、「インフラ整備のみでは本番挙動は
+    変わらない」前提と食い違う）。
+    """
+    if os.environ.get("RELATION_SYNC_ENABLED", "").strip().lower() != "true":
+        return {"skipped": "RELATION_SYNC_ENABLED is not set"}
+    if wiring.notion_page_client is None:
+        logger.error(
+            "run_relation_sync_reconcile: NOTION_API_KEY等が未設定のため実行できません"
+        )
+        raise HTTPException(status_code=500, detail="notion sync is not configured")
+    return refresh_all_client_names(notion_client=wiring.notion_page_client)
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])

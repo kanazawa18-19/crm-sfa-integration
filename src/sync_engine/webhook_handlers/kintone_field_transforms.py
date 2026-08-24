@@ -35,10 +35,23 @@ Webhookが実質何もNotionへ反映しない状態になっていた）。以�
 
 以下は意図的に対象外（`zoho_field_transforms.py`と同じ「1フィールド単位のWebhook
 部分更新には不適切」という基準）:
-- リレーション解決が必要なフィールド（取引先マスター/案件名/担当営業/先方担当者/
-  提案サービス等。migrationコードで`_`プレフィックスの内部専用キーとして扱われているもの）。
-  Webhookイベント単体では関連ページIDを解決できない（migrationパッケージの名寄せロジック
-  のような重い処理を、同期的に応答する必要があるWebhookハンドラ内で行うのは非現実的）。
+- リレーション解決が必要なフィールドのうち、⑥アクション管理の「👨‍👩‍👧‍👦 取引先マスター」
+  （kintoneフィールドコード`client_name`、自由入力の会社名テキスト）は例外
+  （2026-08-25、`src/relation_sync/`によるツール間リレーション同期のリアルタイム化対応で
+  下記の通り対象化した）。他のリレーション解決が必要なフィールド（担当営業/先方担当者/
+  提案サービス等。migrationコードで`_`プレフィックスの内部専用キーとして扱われているもの）
+  は引き続き対象外: Webhookイベント単体では関連ページIDを解決できない（migrationパッケージ
+  の名寄せロジックのような重い処理を、同期的に応答する必要があるWebhookハンドラ内で行うのは
+  非現実的）。「取引先マスター」だけが例外になれた理由は、Notion APIへの問い合わせではなく
+  `ClientNameIndex`（取引先マスターDBの正規化済み取引先名→Notion page IDのPostgresローカル
+  ミラー）へのSELECT一発で完結し、Webhookの同期応答時間内に収まるため。
+  **同じ⑥アクション管理の「案件名」（案件管理DBへのリレーション）はこの例外に含めない**
+  （意図的なスコープ外）: kintoneのアクション管理には案件を一意に特定できる情報が
+  一切無く（`client_name`は取引先名の自由入力テキストのみで、案件そのものを絞り込める
+  列が存在しない）、取引先名のような1対1に近い名寄せが成立しない。複数の案件候補から
+  自動選択することはもちろん、レビューキューへ積んでも人間が判断できる材料が無く
+  意味を持たないため、対応するField Transformもレビューキュー登録も行わない
+  （将来、案件を特定できる列がkintone側に追加された場合は改めて検討する）。
 - 派生値フィールド（①取引先マスターDBの「営業ステータス」は紐づく複数の④案件管理DB
   レコードから導出するため、単一レコードのイベントからは計算できない。
   `kintone_client_master.derive_client_sales_status`参照）。
@@ -58,13 +71,63 @@ Webhookが実質何もNotionへ反映しない状態になっていた）。以�
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import contextvars
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 from src.migration._utils import normalize_date
 from src.migration.action_mapping import normalize_action_type
 from src.migration.kintone_client_master import normalize_customer_type
 from src.migration.project_mapping import normalize_project_status
 from src.migration.zoho_client_master import normalize_prefecture
+from src.relation_sync.resolve import resolve_client_master_relation
+
+# 変換関数の戻り値は`None`が「Notion側の値を明示的にクリアする」という意味で使われている
+# 既存の全エントリと共通（例: `lambda v: v or None`）。しかし
+# `_resolve_client_master_for_kintone_action`だけは意味が異なり、「まだ解決できていない」
+# ことを表す（この場合は取引先マスターのリレーション自体を触らずスキップしたい。誤って
+# `{"relation": []}`を送ってしまうと既存のリレーションを消してしまう）。既存のNoneの意味と
+# 衝突するため、このモジュール専用のセンチネル値`SKIP_FIELD`を返し、呼び出し元
+# （kintone_webhook.py）側で区別する。
+SKIP_FIELD = object()
+
+# `resolve_client_master_relation()`はRelationReviewQueueへの記録用に呼び出し元のkintone
+# レコードID（案件を横断するActionレコードのID）を必要とするが、このモジュールの変換関数は
+# 既存の全エントリと同じ「1フィールドの値→Notion書き込み用の値」という単純な1引数
+# シグネチャ（`Callable[[Any], Any]`）に統一されている。`src/audit_log/actor_context.py`が
+# 「どの経路からの書き込みか」を暗黙に深く伝播させるのと同じ`contextvars`の手法を再利用し、
+# kintone_webhook.py側がフィールド処理ループを開始する前に一度だけ設定する
+# （`kintone_action_record_context()`参照）。
+_current_kintone_action_record_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_kintone_action_record_id", default=None
+)
+
+
+@contextmanager
+def kintone_action_record_context(record_id: str) -> Iterator[None]:
+    """このwithブロック内での`_resolve_client_master_for_kintone_action()`呼び出しに、
+    現在処理中のkintoneレコードID（RelationReviewQueueへの記録用）を伝播させる。"""
+    token = _current_kintone_action_record_id.set(record_id)
+    try:
+        yield
+    finally:
+        _current_kintone_action_record_id.reset(token)
+
+
+def _resolve_client_master_for_kintone_action(client_name: Any) -> Any:
+    """アクション管理の`client_name`（顧客名、自由入力テキスト）を、⑥アクション履歴DBの
+    「👨‍👩‍👧‍👦 取引先マスター」リレーションへ解決する。解決できた場合はNotion page ID
+    （`build_notion_property_value`のRELATION型は単一idも受け付ける）、解決できなかった
+    場合（曖昧・候補なし。呼び出し先でRelationReviewQueueへ記録済み）は`SKIP_FIELD`を返す。
+    """
+    record_id = _current_kintone_action_record_id.get()
+    resolved = resolve_client_master_relation(
+        str(client_name) if client_name is not None else "",
+        source_tool="kintone",
+        source_record_id=record_id or "unknown",
+    )
+    return resolved if resolved is not None else SKIP_FIELD
+
 
 # 対象は transform_kintone_project() が実際にNotionプロパティへ書き込んでいるフィールドの
 # うち、リレーション解決が不要なもののみ（src/migration/project_mapping.py参照）。
@@ -105,12 +168,17 @@ _CLIENT_MASTER_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any
 }
 
 # 対象は transform_kintone_action() が実際にNotionプロパティへ書き込んでいるフィールドのうち、
-# リレーション解決・チェックボックス解析が不要なもののみ（src/migration/action_mapping.py参照）。
-# キーは実フィールドコード。この2件は2026-08-14、実際のkintone Webhook通知（本番）で確認済み
-# （GET /k/v1/app/form/fields.json?app=<action>でも再確認済み）。
+# チェックボックス解析が不要なもの、および取引先マスターリレーション（下記client_name、
+# 2026-08-25追加）。キーは実フィールドコード。actionContent/commentの2件は2026-08-14、実際の
+# kintone Webhook通知（本番）で確認済み（GET /k/v1/app/form/fields.json?app=<action>でも
+# 再確認済み）。client_nameも同API検証済み（モジュールdocstring参照）。
 _ACTION_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
     "actionContent": ("アクション種別", normalize_action_type),  # ラベル: アクション内容
     "comment": ("履歴メモ", lambda v: v or None),  # ラベル: コメント
+    # ラベル: 顧客名（法人・個人・施設）。自由入力テキストのため、ClientNameIndexでの
+    # 名寄せによりNotion取引先マスターDBへのリレーションを解決する（モジュールdocstring
+    # 参照）。戻り値は解決済みpage IDまたはSKIP_FIELD（未解決、プロパティ自体を書き込まない）。
+    "client_name": ("👨‍👩‍👧‍👦 取引先マスター", _resolve_client_master_for_kintone_action),
 }
 
 # db_key -> (kintoneフィールドコード -> (Notionプロパティ名, 値変換関数))。
