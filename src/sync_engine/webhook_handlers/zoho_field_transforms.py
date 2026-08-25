@@ -37,6 +37,15 @@ config/zoho_field_mapping.jsonにも実際のCustomModule3セクション（ラ�
 CustomModule3の実際のラベルと1つずつ突き合わせた結果すべて一致することを確認済みのため、
 デッドコードではなく実際のWebhook通知でも正しく解決される。
 
+■ ⑥アクション履歴の取引先マスターリレーション（2026-08-25、Round2追加）: 「案件名」「取引先」
+「【Notion】取引先マスター」は当初いずれも「1フィールド単位のWebhook部分更新には不適切」
+として意図的に対象外だったが、「取引先」（field6）・「【Notion】取引先マスター」（field22）
+の2つは`src.relation_sync.resolve_zoho.resolve_zoho_action_client_master_relation()`
+（field22の埋め込みNotionページIDヒント優先、無ければfield6の生の会社名を
+`resolve_client_master_relation()`で名寄せ）による例外対応を行った（kintone側の`client_name`
+と同じ設計思想、2026-08-25）。「案件名」は引き続き対象外（案件(project)リレーションは
+kintone側と同じ理由でスコープ外。下記`_ACTION_ZOHO_LABEL_TO_NOTION_FIELD`直前のコメント参照）。
+
 なぜ「ステージ」の値を圧縮・変換せず「営業ステータス」へそのまま書き込むのか:
 `transform_zoho_project()`のモジュールdocstring（2026-08-10確認）が既に記録している通り、
 Notion「営業ステータス」プロパティ自体は実データで100%空欄であり、実質的なステータス情報は
@@ -48,13 +57,87 @@ Zoho「ステージ」列（契約済/失注/解約（処理済み）/返信な�
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import contextvars
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Callable, Iterator, Mapping
 
 from src.migration._utils import normalize_date, parse_multi_value
 from src.migration.kintone_client_master import normalize_customer_type
 from src.migration.zoho_chain import normalize_approach_status
 from src.migration.zoho_client_master import normalize_prefecture
 from src.migration.zoho_project import _parse_bool, _parse_first_touch
+from src.relation_sync.resolve_zoho import (
+    ZohoActionRecordClient,
+    resolve_zoho_action_client_master_relation,
+)
+from src.sync_engine.webhook_handlers._relation_guard import CLIENT_MASTER_RELATION_PROPERTY
+
+# 変換関数の戻り値は`None`が「Notion側の値を明示的にクリアする」という意味で使われている
+# 既存の全エントリと共通（例: `lambda v: v or None`）。しかし
+# `_resolve_client_master_for_zoho_action`だけは意味が異なり、「まだ解決できていない」ことを
+# 表す（この場合は取引先マスターのリレーション自体を触らずスキップしたい。誤って
+# `{"relation": []}`を送ってしまうと既存のリレーションを消してしまう）。既存のNoneの意味と
+# 衝突するため、このモジュール専用のセンチネル値`SKIP_FIELD`を返し、呼び出し元
+# （zoho_webhook.py）側で区別する（kintone_field_transforms.pyの同名センチネルと同じ設計）。
+SKIP_FIELD = object()
+
+# `resolve_zoho_action_client_master_relation()`はRelationReviewQueueへの記録・Zoho APIでの
+# レコード全体取得（field22/field6のどちらか一方しか今回のWebhook通知に含まれない場合の補完）に
+# 呼び出し元のZohoレコードID・当該レコードの変更差分(delta)・Zohoクライアントを必要とするが、
+# このモジュールの変換関数は既存の全エントリと同じ「1フィールドの値→Notion書き込み用の値」
+# という単純な1引数シグネチャ（`Callable[[Any], Any]`）に統一されている。
+# `kintone_field_transforms.py`の`kintone_action_record_context()`と同じ`contextvars`の手法を
+# 再利用し、zoho_webhook.py側がレコードごとのフィールド処理ループを開始する前に一度だけ設定する
+# （`zoho_action_relation_context()`参照）。
+
+
+@dataclass(frozen=True)
+class _ZohoActionRelationContext:
+    record_id: str
+    changed_values: Mapping[str, Any]
+    zoho_client: ZohoActionRecordClient | None
+
+
+_current_zoho_action_relation_context: contextvars.ContextVar[
+    _ZohoActionRelationContext | None
+] = contextvars.ContextVar("current_zoho_action_relation_context", default=None)
+
+
+@contextmanager
+def zoho_action_relation_context(
+    record_id: str,
+    changed_values: Mapping[str, Any],
+    zoho_client: ZohoActionRecordClient | None,
+) -> Iterator[None]:
+    """このwithブロック内での`_resolve_client_master_for_zoho_action()`呼び出しに、現在処理中
+    のZohoレコードID・当該レコードのWebhook変更差分(delta)・Zohoクライアント（レコード全体
+    取得用、省略可）を伝播させる。"""
+    token = _current_zoho_action_relation_context.set(
+        _ZohoActionRelationContext(
+            record_id=record_id, changed_values=changed_values, zoho_client=zoho_client
+        )
+    )
+    try:
+        yield
+    finally:
+        _current_zoho_action_relation_context.reset(token)
+
+
+def _resolve_client_master_for_zoho_action(_value: Any) -> Any:
+    """⑥アクション履歴の「取引先」（field6）/「【Notion】取引先マスター」（field22）いずれかの
+    変更を、「👨‍👩‍👧‍👦 取引先マスター」リレーションへ解決する。`_value`（変更された当該フィールド
+    単体の値）は使わず、`zoho_action_relation_context()`で伝播された当該レコードの変更差分全体
+    （field22/field6両方を必要とする優先順位判定のため）を参照する。解決できた場合はNotion
+    page ID、できなかった場合（曖昧・候補なし・コンテキスト未設定）は`SKIP_FIELD`を返す。
+    """
+    ctx = _current_zoho_action_relation_context.get()
+    if ctx is None:
+        return SKIP_FIELD
+    resolved = resolve_zoho_action_client_master_relation(
+        record_id=ctx.record_id, changed_values=ctx.changed_values, zoho_client=ctx.zoho_client
+    )
+    return resolved if resolved is not None else SKIP_FIELD
 
 # Zohoラベル -> (Notionプロパティ名, 値変換関数)
 # 対象は transform_zoho_project() が実際にNotionプロパティへ書き込んでいるフィールドのみ。
@@ -130,9 +213,16 @@ _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] =
 # 対象は transform_zoho_action() が実際にNotionプロパティへ書き込んでいるフィールドのみ
 # （src/migration/zoho_action.py参照）。以下は意図的に含めない:
 # - "zoho_Act_ID": 内部専用キー。
-# - "案件名"/"取引先"/"【Notion】取引先マスター": リレーション解決が必要な
-#   `_案件_notion_page_id`/`_取引先_zoho_id`/`_取引先_notion_page_id`用の手がかりであり、
-#   1フィールド単位のWebhook部分更新には不適切（projectの`_`プレフィックスキーと同じ扱い）。
+# - "案件名"（`_案件_notion_page_id`用の手がかり）: 案件(project)リレーションは、kintone側
+#   （`kintone_field_transforms.py`のモジュールdocstring参照）と同じ理由でスコープ外。
+#   CustomModule2には「【Notion】案件」のような埋め込みNotionページIDヒントを持つフィールドが
+#   存在せず、「案件名」は案件そのものを一意に絞り込める情報を持たない自由記述テキストのため、
+#   自動選択はもちろんレビューキューへ積んでも人間が判断できる材料が無い（事前調査で確認済み、
+#   2026-08-25）。
+# - "取引先"/"【Notion】取引先マスター": 当初は`_取引先_zoho_id`/`_取引先_notion_page_id`用の
+#   手がかりとして「1フィールド単位のWebhook部分更新には不適切」で対象外だったが、
+#   2026-08-25（Round2）に`_resolve_client_master_for_zoho_action`による例外対応を行った
+#   （下記エントリ参照、モジュールdocstring「⑥アクション履歴の取引先マスターリレーション」欄）。
 # - "手当情報アップロード": FILES型で別モジュール（添付ファイル同期）が扱う対象。
 # - "アクション種別": ACTION_SCHEMA上はSELECT型で書き込み可能だが、transform_zoho_action()では
 #   Zoho側の同名列を直接読まず、「アクション名」の自由記述をclassify_zoho_action_type()で
@@ -161,6 +251,15 @@ _ACTION_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] 
     # 素直に反映する（最後に届いた方が勝つ、通常のdelta更新と同じ挙動）。
     "Notta": ("議事録・録画リンク", lambda v: v or None),
     "録画・音声ファイル": ("議事録・録画リンク", lambda v: v or None),
+    # 取引先マスターリレーション（2026-08-25、Round2追加）。「取引先」（field6）・
+    # 「【Notion】取引先マスター」（field22）のどちらが変更されても、同じ解決関数
+    # （`_resolve_client_master_for_zoho_action`、field22の埋め込みヒント優先）を呼ぶ
+    # （kintone側の`client_name`と同じ設計思想。上記モジュールdocstring参照）。
+    "取引先": (CLIENT_MASTER_RELATION_PROPERTY, _resolve_client_master_for_zoho_action),
+    "【Notion】取引先マスター": (
+        CLIENT_MASTER_RELATION_PROPERTY,
+        _resolve_client_master_for_zoho_action,
+    ),
 }
 
 # 対象は transform_zoho_client_master() が実際にNotionプロパティへ書き込んでいるフィールドのみ

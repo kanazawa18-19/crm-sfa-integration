@@ -7,7 +7,7 @@ import pytest
 
 from src.db_schema.base import Tool
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
-from src.sync_engine.id_mapping import SQLiteIdMappingStore
+from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.webhook_handlers.zoho_webhook import handler, zoho_payload_to_sync_events
 
@@ -508,6 +508,217 @@ def test_zoho_payload_to_sync_events_action_deliberately_excluded_field_is_skipp
     assert any("field7" in record.getMessage() for record in caplog.records)
 
 
+# --- action.取引先/【Notion】取引先マスター（取引先マスターリレーション解決、2026-08-25、Round2） ---
+
+
+def test_zoho_payload_to_sync_events_action_resolves_client_master_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.sync_engine.webhook_handlers import zoho_field_transforms as transforms_module
+
+    monkeypatch.setattr(
+        transforms_module,
+        "resolve_zoho_action_client_master_relation",
+        lambda **kwargs: "notion-page-1" if kwargs["record_id"] == DEFAULT_RECORD_ID else None,
+    )
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field6": "テスト商事"}}],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert events[0].properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
+def test_zoho_payload_to_sync_events_action_skips_client_master_relation_when_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未解決（SKIP_FIELD）の場合、プロパティ自体をpropertiesへ含めない（既存リレーションを
+    上書き・クリアしない）。"""
+    from src.sync_engine.webhook_handlers import zoho_field_transforms as transforms_module
+
+    monkeypatch.setattr(
+        transforms_module, "resolve_zoho_action_client_master_relation", lambda **kwargs: None
+    )
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[
+            {
+                "record_id": DEFAULT_RECORD_ID,
+                "values": {"field6": "曖昧な会社名", "field": "折り返し予定"},
+            }
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert "👨‍👩‍👧‍👦 取引先マスター" not in events[0].properties
+    assert events[0].properties["履歴メモ"] == "折り返し予定"
+
+
+def test_zoho_payload_to_sync_events_action_passes_zoho_client_through_relation_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """注入した`zoho_client`が、field22/field6のうち片方しか変更差分に含まれない場合の
+    レコード全体取得用としてresolve_zoho_action_client_master_relation()へ渡ること。"""
+    from src.sync_engine.webhook_handlers import zoho_field_transforms as transforms_module
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        transforms_module,
+        "resolve_zoho_action_client_master_relation",
+        lambda **kwargs: calls.append(kwargs) or "notion-page-1",
+    )
+    sentinel_zoho_client = object()
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field6": "テスト商事"}}],
+    )
+
+    zoho_payload_to_sync_events(
+        payload, {}, module_to_db_key=ACTION_MODULE_MAP, zoho_client=sentinel_zoho_client
+    )
+
+    assert calls == [
+        {
+            "record_id": DEFAULT_RECORD_ID,
+            "changed_values": {"field6": "テスト商事"},
+            "zoho_client": sentinel_zoho_client,
+        }
+    ]
+
+
+# --- 取引先マスターリレーションの「後勝ち」上書き防止ガード（action、kintoneと同じ設計） ---------
+
+
+class _FakeNotionRelationLookupClient:
+    def __init__(self, pages: dict[str, dict | None]) -> None:
+        self._pages = pages
+        self.get_page_calls: list[str] = []
+
+    def get_page(self, page_id: str) -> dict | None:
+        self.get_page_calls.append(page_id)
+        return self._pages.get(page_id)
+
+
+def _action_client_master_payload() -> dict:
+    return _payload(
+        module="CustomModule2",
+        affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"field6": "テスト商事"}}],
+    )
+
+
+def _resolve_action_relation_to(monkeypatch: pytest.MonkeyPatch, page_id: str | None) -> None:
+    from src.sync_engine.webhook_handlers import zoho_field_transforms as transforms_module
+
+    monkeypatch.setattr(
+        transforms_module, "resolve_zoho_action_client_master_relation", lambda **kwargs: page_id
+    )
+
+
+def test_zoho_payload_to_sync_events_drops_relation_when_already_set_on_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_action_relation_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(
+        IdMapping(notion_key="notion-page-1", db_key="action", zoho_id=DEFAULT_RECORD_ID)
+    )
+    notion_client = _FakeNotionRelationLookupClient(
+        {"notion-page-1": {"👨‍👩‍👧‍👦 取引先マスター": ["existing-client-page"]}}
+    )
+
+    events = zoho_payload_to_sync_events(
+        _action_client_master_payload(),
+        {},
+        module_to_db_key=ACTION_MODULE_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert "👨‍👩‍👧‍👦 取引先マスター" not in events[0].properties
+    assert notion_client.get_page_calls == ["notion-page-1"]
+
+
+def test_zoho_payload_to_sync_events_keeps_relation_when_not_yet_set_on_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_action_relation_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(
+        IdMapping(notion_key="notion-page-1", db_key="action", zoho_id=DEFAULT_RECORD_ID)
+    )
+    notion_client = _FakeNotionRelationLookupClient({"notion-page-1": {"👨‍👩‍👧‍👦 取引先マスター": []}})
+
+    events = zoho_payload_to_sync_events(
+        _action_client_master_payload(),
+        {},
+        module_to_db_key=ACTION_MODULE_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert events[0].properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
+def test_zoho_payload_to_sync_events_keeps_relation_when_record_not_yet_migrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_action_relation_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    notion_client = _FakeNotionRelationLookupClient({})
+
+    events = zoho_payload_to_sync_events(
+        _action_client_master_payload(),
+        {},
+        module_to_db_key=ACTION_MODULE_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert events[0].properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+    assert notion_client.get_page_calls == []
+
+
+def test_zoho_payload_to_sync_events_skips_guard_when_store_and_client_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """id_mapping_store/notion_client未注入時は既存の挙動のまま（自動解決した値をそのまま
+    使う）であることを確認する（後方互換）。"""
+    _resolve_action_relation_to(monkeypatch, "notion-page-1")
+
+    events = zoho_payload_to_sync_events(
+        _action_client_master_payload(), {}, module_to_db_key=ACTION_MODULE_MAP
+    )
+
+    assert events[0].properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
+def test_zoho_payload_to_sync_events_guard_does_not_apply_to_non_action_db_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """取引先マスターリレーション自動解決・上書き防止ガードは⑥アクション履歴DB専用であり、
+    他db_key（例: project）には一切影響しないこと。"""
+    store = SQLiteIdMappingStore(":memory:")
+    notion_client = _FakeNotionRelationLookupClient({})
+
+    events = zoho_payload_to_sync_events(
+        _payload(),
+        {},
+        module_to_db_key=MODULE_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert events[0].properties == {"営業ステータス": "商談中(B)", "初期費用": 500000.0}
+    assert notion_client.get_page_calls == []
+
+
 # --- client_master（Accounts）のper-fieldマッピング -----------------------------------------
 
 
@@ -749,6 +960,46 @@ def test_handler_dispatches_to_injected_dispatcher_when_zoho_enabled(
     assert json.loads(response["body"]) == {
         "results": [{"external_id": DEFAULT_RECORD_ID, "skipped": True}]  # unknown_record
     }
+
+
+def test_handler_forwards_id_mapping_store_notion_client_and_zoho_client_to_sync_event_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """handler()に注入したid_mapping_store/notion_client/zoho_clientが、取引先マスター
+    リレーション解決・「後勝ち」上書き防止ガード用にzoho_payload_to_sync_events()へそのまま
+    渡されること（2026-08-25、Round2、kintone_webhook.pyの同種テストと同じ設計）。"""
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.zoho_webhook._default_module_to_db_key",
+        lambda: MODULE_MAP,
+    )
+    captured: dict = {}
+    original = zoho_payload_to_sync_events
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.zoho_webhook.zoho_payload_to_sync_events", _spy
+    )
+    sentinel_store = object()
+    sentinel_notion_client = object()
+    sentinel_zoho_client = object()
+    event = {"body": json.dumps(_payload()), "headers": {}}
+
+    handler(
+        event,
+        context=None,
+        id_mapping_store=sentinel_store,
+        notion_client=sentinel_notion_client,
+        zoho_client=sentinel_zoho_client,
+    )
+
+    assert captured["id_mapping_store"] is sentinel_store
+    assert captured["notion_client"] is sentinel_notion_client
+    assert captured["zoho_client"] is sentinel_zoho_client
 
 
 def test_handler_dispatches_all_events_for_a_batched_notification_with_multiple_ids(

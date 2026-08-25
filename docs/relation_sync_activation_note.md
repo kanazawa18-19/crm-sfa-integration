@@ -195,3 +195,253 @@ note.md`の同名セクション参照）。`ClientNameIndex`側は本番inciden
   同一と判定できないケース）を人が事前に承認した上で紐付けられる「承認済みエイリアス辞書」
   のような仕組みは、今回未実装。`RelationReviewQueue`の運用が実際に回り始め、この種の
   ケースが頻出するようであれば将来の検討候補とする。
+
+## Round2（2026-08-25）: Zoho側の解決・Dispatcherの新規レコード作成
+
+Round1（本ドキュメントの本編、kintoneアクション履歴の`client_name`解決）に続き、以下2点を
+`RELATION_SYNC_ENABLED`を流用したまま追加した（新規フラグは1つのみ追加、後述）。
+
+### Zoho「取引先」/「【Notion】取引先マスター」の解決
+
+Zohoのアクション履歴モジュール（CustomModule2）で`field6`（取引先、生の会社名）または
+`field22`（【Notion】取引先マスター、移行時にNotionページへの直リンクが埋め込まれている
+ことがある自由記述）が変更された場合、`src/relation_sync/resolve_zoho.py`の
+`resolve_zoho_action_client_master_relation()`が以下の優先順位で解決する:
+
+1. `field22`に埋め込まれたNotionページIDヒント（`src/migration/_utils.py`の
+   `extract_notion_page_id()`）があれば、そのまま使う（名寄せ不要、最も信頼性が高い）。
+2. 無ければ`field6`の生の会社名を、Round1と同じ`resolve_client_master_relation()`に渡して
+   名寄せする（完全一致のみ自動、曖昧なら`RelationReviewQueue`へ、既存の安全設計を踏襲）。
+
+`field22`/`field6`のどちらか一方しかWebhook通知の変更差分（delta）に含まれない場合、
+もう一方の現在値はZoho API（`get_record`）でレコード全体を取得して補う。この機能全体も
+`RELATION_SYNC_ENABLED`でガードする（未設定時はZoho APIへの追加問い合わせも一切行わない）。
+
+kintone側と同じ「後勝ち」上書き防止ガード（Notion側に既に値が設定されていれば自動解決の
+結果があっても上書きしない）は、`src/sync_engine/webhook_handlers/_relation_guard.py`へ
+ツール非依存の形で切り出し、kintone/Zoho両Webhookハンドラで共有している。
+
+「案件」(project)リレーションはkintone側と同じ理由（案件を一意に特定できる情報が無く、
+自動選択はもちろんレビューキューへ積んでも人間が判断できる材料が無い）で今回もスコープ外。
+
+### Dispatcherの新規レコード作成（`unknown_record`スキップの解消）
+
+`src/sync_engine/dispatcher.py`の`Dispatcher.dispatch()`は、`IdMapping`が見つからない
+（＝対応するNotionページが未作成の）kintone/Zoho発イベントを従来`unknown_record`として
+即座にスキップしていたが、新しい環境変数`AUTO_CREATE_NEW_RECORDS_ENABLED`（既定`false`）を
+有効にすると、レコード全体データを取得しNotionに新規ページを作成するようになる
+（`Dispatcher._try_create_new_record()`参照）。
+
+`RELATION_SYNC_ENABLED`とは意図的に別変数にした: 新規ページ作成は既存プロパティの更新より
+「間違えた場合の実害が大きい」（重複ページ・不完全なページの量産リスク）ため、独立して
+ON/OFF・段階導入できるようにする（`PROJECT_MIRROR_SYNC_ENABLED`/`PROJECT_MIRROR_READ_ENABLED`
+の分離と同じ設計思想）。
+
+処理の流れ:
+
+1. `event.source_tool`（kintone/Zohoのみ対象。Notion・スプレッドシートは対象外）の
+   `SyncTarget.get_record()`でレコード全体データを取得する。
+2. `src/sync_engine/new_record_builder.py`の`build_notion_properties_for_new_record()`が、
+   既存のWebhook部分更新用1フィールド単位変換テーブル（`KINTONE_FIELD_TRANSFORMS`/
+   `ZOHO_LABEL_FIELD_MAPPINGS`、上記の取引先マスターリレーション解決も含む）をレコード全体の
+   各フィールドへループ適用し、Notionプロパティへ変換する。
+3. 対象db_key（`get_schema(event.db_key)`）の`RequirementLevel.REQUIRED`なプロパティが
+   変換後のデータに1つでも欠けていれば、不完全なページを作らずスキップする（**どのdb_keyで
+   実際に発火するか・常にスキップされるかは下記「新規作成が実際に機能するdb_key一覧」参照**）。
+4. Notionページ作成の直前にもう一度`IdMapping`の有無を確認し（下記「重複作成の防止」参照）、
+   Notion側に新規ページを作成する。
+5. `IdMappingStore.upsert(mapping, expected_last_synced_at=None)`（新規作成を期待するCAS）で
+   新しいマッピングを登録する（`last_synced_at`は当該イベントの`occurred_at`をそのまま使う）。
+   一時的な障害に備えて数回リトライし、それでも失敗した場合は下記「重複作成の防止」の
+   補償アクション・アラートが動く。
+
+案件(project)のような紐付け先を特定できないリレーションは、変換テーブルにエントリが
+存在しないため、新規作成時も自然に空欄のまま作成される（上記Round1・Zoho解決と同じ方針）。
+
+### 新規作成が実際に機能するdb_key一覧（2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER対応）
+
+`RequirementLevel.REQUIRED`なプロパティと、各`KINTONE_FIELD_TRANSFORMS`/
+`ZOHO_LABEL_FIELD_MAPPINGS`テーブルを実際に突き合わせた結果、**新規作成が発火する
+db_key・発火元ツールの組み合わせは限られている**（安全側に倒した結果であり不具合ではないが、
+「`AUTO_CREATE_NEW_RECORDS_ENABLED=true`にしたのに新規ページが全く作られない」という
+一見バグに見える状態が正常であることが分かるよう明記する）。
+
+| db_key（DatabaseSchema.key） | kintone発イベント | Zoho発イベント |
+|---|---|---|
+| `client_master`（①取引先マスター） | ✅ 機能する（「顧客名」→「取引先名」で必須のtitleを満たせる） | ✅ 機能する（「取引先名」→「取引先名」） |
+| `project`（④案件管理） | ❌ 常にスキップ（`KINTONE_FIELD_TRANSFORMS["project"]`に必須titleプロパティ「案件名」に対応するkintoneフィールドが無い） | ✅ 機能する（「案件名」→「案件名」、「ステージ」→「営業ステータス」の両必須プロパティを満たせる） |
+| `action`（⑥アクション履歴） | ❌ 常にスキップ（必須titleプロパティに対応するkintoneフィールドが無い） | ❌ 常にスキップ（必須プロパティ「アクション種別」に対応するZohoラベルのマッピングが無い。「アクション名」→titleは満たせるが片方不足で作成されない） |
+| `chain`（⑤チェーン） | （kintoneはchainを同期対象としないため、そもそもkintone発イベント自体が発生しない） | ✅ 機能する（「チェーン名・グループ名」→「グループ名」） |
+| `contact`（②連絡先） | （同上、kintoneはcontactを同期しない） | ❌ 常にスキップ（必須プロパティ「取引先マスター」リレーションに対応するZohoラベルのマッピングが無い） |
+| `product`（③サービス・商品） | （同上、kintoneはproductを同期しない） | ❌ 常にスキップ（必須プロパティ「課金形態」に対応するZoho列が存在しない。移行時も既定値を書き込んでいるだけで導出元が無い） |
+
+要点:
+- **kintoneは`client_master`のみ**（`project`/`action`は共にtitleプロパティを導出できず常に
+  スキップ）。kintoneはそもそも`chain`/`contact`/`product`を同期対象としていないため
+  （`kintone_webhook.py`の`_APP_ID_ENV_VARS`参照）、これら3db_keyのkintone発イベント自体が
+  発生しない。
+- **Zohoは`client_master`/`project`/`chain`の3db_key**（`action`/`contact`/`product`は
+  必須プロパティのうち1つ以上が変換テーブルに存在せず常にスキップ）。
+- 対応するkintone/Zoho側フィールドが将来追加・整備された場合は、この表を更新すること
+  （`KINTONE_FIELD_TRANSFORMS`/`ZOHO_LABEL_FIELD_MAPPINGS`のコメントも合わせて参照）。
+
+### 重複作成の防止（2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER対応、同日の
+最終レビューで追加のBLOCKERを1件対応）
+
+`notion_target.upsert_record()`（Notionページ作成）が成功した直後に`IdMapping`登録
+（`IdMappingStore.upsert()`）が失敗すると、Notionページは作成済みなのにマッピング未登録の
+まま処理が終わり、kintone/Zoho側の自動リトライや真の並行Webhookで同じイベントが再処理
+された場合、`IdMapping`が依然見つからず**同じレコードに対応するNotionページが重複作成
+されうる**。`Dispatcher._try_create_new_record()`は以下で対応している:
+
+1. **再確認**: Notionページ作成の直前にもう一度`_resolve_mapping()`でmappingの有無を
+   確認する（レース窓を縮める。完全な排他制御ではない）。
+2. **`create_page()`呼び出し自体の失敗を安全側に倒す**（最終レビューBLOCKER対応）:
+   サーバーレス環境ではNotion APIへのPOST自体は成功したがレスポンス受信前にタイムアウト/
+   接続断/5xxが発生し、`notion_target.upsert_record()`が例外を送出するケースが現実的に
+   起こりうる。**この例外を捕捉せず呼び出し元へ伝播させると、Webhookハンドラの広い
+   `except Exception`が500を返し、kintone/Zoho側のリトライで`mapping`が依然Noneのまま
+   本メソッドへ再突入し、保護ロジックを一切経由せずに重複ページ作成が再現してしまう**
+   （Round2が最初から防ごうとしていた問題そのもの）。そのため`Dispatcher`はこの例外を
+   `_handle_uncertain_notion_page_creation()`で捕捉し、**Webhookレスポンスとしては200
+   （受理済み・リトライ不要）を返す**一方、ページが実際に作成されたか不明である旨を
+   Slackへ明確に伝え、人による手動確認を促す（自動で危険な推測をするより、人が確認できる
+   形で安全側に倒すという、Round1の「完全一致のみ自動反映・曖昧なら要確認キューへ」と
+   同じ設計思想）。このケースはページIDが分からない（Notion APIからの応答を受け取れて
+   いない）ため、下記4の自動アーカイブは行えない。
+3. **CASでの登録 + リトライ**: `IdMapping`登録は`IdMappingStore.upsert(mapping,
+   expected_last_synced_at=None)`（新規作成を期待するcompare-and-swap）で行う
+   （`Dispatcher._register_new_record_mapping()`参照）。
+   - `DuplicateExternalIdError`（外部IDが既に別のnotion_keyに紐づいている＝真の並行作成に
+     よる恒久的な失敗）は、リトライしても結果が変わらないため待機・リトライせず即座に
+     諦める。
+   - それ以外の例外（DB接続断・レート制限等の一時的な障害を想定）は、固定の短い待機
+     （0.2秒、指数バックオフまでは導入していない。高々2回のリトライのため）を挟んで
+     最大2回リトライする。
+4. **補償アクション + アラート**: 上記3が最終的に失敗した場合、作成済みのNotionページを
+   アーカイブする補償アクションを試み（`Dispatcher._handle_orphaned_notion_page()`）、
+   成否によらず孤児ページのNotion page IDを含む明確なSlackアラートを出す（サイレントな
+   500返却でリトライ→再度の重複作成を誘発させない設計）。
+5. **自己修復（バックエンド依存、要注意）**: 真の並行実行で両者ともNotionページ作成に
+   成功してしまった場合、`IdMappingStore.upsert()`は`db_key`単位で外部ID
+   （kintone_id/zoho_id）の重複を検査する（`DuplicateExternalIdError`）ため、後勝ちの
+   登録は多くの場合失敗し、そちら側のページが上記4の補償アクションでアーカイブされる。
+   **ただしこの自己修復は`IdMappingStore`の実装に依存する**:
+   - `SQLiteIdMappingStore`（ローカル開発・簡易本番用）はDBレベルのUNIQUE INDEXを持つため、
+     事前チェックをすり抜けても最終的に確実に検知できる（belt-and-suspenders）。
+   - `NotionIdMappingStore`（本番運用で使う想定のバックエンド、
+     `src/sync_engine/notion_id_mapping.py`）は**自身のdocstringが明記する通りDBレベルの
+     一意制約が無く**、重複検知は`upsert()`内の事前チェック（クエリでの検索）のみが
+     唯一の防御線である。ほぼ同時に2つのWebhookが処理された場合、両方の事前チェックが
+     「重複なし」と判定してしまい`DuplicateExternalIdError`を検知できないレース窓が
+     残る（分散ロック等による解消は今回のスコープ外）。この場合、重複ページのどちらも
+     アーカイブされないまま残る可能性があるため、下記「動作確認チェックリスト」・
+     「ロールバック」の手動確認が重要になる。
+
+それでも真の同時実行を完全には防げない（1のチェックと実際の`create_page()`の間にも短い
+レース窓は残る）。Notion API側にリソース単位の悲観的ロック機構が無いため、これは既知の
+残存リスクとして受け入れている（発生確率は極めて低く、発生しても4の補償アクション・
+5の自己修復（バックエンドによっては不完全）で対処する設計）。
+
+### 運用可視性（Slack通知）
+
+新規レコード作成に関する以下4つのタイミングでSlackへ通知する
+（`SLACK_WEBHOOK_URL_ALERT`環境変数が未設定の場合は通知しない、既存の`notify_conflict`と
+同じ「未設定なら無効化」パターン）:
+
+- ✅ 新規ページ作成成功時（`notify_new_record_created`）
+- ⚠️ 必須プロパティ不足によるスキップ時（`notify_new_record_issue`、
+  `reason="missing_required_properties"`）
+- 🚨 （最重要）`IdMapping`登録失敗時（`notify_new_record_issue`、
+  `reason="mapping_registration_failed"`。孤児ページのNotion page IDを含む）
+- 🚨 （最重要）Notion API呼び出し自体が例外で失敗し、ページ作成の成否が不明な時
+  （`notify_new_record_issue`、`reason="notion_creation_status_unknown"`。Notion page IDは
+  不明なため含まれない。手動でNotion側を直接確認する必要がある）
+
+**`WebhookSlackNotifier`自体はSlackへの送信に失敗しても例外を投げない**（3回目最終レビュー
+BLOCKER対応、2026-08-25）: 上記4つの通知のうち特に🚨2件は「他の保護ロジックが失敗した後の
+最終防衛線」として呼ばれるため、通知処理自体（`requests.post()`）がタイムアウト等で失敗した
+場合でもログに残すのみで静かに戻る実装にしてある。個別の呼び出し箇所（`Dispatcher`側）で
+try/exceptを重ねる必要はない（Notifier自体が「絶対に失敗しない」実装になっているため）。
+
+### 自動作成されたページを監査ログで確認する方法
+
+`HttpNotionClient.create_page()`は`record_notion_write(action="create", ...)`で
+監査ログ（`AuditLog`テーブル、`dashboard/prisma/schema.prisma`のモデル定義・`src/audit_log/`）
+へ書き込みを記録する（本機能専用の実装ではなく、既存の監査ログ記録がそのまま新規作成にも
+適用される）。`src/audit_log/actor_context.py`の`set_actor()`はWebhookハンドラ側
+（`kintone_webhook.py`/`zoho_webhook.py`の`handler()`）で`"kintone_webhook"`/`"zoho_webhook"`を
+`actorSource`として設定しているため、**自動作成されたページは`AuditLog.actorSource`が
+`"kintone_webhook"`または`"zoho_webhook"`、`action`が`"create"`のレコードとして残る**（人が
+手動でNotion上に作成したページとは区別できる）。
+
+確認クエリ例（実カラム名は`dashboard/prisma/schema.prisma`の`AuditLog`モデル定義で検証済み、
+Neon Postgresを想定）:
+
+```sql
+-- 直近7日間に自動作成されたページ一覧（db_key別件数）
+SELECT "dbKey", COUNT(*)
+FROM "AuditLog"
+WHERE action = 'create'
+  AND "actorSource" IN ('kintone_webhook', 'zoho_webhook')
+  AND "createdAt" > now() - interval '7 days'
+GROUP BY "dbKey"
+ORDER BY 2 DESC;
+
+-- 個別レコードの詳細（Notion page ID・作成元Webhook・作成日時）
+SELECT "notionPageId", "dbKey", "actorSource", "createdAt"
+FROM "AuditLog"
+WHERE action = 'create'
+  AND "actorSource" IN ('kintone_webhook', 'zoho_webhook')
+ORDER BY "createdAt" DESC
+LIMIT 100;
+```
+
+### Round2のロールアウト手順（2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER対応）
+
+Round1（本ドキュメント冒頭「ロールアウト順序」）と同水準の手順。**前提条件として
+`RELATION_SYNC_ENABLED=true`が既に有効化・安定運用されていること**
+（`AUTO_CREATE_NEW_RECORDS_ENABLED`単体では取引先マスターリレーション解決は動くが
+（`resolve_client_master_relation`/`resolve_zoho_action_client_master_relation`は
+`RELATION_SYNC_ENABLED`を個別に見るため）、Round1が未検証のままRound2を有効化すると、
+新規作成されるページのリレーションが解決されない状態＝将来的な手戻りが生じやすいため、
+実務上はRound1を先に安定稼働させてから進めることを推奨する）。
+
+1. **インフラ整備をデプロイ**: `AUTO_CREATE_NEW_RECORDS_ENABLED`未設定（既定`false`）のまま、
+   `src/sync_engine/new_record_builder.py`・`Dispatcher._try_create_new_record()`一式を
+   デプロイする。本番挙動は変化しない（従来通り`unknown_record`スキップのまま）。
+2. **Slack通知先の確認**: `SLACK_WEBHOOK_URL_ALERT`が設定済みであることを確認する
+   （未設定だと上記「運用可視性」の通知が届かず、問題発生に気づきにくくなる）。
+3. **`AUTO_CREATE_NEW_RECORDS_ENABLED=true`**: Vercel本番環境変数に設定する。有効化後、
+   kintone/Zohoで上記「新規作成が実際に機能するdb_key一覧」に該当する新規レコードが
+   作成されるたびに、対応するNotionページが自動作成される。
+4. **動作確認チェックリスト**（有効化直後、最低1〜2日は毎日確認すること）:
+   - Vercelのfunction logsで`/api/webhooks/kintone`・`/api/webhooks/zoho`が引き続き200を
+     返していることを確認する。
+   - Slackの通知チャンネルで✅（成功）・⚠️（必須プロパティ不足）・🚨（マッピング登録失敗、
+     または Notion API呼び出し自体の失敗、いずれも最重要）の通知内容を確認する。
+     - `reason="mapping_registration_failed"`の🚨が来た場合、通知に含まれるNotion page ID
+       を直接開き、アーカイブ済みかどうか（「ページはアーカイブ済みです」の文言の有無）を
+       確認し、アーカイブされていなければ手動でアーカイブまたは内容を確認して正式な
+       マッピングを手動登録する。
+     - `reason="notion_creation_status_unknown"`の🚨が来た場合（Notion page IDは通知に
+       含まれない）、上記「自動作成されたページを監査ログで確認する方法」のクエリと、
+       通知に含まれる`external_id`・`db_key`を突き合わせ、実際にページが作成されたか
+       どうかをNotion上で直接確認する（監査ログにも記録が無ければページ自体が作られて
+       いない可能性が高い）。ページが見つかった場合は内容を確認したうえで、正式な
+       IdMappingを手動登録するか、不要であればアーカイブする。
+   - 上記「自動作成されたページを監査ログで確認する方法」のクエリで、想定通りの件数・db_key
+     で新規ページが作成されているか確認する（想定外に多い場合、意図しない新規作成が
+     頻発している可能性がある）。
+   - Notion上で実際に作成されたページを開き、プロパティが正しく入っているか（特に取引先
+     マスターリレーションが解決されているか）を目視確認する。
+5. **ロールバック**: `AUTO_CREATE_NEW_RECORDS_ENABLED=false`に戻すだけで新規作成は即座に
+   無効化できる（コード変更不要）。ただし**既に作成済みのNotionページ（重複・不完全なものを
+   含む）はロールバックで自動的には消えない**。フラグを戻した後、上記の監査ログクエリ・
+   Slack通知履歴を元に、以下を手動で後始末すること:
+   - 重複ページ（同一の取引先/案件等が2件以上作成されている）: 内容を比較し、片方を
+     アーカイブする（`RelationReviewQueue`と異なり、重複ページの自動検出・自動マージの
+     仕組みは今回未実装）。
+   - 不完全ページ（🚨アラートでアーカイブに失敗したまま残っているもの）: Notion上で直接
+     内容を確認し、アーカイブまたは正式なIdMappingを手動でDBへ登録する（`IdMappingStore`の
+     実装（SQLite/`NotionIdMappingStore`）に応じた方法で行うこと）。

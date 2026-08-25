@@ -18,7 +18,7 @@ from src.db_schema.base import (
 from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.conflict_resolver import RejectedData, ResolutionAction
 from src.sync_engine.dispatcher import Dispatcher
-from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
+from src.sync_engine.id_mapping import DuplicateExternalIdError, IdMapping, SQLiteIdMappingStore
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_targets.base import SyncTarget
 from src.sync_engine.sync_targets.spreadsheet_sync import SYNC_LOG_SHEET_NAME, SpreadsheetSyncTarget
@@ -36,27 +36,41 @@ class FakeSyncTarget(SyncTarget):
     """
 
     def __init__(
-        self, tool: Tool, records: dict[str, dict[str, Any]] | None = None, *, always_skip: bool = False
+        self,
+        tool: Tool,
+        records: dict[str, dict[str, Any]] | None = None,
+        *,
+        always_skip: bool = False,
+        delete_raises: bool = False,
+        upsert_raises: Exception | None = None,
     ) -> None:
         self.tool = tool
         self._records = records or {}
         self._always_skip = always_skip
+        self._delete_raises = delete_raises
+        self._upsert_raises = upsert_raises
         self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
         self.delete_calls: list[str] = []
+        self.get_record_calls: list[str] = []
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        self.get_record_calls.append(external_id)
         return self._records.get(external_id)
 
     def upsert_record(
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
     ) -> str | None:
         self.upsert_calls.append((external_id, dict(properties)))
+        if self._upsert_raises is not None:
+            raise self._upsert_raises
         if self._always_skip:
             return None
         return external_id or "new-id"
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self.delete_calls.append(external_id)
+        if self._delete_raises:
+            raise RuntimeError("archive failed")
 
 
 @pytest.fixture
@@ -78,6 +92,42 @@ def mapping(store: SQLiteIdMappingStore) -> IdMapping:
     )
     store.upsert(m)
     return m
+
+
+class _FlakyIdMappingStore:
+    """`SQLiteIdMappingStore`をラップし、`upsert()`を指定回数だけ失敗させるテスト用スタブ
+    （BLOCKER1対応、2026-08-25: 新規レコード作成時のIdMapping登録リトライ・補償アクションの
+    検証用。`upsert()`以外は内側のストアへそのまま委譲する）。
+    """
+
+    def __init__(
+        self, inner: SQLiteIdMappingStore, *, fail_times: int, exc: Exception | None = None
+    ) -> None:
+        self._inner = inner
+        self._fail_times = fail_times
+        self._exc = exc or RuntimeError("transient id mapping store failure")
+        self.upsert_attempts = 0
+
+    def get(self, notion_key: str) -> IdMapping | None:
+        return self._inner.get(notion_key)
+
+    def upsert(self, mapping: IdMapping, **kwargs: Any) -> None:
+        self.upsert_attempts += 1
+        if self.upsert_attempts <= self._fail_times:
+            raise self._exc
+        self._inner.upsert(mapping, **kwargs)
+
+    def delete(self, notion_key: str) -> None:
+        self._inner.delete(notion_key)
+
+    def find_by_external_id(self, tool: Tool, external_id: str, *, db_key: str) -> IdMapping | None:
+        return self._inner.find_by_external_id(tool, external_id, db_key=db_key)
+
+    def update_last_synced_at(self, notion_key: str, synced_at: datetime) -> None:
+        self._inner.update_last_synced_at(notion_key, synced_at)
+
+    def list_by_db(self, db_key: str) -> list[IdMapping]:
+        return self._inner.list_by_db(db_key)
 
 
 def _all_targets() -> dict[Tool, FakeSyncTarget]:
@@ -110,13 +160,48 @@ class FakeSpreadsheetClient:
 
 
 class SpyNotifier:
-    """SlackNotifier.notify_conflict の呼び出し内容を記録するテスト用スタブ。"""
+    """SlackNotifier の呼び出し内容を記録するテスト用スタブ。"""
 
     def __init__(self) -> None:
         self.notified: list[RejectedData] = []
+        self.new_record_created_calls: list[dict[str, Any]] = []
+        self.new_record_issue_calls: list[dict[str, Any]] = []
 
     def notify_conflict(self, rejected: RejectedData) -> None:
         self.notified.append(rejected)
+
+    def notify_new_record_created(
+        self, *, db_key: str, source_tool: Tool, external_id: str, notion_page_id: str
+    ) -> None:
+        self.new_record_created_calls.append(
+            {
+                "db_key": db_key,
+                "source_tool": source_tool,
+                "external_id": external_id,
+                "notion_page_id": notion_page_id,
+            }
+        )
+
+    def notify_new_record_issue(
+        self,
+        *,
+        db_key: str,
+        source_tool: Tool,
+        external_id: str,
+        reason: str,
+        detail: str,
+        notion_page_id: str | None = None,
+    ) -> None:
+        self.new_record_issue_calls.append(
+            {
+                "db_key": db_key,
+                "source_tool": source_tool,
+                "external_id": external_id,
+                "reason": reason,
+                "detail": detail,
+                "notion_page_id": notion_page_id,
+            }
+        )
 
 
 # --- 無限ループ防止 -------------------------------------------------------------------
@@ -174,6 +259,631 @@ def test_dispatch_skips_unknown_record(store: SQLiteIdMappingStore) -> None:
 
     assert result.skipped
     assert result.reason == "unknown_record"
+
+
+# --- 新規レコード作成（AUTO_CREATE_NEW_RECORDS_ENABLED、2026-08-25、Round2） ------------------
+
+
+def _kintone_client_master_record() -> dict[str, Any]:
+    # KINTONE_FIELD_TRANSFORMS["client_master"]の実フィールドコード。「顧客名」→「取引先名」
+    # （REQUIRED・title）のみで必須プロパティを満たせる（client_masterの必須項目は
+    # 「取引先名」のみ、tests/sync_engine/test_new_record_builder.pyと同じ前提）。
+    return {"顧客名": "新規商事", "顧客種別": "ホテル・旅館", "TEL": "03-1234-5678"}
+
+
+def _zoho_project_record() -> dict[str, Any]:
+    # ZOHO_LABEL_FIELD_MAPPINGS["project"]の実api_name（config/zoho_field_mapping.json検証済み、
+    # tests/sync_engine/webhook_handlers/test_zoho_webhook.pyと同じ実api_name）。projectの必須
+    # プロパティ「案件名」「営業ステータス」の両方を満たせる。
+    return {"Deal_Name": "新規案件", "Stage": "商談中(B)"}
+
+
+def test_dispatch_skips_unknown_record_when_flag_unset_even_though_source_data_would_suffice(
+    store: SQLiteIdMappingStore,
+) -> None:
+    """既存動作の完全維持を確認する回帰テスト: AUTO_CREATE_NEW_RECORDS_ENABLEDが未設定の場合、
+    ソース側に必須プロパティを満たす十分なデータがあっても新規作成は一切行わず、従来通り
+    unknown_recordとしてスキップすること（ソースレコードの取得すら行わない）。"""
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={"取引先名": "新規商事"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "unknown_record"
+    assert targets[Tool.KINTONE].get_record_calls == []
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master") is None
+
+
+def test_dispatch_creates_new_notion_page_from_kintone_record_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},  # Webhookの変更差分そのものは新規作成では使わない（全体データを再取得）。
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    assert targets[Tool.KINTONE].get_record_calls == ["kintone-new-1"]
+    assert len(targets[Tool.NOTION].upsert_calls) == 1
+    external_id, properties = targets[Tool.NOTION].upsert_calls[0]
+    assert external_id is None
+    assert properties == {
+        "取引先名": "新規商事",
+        "顧客種別": "ホテル・旅館",
+        "TEL": "03-1234-5678",
+    }
+    new_mapping = store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master")
+    assert new_mapping is not None
+    assert new_mapping.notion_key == "new-id"  # FakeSyncTarget.upsert_recordの既定戻り値
+    assert new_mapping.last_synced_at == NOW
+    # obasan-quality/shirokuma-secレビューWARN対応（2026-08-25）: 新規ページ作成成功もSlackへ通知する。
+    assert notifier.new_record_created_calls == [
+        {
+            "db_key": "client_master",
+            "source_tool": Tool.KINTONE,
+            "external_id": "kintone-new-1",
+            "notion_page_id": "new-id",
+        }
+    ]
+    assert notifier.new_record_issue_calls == []
+
+
+def test_dispatch_creates_new_notion_page_from_zoho_record_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {"zoho-new-1": _zoho_project_record()})
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="project",
+        external_id="zoho-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    external_id, properties = targets[Tool.NOTION].upsert_calls[0]
+    assert external_id is None
+    assert properties == {"案件名": "新規案件", "営業ステータス": "商談中(B)"}
+    new_mapping = store.find_by_external_id(Tool.ZOHO, "zoho-new-1", db_key="project")
+    assert new_mapping is not None
+    assert new_mapping.notion_key == "new-id"
+
+
+def test_dispatch_skips_new_record_creation_when_source_tool_has_no_target(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    del targets[Tool.ZOHO]
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="project",
+        external_id="zoho-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_source_unavailable"
+    assert targets[Tool.NOTION].upsert_calls == []
+
+
+def test_dispatch_skips_new_record_creation_when_source_record_not_found(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()  # Tool.ZOHOのFakeSyncTargetにレコード登録なし。
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="project",
+        external_id="zoho-missing",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_source_not_found"
+    assert targets[Tool.NOTION].upsert_calls == []
+
+
+def test_dispatch_skips_new_record_creation_when_required_property_missing(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """必須プロパティが欠けている場合、不完全なNotionページを作らずスキップすること
+    （例: ⑥アクション履歴DBのtitleプロパティ「商談回数・電話回数・メール回数（何回目）」は
+    KINTONE_FIELD_TRANSFORMS["action"]にkintone側の対応フィールドが存在しないため常に導出
+    できず、kintone発のアクション新規レコードは必須項目不足で作成されない）。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-action-1": {"comment": "折り返し予定"}}
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="action",
+        external_id="kintone-action-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    with caplog.at_level("WARNING"):
+        result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_missing_required_properties"
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert store.find_by_external_id(Tool.KINTONE, "kintone-action-1", db_key="action") is None
+    assert any("missing" in r.getMessage() for r in caplog.records)
+    # obasan-quality/shirokuma-secレビューWARN対応（2026-08-25）: 必須プロパティ不足による
+    # スキップもSlackへ通知する。
+    assert len(notifier.new_record_issue_calls) == 1
+    issue = notifier.new_record_issue_calls[0]
+    assert issue["reason"] == "missing_required_properties"
+    assert issue["notion_page_id"] is None
+    assert notifier.new_record_created_calls == []
+
+
+def test_dispatch_skips_new_record_creation_when_notion_target_missing(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    del targets[Tool.NOTION]
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_notion_target_unavailable"
+
+
+def test_dispatch_skips_new_record_creation_when_notion_creation_is_skipped_by_target(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """Notion側の新規ページ作成自体が（本番では`_MultiDbNotionSyncTarget`がdb_key未設定等の
+    理由で）スキップされた場合、IdMappingを登録せずスキップとして報告すること。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    targets[Tool.NOTION] = FakeSyncTarget(Tool.NOTION, always_skip=True)
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_creation_failed"
+    assert store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master") is None
+
+
+# --- 重複作成の防止（BLOCKER1対応、2026-08-25） ------------------------------------------------
+
+
+def test_dispatch_skips_new_record_creation_when_mapping_appears_immediately_before_create(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """Notionページ作成直前の再確認（レース窓縮小）: `_resolve_mapping()`の最初の呼び出しでは
+    Noneだったが、その直後（＝並行Webhookが先に作成を完了させた想定）にmappingが見つかった
+    場合、重複してNotionページを作成しないこと。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    original_resolve_mapping = dispatcher._resolve_mapping  # noqa: SLF001 (テストのため直接差し替え)
+    call_count = 0
+
+    def _resolve_mapping_then_appear(event: SyncEvent) -> IdMapping | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return original_resolve_mapping(event)
+        # 2回目（create_page直前の再確認）: 並行Webhookが先に作成・登録を終えた状態を模す。
+        return IdMapping(
+            notion_key="concurrently-created-page",
+            db_key="client_master",
+            kintone_id="kintone-new-1",
+            last_synced_at=NOW,
+        )
+
+    monkeypatch.setattr(dispatcher, "_resolve_mapping", _resolve_mapping_then_appear)
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_concurrent_creation_detected"
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert call_count == 2
+
+
+def test_dispatch_retries_mapping_registration_and_succeeds_on_transient_failure(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """IdMapping登録が一時的な障害で失敗しても、リトライで最終的に成功すれば通常通り成功
+    として扱い、補償アクション（アーカイブ）は発生しないこと。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    monkeypatch.setattr("src.sync_engine.dispatcher.time.sleep", lambda seconds: None)
+    flaky_store = _FlakyIdMappingStore(store, fail_times=1)
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(flaky_store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    assert flaky_store.upsert_attempts == 2  # 1回目失敗、2回目成功
+    assert targets[Tool.NOTION].delete_calls == []  # 最終的に成功したので補償アクション不要
+    new_mapping = store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master")
+    assert new_mapping is not None
+    assert notifier.new_record_created_calls  # 成功として通常通り通知される
+    assert notifier.new_record_issue_calls == []
+
+
+def test_dispatch_archives_orphaned_notion_page_when_mapping_registration_permanently_fails(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """IdMapping登録が数回リトライしても失敗し続けた場合、作成済みのNotionページを
+    アーカイブする補償アクションを実行し、孤児ページIDを含むSlackアラートを出すこと。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    monkeypatch.setattr("src.sync_engine.dispatcher.time.sleep", lambda seconds: None)
+    flaky_store = _FlakyIdMappingStore(store, fail_times=999)  # 常に失敗
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(flaky_store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    with caplog.at_level("ERROR"):
+        result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_mapping_registration_failed"
+    # リトライ回数分（初回+2回）だけ試行し、深追いしすぎない。
+    assert flaky_store.upsert_attempts == 3
+    # 補償アクション: 作成済みのNotionページ（"new-id"）をアーカイブする。
+    assert targets[Tool.NOTION].delete_calls == ["new-id"]
+    # 実際にはstore.upsert()が一度も成功していないため、マッピングは登録されないまま。
+    assert store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master") is None
+    assert any("mapping registration failed" in r.getMessage() for r in caplog.records)
+    assert len(notifier.new_record_issue_calls) == 1
+    issue = notifier.new_record_issue_calls[0]
+    assert issue["reason"] == "mapping_registration_failed"
+    assert issue["notion_page_id"] == "new-id"
+    assert "アーカイブ済み" in issue["detail"]
+    assert notifier.new_record_created_calls == []
+
+
+def test_dispatch_alerts_even_when_orphaned_page_archive_itself_fails(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """補償アクション（アーカイブ）自体にも失敗した場合、サイレントに諦めず、その旨を
+    明示したSlackアラートを出すこと。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    monkeypatch.setattr("src.sync_engine.dispatcher.time.sleep", lambda seconds: None)
+    flaky_store = _FlakyIdMappingStore(store, fail_times=999)
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    targets[Tool.NOTION] = FakeSyncTarget(Tool.NOTION, delete_raises=True)
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(flaky_store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_mapping_registration_failed"
+    assert targets[Tool.NOTION].delete_calls == ["new-id"]  # アーカイブは試みられた
+    assert len(notifier.new_record_issue_calls) == 1
+    issue = notifier.new_record_issue_calls[0]
+    assert issue["notion_page_id"] == "new-id"
+    assert "アーカイブにも失敗" in issue["detail"]
+
+
+def test_dispatch_stops_immediately_on_duplicate_external_id_without_retrying(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """obasan-quality/shirokuma-secレビューWARN対応（2026-08-25、最終レビュー）:
+    `DuplicateExternalIdError`（真の並行作成による恒久的な失敗）はリトライしても結果が
+    変わらないため、待機・リトライせず即座に補償アクション（アーカイブ+アラート）へ進むこと。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.time.sleep", lambda seconds: sleep_calls.append(seconds)
+    )
+    duplicate_error = DuplicateExternalIdError(Tool.KINTONE, "kintone-new-1", "other-page")
+    flaky_store = _FlakyIdMappingStore(store, fail_times=999, exc=duplicate_error)
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(flaky_store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_mapping_registration_failed"
+    assert flaky_store.upsert_attempts == 1  # リトライしない(1回だけ試して即座に諦める)
+    assert sleep_calls == []  # 待機もしない
+    assert targets[Tool.NOTION].delete_calls == ["new-id"]  # 補償アクションは通常通り実行される
+    assert len(notifier.new_record_issue_calls) == 1
+    assert notifier.new_record_issue_calls[0]["reason"] == "mapping_registration_failed"
+
+
+def test_dispatch_register_mapping_backs_off_between_retries_but_not_after_last_attempt(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """obasan-quality/shirokuma-secレビューWARN対応（2026-08-25、最終レビュー）: 一時的な
+    障害によるリトライの間には固定の短い待機を挟み、最終試行後には待機しないこと。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.time.sleep", lambda seconds: sleep_calls.append(seconds)
+    )
+    flaky_store = _FlakyIdMappingStore(store, fail_times=999)  # 常に失敗(汎用の一時的エラー)
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    dispatcher = Dispatcher(flaky_store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    dispatcher.dispatch(event)
+
+    # 初回+2回リトライ(計3回試行) → 試行間の待機は2回(3回目の失敗後は待機しない)。
+    assert flaky_store.upsert_attempts == 3
+    assert len(sleep_calls) == 2
+    assert all(seconds > 0 for seconds in sleep_calls)
+
+
+# --- create_page()自体が例外を送出するケース（最終レビューBLOCKER対応、2026-08-25） -------------
+# notion_target.upsert_record()（実体はNotion APIへのPOST）自体がタイムアウト・接続断・5xx等で
+# 例外を送出した場合、「ページが実際に作られたか不明」な状態として扱い、Webhookハンドラへ
+# 例外を伝播させない(=500でリトライを誘発させない)こと。
+
+
+def test_dispatch_treats_notion_creation_call_exception_as_unknown_status_and_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    targets[Tool.NOTION] = FakeSyncTarget(
+        Tool.NOTION, upsert_raises=TimeoutError("Notion API response timed out")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    with caplog.at_level("ERROR"):
+        # 例外が呼び出し元まで伝播しない(=Webhookハンドラが500を返さない)ことそのものが
+        # このテストの主眼(前回レビュー指摘: この保護が無いと、ここでraiseした例外が
+        # webhook_handlers側の広いexcept Exceptionまで伝わり500応答→kintone/Zoho側の
+        # リトライで重複ページ作成が再現していた)。
+        result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_creation_status_unknown"
+    # ページIDが分からない(Notion APIからの応答自体を受け取れていない)ため、アーカイブの
+    # 補償アクションは行えない(delete_recordは呼ばれない)。
+    assert targets[Tool.NOTION].delete_calls == []
+    # IdMappingも当然登録されない。
+    assert store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master") is None
+    assert any("Notion page creation API call raised" in r.getMessage() for r in caplog.records)
+    assert len(notifier.new_record_issue_calls) == 1
+    issue = notifier.new_record_issue_calls[0]
+    assert issue["reason"] == "notion_creation_status_unknown"
+    assert issue["notion_page_id"] is None
+    assert "手動でNotion側を確認" in issue["detail"]
+    assert notifier.new_record_created_calls == []
+
+
+def test_dispatch_completes_safely_even_when_slack_notification_itself_fails(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """3回目最終レビューBLOCKER対応（2026-08-25）の統合確認: `_handle_uncertain_notion_page_
+    creation()`のような「他の保護ロジックが失敗した後の最終防衛線」内のSlack通知自体が
+    失敗しても、`dispatch()`全体が例外を送出せず安全に完了すること。実際の
+    `WebhookSlackNotifier`（モックではなく本番実装）を使い、その内部の`requests.post()`が
+    例外を投げる状況を再現する（`WebhookSlackNotifier`自体が例外を握りつぶす設計になった
+    ことの裏付け。個別呼び出し箇所ごとのtry/exceptには依存しない）。"""
+    from src.sync_engine.slack_notifier import WebhookSlackNotifier
+
+    def _raise_from_requests_post(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("slack webhook unavailable")
+
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.slack_notifier.requests.post", _raise_from_requests_post
+    )
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    targets[Tool.NOTION] = FakeSyncTarget(
+        Tool.NOTION, upsert_raises=TimeoutError("Notion API response timed out")
+    )
+    real_notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    dispatcher = Dispatcher(store, targets, slack_notifier=real_notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    # dispatch()が例外を送出しない(=Webhookハンドラが500を返さない)ことそのものが主眼。
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_creation_status_unknown"
+
+
+def test_dispatch_new_record_creation_uses_new_record_builder_and_propagates_relation_value(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """`Dispatcher`が新規レコード作成時に`build_notion_properties_for_new_record`
+    （取引先マスターリレーション解決を含むプロパティ組み立て、`new_record_builder.py`参照）を
+    正しい引数で呼び出し、その戻り値（解決済みリレーションを含む）をそのままNotionページ作成に
+    使うことを確認する（個々のリレーション解決ロジック自体は
+    tests/sync_engine/test_new_record_builder.pyで別途検証済みのため、ここでは統合の配線のみ
+    確認する）。"""
+    import src.sync_engine.dispatcher as dispatcher_module
+
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    captured: dict[str, Any] = {}
+
+    def _fake_builder(
+        *, source_tool: Tool, db_key: str, external_id: str, raw_record: dict[str, Any]
+    ) -> dict[str, Any]:
+        captured.update(
+            source_tool=source_tool, db_key=db_key, external_id=external_id, raw_record=raw_record
+        )
+        return {
+            "商談回数・電話回数・メール回数（何回目）": "【電話】4回目",
+            "アクション種別": "テレアポ",
+            "👨‍👩‍👧‍👦 取引先マスター": "notion-client-page-1",
+        }
+
+    monkeypatch.setattr(
+        dispatcher_module, "build_notion_properties_for_new_record", _fake_builder
+    )
+    raw_zoho_record = {"Name": "【電話】4回目", "field6": "テスト商事"}
+    targets = _all_targets()
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {"zoho-action-1": raw_zoho_record})
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="action",
+        external_id="zoho-action-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    assert captured == {
+        "source_tool": Tool.ZOHO,
+        "db_key": "action",
+        "external_id": "zoho-action-1",
+        "raw_record": raw_zoho_record,
+    }
+    external_id, properties = targets[Tool.NOTION].upsert_calls[0]
+    assert external_id is None
+    assert properties["👨‍👩‍👧‍👦 取引先マスター"] == "notion-client-page-1"
 
 
 def test_dispatch_skips_stale_event(store: SQLiteIdMappingStore, mapping: IdMapping) -> None:

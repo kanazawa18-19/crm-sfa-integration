@@ -34,6 +34,14 @@ Notion/kintone/Zoho/スプレッドシートAPIクライアントを組み立て
 書き込みが発生するため、現状の運用（移行済みレコードへの反映）ではdb_key解決自体は
 概ね成功する想定だが、万一解決に失敗した場合でも「サイレントに成功したふりをする」
 ことだけは避ける設計とする。
+
+唯一の例外が`_MultiDbNotionSyncTarget.upsert_record()`の新規Notionページ作成
+（`AUTO_CREATE_NEW_RECORDS_ENABLED`、2026-08-25、Round2）: `Dispatcher`はkintone/Zoho発の
+未知レコード（`IdMapping`が存在しない）を検知した時点で、そのイベント自身が持つ
+`db_key`（Webhookハンドラ側で既に確定済み）を`external_id=None`と一緒に渡してくる。
+この場合はdb_keyを取り違える余地が無い（`IdMappingStore`の逆引きに依存しない）ため、
+指定db_key用のNotionクライアントで新規ページを作成する。詳細は
+`Dispatcher._try_create_new_record()`のdocstring参照。
 """
 
 from __future__ import annotations
@@ -118,12 +126,29 @@ class _MultiDbNotionSyncTarget(SyncTarget):
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
     ) -> str | None:
         if external_id is None:
-            logger.warning(
-                "_MultiDbNotionSyncTarget: 新規Notionページ作成(external_id未指定)はdb_keyを"
-                "特定できないため未サポートです。書き込みをスキップします: properties=%r",
-                properties,
-            )
-            return None
+            # 新規Notionページ作成（`AUTO_CREATE_NEW_RECORDS_ENABLED`、2026-08-25、Round2）。
+            # `Dispatcher`が呼び出し元（kintone/Zoho由来の新規レコード）から確定済みのdb_keyを
+            # 渡してきた場合のみ作成する。db_key未指定（従来の呼び出し経路）や、指定db_key用の
+            # クライアントが存在しない場合は、誤ったスキーマで作成してしまうリスクを避け、
+            # 引き続き書き込みをスキップする。
+            if db_key is None:
+                logger.warning(
+                    "_MultiDbNotionSyncTarget: 新規Notionページ作成(external_id未指定)はdb_keyが"
+                    "指定されていないため未サポートです。書き込みをスキップします: "
+                    "properties=%r",
+                    properties,
+                )
+                return None
+            create_client = self._clients_by_db_key.get(db_key)
+            if create_client is None:
+                logger.warning(
+                    "_MultiDbNotionSyncTarget: db_key=%r 用のNotionクライアントが未設定のため、"
+                    "新規ページ作成をスキップします: properties=%r",
+                    db_key,
+                    properties,
+                )
+                return None
+            return create_client.create_page(properties)
         client = self._client_for(external_id)
         if client is None:
             # 誤ったdb_keyのスキーマで書き込む（プロパティ型変換を誤り、Notion APIへ不正な
@@ -418,8 +443,15 @@ def build_kintone_targets_by_db() -> dict[str, KintoneSyncTarget]:
     return targets
 
 
-def build_zoho_targets_by_db() -> dict[str, ZohoSyncTarget]:
-    """db_key単位のZohoSyncTargetを組み立てる（`ENABLE_ZOHO=False`時は空辞書）。
+def build_zoho_client() -> HttpZohoClient | None:
+    """本番用の`HttpZohoClient`を1つ組み立てる（`ENABLE_ZOHO=False`または認証情報未設定時は
+    `None`）。
+
+    `build_zoho_targets_by_db()`（db_key単位の`ZohoSyncTarget`群）が内部で使うクライアントと
+    同じ組み立てロジック。`src.relation_sync.resolve_zoho.resolve_zoho_action_client_master_relation`
+    が要求する`get_record(module, record_id)`（モジュール名を都度指定できる生のクライアント）
+    をそのまま満たすため、`ProductionSyncWiring.zoho_action_client`（Zoho Webhookの取引先
+    マスターリレーション解決用、2026-08-25、Round2）はこちらを直接使う。
 
     `ZOHO_ACCOUNTS_BASE_URL`/`ZOHO_API_BASE_URL`環境変数が設定されている場合、
     `HttpZohoClient`へ明示的に渡す（Zohoはアカウントの所属データセンター
@@ -428,7 +460,7 @@ def build_zoho_targets_by_db() -> dict[str, ZohoSyncTarget]:
     （本モジュールで`.com`をデフォルト値として重複定義しないため）。
     """
     if not is_zoho_enabled():
-        return {}
+        return None
     zoho_kwargs: dict[str, str] = {}
     accounts_base_url = os.environ.get("ZOHO_ACCOUNTS_BASE_URL")
     if accounts_base_url:
@@ -437,9 +469,26 @@ def build_zoho_targets_by_db() -> dict[str, ZohoSyncTarget]:
     if api_base_url:
         zoho_kwargs["api_base_url"] = api_base_url
     try:
-        client = HttpZohoClient(**zoho_kwargs)
+        return HttpZohoClient(**zoho_kwargs)
     except ValueError:
         logger.warning("Zoho認証情報が未設定のため、Zoho向け同期は無効化されます")
+        return None
+
+
+def build_zoho_targets_by_db(client: HttpZohoClient | None = None) -> dict[str, ZohoSyncTarget]:
+    """db_key単位のZohoSyncTargetを組み立てる（`ENABLE_ZOHO=False`時は空辞書）。
+
+    `client`（省略可）を渡すと、その`HttpZohoClient`インスタンスをそのまま使い回す
+    （新たに構築しない）。`ProductionSyncWiring.__init__`が`zoho_action_client`用に既に
+    構築した`HttpZohoClient`を`build_production_dispatcher()`経由でここへ渡すことで、
+    同一プロセス内でOAuthアクセストークンキャッシュを持つ`HttpZohoClient`が二重生成される
+    （＝キャッシュも二重化しトークンリフレッシュ回数が無駄に倍増する）事故を防ぐ
+    （shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-25）。省略時は従来通り
+    `build_zoho_client()`で新規に構築する。
+    """
+    if client is None:
+        client = build_zoho_client()
+    if client is None:
         return {}
     return {schema.key: ZohoSyncTarget(client, schema.zoho_api_module) for schema in ALL_SCHEMAS}
 
@@ -604,12 +653,19 @@ def build_client_name_index_sync_callable(
     return functools.partial(sync_client_name_to_index, notion_client=notion_client)
 
 
-def build_production_dispatcher(*, id_mapping_store: IdMappingStore | None = None) -> Dispatcher:
+def build_production_dispatcher(
+    *, id_mapping_store: IdMappingStore | None = None, zoho_client: HttpZohoClient | None = None
+) -> Dispatcher:
     """本番用のDispatcher（4ツール分のSyncTarget＋IdMappingStore）を組み立てる。
 
     各ツールの認証情報が未設定の場合、当該ツールへの同期は無効化される（そのツールは
     `targets`辞書に含まれず、`Dispatcher`は当該ツールへの書き込みを単にスキップする。
     `Dispatcher._write_value`はtargetが無い場合に何もしないため安全）。
+
+    `zoho_client`（省略可）は`build_zoho_targets_by_db()`へそのまま渡す。
+    `ProductionSyncWiring.__init__`が`zoho_action_client`用に既に構築済みの`HttpZohoClient`を
+    渡すことで、`HttpZohoClient`（OAuthアクセストークンキャッシュを持つ）が同一プロセス内で
+    二重生成されるのを防ぐ（shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-25）。
     """
     store = id_mapping_store or build_id_mapping_store()
     targets: dict[Tool, SyncTarget] = {}
@@ -622,7 +678,7 @@ def build_production_dispatcher(*, id_mapping_store: IdMappingStore | None = Non
     if kintone_targets:
         targets[Tool.KINTONE] = _MultiDbKintoneSyncTarget(kintone_targets)
 
-    zoho_targets = build_zoho_targets_by_db()
+    zoho_targets = build_zoho_targets_by_db(zoho_client)
     if zoho_targets:
         targets[Tool.ZOHO] = _MultiDbZohoSyncTarget(zoho_targets)
 
@@ -696,6 +752,12 @@ class ProductionSyncWiring:
     対応する連携先の環境変数が未設定の場合は`None`になる（Webhookエンドポイント側は`None`の
     場合当該フックを渡さない想定であり、アプリ起動・Webhookリクエスト処理自体はいずれも
     失敗しない）。
+
+    `zoho_action_client`は、Zoho Webhook（`zoho_webhook.py`）の⑥アクション履歴DB取引先
+    マスターリレーション自動解決（2026-08-25、Round2）用。field22/field6のうち今回のWebhook
+    通知の変更差分に含まれない側をZoho APIでレコード全体取得して補うために使う
+    （`src.relation_sync.resolve_zoho.resolve_zoho_action_client_master_relation`参照）。
+    `ENABLE_ZOHO=False`または認証情報未設定の場合は`None`になる。
     """
 
     def __init__(self) -> None:
@@ -704,12 +766,18 @@ class ProductionSyncWiring:
         self.notion_page_client: HttpNotionClient | None = (
             next(iter(notion_clients.values())) if notion_clients else None
         )
+        self.zoho_action_client: HttpZohoClient | None = build_zoho_client()
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
-            build_production_dispatcher(id_mapping_store=self.id_mapping_store)
+            build_production_dispatcher(
+                id_mapping_store=self.id_mapping_store, zoho_client=self.zoho_action_client
+            )
         )
         # build_production_dispatcher()内で改めてNotionクライアント一式を構築しており
         # 二重にはなるが、Webhook受信のたびに毎回構築するわけではない（モジュールレベルで
         # 1回だけ構築してプロセス内で使い回す。get_production_wiring()参照）ため許容する。
+        # Zohoクライアント（OAuthアクセストークンキャッシュを持つ）は上記の`zoho_action_client`
+        # 引数渡しにより二重生成を避けている（Notionと異なりトークンキャッシュの二重化という
+        # 実害があるため、shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-25）。
         self.calendar_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
             build_calendar_sync_callable()
         )
@@ -764,6 +832,7 @@ __all__ = [
     "build_production_dispatcher",
     "build_project_mirror_sync_callable",
     "build_spreadsheet_targets_by_db",
+    "build_zoho_client",
     "build_zoho_targets_by_db",
     "get_production_wiring",
     "reset_production_wiring",

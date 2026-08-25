@@ -87,7 +87,9 @@ from typing import Any, Mapping
 from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
+from src.relation_sync.resolve_zoho import ZohoActionRecordClient
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
+from src.sync_engine.id_mapping import IdMappingStore
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.sync_targets.zoho_sync import is_zoho_enabled
@@ -99,8 +101,21 @@ from src.sync_engine.webhook_handlers._common import (
     unauthorized_response,
     verify_webhook_body_token,
 )
-from src.sync_engine.webhook_handlers.zoho_field_transforms import ZOHO_LABEL_FIELD_MAPPINGS
+from src.sync_engine.webhook_handlers._relation_guard import (
+    CLIENT_MASTER_RELATION_PROPERTY,
+    NotionRelationLookupClient,
+    drop_client_master_relation_if_already_set,
+)
+from src.sync_engine.webhook_handlers.zoho_field_transforms import (
+    SKIP_FIELD,
+    ZOHO_LABEL_FIELD_MAPPINGS,
+    zoho_action_relation_context,
+)
 from src.sync_engine.zoho_field_mapping import resolve_zoho_field_label
+
+# ⑥アクション履歴DBのdb_key（KINTONE_FIELD_TRANSFORMS/ZOHO_LABEL_FIELD_MAPPINGSと同じキー）。
+# 取引先マスターリレーション解決（zoho_action_relation_context）を適用する対象db_keyの判定に使う。
+_ACTION_DB_KEY = "action"
 
 
 def _default_module_to_db_key() -> dict[str, str]:
@@ -130,6 +145,9 @@ def zoho_payload_to_sync_events(
     headers: Mapping[str, str],
     *,
     module_to_db_key: Mapping[str, str] | None = None,
+    id_mapping_store: IdMappingStore | None = None,
+    notion_client: NotionRelationLookupClient | None = None,
+    zoho_client: ZohoActionRecordClient | None = None,
 ) -> list[SyncEvent]:
     """Zoho Notification WebhookペイロードをSyncEventのリストへ変換する。
 
@@ -137,6 +155,14 @@ def zoho_payload_to_sync_events(
     （"ids"に複数件、"affected_values"にもレコードIDごとに対応するエントリが複数含まれる）
     ことがあり、そのすべてを取りこぼさず処理する必要があるため（2026-08-12発覚のBLOCKER:
     旧実装は`ids[0]`のみを見ており、バッチ通知の2件目以降が無条件に無視されデータ消失していた）。
+
+    `id_mapping_store`/`notion_client`（いずれも省略可、既定`None`）を両方注入した場合のみ、
+    ⑥アクション履歴DBの取引先マスターリレーション自動解決に、kintone側と同じ「後勝ち」上書き
+    防止ガードが働く（`_relation_guard.drop_client_master_relation_if_already_set`参照）。
+    `zoho_client`（省略可）は、当該レコードの取引先マスターリレーション解決に必要な
+    field22（【Notion】取引先マスター）/field6（取引先）のうち、今回のWebhook通知の変更差分に
+    含まれない側をZoho APIでレコード全体取得して補うために使う
+    （`src.relation_sync.resolve_zoho.resolve_zoho_action_client_master_relation`参照）。
     """
     resolver = module_to_db_key if module_to_db_key is not None else _default_module_to_db_key()
     module = payload["module"]
@@ -179,70 +205,103 @@ def zoho_payload_to_sync_events(
         # 早期に警告ログを出しておく（Notionのようなrollup/formula型の大量発生は想定しにくいため、
         # notion_webhook.pyのような型ホワイトリストまでは設けない簡易対応）。
         properties: dict[str, Any] = {}
-        for api_name, value in matched_values.items():
-            # api_name -> ラベルへ変換できない（マッピング未登録）場合と、ラベルは解決できても
-            # 後続のマッピングでNotionプロパティへ対応付けられない場合を、同じ「未知の
-            # フィールドとしてスキップ」の警告ログへ合流させる（呼び出し元にとってはどちらも
-            # 「このフィールドは同期対象外」という同じ結果のため）。このスキップは当該レコード
-            # （イベント）のみに閉じており、バッチ内の他レコードの処理には影響しない。
-            label = resolve_zoho_field_label(module, api_name)
-            if label is None:
-                logger.warning(
-                    "ignoring unknown Zoho property api_name='%s' for db_key=%r (not in schema)",
-                    api_name,
-                    db_key,
-                )
-                continue
-
-            if field_mapping is not None:
-                # db_key専用のper-fieldマッピングテーブル（ZOHO_LABEL_FIELD_MAPPINGS）がある場合:
-                # Zohoラベルをそのまま最終的なNotionプロパティ名として使わず、
-                # (Notionプロパティ名, 値変換関数)を引く。確度/例外スイッチ/FORMULA・ROLLUP型
-                # プロパティ等、意図的にマッピングから除外されているラベルはここで見つからず、
-                # 上と同じ「未知のプロパティ」として警告ログを出しスキップする
-                # （こちらも想定内の挙動であり、エラーにはしない）。
-                mapped = field_mapping.get(label)
-                if mapped is None:
+        # zoho_action_relation_context(): db_key="action"の「取引先」（field6）/
+        # 「【Notion】取引先マスター」（field22）変更（取引先マスターリレーション自動解決）が、
+        # 当該レコードの変更差分全体・レコードID・Zoho APIクライアントを暗黙に参照できるよう
+        # 伝播させる（zoho_field_transforms.pyのモジュールdocstring参照）。他db_key/フィールドは
+        # このコンテキストを参照しないため無害。
+        with zoho_action_relation_context(record_id, matched_values, zoho_client):
+            for api_name, value in matched_values.items():
+                # api_name -> ラベルへ変換できない（マッピング未登録）場合と、ラベルは解決できても
+                # 後続のマッピングでNotionプロパティへ対応付けられない場合を、同じ「未知の
+                # フィールドとしてスキップ」の警告ログへ合流させる（呼び出し元にとってはどちらも
+                # 「このフィールドは同期対象外」という同じ結果のため）。このスキップは当該レコード
+                # （イベント）のみに閉じており、バッチ内の他レコードの処理には影響しない。
+                label = resolve_zoho_field_label(module, api_name)
+                if label is None:
                     logger.warning(
-                        "ignoring unknown Zoho property api_name='%s' (label=%r) for db_key=%r "
-                        "(not in per-field mapping; excluded on purpose or not yet covered)",
+                        "ignoring unknown Zoho property api_name='%s' for db_key=%r (not in schema)",
                         api_name,
-                        label,
                         db_key,
                     )
                     continue
-                notion_property, transform = mapped
+
+                if field_mapping is not None:
+                    # db_key専用のper-fieldマッピングテーブル（ZOHO_LABEL_FIELD_MAPPINGS）がある場合:
+                    # Zohoラベルをそのまま最終的なNotionプロパティ名として使わず、
+                    # (Notionプロパティ名, 値変換関数)を引く。確度/例外スイッチ/FORMULA・ROLLUP型
+                    # プロパティ等、意図的にマッピングから除外されているラベルはここで見つからず、
+                    # 上と同じ「未知のプロパティ」として警告ログを出しスキップする
+                    # （こちらも想定内の挙動であり、エラーにはしない）。
+                    mapped = field_mapping.get(label)
+                    if mapped is None:
+                        logger.warning(
+                            "ignoring unknown Zoho property api_name='%s' (label=%r) for db_key=%r "
+                            "(not in per-field mapping; excluded on purpose or not yet covered)",
+                            api_name,
+                            label,
+                            db_key,
+                        )
+                        continue
+                    notion_property, transform = mapped
+                    try:
+                        transformed_value = transform(value)
+                    except Exception:
+                        # 個別レコードの不正な値（例: どのフォーマットにも一致しない日付文字列）で
+                        # バッチ全体を落とさないよう、当該フィールドのみスキップする（2026-08-12の
+                        # バッチ処理修正と同じ「1件/1フィールド単位で失敗を閉じ込める」方針）。
+                        logger.warning(
+                            "failed to transform Zoho field value for api_name='%s' (label=%r) "
+                            "db_key=%r; skipping this field only",
+                            api_name,
+                            label,
+                            db_key,
+                            exc_info=True,
+                        )
+                        continue
+                    if transformed_value is SKIP_FIELD:
+                        # 未解決のリレーション（例: 取引先マスターの名寄せが曖昧・候補なし）。
+                        # 既存のNoneハンドリング（明示的にプロパティをクリアする）とは意味が異なり、
+                        # このプロパティへの書き込み自体を行わない（既存の値を上書きしない）。
+                        logger.info(
+                            "zoho webhook: relation unresolved for api_name='%s' (label=%r) "
+                            "db_key=%r; skipping this property (not clearing existing value)",
+                            api_name,
+                            label,
+                            db_key,
+                        )
+                        continue
+                    properties[notion_property] = transformed_value
+                    continue
+
+                # field_mappingが未整備のdb_key（ZOHO_LABEL_FIELD_MAPPINGSにエントリが無い場合。
+                # 将来db_keyが追加され対応が後回しになった場合等）は、従来通りZohoラベルを
+                # そのままプロパティキーとして使う簡易挙動を維持する。
                 try:
-                    transformed_value = transform(value)
-                except Exception:
-                    # 個別レコードの不正な値（例: どのフォーマットにも一致しない日付文字列）で
-                    # バッチ全体を落とさないよう、当該フィールドのみスキップする（2026-08-12の
-                    # バッチ処理修正と同じ「1件/1フィールド単位で失敗を閉じ込める」方針）。
+                    schema.get_property(label)
+                except KeyError:
                     logger.warning(
-                        "failed to transform Zoho field value for api_name='%s' (label=%r) "
-                        "db_key=%r; skipping this field only",
+                        "ignoring unknown Zoho property api_name='%s' for db_key=%r (not in schema)",
                         api_name,
-                        label,
                         db_key,
-                        exc_info=True,
                     )
                     continue
-                properties[notion_property] = transformed_value
-                continue
+                properties[label] = value
 
-            # field_mappingが未整備のdb_key（ZOHO_LABEL_FIELD_MAPPINGSにエントリが無い場合。
-            # 将来db_keyが追加され対応が後回しになった場合等）は、従来通りZohoラベルを
-            # そのままプロパティキーとして使う簡易挙動を維持する。
-            try:
-                schema.get_property(label)
-            except KeyError:
-                logger.warning(
-                    "ignoring unknown Zoho property api_name='%s' for db_key=%r (not in schema)",
-                    api_name,
-                    db_key,
-                )
-                continue
-            properties[label] = value
+        if (
+            db_key == _ACTION_DB_KEY
+            and CLIENT_MASTER_RELATION_PROPERTY in properties
+            and id_mapping_store is not None
+            and notion_client is not None
+        ):
+            drop_client_master_relation_if_already_set(
+                properties,
+                tool=Tool.ZOHO,
+                record_id=record_id,
+                db_key=db_key,
+                id_mapping_store=id_mapping_store,
+                notion_client=notion_client,
+            )
 
         events.append(
             SyncEvent(
@@ -259,12 +318,23 @@ def zoho_payload_to_sync_events(
 
 
 def handler(
-    event: Mapping[str, Any], context: object, *, dispatcher: Dispatcher | None = None
+    event: Mapping[str, Any],
+    context: object,
+    *,
+    dispatcher: Dispatcher | None = None,
+    id_mapping_store: IdMappingStore | None = None,
+    notion_client: NotionRelationLookupClient | None = None,
+    zoho_client: ZohoActionRecordClient | None = None,
 ) -> dict[str, Any]:
     """Lambda/Cloud Functions エントリポイント（API Gateway形式のHTTPイベントを想定）。
 
     実際のデプロイ設定（SAM/Serverless Framework等）は範囲外。ENABLE_ZOHO=False時は
     ペイロード変換・dispatcherへのdispatchのいずれも行わずスキップする。
+
+    `id_mapping_store`/`notion_client`/`zoho_client`（いずれも省略可）は
+    `zoho_payload_to_sync_events`の同名引数へそのまま渡す。⑥アクション履歴DBの取引先マスター
+    リレーション自動解決・「後勝ち」上書き防止ガード用（同関数のdocstring参照、本番配線は
+    `src/api/app.py`の`webhook_zoho`が`ProductionSyncWiring`側の対応するクライアントを渡す）。
 
     Zohoはtokenをbody内に返すため、認証（verify_webhook_body_token）にはbodyのJSONパースが
     必要になる。他ハンドラ（ヘッダー方式）と異なり、JSONパース失敗（400）はtoken検証（401）
@@ -291,7 +361,13 @@ def handler(
         return unauthorized_response()
 
     try:
-        sync_events = zoho_payload_to_sync_events(payload, headers)
+        sync_events = zoho_payload_to_sync_events(
+            payload,
+            headers,
+            id_mapping_store=id_mapping_store,
+            notion_client=notion_client,
+            zoho_client=zoho_client,
+        )
     except (KeyError, ValueError) as exc:
         return bad_request_response(str(exc))
     except Exception:

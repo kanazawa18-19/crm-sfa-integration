@@ -37,6 +37,7 @@ from src.sync_engine.production_wiring import (
     build_production_dispatcher,
     build_project_mirror_sync_callable,
     build_spreadsheet_targets_by_db,
+    build_zoho_client,
     build_zoho_targets_by_db,
     get_production_wiring,
     reset_production_wiring,
@@ -180,6 +181,55 @@ def test_build_zoho_targets_by_db_uses_configured_data_center_base_urls(
     client = targets[ALL_SCHEMAS[0].key]._client  # noqa: SLF001 (テストのため内部状態を直接確認)
     assert client._accounts_base_url == "https://accounts.zoho.jp"  # noqa: SLF001
     assert client._api_base_url == "https://www.zohoapis.jp/crm/v2"  # noqa: SLF001
+
+
+# --- build_zoho_client (2026-08-25、Round2: Zoho Webhookの取引先マスターリレーション解決用) ---
+
+
+def test_build_zoho_client_returns_none_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_ZOHO", "False")
+
+    assert build_zoho_client() is None
+
+
+def test_build_zoho_client_returns_none_when_credentials_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.delenv("ZOHO_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ZOHO_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("ZOHO_REFRESH_TOKEN", raising=False)
+
+    assert build_zoho_client() is None
+
+
+def test_build_zoho_client_builds_client_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "id")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "refresh")
+
+    client = build_zoho_client()
+
+    assert client is not None
+    assert client._accounts_base_url == "https://accounts.zoho.com"  # noqa: SLF001
+
+
+def test_build_zoho_targets_by_db_shares_the_same_underlying_client_across_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """build_zoho_client()への切り出し後も、db_key単位の各ZohoSyncTargetは従来通り
+    同一のHttpZohoClientインスタンスを共有すること（アクセストークンの二重リフレッシュを
+    避けるため）。"""
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "id")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "refresh")
+
+    targets = build_zoho_targets_by_db()
+
+    clients = {target._client for target in targets.values()}  # noqa: SLF001
+    assert len(clients) == 1
 
 
 # --- build_spreadsheet_targets_by_db ---------------------------------------------------------
@@ -507,15 +557,21 @@ def test_build_production_dispatcher_includes_configured_tools(
 
 
 class _FakeNotionClient:
-    def __init__(self, db_key: str) -> None:
+    def __init__(self, db_key: str, *, create_page_id: str | None = "new-page-id") -> None:
         self.db_key = db_key
         self.update_calls: list[tuple[str, dict[str, Any]]] = []
+        self.create_calls: list[dict[str, Any]] = []
+        self._create_page_id = create_page_id
 
     def get_page(self, page_id: str) -> dict[str, Any] | None:
         return {"取引先名": f"from-{self.db_key}"}
 
     def update_page(self, page_id: str, properties: dict[str, Any]) -> None:
         self.update_calls.append((page_id, dict(properties)))
+
+    def create_page(self, properties: dict[str, Any]) -> str:
+        self.create_calls.append(dict(properties))
+        return self._create_page_id
 
     def archive_page(self, page_id: str) -> None:
         pass
@@ -537,14 +593,53 @@ def test_multi_db_notion_sync_target_routes_write_by_id_mapping_db_key(
     assert project_client.update_calls == []
 
 
-def test_multi_db_notion_sync_target_upsert_with_none_external_id_is_unsupported(
+def test_multi_db_notion_sync_target_upsert_with_none_external_id_and_no_db_key_is_unsupported(
     store: SQLiteIdMappingStore,
 ) -> None:
-    target = _MultiDbNotionSyncTarget({"client_master": _FakeNotionClient("client_master")}, store)
+    """db_keyが渡されない従来の呼び出し経路（例: Notion発の新規ページ作成、本ルーターの
+    スコープ外）は引き続き未サポートのまま（後方互換）。"""
+    client = _FakeNotionClient("client_master")
+    target = _MultiDbNotionSyncTarget({"client_master": client}, store)
 
     result = target.upsert_record(None, {"取引先名": "新規"})
 
     assert result is None
+    assert client.create_calls == []
+
+
+def test_multi_db_notion_sync_target_creates_new_page_when_db_key_provided(
+    store: SQLiteIdMappingStore,
+) -> None:
+    """新規レコード作成（`AUTO_CREATE_NEW_RECORDS_ENABLED`、2026-08-25、Round2）:
+    `Dispatcher`が確定済みのdb_keyを渡してきた場合は、対応するNotionクライアントで
+    新規ページを作成すること。"""
+    client_master_client = _FakeNotionClient("client_master", create_page_id="new-page-id")
+    project_client = _FakeNotionClient("project", create_page_id="should-not-be-used")
+    target = _MultiDbNotionSyncTarget(
+        {"client_master": client_master_client, "project": project_client}, store
+    )
+
+    result = target.upsert_record(None, {"取引先名": "新規商事"}, db_key="client_master")
+
+    assert result == "new-page-id"
+    assert client_master_client.create_calls == [{"取引先名": "新規商事"}]
+    assert project_client.create_calls == []
+
+
+def test_multi_db_notion_sync_target_skips_creation_when_db_key_unconfigured(
+    store: SQLiteIdMappingStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """指定db_key用のNotionクライアントが構築されていない場合（NOTION_API_KEYはあるが当該DBの
+    notion_database_idが未設定等）、誤ったスキーマで作成せずスキップすること。"""
+    client = _FakeNotionClient("client_master")
+    target = _MultiDbNotionSyncTarget({"client_master": client}, store)
+
+    with caplog.at_level("WARNING"):
+        result = target.upsert_record(None, {"名前": "新規"}, db_key="contact")
+
+    assert result is None
+    assert client.create_calls == []
+    assert any("contact" in r.getMessage() for r in caplog.records)
 
 
 def test_multi_db_notion_sync_target_skips_write_when_db_key_unresolvable(
@@ -690,6 +785,52 @@ def test_production_sync_wiring_notion_page_client_is_set_with_api_key(
     wiring = ProductionSyncWiring()
 
     assert wiring.notion_page_client is not None
+
+
+def test_production_sync_wiring_zoho_action_client_is_none_when_zoho_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    _isolate_tool_env(monkeypatch)  # ENABLE_ZOHO=Falseを含む
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.zoho_action_client is None
+
+
+def test_production_sync_wiring_zoho_action_client_is_set_when_zoho_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    _isolate_tool_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "id")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "refresh")
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.zoho_action_client is not None
+
+
+def test_production_sync_wiring_zoho_action_client_is_shared_with_dispatcher_zoho_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shirokuma-sec/obasan-qualityレビューWARN対応（2026-08-25）: `HttpZohoClient`
+    （OAuthアクセストークンキャッシュを持つ）が二重生成されず、`zoho_action_client`と
+    Dispatcher内部の`_MultiDbZohoSyncTarget`が同一インスタンスを共有すること。"""
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    _isolate_tool_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "id")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZOHO_REFRESH_TOKEN", "refresh")
+
+    wiring = ProductionSyncWiring()
+
+    zoho_target = wiring.dispatcher._dispatcher._targets[Tool.ZOHO]  # noqa: SLF001 (テストのため内部状態を直接確認)
+    inner_client = next(iter(zoho_target._targets_by_db_key.values()))._client  # noqa: SLF001
+    assert inner_client is wiring.zoho_action_client
 
 
 def test_production_sync_wiring_dispatcher_is_wrapped_with_skip_tracking(

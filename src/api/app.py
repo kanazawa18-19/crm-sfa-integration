@@ -296,7 +296,19 @@ async def webhook_zoho(
     request: Request, wiring: ProductionSyncWiring = Depends(_wiring_dependency)
 ) -> Response:
     event = await _lambda_event_from_request(request)
-    result = zoho_webhook_handler(event, context=None, dispatcher=wiring.dispatcher)
+    # id_mapping_store/notion_client/zoho_client: ⑥アクション履歴DBの取引先マスターリレーション
+    # 自動解決・「後勝ち」上書き防止ガード用（2026-08-25、Round2。kintone側と同じ設計、
+    # zoho_webhook.pyのモジュールdocstring参照）。wiring.notion_page_client/zoho_action_client
+    # が未設定（NOTION_API_KEY/Zoho認証情報未設定）の場合はNoneのまま渡され、当該機能自体が
+    # 無効化される（zoho_webhook側は既存の挙動にフォールバックする）。
+    result = zoho_webhook_handler(
+        event,
+        context=None,
+        dispatcher=wiring.dispatcher,
+        id_mapping_store=wiring.id_mapping_store,
+        notion_client=wiring.notion_page_client,
+        zoho_client=wiring.zoho_action_client,
+    )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
 

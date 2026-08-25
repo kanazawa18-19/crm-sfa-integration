@@ -55,6 +55,7 @@ class _FakeWiring:
         project_mirror_sync_callable: Any = None,
         client_name_index_sync_callable: Any = None,
         id_mapping_store: Any = None,
+        zoho_action_client: Any = None,
     ) -> None:
         self.dispatcher = dispatcher or _SpyDispatcher()
         self.notion_page_client = notion_page_client
@@ -63,6 +64,7 @@ class _FakeWiring:
         self.project_mirror_sync_callable = project_mirror_sync_callable
         self.client_name_index_sync_callable = client_name_index_sync_callable
         self.id_mapping_store = id_mapping_store
+        self.zoho_action_client = zoho_action_client
 
 
 @pytest.fixture
@@ -286,6 +288,53 @@ def test_webhook_zoho_dispatches_via_injected_wiring(
     assert response.status_code == 200
     assert len(spy.dispatched) == 1
     assert spy.dispatched[0].db_key == "project"
+
+
+def test_webhook_zoho_does_not_overwrite_client_master_relation_already_set_on_notion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本番エンドポイント（webhook_zoho）がwiring.id_mapping_store/notion_page_clientを
+    実際にzoho_webhook_handlerへ渡し、Notion側に既に取引先マスターリレーションが設定済みの
+    場合は自動解決の結果があっても上書きしないことを確認する（2026-08-25、Round2。kintone側の
+    同種テストと同じ設計思想）。"""
+    from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
+    from src.sync_engine.webhook_handlers import zoho_field_transforms as transforms_module
+
+    monkeypatch.setenv("ENABLE_ZOHO", "True")
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        transforms_module,
+        "resolve_zoho_action_client_master_relation",
+        lambda **kwargs: "notion-page-1",
+    )
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(IdMapping(notion_key="notion-page-1", db_key="action", zoho_id="zoho-action-1"))
+
+    class _FakeNotionRelationLookupClient:
+        def get_page(self, page_id: str) -> dict[str, Any]:
+            return {"👨‍👩‍👧‍👦 取引先マスター": ["existing-client-page"]}
+
+    notion_client = _FakeNotionRelationLookupClient()
+    spy = _SpyDispatcher()
+    _override_wiring(
+        _FakeWiring(dispatcher=spy, notion_page_client=notion_client, id_mapping_store=store)
+    )
+    payload = {
+        "server_time": 1754960400000,
+        "module": "CustomModule2",  # ACTION_SCHEMA.zoho_api_module
+        "operation": "update",
+        "ids": ["zoho-action-1"],
+        "affected_values": [
+            {"record_id": "zoho-action-1", "values": {"field6": "テスト商事"}}
+        ],
+    }
+
+    response = client.post("/api/webhooks/zoho", json=payload)
+
+    store.close()
+    assert response.status_code == 200
+    assert len(spy.dispatched) == 1
+    assert "👨‍👩‍👧‍👦 取引先マスター" not in spy.dispatched[0].properties
 
 
 def test_webhook_spreadsheet_dispatches_via_injected_wiring(
