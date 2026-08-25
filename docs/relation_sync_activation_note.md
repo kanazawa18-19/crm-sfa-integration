@@ -141,6 +141,27 @@ DB側から原子的にスキップする（`status = 'pending'`の行のみを�
 詳細は同ファイルのコメント参照）。resolved/dismissedになった行は対象外のため、一度レビュー
 済みの組み合わせが後日再び曖昧になった場合は新規に積み直される。
 
+## 過去のインシデント: mark-and-sweepの精度不一致による誤削除（2026-08-25）
+
+`upsert_client_names_and_sweep()`が基準時刻に素の`datetime.now(timezone.utc)`（マイクロ秒精度）を
+使っていたところ、Postgresの`TIMESTAMP(3)`カラムへの保存時に四捨五入（round-half-up、境界に
+よっては繰り上がる）でミリ秒精度へ丸められる一方、末尾のDELETEのWHERE比較には丸められて
+いない元の値がそのまま使われ、丸め方向次第で`保存値 < 比較用の元の値`が真になり、今まさに
+挿入したばかりの行まで誤って削除される事故になりうる不具合だった（`src/project_mirror/db.py`の
+`upsert_projects_and_sweep()`で同一パターンが実際に本番incidentとして発生し、`ProjectMirror`が
+0件になってダッシュボードの案件管理画面が空表示になった。詳細は`docs/project_mirror_activation_
+note.md`の同名セクション参照）。`ClientNameIndex`側は本番incident発生前に同じ実装パターンとして
+発見・修正済み。
+
+対策として、基準時刻の計算を`src/db_utils.py`の`db_truncated_utcnow()`に置き換えた（マイクロ秒を
+事前に1000の倍数＝ミリ秒境界へ切り捨てておくことで、Postgres側の丸めが切り捨てでも繰り上げでも
+結果が変わらない不動点にする）。
+
+**次に同種のmark-and-sweep方式のミラーテーブル（全件UPSERT→`"syncedAt" < 基準時刻`でDELETEする
+パターン）を新設する際は、必ず`src/db_utils.py`の`db_truncated_utcnow()`を使うこと**（素の
+`datetime.now(timezone.utc)`を使うと、DBの精度丸めとの不一致で投入直後の行が誤削除される事故が
+過去に発生した）。
+
 ## 動作確認チェックリスト（各ステップ共通）
 
 1. Vercelのfunction logsで対象エンドポイント（Webhook/cron）の200レスポンスを確認する。

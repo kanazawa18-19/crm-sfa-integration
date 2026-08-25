@@ -10,12 +10,14 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
+
+from src.db_utils import db_truncated_utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,16 @@ def upsert_projects_and_sweep(records: list[dict[str, Any]]) -> int:
     `records`が空の場合、呼び出し元(`refresh_all_projects`)の取得結果が空リストである
     可能性が高く、そのままsweepするとミラー全件を削除してしまう事故になりうるため、
     何もせずwarningログのみ出して早期リターンする(安全側に倒す。戻り値は0)。
+
+    基準時刻には`datetime.now(timezone.utc)`をそのまま使わず`db_truncated_utcnow()`
+    (`src/db_utils.py`)を使う。`syncedAt`カラムは`TIMESTAMP(3)`(ミリ秒精度)のため、
+    素のマイクロ秒精度の値をUPSERTすると保存時にPostgresが四捨五入(round-half-up、
+    境界によっては繰り上がる)でミリ秒精度に丸める一方、末尾のDELETEの比較には丸められて
+    いない元の値が使われ、丸め方向次第で`保存値 < 比較用の元の値`が真になって挿入直後の
+    行まで誤削除される事故が本番で発生した(2026-08-25、実データで再現確認済み)。
+    `db_truncated_utcnow()`が値を事前にミリ秒境界(1000の倍数)へ切り捨てておくことで、
+    Postgres側の丸めが切り捨てでも繰り上げでも結果が変わらない不動点になり、この事故を
+    防いでいる。
     """
     if not records:
         logger.warning(
@@ -116,7 +128,7 @@ def upsert_projects_and_sweep(records: list[dict[str, Any]]) -> int:
         )
         return 0
 
-    synced_at = datetime.now(timezone.utc)
+    synced_at = db_truncated_utcnow()
     with _connect() as conn:
         with conn.cursor() as cur:
             for batch in _chunked(records, _UPSERT_BATCH_SIZE):

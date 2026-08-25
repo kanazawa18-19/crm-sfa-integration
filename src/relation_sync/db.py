@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+
+from src.db_utils import db_truncated_utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +103,12 @@ def upsert_client_names_and_sweep(records: list[dict[str, Any]]) -> int:
     `records`が空の場合、呼び出し元の取得結果が空リストである可能性が高く、そのまま
     sweepするとインデックス全件を削除してしまう事故になりうるため、何もせずwarningログのみ
     出して早期リターンする(project_mirror/db.pyと同じ安全側の判断。戻り値は0)。
+
+    基準時刻には`db_truncated_utcnow()`(`src/db_utils.py`)を使う。理由は
+    `project_mirror/db.py`の`upsert_projects_and_sweep()`のdocstring参照
+    (`syncedAt`が`TIMESTAMP(3)`のため、素のマイクロ秒精度の値だと保存時のPostgresの
+    丸め(四捨五入で繰り上がる場合がある)により挿入直後の行が誤ってDELETEされる事故が
+    本番で発生した、2026-08-25)。
     """
     if not records:
         logger.warning(
@@ -109,7 +117,7 @@ def upsert_client_names_and_sweep(records: list[dict[str, Any]]) -> int:
         )
         return 0
 
-    synced_at = datetime.now(timezone.utc)
+    synced_at = db_truncated_utcnow()
     with _connect() as conn:
         with conn.cursor() as cur:
             for batch in _chunked(records, _UPSERT_BATCH_SIZE):

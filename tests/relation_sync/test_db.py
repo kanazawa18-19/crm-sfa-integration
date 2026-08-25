@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
+from src import db_utils
 from src.relation_sync import db
 
 
@@ -157,6 +159,59 @@ def test_upsert_client_names_and_sweep_batches_upserts_and_deletes_stale_rows(
 
     assert conn.committed is True
     assert result == 3
+
+
+def test_upsert_client_names_and_sweep_synced_at_survives_postgres_ms_rounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本番incident再現テスト(2026-08-25、src/project_mirror/test_db.pyの同名テストと同じ
+    パターン)。
+
+    `syncedAt`カラムは`TIMESTAMP(3)`(ミリ秒精度)のため、UPSERTしたマイクロ秒精度の値は
+    Postgres保存時に四捨五入(round-half-up、境界によっては繰り上がる)でミリ秒精度へ丸め
+    られる。もし`upsert_client_names_and_sweep()`が素の`datetime.now(timezone.utc)`を基準
+    時刻に使うと、末尾のDELETEの比較には丸められていない元の値が使われ、丸め方向次第で
+    「保存された丸め後の値 < DELETEの比較用の元の値」が真になり挿入直後の行まで誤って
+    削除されてしまう(実データで確認済みのインシデント)。
+
+    ここでは実DBに接続せず、`datetime.now()`を1000の倍数でない境界値
+    (`927_999`マイクロ秒)に固定して決定的にテストする。UPSERT/DELETEで実際に使われた
+    パラメータを取り出し、Postgresの丸め動作を切り捨てとしてシミュレートする(不動点
+    かどうかの検証には切り捨て・繰り上げのどちらでも結果は変わらない)。
+    """
+    fixed_now = datetime(2026, 8, 25, 12, 0, 0, 927_999, tzinfo=timezone.utc)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            return fixed_now
+
+    monkeypatch.setattr(db_utils, "datetime", _FixedDatetime)
+
+    fake_cursor = _FakeCursor(rowcount=0)
+    _patch_connect(monkeypatch, fake_cursor)
+
+    records = [{"notion_page_id": "page-1", "normalized_name": "テスト商事", "raw_name": "テスト商事"}]
+    db.upsert_client_names_and_sweep(records)
+
+    upsert_sql, upsert_params = fake_cursor.executed[0]
+    delete_sql, delete_params = fake_cursor.executed[1]
+    assert "INSERT INTO" in upsert_sql
+    assert "DELETE FROM" in delete_sql
+
+    upserted_synced_at = upsert_params[4]
+    delete_threshold = delete_params[0]
+    # 両方とも同じ基準時刻(db_truncated_utcnow()により927_999→927_000へ切り捨て済み)
+    # から算出された値であること。
+    assert upserted_synced_at.microsecond == 927_000
+    assert upserted_synced_at == delete_threshold
+
+    # PostgresのTIMESTAMP(3)保存時の丸めを切り捨てとしてシミュレートする
+    # (927_000は1000の倍数の不動点のため、四捨五入で繰り上がっても結果は変わらない)。
+    postgres_stored_value = upserted_synced_at.replace(
+        microsecond=(upserted_synced_at.microsecond // 1000) * 1000
+    )
+    assert not (postgres_stored_value < delete_threshold)
 
 
 # --- try_acquire_refresh_lock / release_refresh_lock ---------------------------------------
