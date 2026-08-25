@@ -83,6 +83,16 @@ Vercel本番環境変数に`RELATION_SYNC_ENABLED=true`を設定する。これ�
 自動反映される。曖昧（0件・複数件）だった場合は`RelationReviewQueue`へ記録されるだけで、
 Notion側のリレーションは変更されない。
 
+**既存のNotionリレーションは黙って上書きしない**（2026-08-25、GPT-5.6クロスレビュー指摘
+対応）: 自動解決が完全一致でNotion page IDを得られた場合でも、対応するNotionページの
+「👨‍👩‍👧‍👦 取引先マスター」プロパティに**既に何か値が設定されていれば書き込まない**
+（`kintone_webhook.py`の`_drop_client_master_relation_if_already_set`参照）。これが無いと、
+人がNotion上で手動修正したリレーションが、後日kintone側の`client_name`が再編集される
+たびに黙って上書きされてしまい、「静かな誤紐付けを避ける」という本機能の目的そのものに
+反する動作になる。自動反映は「Notion側がまだ未設定の場合のみ」に限定される。現在値の確認
+（`ProductionSyncWiring.id_mapping_store`での逆引き＋`notion_page_client.get_page()`）に
+失敗した場合も、安全側に倒して当該プロパティへの書き込みをスキップする。
+
 ### 4. RelationReviewQueueの定期確認
 
 `scripts/list_relation_review_queue.py`を実行し、pending状態のレビュー項目を確認する
@@ -140,3 +150,27 @@ DB側から原子的にスキップする（`status = 'pending'`の行のみを�
    マスター件数と概ね一致するか確認する。
 4. `scripts/list_relation_review_queue.py`でpending件数が異常に多くないか確認する
    （多い場合は名寄せロジック・kintone側入力の見直しを検討する）。
+
+## 既知の制約・将来の検討事項（2026-08-25、GPT-5.6クロスレビュー指摘の記録）
+
+対応不要と判断したが記録として残しておく指摘事項:
+
+- **一度自動解決した後の経年劣化**: 一度完全一致で自動解決してNotionのリレーションへ反映した
+  後、別の取引先が取引先マスターに追加されて同じ正規化名が曖昧（複数候補）になった場合、
+  過去に自動解決済みのリレーションは再チェックされず古いまま残る（誤りではなく、当時
+  確定した情報のスナップショットとして残り続ける）。今回のスコープでは再検証の仕組みは
+  設けていない。
+- **Webhookの到着順序**: kintone Webhookが発生順どおりに届くとは限らないため、
+  `resolve_client_master_relation()`は常にkintone側の最新状態を都度取得するのではなく、
+  届いたWebhookペイロードに含まれる値をそのまま使う設計上の前提がある（他の
+  `KINTONE_FIELD_TRANSFORMS`エントリと同じ、Webhookペイロード単体で完結する設計）。
+- **正規化ロジック変更時の整合性**: `normalize_company_name_strong()`
+  （`src/migration/zoho_client_master.py`）を将来変更した場合、既存の`ClientNameIndex`は
+  旧ロジックで正規化されたキーのまま残るため、新ロジックとの整合性が崩れる。正規化ロジック
+  を変更した場合は`scripts/backfill_client_name_index.py`で`ClientNameIndex`を全件
+  再構築すること。
+- **承認済みエイリアス辞書**: 表記ゆれが大きい別名（例: サイボウズ/株式会社サイボウズ/
+  Cybozu等、`normalize_company_name_strong()`の全角半角統一・法人格表記ゆれ吸収だけでは
+  同一と判定できないケース）を人が事前に承認した上で紐付けられる「承認済みエイリアス辞書」
+  のような仕組みは、今回未実装。`RelationReviewQueue`の運用が実際に回り始め、この種の
+  ケースが頻出するようであれば将来の検討候補とする。

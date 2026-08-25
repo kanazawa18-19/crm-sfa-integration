@@ -7,7 +7,7 @@ import pytest
 
 from src.db_schema.base import Tool
 from src.sync_engine.dispatcher import Dispatcher
-from src.sync_engine.id_mapping import SQLiteIdMappingStore
+from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.webhook_handlers.kintone_webhook import handler, kintone_payload_to_sync_event
 
@@ -157,6 +157,167 @@ def test_kintone_payload_to_sync_event_skips_action_client_name_when_unresolved(
     assert event.properties["履歴メモ"] == "折り返し予定"
 
 
+# --- 取引先マスターリレーションの「後勝ち」上書き防止ガード ---------------------------------
+# 2026-08-25、GPT-5.6クロスレビュー指摘対応: 人がNotion上で手動修正したリレーションを、
+# 後日kintone側のclient_nameが再編集されるたびに黙って上書きしてしまう事故を防ぐ。
+
+
+class _FakeNotionRelationLookupClient:
+    def __init__(self, pages: dict[str, dict | None]) -> None:
+        self._pages = pages
+        self.get_page_calls: list[str] = []
+
+    def get_page(self, page_id: str) -> dict | None:
+        self.get_page_calls.append(page_id)
+        return self._pages.get(page_id)
+
+
+class _FailingNotionRelationLookupClient:
+    def get_page(self, page_id: str) -> dict | None:
+        raise RuntimeError("notion api unavailable")
+
+
+def _client_name_record(*, record_id: str = "77", client_name: str = "テスト商事") -> dict:
+    return {
+        "$id": {"type": "__ID__", "value": record_id},
+        "更新日時": {"type": "UPDATED_TIME", "value": "2026-08-05T09:00:00Z"},
+        "client_name": {"type": "SINGLE_LINE_TEXT", "value": client_name},
+    }
+
+
+def _resolve_to(monkeypatch: pytest.MonkeyPatch, page_id: str | None) -> None:
+    from src.sync_engine.webhook_handlers import kintone_field_transforms as transforms_module
+
+    monkeypatch.setattr(
+        transforms_module, "resolve_client_master_relation", lambda raw_name, **kwargs: page_id
+    )
+
+
+def test_kintone_payload_to_sync_event_drops_relation_when_already_set_on_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(IdMapping(notion_key="notion-page-1", db_key="action", kintone_id="77"))
+    notion_client = _FakeNotionRelationLookupClient(
+        {"notion-page-1": {"👨‍👩‍👧‍👦 取引先マスター": ["existing-client-page"]}}
+    )
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=_client_name_record()),
+        {},
+        app_id_to_db_key=APP_ID_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert "👨‍👩‍👧‍👦 取引先マスター" not in event.properties
+    assert notion_client.get_page_calls == ["notion-page-1"]
+
+
+def test_kintone_payload_to_sync_event_keeps_relation_when_not_yet_set_on_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(IdMapping(notion_key="notion-page-1", db_key="action", kintone_id="77"))
+    notion_client = _FakeNotionRelationLookupClient(
+        {"notion-page-1": {"👨‍👩‍👧‍👦 取引先マスター": []}}
+    )
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=_client_name_record()),
+        {},
+        app_id_to_db_key=APP_ID_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert event.properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
+def test_kintone_payload_to_sync_event_keeps_relation_when_record_not_yet_migrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IdMappingStoreにマッピングが無い(=対応するNotionページ自体が無い)場合、上書きの
+    心配が無いため自動解決した値をそのまま通すこと。"""
+    _resolve_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    notion_client = _FakeNotionRelationLookupClient({})
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=_client_name_record()),
+        {},
+        app_id_to_db_key=APP_ID_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert event.properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+    assert notion_client.get_page_calls == []
+
+
+def test_kintone_payload_to_sync_event_drops_relation_when_current_value_check_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """現在値の確認自体に失敗した場合、安全側に倒して書き込みをスキップすること。"""
+    _resolve_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(IdMapping(notion_key="notion-page-1", db_key="action", kintone_id="77"))
+
+    with caplog.at_level("WARNING"):
+        event = kintone_payload_to_sync_event(
+            _payload(app_id="789", record=_client_name_record()),
+            {},
+            app_id_to_db_key=APP_ID_MAP,
+            id_mapping_store=store,
+            notion_client=_FailingNotionRelationLookupClient(),
+        )
+
+    store.close()
+    assert "👨‍👩‍👧‍👦 取引先マスター" not in event.properties
+    assert any("client-master relation" in r.getMessage() for r in caplog.records)
+
+
+def test_kintone_payload_to_sync_event_keeps_relation_when_notion_page_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notionページ自体が見つからない(削除済み等)場合は上書き防止ガードの対象外とし、
+    dispatcher側の通常の書き込み処理に委ねること。"""
+    _resolve_to(monkeypatch, "notion-page-1")
+    store = SQLiteIdMappingStore(":memory:")
+    store.upsert(IdMapping(notion_key="notion-page-1", db_key="action", kintone_id="77"))
+    notion_client = _FakeNotionRelationLookupClient({"notion-page-1": None})
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=_client_name_record()),
+        {},
+        app_id_to_db_key=APP_ID_MAP,
+        id_mapping_store=store,
+        notion_client=notion_client,
+    )
+
+    store.close()
+    assert event.properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
+def test_kintone_payload_to_sync_event_skips_guard_when_store_and_client_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """id_mapping_store/notion_client未注入時は既存の挙動のまま(自動解決した値をそのまま
+    使う)であることを確認する(後方互換)。"""
+    _resolve_to(monkeypatch, "notion-page-1")
+
+    event = kintone_payload_to_sync_event(
+        _payload(app_id="789", record=_client_name_record()), {}, app_id_to_db_key=APP_ID_MAP
+    )
+
+    assert event.properties == {"👨‍👩‍👧‍👦 取引先マスター": "notion-page-1"}
+
+
 def test_kintone_payload_to_sync_event_skips_fields_not_in_transform_table() -> None:
     # obasan-qualityレビューWARN対応（2026-08-14）: 架空のフィールド名ではなく、実際に
     # リレーション解決が必要なため意図的に対象外とされているフィールドコード（KINTONE_
@@ -226,6 +387,42 @@ def test_handler_dispatches_to_injected_dispatcher(monkeypatch: pytest.MonkeyPat
     store.close()
     assert response["statusCode"] == 200
     assert json.loads(response["body"]) == {"skipped": True}
+
+
+def test_handler_forwards_id_mapping_store_and_notion_client_to_sync_event_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """handler()に注入したid_mapping_store/notion_clientが、取引先マスターリレーションの
+    「後勝ち」上書き防止ガード用にkintone_payload_to_sync_event()へそのまま渡されること
+    （2026-08-25、GPT-5.6クロスレビュー指摘対応）。"""
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.kintone_webhook._default_app_id_to_db_key",
+        lambda: APP_ID_MAP,
+    )
+    captured: dict = {}
+    original = kintone_payload_to_sync_event
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.kintone_webhook.kintone_payload_to_sync_event", _spy
+    )
+    sentinel_store = object()
+    sentinel_notion_client = object()
+    event = {"body": json.dumps(_payload()), "headers": {}, "query_params": {}}
+
+    handler(
+        event,
+        context=None,
+        id_mapping_store=sentinel_store,
+        notion_client=sentinel_notion_client,
+    )
+
+    assert captured["id_mapping_store"] is sentinel_store
+    assert captured["notion_client"] is sentinel_notion_client
 
 
 # --- BLOCKER5: 不正・欠損ペイロード時のエラーハンドリング -------------------------------

@@ -277,7 +277,17 @@ async def webhook_kintone(
     request: Request, wiring: ProductionSyncWiring = Depends(_wiring_dependency)
 ) -> Response:
     event = await _lambda_event_from_request(request)
-    result = kintone_webhook_handler(event, context=None, dispatcher=wiring.dispatcher)
+    # id_mapping_store/notion_client: 取引先マスターリレーションの「後勝ち」上書き防止ガード用
+    # （2026-08-25、GPT-5.6クロスレビュー指摘対応。kintone_webhook.pyのモジュールdocstring
+    # 参照）。wiring.notion_page_client未設定（NOTION_API_KEY未設定）の場合はNoneのまま渡され、
+    # ガード自体が無効化される（kintone_webhook側は既存の挙動にフォールバックする）。
+    result = kintone_webhook_handler(
+        event,
+        context=None,
+        dispatcher=wiring.dispatcher,
+        id_mapping_store=wiring.id_mapping_store,
+        notion_client=wiring.notion_page_client,
+    )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
 

@@ -28,6 +28,17 @@ Dispatcher側で「スキーマに存在しない」として黙ってスキッ�
 （`src/relation_sync/`によるローカルインデックス経由の同期的な名寄せ。詳細は
 `kintone_field_transforms.py`のモジュールdocstring参照）。
 
+■ 取引先マスターリレーションの「後勝ち」上書き防止について（2026-08-25、GPT-5.6クロス
+レビュー指摘対応）: 上記の自動解決は完全一致した場合に毎回そのまま書き込む素朴な実装だと、
+Notion上で人が手動修正したリレーションを、後日kintone側の`client_name`が再編集されるたびに
+黙って上書きしてしまう（この機能が防ごうとしている「静かな誤紐付け」そのものを引き起こす）。
+そのため`id_mapping_store`/`notion_client`（いずれも省略可）を注入した場合のみ、対応する
+Notionページの現在の「👨‍👩‍👧‍👦 取引先マスター」プロパティを読み、**既に何か値が設定されて
+いれば自動解決の結果があってもそのプロパティへの書き込みを行わない**
+（`_drop_client_master_relation_if_already_set`参照。自動反映は「Notion側がまだ未設定の
+場合のみ」に限定する）。現在値の確認自体に失敗した場合も、安全側に倒して書き込みをスキップ
+する（既存のNotion側の状態が不明なまま上書きするリスクを避けるため）。
+
 想定ペイロード例（テストフィクスチャは tests/sync_engine/webhook_handlers/ を参照。
 フィールドコードは実際のkintone環境で検証済みの値、コメントに表示ラベルを付記する。
 "商談中（B）"の括弧は一括移行時に実CSVで確認済みの全角表記だが、Webhook/REST API経由の
@@ -49,11 +60,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
+from src.sync_engine.id_mapping import IdMappingStore
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.webhook_handlers._common import (
@@ -72,6 +84,18 @@ from src.sync_engine.webhook_handlers.kintone_field_transforms import (
 )
 
 _UPDATED_AT_FIELD_CODE = "更新日時"
+
+# ⑥アクション管理の「取引先マスター」リレーション（KINTONE_FIELD_TRANSFORMS参照）。
+# 「後勝ち」上書き防止ガード（_drop_client_master_relation_if_already_set）専用の定数。
+_CLIENT_MASTER_RELATION_PROPERTY = "👨‍👩‍👧‍👦 取引先マスター"
+
+
+class NotionRelationLookupClient(Protocol):
+    """`_drop_client_master_relation_if_already_set`が要求するNotionクライアントの
+    最小インターフェース（`src.sync_engine.clients.notion_client.HttpNotionClient.get_page`
+    が実装）。"""
+
+    def get_page(self, page_id: str) -> dict[str, Any] | None: ...
 
 # 03_プロパティ定義の内部管理項目（created_at/updated_at/last_synced_at）に相当するkintone標準
 # フィールド。DatabaseSchema.propertiesとして個別管理される項目ではないため伝播対象から除く。
@@ -114,13 +138,72 @@ def _kintone_actor_label(record: Mapping[str, Any]) -> str | None:
     return value.get("name") or value.get("code")
 
 
+def _drop_client_master_relation_if_already_set(
+    properties: dict[str, Any],
+    *,
+    record_id: str,
+    db_key: str,
+    id_mapping_store: IdMappingStore,
+    notion_client: NotionRelationLookupClient,
+) -> None:
+    """`properties`に含まれる自動解決済みの「👨‍👩‍👧‍👦 取引先マスター」を、対応するNotion
+    ページに既に何か値が設定されている場合は取り除く（`properties`を直接書き換える）。
+
+    人がNotion上で手動修正したリレーションを、後日kintone側の`client_name`が再編集される
+    たびに黙って上書きしてしまう事故を防ぐ（GPT-5.6クロスレビュー指摘対応、2026-08-25。
+    モジュールdocstring参照）。自動反映は「Notion側がまだ未設定の場合のみ」に限定する。
+
+    現在値の確認自体（IdMappingStoreの逆引き・Notion APIのページ取得）に失敗した場合も、
+    安全側に倒してこのプロパティへの書き込みをスキップする（既存のNotion側の状態が不明な
+    まま上書きするリスクを避けるため。`src/migration/notion_dedupe.py`のneeds_review方針
+    「確信が持てないケースは自動で書き込まない」と同じ考え方）。
+    """
+    try:
+        mapping = id_mapping_store.find_by_external_id(Tool.KINTONE, record_id, db_key=db_key)
+        if mapping is None:
+            # まだ移行されていない（対応するNotionページ自体が存在しない）レコード。
+            # 上書きの心配が無いため、自動解決した値をそのまま通す。
+            return
+        current = notion_client.get_page(mapping.notion_key)
+    except Exception:
+        logger.warning(
+            "kintone webhook: failed to check current client-master relation before writing; "
+            "skipping this property to avoid silently overwriting an existing value "
+            "(record_id=%r)",
+            record_id,
+            exc_info=True,
+        )
+        properties.pop(_CLIENT_MASTER_RELATION_PROPERTY, None)
+        return
+
+    if current is None:
+        # ページが見つからない（削除済み等）。dispatcher側の通常の書き込み処理に委ねる。
+        return
+    if current.get(_CLIENT_MASTER_RELATION_PROPERTY):
+        logger.info(
+            "kintone webhook: client-master relation is already set on the Notion page; "
+            "not overwriting with the auto-resolved value (record_id=%r, notion_page_id=%r)",
+            record_id,
+            mapping.notion_key,
+        )
+        properties.pop(_CLIENT_MASTER_RELATION_PROPERTY, None)
+
+
 def kintone_payload_to_sync_event(
     payload: Mapping[str, Any],
     headers: Mapping[str, str],
     *,
     app_id_to_db_key: Mapping[str, str] | None = None,
+    id_mapping_store: IdMappingStore | None = None,
+    notion_client: NotionRelationLookupClient | None = None,
 ) -> SyncEvent:
-    """kintone Webhookペイロードを共通のSyncEventへ変換する。"""
+    """kintone Webhookペイロードを共通のSyncEventへ変換する。
+
+    `id_mapping_store`/`notion_client`（いずれも省略可、既定`None`）を両方注入した場合のみ、
+    自動解決した取引先マスターリレーションの「後勝ち」上書き防止ガードが働く
+    （`_drop_client_master_relation_if_already_set`参照）。未注入時は既存の挙動のまま
+    （自動解決できればそのまま`properties`に含める）。
+    """
     resolver = app_id_to_db_key if app_id_to_db_key is not None else _default_app_id_to_db_key()
     app_id = str(payload["app"]["id"])
     db_key = resolver.get(app_id)
@@ -180,6 +263,19 @@ def kintone_payload_to_sync_event(
                 continue
             properties[notion_property] = value
 
+    if (
+        _CLIENT_MASTER_RELATION_PROPERTY in properties
+        and id_mapping_store is not None
+        and notion_client is not None
+    ):
+        _drop_client_master_relation_if_already_set(
+            properties,
+            record_id=record_id,
+            db_key=db_key,
+            id_mapping_store=id_mapping_store,
+            notion_client=notion_client,
+        )
+
     return SyncEvent(
         source_tool=Tool.KINTONE,
         db_key=db_key,
@@ -191,12 +287,22 @@ def kintone_payload_to_sync_event(
 
 
 def handler(
-    event: Mapping[str, Any], context: object, *, dispatcher: Dispatcher | None = None
+    event: Mapping[str, Any],
+    context: object,
+    *,
+    dispatcher: Dispatcher | None = None,
+    id_mapping_store: IdMappingStore | None = None,
+    notion_client: NotionRelationLookupClient | None = None,
 ) -> dict[str, Any]:
     """Lambda/Cloud Functions エントリポイント（API Gateway形式のHTTPイベントを想定）。
 
     実際のデプロイ設定（SAM/Serverless Framework等）は範囲外。dispatcherを注入すれば
     変換後のSyncEventをそのままディスパッチする（未注入時は変換結果の検証のみ行う）。
+
+    `id_mapping_store`/`notion_client`（いずれも省略可）は`kintone_payload_to_sync_event`の
+    同名引数へそのまま渡す。取引先マスターリレーションの「後勝ち」上書き防止ガード用
+    （モジュールdocstring参照、本番配線は`src/api/app.py`の`webhook_kintone`が
+    `ProductionSyncWiring.id_mapping_store`/`notion_page_client`を渡す）。
 
     認証: kintoneのWebhook設定画面はカスタムHTTPヘッダーもbodyへの任意フィールド追加も
     サポートせず、指定できるのは「Webhook URL」欄のみのため、他ハンドラのような
@@ -214,7 +320,9 @@ def handler(
     try:
         body = event.get("body")
         payload = json.loads(body) if isinstance(body, str) else (body or {})
-        sync_event = kintone_payload_to_sync_event(payload, headers)
+        sync_event = kintone_payload_to_sync_event(
+            payload, headers, id_mapping_store=id_mapping_store, notion_client=notion_client
+        )
     except json.JSONDecodeError as exc:
         return bad_request_response(f"invalid JSON payload: {exc}")
     except (KeyError, ValueError) as exc:
