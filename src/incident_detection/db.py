@@ -5,6 +5,13 @@ dashboard(Next.js)側のPrisma(dashboard/prisma/schema.prisma)に一本化して
 raw SQLで読み書きするのみでマイグレーションは行わない。接続文字列はdashboard側と同じ
 DATABASE_URL環境変数を共有する想定。新規env変数は追加しない(SLACK_WEBHOOK_URL_ALERTは
 既存を流用)。
+
+`find_manager_emails()`の実体は`src/notifications/manager_dm.py`へ移設した(2026-08-25、
+`src/sync_engine/slack_notifier.py`側でも同じ「isManager=true全員へDM」要件が発生したため、
+インシデント検知専用に見えるこのパッケージから、ドメイン非依存の`notifications`パッケージへ
+DB解決ロジックを集約)。ここでは既存呼び出し元(`notify.py`、および
+`notify.db.find_manager_emails`を直接monkeypatchしている既存テスト)との互換性のため、
+薄いラッパーとして残している。
 """
 
 from __future__ import annotations
@@ -14,6 +21,8 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+
+from src.notifications import manager_dm
 
 
 def _connect() -> psycopg.Connection[dict[str, Any]]:
@@ -76,8 +85,8 @@ def find_manager_emails() -> list[str]:
     通知先をハードコード/env変数で持つのではなく、dashboard側の管理画面でON/OFFできる
     `User.isManager`フラグ(アクセス権限用の`role`とは別軸)から動的に解決する。
     `notify.notify_managers_immediate()`がこの一覧の各emailへ個別にDM送信する。
+
+    実体は`src.notifications.manager_dm.find_manager_emails()`(2026-08-25移設、モジュール
+    docstring参照)。
     """
-    with _connect() as conn, conn.cursor() as cur:
-        cur.execute('SELECT email FROM "User" WHERE "isManager" = true')
-        rows = cur.fetchall()
-    return [row["email"] for row in rows]
+    return manager_dm.find_manager_emails()

@@ -67,8 +67,19 @@ def notify_managers_immediate(
 ) -> None:
     """高優先度(スコア8点以上)のインシデントを検知した際、`User.isManager = true`の各
     マネージャーへ即座にSlack DMで通知する。1人への送信失敗が他の対象者への送信を
-    止めないよう、対象者ごとに独立してtry/exceptする。"""
+    止めないよう、対象者ごとに独立してtry/exceptする。
+
+    `SLACK_BOT_TOKEN`未設定・managerが0人の場合も、通知をスキップした旨を`logger.warning`で
+    残す(2026-08-25、`src/notifications/manager_dm.py`の`notify_managers()`と同じ対応。
+    以前はログすら残さず静かにreturnしていたため、`isManager`フラグの設定漏れが起きた場合に
+    「なぜ通知が届かなかったか」の痕跡が一切残らなかった)。
+    """
     if not os.environ.get("SLACK_BOT_TOKEN"):
+        logger.warning(
+            "incident_detection: SLACK_BOT_TOKEN is not configured; skipping manager DM "
+            "notification entirely (no manager will be notified) for contact_email=%s",
+            contact_email,
+        )
         return
 
     try:
@@ -77,6 +88,11 @@ def notify_managers_immediate(
         logger.exception("incident_detection: failed to resolve manager emails")
         return
     if not manager_emails:
+        logger.warning(
+            "incident_detection: no managers found (User.isManager = true has 0 rows); "
+            "skipping manager DM notification entirely for contact_email=%s",
+            contact_email,
+        )
         return
 
     text = (

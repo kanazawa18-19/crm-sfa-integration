@@ -121,21 +121,30 @@ def _slack_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
 
 
-def _slack_get(method: str, params: dict[str, str]) -> dict[str, Any]:
+def _slack_get(
+    method: str, params: dict[str, str], *, timeout: float = _REQUEST_TIMEOUT_SECONDS
+) -> dict[str, Any]:
     response = requests.get(
         f"{_SLACK_API_BASE}/{method}",
         headers=_slack_headers(),
         params=params,
-        timeout=_REQUEST_TIMEOUT_SECONDS,
+        timeout=timeout,
     )
     return response.json()
 
 
-def _resolve_dm_channel(rep_email: str) -> tuple[str, str] | None:
+def _resolve_dm_channel(
+    rep_email: str, *, timeout: float = _REQUEST_TIMEOUT_SECONDS
+) -> tuple[str, str] | None:
     """`rep_email`のSlackユーザーIDを解決し、(DMチャンネルID, SlackユーザーID)を返す
     （失敗時はNone）。
+
+    `timeout`はキーワード専用の任意引数（既定は本モジュールの`_REQUEST_TIMEOUT_SECONDS`で
+    既存呼び出し元の挙動は変わらない）。`src/notifications/manager_dm.py`が同期的なWebhook
+    処理から呼ばれる際、短いタイムアウトを指定するために追加した（2026-08-25、
+    shirokuma-secレビュー対応。「DM送信が同期的にwebhookレスポンスをブロックする問題」）。
     """
-    lookup = _slack_get("users.lookupByEmail", {"email": rep_email})
+    lookup = _slack_get("users.lookupByEmail", {"email": rep_email}, timeout=timeout)
     if not lookup.get("ok"):
         logger.warning(
             "Slack users.lookupByEmail failed for rep_email=%s: %s",
@@ -149,7 +158,7 @@ def _resolve_dm_channel(rep_email: str) -> tuple[str, str] | None:
         f"{_SLACK_API_BASE}/conversations.open",
         headers=_slack_headers(),
         json={"users": user_id},
-        timeout=_REQUEST_TIMEOUT_SECONDS,
+        timeout=timeout,
     ).json()
     if not open_result.get("ok"):
         logger.warning(

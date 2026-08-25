@@ -345,9 +345,7 @@ db_key・発火元ツールの組み合わせは限られている**（安全側
 
 ### 運用可視性（Slack通知）
 
-新規レコード作成に関する以下4つのタイミングでSlackへ通知する
-（`SLACK_WEBHOOK_URL_ALERT`環境変数が未設定の場合は通知しない、既存の`notify_conflict`と
-同じ「未設定なら無効化」パターン）:
+新規レコード作成に関する以下4つのタイミングでSlackへ通知する:
 
 - ✅ 新規ページ作成成功時（`notify_new_record_created`）
 - ⚠️ 必須プロパティ不足によるスキップ時（`notify_new_record_issue`、
@@ -358,11 +356,52 @@ db_key・発火元ツールの組み合わせは限られている**（安全側
   （`notify_new_record_issue`、`reason="notion_creation_status_unknown"`。Notion page IDは
   不明なため含まれない。手動でNotion側を直接確認する必要がある）
 
+**通知先（2026-08-25、送信方式変更）**: 当初は`SLACK_WEBHOOK_URL_ALERT`環境変数のIncoming
+Webhook（`notify_conflict`と同じ「未設定なら無効化」パターン）を想定していたが、本番環境に
+この変数が未設定であることが判明した。金沢さんへの確認の結果、「まずは金沢のDMへ、
+ゆくゆくはマネージャー陣のDMへ」という方針になったため、`src/incident_detection/notify.py`
+（高優先度インシデント検知の即時通知）と同じ「`User.isManager = true`の全ユーザーへSlack DM」
+方式（`src/notifications/manager_dm.py`、既存の`SLACK_BOT_TOKEN`を使用、新規env変数なし）に
+変更した。通知先はハードコード/env変数ではなく、dashboard管理画面でON/OFFできる
+`User.isManager`フラグから都度動的に解決するため、マネージャー陣への拡大時もコード変更は
+不要（対象ユーザーの`isManager`をONにするだけでよい）。なお`notify_conflict`（Round1、
+コンフリクト自動解決通知）は本項の対象外で、引き続き`SLACK_WEBHOOK_URL_ALERT`のままである。
+
 **`WebhookSlackNotifier`自体はSlackへの送信に失敗しても例外を投げない**（3回目最終レビュー
-BLOCKER対応、2026-08-25）: 上記4つの通知のうち特に🚨2件は「他の保護ロジックが失敗した後の
-最終防衛線」として呼ばれるため、通知処理自体（`requests.post()`）がタイムアウト等で失敗した
-場合でもログに残すのみで静かに戻る実装にしてある。個別の呼び出し箇所（`Dispatcher`側）で
-try/exceptを重ねる必要はない（Notifier自体が「絶対に失敗しない」実装になっているため）。
+BLOCKER対応、2026-08-25。DM送信方式への変更後も踏襲）: 上記4つの通知のうち特に🚨2件は
+「他の保護ロジックが失敗した後の最終防衛線」として呼ばれるため、通知処理自体
+（Slackユーザー解決・`chat.postMessage`・`User`テーブルへのDB接続等）がタイムアウト等で
+失敗した場合でもログに残すのみで静かに戻る実装にしてある。個別の呼び出し箇所
+（`Dispatcher`側）でtry/exceptを重ねる必要はない（Notifier自体が「絶対に失敗しない」実装に
+なっているため）。
+
+**DM本文に人間向け表示名・対処アクションを埋め込む**（2026-08-25、動物チーム
+（shirokuma-sec/obasan-quality/kuma-qa）レビュー対応）: DM本文の`DB:`行には`db_key`の生値
+（例: "client_master"）に加えて`src/db_schema/registry.py`の`get_schema(db_key).display_name`
+（例: "取引先マスターDB"）を併記する。`notify_new_record_issue`ではさらに、`reason`ごとの
+一言アクションを`対応:`行として追加する（`src/sync_engine/slack_notifier.py`の
+`_ISSUE_REASON_ACTION_HINTS`）。深夜・休日に届きうる緊急通知（特に🚨2件）でも、本ドキュメントを
+別途参照しなくてもその場で次にすべきことが分かるようにするため。**このdictの文言は下記
+「動作確認チェックリスト」の対処手順と一致させてある。どちらかを変更した場合は、もう一方も
+忘れずに更新すること**（二重管理を避けるため、詳細な手順自体はこのドキュメント側に譲り、DM
+本文には要点のみを埋め込む設計）。
+
+**DM送信ループのタイムアウト予算**（2026-08-25、shirokuma-secレビュー【最重要】対応）:
+`dispatcher.dispatch()`はkintone/Zoho Webhookハンドラから`BackgroundTasks`を使わず同期的に
+呼ばれるため（本番はVercelのサーバーレス関数(FastAPI)としてデプロイされており、
+レスポンス送信後に関数プロセスが凍結/終了しうるため`BackgroundTasks`は導入していない）、DM
+送信の遅延がそのままWebhookレスポンスの遅延になり、kintone/Zoho側のリトライによる重複ページ
+作成を誘発しかねない。`manager_dm.notify_managers()`はマネージャーN人ぶんのDM送信ループ全体に
+合計5秒のタイムアウト予算（`_NOTIFY_MANAGERS_TIME_BUDGET_SECONDS`）を設け、超過したら残りの
+マネージャーへの送信を打ち切り`logger.warning`で記録する。各Slack API呼び出し自体のtimeoutも
+10秒から3秒（`_DM_API_CALL_TIMEOUT_SECONDS`）に短縮した。「1人への送信失敗が他の対象者への
+送信を止めない」という既存の安全設計はそのまま維持している。
+
+**`SLACK_BOT_TOKEN`未設定・マネージャー0人時のログ**（2026-08-25、shirokuma-secレビュー
+対応）: 以前はこの2ケースでログすら残さず静かにreturnしていたため、上記「Round2のロール
+アウト手順」2.で確認を促している`isManager`フラグの設定漏れが起きた場合、通知が届かない
+だけでなく「なぜ届かなかったか」の痕跡も残らなかった。現在は`manager_dm.notify_managers()`が
+両ケースとも`logger.warning`で1行残す。
 
 ### 自動作成されたページを監査ログで確認する方法
 
@@ -410,16 +449,20 @@ Round1（本ドキュメント冒頭「ロールアウト順序」）と同水�
 1. **インフラ整備をデプロイ**: `AUTO_CREATE_NEW_RECORDS_ENABLED`未設定（既定`false`）のまま、
    `src/sync_engine/new_record_builder.py`・`Dispatcher._try_create_new_record()`一式を
    デプロイする。本番挙動は変化しない（従来通り`unknown_record`スキップのまま）。
-2. **Slack通知先の確認**: `SLACK_WEBHOOK_URL_ALERT`が設定済みであることを確認する
-   （未設定だと上記「運用可視性」の通知が届かず、問題発生に気づきにくくなる）。
+2. **Slack通知先の確認**: `SLACK_BOT_TOKEN`が設定済みであること、かつ通知を受け取る
+   ユーザー（当面は金沢さん、将来的にはマネージャー陣）のdashboard管理画面上の
+   `isManager`フラグがONになっていることを確認する（`SLACK_BOT_TOKEN`未設定・
+   `isManager=true`のユーザーが0人のいずれの場合も、上記「運用可視性」の通知は
+   静かにスキップされ届かない。問題発生に気づきにくくなるため必ず確認すること）。
 3. **`AUTO_CREATE_NEW_RECORDS_ENABLED=true`**: Vercel本番環境変数に設定する。有効化後、
    kintone/Zohoで上記「新規作成が実際に機能するdb_key一覧」に該当する新規レコードが
    作成されるたびに、対応するNotionページが自動作成される。
 4. **動作確認チェックリスト**（有効化直後、最低1〜2日は毎日確認すること）:
    - Vercelのfunction logsで`/api/webhooks/kintone`・`/api/webhooks/zoho`が引き続き200を
      返していることを確認する。
-   - Slackの通知チャンネルで✅（成功）・⚠️（必須プロパティ不足）・🚨（マッピング登録失敗、
-     または Notion API呼び出し自体の失敗、いずれも最重要）の通知内容を確認する。
+   - `isManager=true`のユーザー宛Slack DMで✅（成功）・⚠️（必須プロパティ不足）・
+     🚨（マッピング登録失敗、または Notion API呼び出し自体の失敗、いずれも最重要）の
+     通知内容を確認する。
      - `reason="mapping_registration_failed"`の🚨が来た場合、通知に含まれるNotion page ID
        を直接開き、アーカイブ済みかどうか（「ページはアーカイブ済みです」の文言の有無）を
        確認し、アーカイブされていなければ手動でアーカイブまたは内容を確認して正式な
@@ -445,3 +488,49 @@ Round1（本ドキュメント冒頭「ロールアウト順序」）と同水�
    - 不完全ページ（🚨アラートでアーカイブに失敗したまま残っているもの）: Notion上で直接
      内容を確認し、アーカイブまたは正式なIdMappingを手動でDBへ登録する（`IdMappingStore`の
      実装（SQLite/`NotionIdMappingStore`）に応じた方法で行うこと）。
+
+### 今後の検討候補（2026-08-25、動物チームレビュー記録、対応不要と判断）
+
+「新規レコード作成Slack通知のDM方式切り替え」の動物チーム（shirokuma-sec/obasan-quality/
+kuma-qa）レビューで指摘されたが、実害・優先度の観点から今回は対応を見送った項目。将来
+関連箇所を触る際の参考として記録しておく:
+
+- **`find_manager_emails()`の委譲を直接検証する単体テストが無い**: `src/incident_detection/
+  db.py`から`src/notifications/manager_dm.py`への委譲自体（呼び出しがそのまま転送される
+  こと）を確認する単体テストが無い。既存の統合的なテスト（`notify_managers_immediate`経由の
+  テスト）で間接的にはカバーされている。
+- **DM送信の実処理が2箇所にほぼ同一のまま重複して残っている**: `src/notifications/
+  manager_dm.py`の`send_dm()`と`src/incident_detection/notify.py`の`_send_incident_dm()`は
+  ほぼ同じ処理（`_resolve_dm_channel()`→`chat.postMessage`）を別々に持つ。既存の単体テストが
+  `notify._resolve_dm_channel`/`notify.db.find_manager_emails`をモジュール属性として直接
+  monkeypatchしている前提に依存しており、統合するとテストのpatch対象がずれて既存の検証が
+  無効化されるリスクがあるため、あえて統合していない（`src/notifications/manager_dm.py`の
+  モジュールdocstring「`incident_detection/notify.py`との役割分担について」参照）。
+- **`WebhookSlackNotifier`というクラス名が実態と乖離している**: `notify_conflict`は
+  Incoming Webhook、`notify_new_record_created`/`notify_new_record_issue`はSlack DMと、
+  送信手段がメソッドにより異なるにもかかわらず、クラス名は歴史的経緯によりWebhook前提の
+  ままになっている。
+- **`src/notifications/manager_dm.py`が遅延importを必要とする循環依存構造になっている**:
+  `manager_dm.py` → `src.meeting_sync.slack_approval` → `src.sync_engine.clients.
+  notion_lookup` → ... → `src.sync_engine.dispatcher` → `src.sync_engine.slack_notifier`
+  という循環importがあるため、`slack_notifier.py`の`_notify_managers()`は`manager_dm`を
+  関数内で遅延importしている。将来同種のヘルパーを追加するたびに同じ対策が増殖しうる。
+- **`find_manager_emails()`が呼び出しごとに毎回新規DB接続を張る**: コネクションプールが
+  無く、`notify_managers()`を呼ぶたびに新しいpsycopg接続を開いて閉じる。呼び出し頻度が
+  低い（新規レコード作成・高優先度インシデント検知の発生時のみ）うちは実害が小さい。
+
+「合計5秒のタイムアウト予算」修正（上記ロールアウト手順のDM方式切り替え）に対する検証レビュー
+（shirokuma-sec、2026-08-25）で追加指摘された、対応を見送った2点:
+
+- **タイムアウト予算のチェックがマネージャーのループ先頭でしか行われず、厳密な上限保証では
+  ない**: `notify_managers()`内の予算チェックは各マネージャーの処理開始前にのみ行われ、
+  `send_dm()`内部（最大3回のSlack API呼び出し、各3秒）の途中では働かない。そのため1人目の
+  処理だけで理論上最大約9秒（+`find_manager_emails()`のDB接続が最大10秒、これは予算に
+  含まれない）かかりうり、ワーストケースの総ブロッキング時間は最大約19秒（当初の
+  「N人×最大30秒」からは大幅短縮だが、docstring/ログの「合計5秒」という表現は正確な上限
+  保証ではない）。厳密な上限にするには`send_dm()`側にも`deadline`を渡して各API呼び出し前に
+  チェックする必要がある。
+- **`slack_notifier.py`の`_notify_managers()`内の`manager_dm`遅延importがtry/exceptの外に
+  ある**: このモジュールの設計目標（Notifier自体を絶対に失敗させない）を厳密に守るなら
+  import文もtryの中に入れるべきだが、`sys.modules`キャッシュにより通常運用で実際に失敗する
+  可能性は低い。

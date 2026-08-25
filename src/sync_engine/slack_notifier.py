@@ -9,9 +9,22 @@ Protocolを介して通知を行い、テストではモックNotifierを注入�
 （shirokuma-sec/obasan-qualityレビューWARN対応）。特に`notify_new_record_issue`は、Notion
 ページ作成後にIdMapping登録が失敗した「孤児ページ」の検知（BLOCKER1対応）にも使われる。
 
-■ 例外を投げない設計について（2026-08-25、3回目最終レビューBLOCKER対応）: `WebhookSlackNotifier`
-の各`notify_*`メソッドは、`requests.post()`が例外（タイムアウト・接続断・5xx等）を送出しても
-**呼び出し元へ一切伝播させない**（内部でtry/exceptし、失敗時はログのみ残して静かに戻る）。
+■ 通知先について（2026-08-25、送信先変更）: `notify_conflict`は引き続き
+`SLACK_WEBHOOK_URL_ALERT`環境変数のIncoming Webhookへ送る（Round1から変更なし、本番で
+このWebhookは設定済み・運用実績あり）。一方`notify_new_record_created`/
+`notify_new_record_issue`（Round2）は、本番環境に`SLACK_WEBHOOK_URL_ALERT`が未設定だった
+ことが判明したため、`src/incident_detection/notify.py`と同じ「`User.isManager = true`の
+全ユーザーへSlack DM」方式（`src/notifications/manager_dm.py`、`SLACK_BOT_TOKEN`を使用、
+新規env変数なし）に変更した。通知先をハードコードせず、dashboard管理画面で`isManager`
+フラグをON/OFFすることで動的に増減できる（金沢さん要望: まずは金沢のDM、将来的には
+マネージャー陣のDMへ拡張）。
+
+■ 例外を投げない設計について（2026-08-25、3回目最終レビューBLOCKER対応。DM送信方式への
+変更後も踏襲）: `WebhookSlackNotifier`の各`notify_*`メソッドは、送信手段が
+Incoming Webhook（`_post()`）でもSlack DM（`_notify_managers()`、内部で
+`manager_dm.notify_managers()`を呼ぶ）でも、送信失敗（`requests`が送出する例外・
+Slack API側のエラーレスポンス・DB接続失敗等）を**呼び出し元へ一切伝播させない**
+（内部でtry/exceptし、失敗時はログのみ残して静かに戻る）。
 `Dispatcher._handle_uncertain_notion_page_creation()`/`_handle_orphaned_notion_page()`のような
 「他の保護ロジックが失敗した後の最終防衛線」でこの通知を呼んでいる箇所があり、もし通知自体が
 例外を投げると、その例外がWebhookハンドラの広い`except Exception`まで伝播して500応答となり、
@@ -30,9 +43,45 @@ from typing import Protocol
 import requests
 
 from src.db_schema.base import Tool
+from src.db_schema.registry import get_schema
 from src.sync_engine.conflict_resolver import RejectedData
 
 logger = logging.getLogger(__name__)
+
+# `notify_new_record_issue`のreasonごとの一言アクション（obasan-qualityレビュー対応、
+# 2026-08-25）。深夜・休日に届きうる緊急通知（特に🚨の2件）でも、内部識別子の生値だけでなく
+# その場で次に何をすればよいか分かるようにする。
+#
+# ■ docs/relation_sync_activation_note.md との同期について: 本dictの文言は
+# `docs/relation_sync_activation_note.md`の「Round2のロールアウト手順」節・
+# 「動作確認チェックリスト」に記載の対処手順と一致させてある。本dictを変更した場合は、
+# 必ず同ドキュメントの当該節も合わせて更新すること（二重管理を避けるため、詳細な手順自体は
+# ドキュメント側に譲り、DM本文には要点のみを埋め込む）。
+_ISSUE_REASON_ACTION_HINTS: dict[str, str] = {
+    "missing_required_properties": (
+        "⚠️ 必須プロパティが不足しているためページは作成されていません。kintone/Zoho側の"
+        "入力を確認し、必須項目を補ってください（自動での再作成は行われません）。"
+    ),
+    "mapping_registration_failed": (
+        "🚨 通知に含まれるNotion page IDを直接開き、アーカイブ済みか確認してください。"
+        "アーカイブされていなければ手動でアーカイブするか、内容を確認して正式なマッピングを"
+        "手動登録してください。"
+    ),
+    "notion_creation_status_unknown": (
+        "🚨 監査ログとNotion上を突き合わせて実際にページが作成されたか確認してください。"
+        "見つかった場合は正式なIdMappingを手動登録するか、不要であればアーカイブしてください。"
+    ),
+}
+
+
+def _db_key_display_name(db_key: str) -> str:
+    """`db_key`の人間向け表示名（例: "取引先マスターDB"）を返す。未知のdb_keyの場合は
+    `db_key`自体をそのまま返す（DM本文の生成自体を失敗させないため、安全側に倒す）。
+    """
+    try:
+        return get_schema(db_key).display_name
+    except KeyError:
+        return db_key
 
 
 class SlackNotifier(Protocol):
@@ -64,7 +113,11 @@ class SlackNotifier(Protocol):
 
 
 class WebhookSlackNotifier:
-    """SLACK_WEBHOOK_URL_ALERT環境変数のIncoming WebhookへシンプルにHTTP POSTする実装。
+    """コンフリクト通知（`notify_conflict`）はSLACK_WEBHOOK_URL_ALERT環境変数のIncoming
+    Webhookへ、新規レコード作成関連の通知（`notify_new_record_created`/
+    `notify_new_record_issue`）は`User.isManager = true`の全ユーザーへのSlack DMへ送る実装
+    （クラス名は歴史的経緯によりWebhook前提のままだが、送信手段はメソッドにより異なる。
+    モジュールdocstring「通知先について」参照）。
 
     本番投入時はリトライ・レート制限・Block Kit等によるリッチな整形を検討すること。
     ここでは仕様書05節の通知内容（対象案件 / 変更項目 / 採用データ / 却下データ）を
@@ -101,6 +154,31 @@ class WebhookSlackNotifier:
                 exc_info=True,
             )
 
+    def _notify_managers(self, text: str) -> None:
+        """`text`を`manager_dm.notify_managers()`経由で`User.isManager = true`の全員へ
+        Slack DMする。`manager_dm.notify_managers()`自体が内部で例外を握りつぶす設計だが
+        （`SLACK_BOT_TOKEN`未設定・manager解決失敗・DM送信失敗いずれも静かにログのみで
+        戻る）、`_post()`と同じ「Notifier自体を絶対に失敗しない実装にする」防御をここでも
+        一段重ねる（モジュールdocstring「例外を投げない設計について」参照）。
+
+        `manager_dm`はモジュールの先頭ではなくここで遅延importする:
+        `manager_dm` → `src.meeting_sync.slack_approval` →
+        `src.sync_engine.clients.notion_lookup` → ... → `src.sync_engine.dispatcher` →
+        本モジュール、という循環importが発生するため（`dispatcher.py`が`SlackNotifier`
+        Protocolをモジュールレベルでimportしている）。
+        """
+        from src.notifications import manager_dm
+
+        try:
+            manager_dm.notify_managers(text, log_context="WebhookSlackNotifier")
+        except Exception:
+            logger.warning(
+                "WebhookSlackNotifier: failed to notify managers via Slack DM; continuing "
+                "without raising (Slack notification is a secondary feature and must not "
+                "block the caller's main processing)",
+                exc_info=True,
+            )
+
     def notify_conflict(self, rejected: RejectedData) -> None:
         text = (
             "[同期コンフリクト自動解決]\n"
@@ -117,11 +195,11 @@ class WebhookSlackNotifier:
     ) -> None:
         text = (
             "[新規レコード自動作成]\n"
-            f"DB: {db_key}\n"
+            f"DB: {db_key}（{_db_key_display_name(db_key)}）\n"
             f"作成元: {source_tool.value}（external_id={external_id}）\n"
             f"Notion page ID: {notion_page_id}"
         )
-        self._post(text)
+        self._notify_managers(text)
 
     def notify_new_record_issue(
         self,
@@ -135,11 +213,14 @@ class WebhookSlackNotifier:
     ) -> None:
         lines = [
             "[新規レコード自動作成で問題が発生しました]",
-            f"DB: {db_key}",
+            f"DB: {db_key}（{_db_key_display_name(db_key)}）",
             f"対象: {source_tool.value}（external_id={external_id}）",
             f"理由: {reason}",
             f"詳細: {detail}",
         ]
+        action_hint = _ISSUE_REASON_ACTION_HINTS.get(reason)
+        if action_hint:
+            lines.append(f"対応: {action_hint}")
         if notion_page_id:
             lines.append(f"⚠️ Notion page ID（要確認・孤児ページの可能性あり）: {notion_page_id}")
-        self._post("\n".join(lines))
+        self._notify_managers("\n".join(lines))

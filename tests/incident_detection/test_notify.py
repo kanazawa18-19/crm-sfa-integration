@@ -30,7 +30,7 @@ class _FakeSlackResponse:
 
 
 def test_notify_managers_immediate_skips_when_slack_bot_token_not_configured(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     resolve_calls: list[str] = []
@@ -39,24 +39,32 @@ def test_notify_managers_immediate_skips_when_slack_bot_token_not_configured(
         notify.db, "find_manager_emails", lambda: (_ for _ in ()).throw(AssertionError("should not be called"))
     )
 
-    notify.notify_managers_immediate(
-        subject="件名", snippet="本文", contact_email="lead@client.example.com", rep_email="rep@cnctor.jp", score=10
-    )
+    with caplog.at_level("WARNING"):
+        notify.notify_managers_immediate(
+            subject="件名", snippet="本文", contact_email="lead@client.example.com", rep_email="rep@cnctor.jp", score=10
+        )
 
     assert resolve_calls == []
+    # manager_dm.notify_managers()と同じ対応(2026-08-25): 未設定時も痕跡がログに残ること。
+    assert any("SLACK_BOT_TOKEN is not configured" in r.getMessage() for r in caplog.records)
 
 
-def test_notify_managers_immediate_skips_when_no_managers_found(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_notify_managers_immediate_skips_when_no_managers_found(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setattr(notify.db, "find_manager_emails", lambda: [])
     resolve_calls: list[str] = []
     monkeypatch.setattr(notify, "_resolve_dm_channel", lambda email: resolve_calls.append(email))
 
-    notify.notify_managers_immediate(
-        subject="件名", snippet="本文", contact_email="lead@client.example.com", rep_email="rep@cnctor.jp", score=10
-    )
+    with caplog.at_level("WARNING"):
+        notify.notify_managers_immediate(
+            subject="件名", snippet="本文", contact_email="lead@client.example.com", rep_email="rep@cnctor.jp", score=10
+        )
 
     assert resolve_calls == []
+    # manager_dm.notify_managers()と同じ対応(2026-08-25): 0人時も痕跡がログに残ること。
+    assert any("no managers found" in r.getMessage() for r in caplog.records)
 
 
 def test_notify_managers_immediate_skips_silently_when_find_manager_emails_raises(

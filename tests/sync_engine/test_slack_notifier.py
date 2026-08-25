@@ -78,17 +78,22 @@ def test_notify_conflict_skips_when_no_webhook_url_configured(
 
 # --- notify_new_record_created / notify_new_record_issue（2026-08-25、Round2） ------------------
 # shirokuma-sec/obasan-qualityレビューWARN対応: 新規レコード作成の運用可視性のために追加。
+# 本番環境にSLACK_WEBHOOK_URL_ALERTが未設定と判明したため、incident_detectionと同じ
+# 「User.isManager = true」全員へのSlack DM方式へ変更した（2026-08-25）。
+# ここでは`manager_dm.notify_managers()`が正しい引数で呼ばれることのみ検証し、DM解決・
+# 送信自体の詳細な挙動（SLACK_BOT_TOKEN未設定時のスキップ、manager毎のtry/except等）は
+# tests/notifications/test_manager_dm.pyの責務とする。
 
 
-def test_notify_new_record_created_posts_to_configured_webhook_url(
+def test_notify_new_record_created_calls_manager_dm_notify_managers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append({"url": url, "json": json}),
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text, "log_context": log_context}),
     )
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    notifier = WebhookSlackNotifier()
 
     notifier.notify_new_record_created(
         db_key="client_master",
@@ -98,42 +103,25 @@ def test_notify_new_record_created_posts_to_configured_webhook_url(
     )
 
     assert len(calls) == 1
-    text = calls[0]["json"]["text"]
+    text = calls[0]["text"]
     assert "client_master" in text
     assert "kintone" in text
     assert "45" in text
     assert "new-page-id" in text
+    assert calls[0]["log_context"] == "WebhookSlackNotifier"
 
 
-def test_notify_new_record_created_skips_when_no_webhook_url_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append(url),
-    )
-    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT", raising=False)
-    notifier = WebhookSlackNotifier()
-
-    notifier.notify_new_record_created(
-        db_key="client_master", source_tool=Tool.KINTONE, external_id="45", notion_page_id="x"
-    )
-
-    assert calls == []
-
-
-def test_notify_new_record_issue_posts_to_configured_webhook_url_with_notion_page_id(
+def test_notify_new_record_issue_calls_manager_dm_notify_managers_with_notion_page_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """孤児ページ（IdMapping登録失敗）の場合、Notion page IDがテキストに明示的に含まれること
     （運用者がすぐに該当ページを特定できるようにするため）。"""
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append({"url": url, "json": json}),
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text, "log_context": log_context}),
     )
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    notifier = WebhookSlackNotifier()
 
     notifier.notify_new_record_issue(
         db_key="project",
@@ -145,7 +133,7 @@ def test_notify_new_record_issue_posts_to_configured_webhook_url_with_notion_pag
     )
 
     assert len(calls) == 1
-    text = calls[0]["json"]["text"]
+    text = calls[0]["text"]
     assert "project" in text
     assert "zoho" in text
     assert "mapping_registration_failed" in text
@@ -157,10 +145,10 @@ def test_notify_new_record_issue_omits_notion_page_id_when_not_given(
 ) -> None:
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append({"json": json}),
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
     )
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    notifier = WebhookSlackNotifier()
 
     notifier.notify_new_record_issue(
         db_key="action",
@@ -170,29 +158,115 @@ def test_notify_new_record_issue_omits_notion_page_id_when_not_given(
         detail="必須プロパティが不足しているため作成をスキップしました",
     )
 
-    assert "Notion page ID" not in calls[0]["json"]["text"]
+    assert "Notion page ID" not in calls[0]["text"]
 
 
-def test_notify_new_record_issue_skips_when_no_webhook_url_configured(
+# --- DM本文への人間向け表示名・対処アクション埋め込み（obasan-qualityレビュー対応、2026-08-25） --
+# 内部識別子（db_key/reason）の生値だけでなく、緊急時にその場で判断できる情報をDM本文に含める。
+
+
+def test_notify_new_record_created_includes_db_key_display_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append(url),
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
     )
-    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT", raising=False)
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_new_record_created(
+        db_key="client_master", source_tool=Tool.KINTONE, external_id="45", notion_page_id="new-page-id"
+    )
+
+    text = calls[0]["text"]
+    assert "client_master" in text
+    assert "取引先マスターDB" in text
+
+
+def test_notify_new_record_issue_includes_action_hint_for_mapping_registration_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
     notifier = WebhookSlackNotifier()
 
     notifier.notify_new_record_issue(
-        db_key="action",
+        db_key="project",
+        source_tool=Tool.ZOHO,
+        external_id="zoho-1",
+        reason="mapping_registration_failed",
+        detail="detail",
+        notion_page_id="orphaned-page-id",
+    )
+
+    text = calls[0]["text"]
+    assert "案件管理DB" in text  # db_keyの人間向け表示名
+    assert "Notion page ID" in text and "アーカイブ済みか確認" in text  # reasonの対処アクション
+
+
+def test_notify_new_record_issue_includes_action_hint_for_notion_creation_status_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_new_record_issue(
+        db_key="client_master",
         source_tool=Tool.KINTONE,
-        external_id="77",
-        reason="missing_required_properties",
+        external_id="45",
+        reason="notion_creation_status_unknown",
         detail="detail",
     )
 
-    assert calls == []
+    assert "監査ログとNotion上を突き合わせて" in calls[0]["text"]
+
+
+def test_notify_new_record_issue_omits_action_hint_for_unknown_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_ISSUE_REASON_ACTION_HINTS`に無いreasonでも例外を送出せず、単に対応行を省くこと。"""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_new_record_issue(
+        db_key="client_master",
+        source_tool=Tool.KINTONE,
+        external_id="45",
+        reason="some_future_reason",
+        detail="detail",
+    )
+
+    assert "対応:" not in calls[0]["text"]
+
+
+def test_notify_new_record_created_falls_back_to_raw_db_key_when_schema_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未知のdb_keyでも`get_schema()`のKeyErrorを握りつぶし、DM本文の生成自体は失敗させないこと。"""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_new_record_created(
+        db_key="unknown_db_key", source_tool=Tool.KINTONE, external_id="1", notion_page_id="p"
+    )
+
+    assert "unknown_db_key" in calls[0]["text"]
 
 
 # --- 例外を投げない設計（2026-08-25、3回目最終レビューBLOCKER対応） -----------------------------
@@ -215,34 +289,38 @@ def test_notify_conflict_does_not_raise_when_requests_post_fails(
     assert any("failed to post to Slack" in r.getMessage() for r in caplog.records)
 
 
-def test_notify_new_record_created_does_not_raise_when_requests_post_fails(
+def test_notify_new_record_created_does_not_raise_when_manager_dm_notify_managers_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def _raise(url: str, json: dict[str, Any], timeout: int) -> None:
+    """DM送信方式への変更後も、`manager_dm.notify_managers()`が万一例外を送出した場合に
+    備えて`_notify_managers()`自体がそれを握りつぶすこと（`manager_dm.notify_managers()`は
+    本来例外を投げない設計だが、`_post()`と同じ多層防御としてここでも確認する）。"""
+
+    def _raise(text: str, *, log_context: str) -> None:
         raise ConnectionError("connection reset")
 
-    monkeypatch.setattr("src.sync_engine.slack_notifier.requests.post", _raise)
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    monkeypatch.setattr("src.notifications.manager_dm.notify_managers", _raise)
+    notifier = WebhookSlackNotifier()
 
     with caplog.at_level("WARNING"):
         notifier.notify_new_record_created(
             db_key="client_master", source_tool=Tool.KINTONE, external_id="45", notion_page_id="x"
         )
 
-    assert any("failed to post to Slack" in r.getMessage() for r in caplog.records)
+    assert any("failed to notify managers via Slack DM" in r.getMessage() for r in caplog.records)
 
 
-def test_notify_new_record_issue_does_not_raise_when_requests_post_fails(
+def test_notify_new_record_issue_does_not_raise_when_manager_dm_notify_managers_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """`_handle_uncertain_notion_page_creation()`/`_handle_orphaned_notion_page()`のような
     「他の保護ロジックが失敗した後の最終防衛線」で使われる通知のため、特に重要。"""
 
-    def _raise(url: str, json: dict[str, Any], timeout: int) -> None:
+    def _raise(text: str, *, log_context: str) -> None:
         raise RuntimeError("HTTP 500 from Slack")
 
-    monkeypatch.setattr("src.sync_engine.slack_notifier.requests.post", _raise)
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    monkeypatch.setattr("src.notifications.manager_dm.notify_managers", _raise)
+    notifier = WebhookSlackNotifier()
 
     with caplog.at_level("WARNING"):
         notifier.notify_new_record_issue(
@@ -254,4 +332,4 @@ def test_notify_new_record_issue_does_not_raise_when_requests_post_fails(
             notion_page_id="orphaned-page-id",
         )
 
-    assert any("failed to post to Slack" in r.getMessage() for r in caplog.records)
+    assert any("failed to notify managers via Slack DM" in r.getMessage() for r in caplog.records)
