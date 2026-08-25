@@ -157,6 +157,13 @@ body {
        ボーダーにも使うことで視認性を確保している。 */
     @apply inline-flex items-center rounded-full border border-(--text-grey) bg-(--color-surface) px-2 py-1 text-sm font-medium text-(--text-grey);
   }
+  .badge-green {
+    /* 「有効」等の成功系ステータス用の塗りつぶしピル。以前は各ページでベタ書きされて
+       いた(users/page.tsxのアカウント状態表示など)ものを共有クラス化した
+       (obasan-qualityレビュー指摘、2026-08-25)。同じ色を別の意味の項目にも使い回すと
+       視覚的に混同しやすいため、意味が異なる箇所ではbadge-blue等の別クラスを使うこと。 */
+    @apply inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/40 dark:text-green-300;
+  }
 
   .link {
     @apply text-(--brand-blue) underline decoration-(--brand-blue-light) decoration-2 underline-offset-2 transition-colors hover:text-(--brand-blue-dark);

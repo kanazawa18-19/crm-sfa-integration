@@ -1,6 +1,6 @@
 import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
-import { changeUserRole, deleteUser } from "@/app/actions";
+import { changeUserRole, deleteUser, toggleUserIsManager } from "@/app/actions";
 import SubmitButton from "@/components/SubmitButton";
 import InviteUserForm from "./InviteUserForm";
 
@@ -15,12 +15,22 @@ const ROLE_LABELS: Record<string, string> = {
 export default async function UsersPage() {
   const currentUser = await requireRole("master");
   const users = await prisma.user.findMany({ orderBy: { createdAt: "asc" } });
+  const managerCount = users.filter((u) => u.isManager).length;
 
   return (
     <div>
       <h1 className="page-title">ユーザー管理</h1>
       <p className="mt-1 text-sm text-(--color-foreground)/60">
         管理者は全操作、編集者は追加・編集(危険な操作や設定変更は不可)、閲覧者は閲覧のみ可能です。
+      </p>
+      <p className="mt-1 text-sm text-(--color-foreground)/60">
+        「インシデント通知先」は上記のアクセス権限(権限列)とは別軸の設定です。ONにしたユーザーは、システムが検知した重大インシデント(スコア8点以上)や、kintone/Zoho連携での新規レコード登録の異常を検知した際に、Slack
+        DMで通知を受け取ります。
+      </p>
+      <p className="mt-1 text-sm text-(--color-foreground)/60">
+        現在の通知対象:{" "}
+        <strong className={managerCount === 0 ? "text-(--brand-danger)" : undefined}>{managerCount}人</strong>
+        {managerCount === 0 && "です。このままでは重大インシデントの通知が誰にも届きません。"}
       </p>
 
       <section className="surface-card mt-6 p-5">
@@ -39,6 +49,7 @@ export default async function UsersPage() {
                 <th className="px-4 py-2 font-medium">メールアドレス</th>
                 <th className="font-medium">権限</th>
                 <th className="font-medium">状態</th>
+                <th className="border-l border-(--border-subtle) px-4 font-medium">インシデント通知先</th>
                 <th></th>
               </tr>
             </thead>
@@ -66,11 +77,33 @@ export default async function UsersPage() {
                   </td>
                   <td>
                     {u.passwordHash ? (
-                      <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/40 dark:text-green-300">
-                        有効
-                      </span>
+                      <span className="badge-green">有効</span>
                     ) : (
                       <span className="badge-muted">招待中</span>
+                    )}
+                  </td>
+                  <td className="border-l border-(--border-subtle) px-4">
+                    {/* 通知対象が0人にならないよう、最後の1人はOFFにできない
+                        (deleteUser()の「有効なmasterアカウントは削除不可」と同じ考え方
+                        でフォーム自体を出さない。actions.tsのtoggleUserIsManager()にも
+                        同じガードあり — obasan-qualityレビュー指摘、2026-08-25)。 */}
+                    {u.isManager && managerCount <= 1 ? (
+                      <span className="flex items-center gap-2">
+                        <span className="badge-blue">通知ON</span>
+                        <span className="text-xs text-(--color-foreground)/40">(最後の1人)</span>
+                      </span>
+                    ) : (
+                      <form action={toggleUserIsManager} className="flex items-center gap-2">
+                        <input type="hidden" name="id" value={u.id} />
+                        {u.isManager ? (
+                          <span className="badge-blue">通知ON</span>
+                        ) : (
+                          <span className="badge-muted">通知OFF</span>
+                        )}
+                        <SubmitButton pendingLabel="変更中..." className="link text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                          {u.isManager ? "OFFにする" : "ONにする"}
+                        </SubmitButton>
+                      </form>
                     )}
                   </td>
                   <td className="px-4">

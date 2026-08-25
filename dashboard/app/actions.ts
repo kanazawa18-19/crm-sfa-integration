@@ -316,6 +316,28 @@ export async function changeUserRole(formData: FormData) {
   redirect("/users");
 }
 
+export async function toggleUserIsManager(formData: FormData) {
+  await requireRole("master");
+
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+
+  const target = await prisma.user.findUnique({ where: { id } });
+  if (!target) return;
+
+  // 最後の1人をOFFにすると、重大インシデント検知やレコード作成異常のSlack DM通知が
+  // 誰にも届かなくなる(サイレント障害)。UI側でも最後の1人のOFF操作は隠しているが、
+  // deleteUser()の「有効なmasterアカウントは削除不可」と同じ考え方でサーバー側にも
+  // ガードを置く(obasan-qualityレビュー指摘、2026-08-25)。
+  if (target.isManager) {
+    const otherManagerCount = await prisma.user.count({ where: { isManager: true, id: { not: id } } });
+    if (otherManagerCount === 0) return;
+  }
+
+  await prisma.user.update({ where: { id }, data: { isManager: !target.isManager } });
+  redirect("/users");
+}
+
 export async function deleteUser(formData: FormData) {
   const actor = await requireRole("master");
 
