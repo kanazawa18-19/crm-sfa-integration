@@ -210,6 +210,11 @@ model EmailLog {
 
   @@index([contactPageId])
   @@index([contactEmail])
+  // メールログ画面(email-log/page.tsx)が常に`ORDER BY sentAt desc`を使い、かつ
+  // after:/before:/older_than:/newer_than:のようなsentAtレンジフィルタでも使う
+  // (shirokuma-secレビューWARN対応、2026-08-26)。EmailLogはGmail同期で増え続ける
+  // テーブルのため、ページが深くなるほど重くなるのを防ぐ。
+  @@index([sentAt])
 }
 
 // データ監査ログ(2026-08-17、金沢さんからの「最終編集者・作成者・編集内容を記録したい」
