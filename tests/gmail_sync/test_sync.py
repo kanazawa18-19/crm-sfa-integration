@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from src.gmail_sync import db, sync
-from src.gmail_sync.gmail_client import GmailMessage, GmailMessageRef, HistoryIdExpiredError
+from src.gmail_sync.gmail_client import GmailApiError, GmailMessage, GmailMessageRef, HistoryIdExpiredError
 
 
 def test_extract_addresses_parses_name_and_plain_forms() -> None:
@@ -317,6 +317,125 @@ def test_sync_rep_incremental_falls_back_to_full_sync_and_clears_history_id_when
     # 期限切れの古いhistoryIdを「今」の値で上書きするのではなくNoneへクリアする
     # (次回のwatch登録で再ブートストラップできるようにするため)。
     assert saved == [("rep@cnctor.jp", None)]
+
+
+# --- 404(メッセージ削除済み)スキップ(2026-08-26、本番障害バグ修正) ----------------------------
+#
+# gmail_push_webhookが本番で170回連続失敗し続けていたバグの再現・修正確認。
+# get_message()がGmailApiError(404)を送出しても、そのメッセージだけスキップして
+# 他のメッセージの処理・historyIdの前進が継続することを検証する。
+
+
+def test_sync_rep_incremental_skips_404_message_and_still_advances_history_id(
+    monkeypatch,
+) -> None:
+    from src.gmail_sync.gmail_client import HistoryListResult
+
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("1000"))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_history",
+        lambda access_token, start_history_id: HistoryListResult(
+            message_ids=["deleted-msg", "msg1"], history_id="6000"
+        ),
+    )
+
+    def fake_get_message(access_token, message_id):
+        if message_id == "deleted-msg":
+            raise GmailApiError(404, "Requested entity was not found.")
+        return _message(id_=message_id)
+
+    monkeypatch.setattr(sync.gmail_client, "get_message", fake_get_message)
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    saved: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
+    )
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    # 削除済みメッセージ(404)はスキップされるが、後続のmsg1は処理される
+    assert count == 1
+    assert len(inserted) == 1
+    assert inserted[0]["gmail_message_id"] == "msg1"
+    # 404で1件失敗してもhistoryIdは前進する(本番バグ: これができずカーソルが固まっていた)
+    assert saved == [("rep@cnctor.jp", "6000")]
+
+
+def test_sync_rep_incremental_propagates_non_404_error_and_does_not_advance_history_id(
+    monkeypatch,
+) -> None:
+    from src.gmail_sync.gmail_client import HistoryListResult
+
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("1000"))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_history",
+        lambda access_token, start_history_id: HistoryListResult(message_ids=["msg1"], history_id="6000"),
+    )
+
+    def raise_server_error(access_token, message_id):
+        raise GmailApiError(500, "internal error")
+
+    monkeypatch.setattr(sync.gmail_client, "get_message", raise_server_error)
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    def fail_update_history_id(*args, **kwargs):
+        raise AssertionError("update_history_id should not be called when a non-404 error propagates")
+
+    monkeypatch.setattr(sync.db, "update_history_id", fail_update_history_id)
+
+    try:
+        sync.sync_rep_incremental(
+            "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+        )
+        raised = False
+    except GmailApiError:
+        raised = True
+
+    # 一時障害の可能性がある非404エラーは握りつぶさず伝播させ、historyIdも進めない
+    # (安易に握りつぶすとリトライされるはずのメッセージを恒久的に見逃すため)
+    assert raised
+
+
+def test_sync_rep_skips_404_message_and_continues_with_others(monkeypatch) -> None:
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_recent_messages",
+        lambda access_token: [GmailMessageRef(id="deleted-msg"), GmailMessageRef(id="msg1")],
+    )
+
+    def fake_get_message(access_token, message_id):
+        if message_id == "deleted-msg":
+            raise GmailApiError(404, "Requested entity was not found.")
+        return _message(id_=message_id)
+
+    monkeypatch.setattr(sync.gmail_client, "get_message", fake_get_message)
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+
+    inserted: list[dict] = []
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: inserted.append(kwargs))
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert count == 1
+    assert len(inserted) == 1
+    assert inserted[0]["gmail_message_id"] == "msg1"
 
 
 # --- インシデント・アクシデント検知連携(2026-08-16、src/incident_detection/) --------------------

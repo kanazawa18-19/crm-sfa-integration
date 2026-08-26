@@ -167,6 +167,42 @@ def _process_message_ref(
     return True
 
 
+def _process_message_ref_or_skip(
+    message_id: str,
+    access_token: str,
+    rep_email: str,
+    contact_client: HttpNotionClient,
+    *,
+    internal_domains: frozenset[str],
+) -> bool:
+    """`_process_message_ref()`をHTTP 404(メッセージが既に恒久的に存在しない)についてのみ
+    握りつぶしてスキップするラッパー(2026-08-26、本番障害の緊急バグ修正)。
+
+    Gmail Push通知のhistoryイベントに載っているメッセージIDが、スパムとして完全削除・
+    ユーザーによる完全削除等の理由で実体を取得できない(404)ケースは正常に起こりうる。
+    このケースをここでcatchせず呼び出し元のループ外まで伝播させると、`sync_rep_incremental()`
+    ではそのメッセージ以降が一切処理されないだけでなく、`db.update_history_id()`にも
+    到達できず`historyId`カーソルが恒久的に固まる。次回以降のPush通知でも同じ
+    メッセージIDへ再度ぶつかり、同じ404で無限に同期が止まり続ける
+    (2026-08-25〜26、本番でPush通知処理が170回連続失敗し続けた原因)。
+
+    404以外の例外(ネットワークエラー・認証エラー等、一時障害の可能性があるもの)は
+    ここでは握りつぶさずそのまま伝播させる。一時障害まで握りつぶして`historyId`だけ
+    進めてしまうと、本来リトライで拾えたはずのメッセージを二度と拾えなくなる
+    (恒久的な見逃し)ため、404(=リトライしても絶対に直らないことが明確なケース)のみを
+    対象とする。
+    """
+    try:
+        return _process_message_ref(
+            message_id, access_token, rep_email, contact_client, internal_domains=internal_domains
+        )
+    except gmail_client.GmailApiError as exc:
+        if exc.status_code == 404:
+            logger.info("gmail_sync: message %s no longer exists (404), skipping", message_id)
+            return False
+        raise
+
+
 def sync_rep(
     rep_email: str,
     refresh_token: str,
@@ -181,7 +217,7 @@ def sync_rep(
 
     logged_count = 0
     for ref in refs:
-        if _process_message_ref(
+        if _process_message_ref_or_skip(
             ref.id, access_token, rep_email, contact_client, internal_domains=internal_domains
         ):
             logged_count += 1
@@ -210,6 +246,12 @@ def sync_rep_incremental(
       `sync_rep()`にフォールバックした上で、保存済みの(もう使えない)`historyId`をクリアする
       (`db.update_history_id(rep_email, None)`)。クリアすることで、次回の
       `register_or_renew_watch()`が「未設定」と判断し、有効な値へ再ブートストラップできる。
+
+    メッセージ単位の処理は`_process_message_ref_or_skip()`経由で呼ぶこと(2026-08-26、
+    本番障害の緊急バグ修正)。個別メッセージが404(既に削除済み等)で取得できない場合に
+    それをcatchせずこのループの外まで伝播させると、以降のメッセージ処理だけでなく上記の
+    `historyId`更新自体にも到達できなくなり、`historyId`カーソルが恒久的に固まって次回以降
+    毎回同じ404で失敗し続ける(実際に2026-08-25〜26でPush通知が170回連続失敗した)。
     """
     conn = db.find_connection_by_email(rep_email)
     stored_history_id = conn.history_id if conn is not None else None
@@ -233,7 +275,7 @@ def sync_rep_incremental(
 
     logged_count = 0
     for message_id in result.message_ids:
-        if _process_message_ref(
+        if _process_message_ref_or_skip(
             message_id, access_token, rep_email, contact_client, internal_domains=internal_domains
         ):
             logged_count += 1
