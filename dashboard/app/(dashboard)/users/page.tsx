@@ -2,6 +2,7 @@ import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import { changeUserRole, deleteUser, toggleUserIsManager } from "@/app/actions";
 import SubmitButton from "@/components/SubmitButton";
+import SwitchButton from "@/components/SwitchButton";
 import InviteUserForm from "./InviteUserForm";
 
 export const dynamic = "force-dynamic";
@@ -89,20 +90,21 @@ export default async function UsersPage() {
                         同じガードあり — obasan-qualityレビュー指摘、2026-08-25)。 */}
                     {u.isManager && managerCount <= 1 ? (
                       <span className="flex items-center gap-2">
-                        <span className="badge-blue">通知ON</span>
-                        <span className="text-xs text-(--color-foreground)/40">(最後の1人)</span>
+                        <SwitchButton
+                          checked
+                          disabled
+                          label={`${u.email} のインシデント通知先`}
+                          pendingLabel="変更中..."
+                          describedById={`last-manager-hint-${u.id}`}
+                        />
+                        <span id={`last-manager-hint-${u.id}`} className="text-xs text-(--text-grey)">
+                          (最後の1人)
+                        </span>
                       </span>
                     ) : (
-                      <form action={toggleUserIsManager} className="flex items-center gap-2">
+                      <form action={toggleUserIsManager}>
                         <input type="hidden" name="id" value={u.id} />
-                        {u.isManager ? (
-                          <span className="badge-blue">通知ON</span>
-                        ) : (
-                          <span className="badge-muted">通知OFF</span>
-                        )}
-                        <SubmitButton pendingLabel="変更中..." className="link text-xs disabled:cursor-not-allowed disabled:opacity-40">
-                          {u.isManager ? "OFFにする" : "ONにする"}
-                        </SubmitButton>
+                        <SwitchButton checked={u.isManager} label={`${u.email} のインシデント通知先`} pendingLabel="変更中..." />
                       </form>
                     )}
                   </td>
