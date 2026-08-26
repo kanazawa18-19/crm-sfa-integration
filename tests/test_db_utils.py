@@ -44,6 +44,25 @@ def test_db_truncated_utcnow_rounds_microsecond_down_to_multiple_of_1000(
     assert result.replace(microsecond=raw_microsecond) == fixed_now
 
 
+def test_ensure_utc_attaches_utc_tzinfo_to_naive_datetime() -> None:
+    """psycopg経由で読んだ`TIMESTAMP(3)`列由来のtz-naiveなdatetimeを、UTCとして
+    tz-awareに変換することを確認する(2026-08-26、gmail_sync watch_registrationの
+    本番クラッシュの再発防止用ヘルパー)。"""
+    naive = datetime(2026, 8, 26, 3, 0, 0)
+
+    result = db_utils.ensure_utc(naive)
+
+    assert result == datetime(2026, 8, 26, 3, 0, 0, tzinfo=timezone.utc)
+    assert result.tzinfo == timezone.utc
+
+
+def test_ensure_utc_leaves_tz_aware_datetime_unchanged() -> None:
+    aware = datetime(2026, 8, 26, 3, 0, 0, tzinfo=timezone.utc)
+
+    assert db_utils.ensure_utc(aware) == aware
+    assert db_utils.ensure_utc(aware) is aware
+
+
 def test_db_truncated_utcnow_is_idempotent_under_further_truncation() -> None:
     """今回の不具合の本質(`保存後の丸め済みの値 < DELETEのWHEREに使う元の値`が真に
     なってしまう)は、基準時刻がPostgres保存時の丸め(四捨五入)を通しても変化しない

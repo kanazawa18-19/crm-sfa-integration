@@ -30,3 +30,26 @@ def db_truncated_utcnow() -> datetime:
     """
     now = datetime.now(timezone.utc)
     return now.replace(microsecond=(now.microsecond // 1000) * 1000)
+
+
+def ensure_utc(dt: datetime) -> datetime:
+    """psycopg経由で読んだdatetime(タイムゾーン情報を持たない`TIMESTAMP(3)`列由来 — UTC値
+    として保存されている前提)に、UTCのtzinfoを付与して返す。
+
+    **既にtz-awareな場合はUTCへの正規化はせず、そのまま返す**(UTC以外のオフセットを持つ値を
+    渡した場合、戻り値のtzinfoもそのオフセットのまま)。この関数の目的はtz-naive/awareの混在
+    による`TypeError`を防ぐことであり、「戻り値のtzinfoは必ずUTC」という保証はしない
+    (datetime同士の演算・比較はtzinfoが異なっていても正しく計算されるため、この用途では
+    正規化は不要)。戻り値を`isoformat()`等でシリアライズしてUTC表記を期待する用途には
+    使わないこと(その場合は呼び出し側で`astimezone(timezone.utc)`すること)。
+
+    `datetime.now(timezone.utc)`のようなtz-awareな値と直接演算(`-`等)すると
+    `TypeError: can't subtract offset-naive and offset-aware datetimes`になるため、DBから
+    読んだdatetimeを扱う箇所では演算前に必ずこれを通すこと(2026-08-26、
+    `gmail_sync.watch_registration._needs_renewal()`が`watchExpiration`との差分計算で
+    このエラーを起こし本番cronがクラッシュしたインシデントの再発防止。
+    詳細はdocs/gmail_sync_activation_note.md参照)。
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt

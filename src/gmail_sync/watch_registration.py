@@ -16,6 +16,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from src.db_utils import ensure_utc
 from src.gmail_sync import db, gmail_client
 from src.gmail_sync.token_crypto import decrypt_token
 
@@ -68,7 +69,12 @@ def register_or_renew_watch(rep_email: str, refresh_token: str, topic_name: str)
 def _needs_renewal(conn: db.RepGmailConnection, *, now: datetime) -> bool:
     if conn.watch_expiration is None:
         return True
-    return conn.watch_expiration - now <= timedelta(days=_RENEWAL_THRESHOLD_DAYS)
+    # `conn.watch_expiration`はpsycopg経由、`TIMESTAMP(3)`列(`RepGmailConnection.watchExpiration`)
+    # 由来でタイムゾーン情報を持たない(UTC値として保存されている)。`now`(tz-aware)とそのまま
+    # 引き算すると`TypeError: can't subtract offset-naive and offset-aware datetimes`になる
+    # (2026-08-26、本番cronクラッシュ・docs/gmail_sync_activation_note.md参照)。
+    watch_expiration = ensure_utc(conn.watch_expiration)
+    return watch_expiration - now <= timedelta(days=_RENEWAL_THRESHOLD_DAYS)
 
 
 def renew_all_watches(*, topic_name: str | None = None) -> dict[str, str]:

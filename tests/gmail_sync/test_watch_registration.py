@@ -7,6 +7,7 @@ import pytest
 from src.gmail_sync import db, watch_registration
 from src.gmail_sync.watch_registration import (
     GmailWatchNotConfiguredError,
+    _needs_renewal,
     register_or_renew_watch,
     renew_all_watches,
 )
@@ -142,6 +143,52 @@ def test_register_or_renew_watch_raises_when_first_registration_response_missing
 
     with pytest.raises(watch_registration.gmail_client.GmailApiError):
         register_or_renew_watch("rep@cnctor.jp", "refresh-token", "projects/test/topics/gmail-notifications")
+
+
+# _needs_renewal(): `watch_expiration`はpsycopg経由、`TIMESTAMP(3)`列(`watchExpiration`)由来で
+# タイムゾーン情報を持たない(tz-naive)値として返る。tz-awareな`now`とそのまま引き算すると
+# `TypeError: can't subtract offset-naive and offset-aware datetimes`になっていた
+# (2026-08-26、本番cronクラッシュの回帰テスト。watchが一度でも登録されてwatchExpirationに
+# 値が入った後にのみ顕在化するバグだったため、tz-awareな値のみを渡す既存テストでは
+# 検出できなかった。docs/gmail_sync_activation_note.md参照)。
+
+
+def test_needs_renewal_does_not_raise_for_tz_naive_watch_expiration_far_in_future() -> None:
+    now = datetime.now(timezone.utc)
+    # DBから返る実際の形を模した、tzinfoを持たないdatetime。
+    far_future_naive = (now + timedelta(days=5)).replace(tzinfo=None)
+
+    assert _needs_renewal(_connection(watch_expiration=far_future_naive), now=now) is False
+
+
+def test_needs_renewal_does_not_raise_for_tz_naive_watch_expiration_expiring_soon() -> None:
+    now = datetime.now(timezone.utc)
+    soon_naive = (now + timedelta(hours=12)).replace(tzinfo=None)
+
+    assert _needs_renewal(_connection(watch_expiration=soon_naive), now=now) is True
+
+
+def test_renew_all_watches_skips_reps_with_far_future_tz_naive_expiration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    far_future_naive = (datetime.now(timezone.utc) + timedelta(days=5)).replace(tzinfo=None)
+    monkeypatch.setattr(
+        watch_registration.db,
+        "list_gmail_connections",
+        lambda: [_connection(watch_expiration=far_future_naive)],
+    )
+    called: list[str] = []
+    monkeypatch.setattr(
+        watch_registration,
+        "register_or_renew_watch",
+        lambda rep_email, refresh_token, topic_name: called.append(rep_email),
+    )
+    monkeypatch.setattr(watch_registration, "decrypt_token", lambda enc: "refresh-token")
+
+    result = renew_all_watches(topic_name="projects/test/topics/gmail-notifications")
+
+    assert result == {"rep@cnctor.jp": "skipped"}
+    assert called == []
 
 
 def test_renew_all_watches_raises_when_topic_name_not_configured(

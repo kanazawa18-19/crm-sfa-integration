@@ -66,3 +66,40 @@ Gmail側で既に削除済みのメッセージを`messages.get`で取得しよ�
     送出しうるのは`get_message()`呼び出しのみだが、将来同関数内に別のGmail API呼び出しを
     追加する場合は、404の扱いをその呼び出しごとに個別に検討すること（メッセージ本体の削除と
     無関係な404を誤って同一視しないため）。
+
+## 過去のインシデント3: tz-naive/tz-awareなdatetime混在によるwatch延長cronのクラッシュ（2026-08-25〜08-26発見）
+
+インシデント1の復旧作業（担当者が手動でGmail連携を再接続）で`watchExpiration`に初めて値が
+入った直後から、`GET /api/cron/gmail-watch-renewal`（`renew_all_watches()`、Push通知watchの
+自動延長、Vercel Cronで1日1回）が毎回以下のエラーでクラッシュするようになった。
+
+```
+TypeError: can't subtract offset-naive and offset-aware datetimes
+```
+
+原因は`_needs_renewal()`（`src/gmail_sync/watch_registration.py`）で、`conn.watch_expiration`
+（psycopg経由、`RepGmailConnection.watchExpiration`＝`TIMESTAMP(3)`列由来のtz-naiveなdatetime）
+と`now`（`datetime.now(timezone.utc)`、tz-aware）をそのまま引き算していたこと。
+`watch_expiration`が`None`の間（＝初回登録前）は`_needs_renewal()`の`is None`早期returnで
+このコードパスを通らないため顕在化せず、**一度でもwatchが登録されて値が入った後に初めて発火する**
+遅発性のバグだった。この間、失効が近づいても延長が一切行われないため、Google仕様上の上限
+（登録・延長時点から最大7日）に達するとPush通知経由のリアルタイム同期が無音で停止するリスクが
+あった（日次のフル同期セーフティネットは残るため、データが完全に失われるわけではない）。
+
+同種の問題は既に`src/email_reminders/reminder_check.py`の`_elapsed_hours()`で発生・対処済み
+だったが（`sent_at`のtz-naive/aware変換）、`watch_registration.py`側は横展開されていなかった。
+
+**対応**: `src/db_utils.py`に共通ヘルパー`ensure_utc(dt)`を追加し（`db_truncated_utcnow()`と
+同じ「DBのタイムスタンプ精度・タイムゾーン問題への対処」という置き場）、`_needs_renewal()`で
+`conn.watch_expiration`をこの関数に通してから`now`と演算するよう修正した。回帰テストは、
+DBが実際に返す形（tz-naive）の`watch_expiration`を渡すケースを追加した（既存テストは
+tz-awareな値のみを渡していたため、このバグを検出できなかった）。
+
+**次に同種のコードを書く人への教訓**:
+- psycopg経由で読んだdatetime（`TIMESTAMP(3)`等、タイムゾーン情報を持たないPostgresカラム由来）
+  は、Pythonの`datetime.now(timezone.utc)`のようなtz-awareな値と直接演算・比較する前に、必ず
+  `src/db_utils.ensure_utc()`（またはそれと同じ考え方の変換）を通してtz-awareへ揃えること。
+- このクラスのバグは、対象のカラムが`NULL`の間は早期returnやNoneチェックで問題のコードパスに
+  到達せず「動いているように見え」、実際に値が入って初めて`TypeError`として顕在化する遅発性を
+  持つ。ローカル・テスト環境で対象カラムが常に`NULL`のまま検証していると気づけないため、
+  新しいDB由来のdatetime比較を書く際は、値がある場合のケースを明示的にテストすること。
