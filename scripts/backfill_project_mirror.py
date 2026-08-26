@@ -42,8 +42,13 @@ def main() -> None:
 
     if result.get("skipped"):
         # 既に別プロセス（夜間reconciliation cron等）が実行中でロックを取得できなかった場合
-        # （src/project_mirror/db.pyのtry_acquire_refresh_lock参照）。
-        print(f"スキップしました: {result['skipped']}（既に別プロセスが実行中の可能性があります）")
+        # （src/project_mirror/db.pyのtry_acquire_refresh_lock参照）、部分取得の疑い
+        # （skipped="suspected_partial_fetch"）、または必須プロパティの充足率が閾値を
+        # 下回った疑い（skipped="insufficient_required_properties"、2026-08-26。
+        # 行数は正常だが「案件名」「営業ステータス」等の主要プロパティが丸ごと欠落する事故が
+        # 実際に発生したための対策、docs/project_mirror_activation_note.md参照）のいずれか。
+        # いずれの場合も既存データは変更していない。
+        print(f"スキップしました: {result['skipped']}（詳細: {result}）")
         return
 
     synced_count = result["synced_count"]

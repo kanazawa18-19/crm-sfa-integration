@@ -249,7 +249,7 @@ async def webhook_notion(
     `handler_with_proxy()`（ページ全体をNotion APIから再取得するプロキシ層）を使う。
     """
     event = await _lambda_event_from_request(request)
-    if wiring.notion_page_client is None:
+    if wiring.any_db_page_client is None:
         logger.error(
             "webhook_notion: NOTION_API_KEY等が未設定のためNotion同期が構成されておらず、"
             "Webhookを処理できません"
@@ -262,7 +262,7 @@ async def webhook_notion(
     result = notion_webhook_handler_with_proxy(
         event,
         context=None,
-        notion_client=wiring.notion_page_client,
+        notion_client=wiring.any_db_page_client,
         dispatcher=wiring.dispatcher,
         calendar_sync=wiring.calendar_sync_callable,
         lead_sync=wiring.lead_sync_callable,
@@ -279,14 +279,14 @@ async def webhook_kintone(
     event = await _lambda_event_from_request(request)
     # id_mapping_store/notion_client: 取引先マスターリレーションの「後勝ち」上書き防止ガード用
     # （2026-08-25、GPT-5.6クロスレビュー指摘対応。kintone_webhook.pyのモジュールdocstring
-    # 参照）。wiring.notion_page_client未設定（NOTION_API_KEY未設定）の場合はNoneのまま渡され、
+    # 参照）。wiring.any_db_page_client未設定（NOTION_API_KEY未設定）の場合はNoneのまま渡され、
     # ガード自体が無効化される（kintone_webhook側は既存の挙動にフォールバックする）。
     result = kintone_webhook_handler(
         event,
         context=None,
         dispatcher=wiring.dispatcher,
         id_mapping_store=wiring.id_mapping_store,
-        notion_client=wiring.notion_page_client,
+        notion_client=wiring.any_db_page_client,
     )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
@@ -298,7 +298,7 @@ async def webhook_zoho(
     event = await _lambda_event_from_request(request)
     # id_mapping_store/notion_client/zoho_client: ⑥アクション履歴DBの取引先マスターリレーション
     # 自動解決・「後勝ち」上書き防止ガード用（2026-08-25、Round2。kintone側と同じ設計、
-    # zoho_webhook.pyのモジュールdocstring参照）。wiring.notion_page_client/zoho_action_client
+    # zoho_webhook.pyのモジュールdocstring参照）。wiring.any_db_page_client/zoho_action_client
     # が未設定（NOTION_API_KEY/Zoho認証情報未設定）の場合はNoneのまま渡され、当該機能自体が
     # 無効化される（zoho_webhook側は既存の挙動にフォールバックする）。
     result = zoho_webhook_handler(
@@ -306,7 +306,7 @@ async def webhook_zoho(
         context=None,
         dispatcher=wiring.dispatcher,
         id_mapping_store=wiring.id_mapping_store,
-        notion_client=wiring.notion_page_client,
+        notion_client=wiring.any_db_page_client,
         zoho_client=wiring.zoho_action_client,
     )
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
@@ -549,10 +549,19 @@ def run_project_mirror_reconcile(
     いなくてもcron登録した時点で毎晩`ProjectMirror`への書き込みが始まってしまい、計画上の
     「インフラ整備のみでは本番挙動は変わらない」前提と食い違う
     （`build_project_mirror_sync_callable`と同じ「未設定なら無効化」パターンに揃える）。
+
+    `notion_client`には必ず`wiring.project_mirror_notion_client`（案件管理DB専用クライアント）
+    を渡すこと。`wiring.any_db_page_client`（Dispatcherが使うクライアント群のいずれか1つが
+    入る、どのDBかは不定の変数）を渡してはならない
+    （`refresh_all_projects()`が内部で呼ぶ`query_all_pages()`はクライアントに固定された
+    database_idの全件を返すdb_key依存の操作であり、2026-08-26に実際に`any_db_page_client`
+    （当時の変数名は`notion_page_client`）を渡してしまっていたことで、取引先マスターDBの
+    全件を`ProjectMirror`へ誤って書き込む事故が発生した。詳細は
+    `docs/project_mirror_activation_note.md`参照）。
     """
     if os.environ.get("PROJECT_MIRROR_SYNC_ENABLED", "").strip().lower() != "true":
         return {"skipped": "PROJECT_MIRROR_SYNC_ENABLED is not set"}
-    if wiring.notion_page_client is None:
+    if wiring.project_mirror_notion_client is None:
         logger.error(
             "run_project_mirror_reconcile: NOTION_API_KEY等が未設定のため実行できません"
         )
@@ -565,7 +574,7 @@ def run_project_mirror_reconcile(
         max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
     )
     return refresh_all_projects(
-        notion_client=wiring.notion_page_client, user_directory=user_directory
+        notion_client=wiring.project_mirror_notion_client, user_directory=user_directory
     )
 
 
@@ -587,15 +596,23 @@ def run_relation_sync_reconcile(
     のみ」段階でも行うため、このガードが無いと環境変数を何も設定していなくてもcron登録した
     時点で毎晩`ClientNameIndex`への書き込みが始まってしまい、「インフラ整備のみでは本番挙動は
     変わらない」前提と食い違う）。
+
+    `notion_client`には必ず`wiring.client_master_notion_client`（取引先マスターDB専用
+    クライアント）を渡すこと。`wiring.any_db_page_client`を渡してはならない
+    （`run_project_mirror_reconcile`と同じ理由・同じ事故のリスク。`refresh_all_client_names()`
+    が内部で呼ぶ`query_all_pages()`もdb_key依存の操作であり、`run_project_mirror_reconcile`と
+    同様に`any_db_page_client`（当時の変数名は`notion_page_client`）を渡していたため、
+    「たまたま辞書の先頭が取引先マスターDBだった」場合にのみ正しく動く状態になっていた
+    （2026-08-26修正）。詳細は`docs/project_mirror_activation_note.md`参照）。
     """
     if os.environ.get("RELATION_SYNC_ENABLED", "").strip().lower() != "true":
         return {"skipped": "RELATION_SYNC_ENABLED is not set"}
-    if wiring.notion_page_client is None:
+    if wiring.client_master_notion_client is None:
         logger.error(
             "run_relation_sync_reconcile: NOTION_API_KEY等が未設定のため実行できません"
         )
         raise HTTPException(status_code=500, detail="notion sync is not configured")
-    return refresh_all_client_names(notion_client=wiring.notion_page_client)
+    return refresh_all_client_names(notion_client=wiring.client_master_notion_client)
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])

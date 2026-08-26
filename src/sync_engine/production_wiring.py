@@ -56,6 +56,8 @@ from src.api.user_directory import NotionUserDirectory
 from src.calendar_sync.service import sync_next_action_date_to_calendar
 from src.calendar_sync.web_engagement_tool_client import WebEngagementToolCalendarClient
 from src.db_schema.base import Tool
+from src.db_schema.client_master import CLIENT_MASTER_SCHEMA
+from src.db_schema.project import PROJECT_SCHEMA
 from src.db_schema.registry import ALL_SCHEMAS
 from src.lead_sync.service import sync_contact_to_lead
 from src.lead_sync.web_engagement_tool_client import WebEngagementToolLeadSyncClient
@@ -553,7 +555,7 @@ def build_lead_sync_callable(
     web-engagement-tool側のLeadシステムへ同期する`src.lead_sync.service.sync_contact_to_lead`
     をベースにする）。
 
-    `notion_client`（`ProductionSyncWiring.notion_page_client`を想定）が`None`の場合
+    `notion_client`（`ProductionSyncWiring.any_db_page_client`を想定）が`None`の場合
     （`NOTION_API_KEY`未設定でNotion同期自体が無効化されている場合）、会社名解決
     （`sync_contact_to_lead`が「取引先マスター」relationの参照先ページを追加取得するために
     Notion APIを呼ぶ）ができないため、同様に無効化し`None`を返す。
@@ -601,7 +603,7 @@ def build_project_mirror_sync_callable(
     ない」検証期間を挟み、読み取り元の切り替えだけを独立して後からON/OFFできるようにする
     ための段階導入設計（ロールアウト手順の詳細はdocs/project_mirror_activation_note.md参照）。
 
-    `notion_client`（`ProductionSyncWiring.notion_page_client`を想定）が`None`の場合
+    `notion_client`（`ProductionSyncWiring.any_db_page_client`を想定）が`None`の場合
     （`NOTION_API_KEY`未設定でNotion同期自体が無効化されている場合）、
     `sync_project_to_mirror`がページ全体の再取得（`get_raw_page`）に使うNotionクライアントが
     無いため、同様に無効化し`None`を返す。
@@ -638,7 +640,7 @@ def build_client_name_index_sync_callable(
     ガードとは責務が分かれている（shirokuma-sec/obasan-qualityレビューBLOCKER対応、
     詳細はdocs/relation_sync_activation_note.md参照）。
 
-    `notion_client`（`ProductionSyncWiring.notion_page_client`を想定）が`None`の場合
+    `notion_client`（`ProductionSyncWiring.any_db_page_client`を想定）が`None`の場合
     （`NOTION_API_KEY`未設定でNotion同期自体が無効化されている場合）、
     `sync_client_name_to_index`がページ全体の再取得（`get_raw_page`）に使うNotionクライアントが
     無いため、同様に無効化し`None`を返す。
@@ -736,9 +738,27 @@ class SkipTrackingDispatcher:
 class ProductionSyncWiring:
     """Webhookルート（`src/api/app.py`）から使い回す、本番用のDispatcher一式。
 
-    `notion_page_client`はNotion Webhookプロキシ層（`notion_webhook.handler_with_proxy`の
+    `any_db_page_client`はNotion Webhookプロキシ層（`notion_webhook.handler_with_proxy`の
     `notion_client`引数）用。ページ全体の再取得（`get_raw_page`）はdb_keyに依存しないため、
     Dispatcherが内部で使うクライアント群のいずれか1つを流用する。
+
+    【重要・命名の意図】この属性名は元々`notion_page_client`だったが、2026-08-26に
+    「特定のdb_keyのクライアントでなければならない箇所（`query_all_pages()`のような
+    db_key依存の操作を呼ぶ箇所）」へこの『任意のDBが入りうる』クライアントをそのまま
+    誤って渡してしまう事故が実際に発生した
+    （`run_project_mirror_reconcile`/`run_relation_sync_reconcile`が、辞書の先頭にたまたま
+    入っていた取引先マスターDBのクライアントで`refresh_all_projects`/
+    `refresh_all_client_names`を実行し、`query_all_pages()`が取引先マスターDBの全件を
+    返してしまっていた。`ProjectMirror`が10000件全件で主要プロパティ欠落を起こしダッシュ
+    ボードの数値が全て0になった実際のインシデント。詳細は
+    `docs/project_mirror_activation_note.md`参照）。`notion_page_client`という名前は
+    「Notionのページ操作用クライアント」としか読めず、「どのDBのクライアントかは不定」
+    という制約が名前から分からないことが事故の一因だったため、`any_db_page_client`へ
+    改名した。**この属性を`get_raw_page`/`get_page`/`archive_page`のような単一ページ操作
+    以外（`query_all_pages()`等、そのクライアントに固定されたdatabase_idへ依存する操作）へ
+    絶対に渡さないこと。** db_key依存の操作が必要な場合は、`project_mirror_notion_client`
+    （案件管理DB専用）・`client_master_notion_client`（取引先マスターDB専用）のような
+    DB名を冠した専用属性を使う（無ければ追加する）。
 
     `dispatcher`は`SkipTrackingDispatcher`でラップされており、部分的な同期スキップが
     発生した場合にwarningログを出す（上記docstring参照）。
@@ -751,7 +771,15 @@ class ProductionSyncWiring:
     `build_project_mirror_sync_callable`/`build_client_name_index_sync_callable`参照）。
     対応する連携先の環境変数が未設定の場合は`None`になる（Webhookエンドポイント側は`None`の
     場合当該フックを渡さない想定であり、アプリ起動・Webhookリクエスト処理自体はいずれも
-    失敗しない）。
+    失敗しない）。これらは全てWebhook（Notionの単一ページ変更イベント）経由での呼び出しに
+    限られ`get_raw_page`しか使わないため、`any_db_page_client`を渡して問題ない。
+
+    `project_mirror_notion_client`/`client_master_notion_client`は、それぞれ案件管理DB/
+    取引先マスターDB専用に構築した`HttpNotionClient`（2026-08-26新設）。`refresh_all_projects`
+    （`run_project_mirror_reconcile`）・`refresh_all_client_names`（`run_relation_sync_reconcile`）
+    の夜間reconciliationは`query_all_pages()`（db_key依存）を使うため、`any_db_page_client`
+    ではなくこちらを渡すこと。対応するNotionデータベースの`notion_database_id`が未設定、または
+    `NOTION_API_KEY`未設定の場合は`None`になる。
 
     `zoho_action_client`は、Zoho Webhook（`zoho_webhook.py`）の⑥アクション履歴DB取引先
     マスターリレーション自動解決（2026-08-25、Round2）用。field22/field6のうち今回のWebhook
@@ -763,8 +791,19 @@ class ProductionSyncWiring:
     def __init__(self) -> None:
         self.id_mapping_store: IdMappingStore = build_id_mapping_store()
         notion_clients = build_notion_clients_by_db()
-        self.notion_page_client: HttpNotionClient | None = (
+        self.any_db_page_client: HttpNotionClient | None = (
             next(iter(notion_clients.values())) if notion_clients else None
+        )
+        # 案件管理DB/取引先マスターDB専用クライアント（2026-08-26、db_key依存の操作
+        # （query_all_pages()等）を安全に呼べるようにするための明示的な指定。上の
+        # `any_db_page_client`と違い「辞書のどれか1つ」ではなく、必ずそのDBのクライアントで
+        # あることを保証する。対象DBのnotion_database_id未設定・NOTION_API_KEY未設定の場合は
+        # notion_clientsに当該db_keyが含まれずNoneになる。
+        self.project_mirror_notion_client: HttpNotionClient | None = notion_clients.get(
+            PROJECT_SCHEMA.key
+        )
+        self.client_master_notion_client: HttpNotionClient | None = notion_clients.get(
+            CLIENT_MASTER_SCHEMA.key
         )
         self.zoho_action_client: HttpZohoClient | None = build_zoho_client()
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
@@ -782,13 +821,13 @@ class ProductionSyncWiring:
             build_calendar_sync_callable()
         )
         self.lead_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
-            build_lead_sync_callable(self.notion_page_client)
+            build_lead_sync_callable(self.any_db_page_client)
         )
         self.project_mirror_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
-            build_project_mirror_sync_callable(self.notion_page_client)
+            build_project_mirror_sync_callable(self.any_db_page_client)
         )
         self.client_name_index_sync_callable: Callable[[Mapping[str, Any], str], Any] | None = (
-            build_client_name_index_sync_callable(self.notion_page_client)
+            build_client_name_index_sync_callable(self.any_db_page_client)
         )
 
 

@@ -253,7 +253,7 @@ def handler(
     `id_mapping_store`/`notion_client`（いずれも省略可）は`kintone_payload_to_sync_event`の
     同名引数へそのまま渡す。取引先マスターリレーションの「後勝ち」上書き防止ガード用
     （モジュールdocstring参照、本番配線は`src/api/app.py`の`webhook_kintone`が
-    `ProductionSyncWiring.id_mapping_store`/`notion_page_client`を渡す）。
+    `ProductionSyncWiring.id_mapping_store`/`any_db_page_client`を渡す）。
 
     認証: kintoneのWebhook設定画面はカスタムHTTPヘッダーもbodyへの任意フィールド追加も
     サポートせず、指定できるのは「Webhook URL」欄のみのため、他ハンドラのような

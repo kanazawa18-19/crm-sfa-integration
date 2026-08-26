@@ -117,6 +117,101 @@ sweepで誤って削除してしまう事故を防ぐため）。
 `datetime.now(timezone.utc)`を使うと、DBの精度丸めとの不一致で投入直後の行が誤削除される事故が
 過去に発生した）。
 
+## 過去のインシデント: 必須プロパティの丸ごと欠落（2026-08-26）
+
+上記の誤削除事故から復旧した翌日、`ProjectMirror`は行数こそ10000件（Notion側の実件数と
+一致）だったにもかかわらず、**その全件で「案件名」「営業ステータス」「契約日」等の主要
+プロパティが丸ごと欠落し**、「チェーン」「電話番号」等ごく一部のキーしか`data`列に入って
+いない状態になっていた。ダッシュボードの集計（`src/api/dashboard_service.py`の
+`build_daily_report()`/`build_member_performance()`/`build_manager_alerts()`）はいずれも
+`p.get("営業ステータス") is None`の案件を集計対象から除外するため、全件が「ステータス不明」
+として除外され、mark-and-sweepの誤削除事故と同じ「ダッシュボードの数字が軒並み0表示になる」
+実害が再発した（本番で2回発生。再バックフィルで復旧済み。根本原因は下記「根本原因判明・修正
+（2026-08-26）」節参照）。
+
+このとき`scripts/backfill_project_mirror.py`は`完了しました: synced_count=10000
+deleted_count=10000`と成功調のメッセージを出力しており、既存の行数ベースのガード
+（`_MIN_EXPECTED_SYNCED_COUNT=100`、`refresh_all_projects()`の`_MIN_SYNC_RATIO`）もいずれも
+「取得できた行数」しか見ていなかったため通過してしまい、スクリプトの出力からは異常を検知
+できなかった。
+
+**教訓: 行数チェックだけでは「行数は正しいが中身が空」という壊れ方を検知できない。**
+mark-and-sweep方式のミラーは「何件取れたか」（行数）と「各行の中身が使い物になるか」
+（必須プロパティの充足率）は独立した別の壊れ方をしうる。次に同種のミラーテーブルを
+新設する際は、行数ベースのガードに加えて、ダッシュボード等の消費側が実際に参照する必須
+プロパティ（`is None`/空値チェックでレコードごと除外に使われるプロパティ）が一定割合以上
+の行に存在することも別途検証すること。
+
+対策として、`refresh_all_projects()`に必須プロパティ（`PROJECT_SCHEMA`で
+`RequirementLevel.REQUIRED`の「案件名」「営業ステータス」）の充足率チェックを追加した
+（`src/project_mirror/sync.py`の`_required_property_fill_ratios()`）。取得行数が
+`_MIN_ROWS_FOR_COMPLETENESS_CHECK`（20件）以上かつ、いずれかの必須プロパティの充足率が
+`_MIN_REQUIRED_PROPERTY_RATIO`（90%）を下回った場合、sweepを中止して既存データを保護し
+（戻り値`skipped="insufficient_required_properties"`）、Slack（`_notify_slack_alert()`＋
+`User.isManager = true`全員へのSlack DM、`src/notifications/manager_dm.py`）で運用者へ通知
+する。`scripts/backfill_project_mirror.py`もこの`skipped`を検知し、「完了しました」という
+成功調のメッセージを出さないよう変更した。`_MIN_REQUIRED_PROPERTY_RATIO=90%`は、対象
+プロパティがいずれもNotion側でTITLE/REQUIRED区分であり正常データではほぼ全件に値が入って
+いるはずという前提のもと、正常な本番データを誤って止めないよう余裕を持たせつつ、今回の
+ような壊滅的な欠落（実績0%）は確実に検知できる水準として設定した（実データでの厳密な
+検証はできていないため、運用開始後に誤検知が続くようであれば閾値を見直すこと）。
+
+なお`src/relation_sync/sync.py`の`refresh_all_client_names()`（`ClientNameIndex`）は
+同じmark-and-sweep方式だが、`ClientNameIndex`は行が`normalizedName`/`rawName`の2列のみで
+構成され、`_page_to_index_row()`側でtitle（`raw_name`の元）が空のページはそもそも`rows`に
+含めず除外する設計になっている。そのため`ProjectMirror`のような「行としては作られるが
+中身の大半のキーが欠落する」壊れ方は構造的に起こりえず、この種の欠落は既存の行数ベースの
+`_MIN_SYNC_RATIO`ガード（`rows`の件数減少として現れる）で既に検知できるため、同種の充足率
+チェックは追加していない（2026-08-26調査）。
+
+### 根本原因判明・修正（2026-08-26）
+
+本番のreconcile実行時のログに`project_mirror: db_key='project' スキーマに存在しない
+未定義プロパティをスキップしました: ['FAX', 'TEL', '【営業部】営業ステータス', '取引先ID',
+'取引先名', '住所', ...]`という、明らかに**取引先マスターDB**由来のプロパティ群が出力されて
+いたことから根本原因が判明した。
+
+`src/sync_engine/production_wiring.py`の`ProductionSyncWiring.__init__`は、Notion Webhook
+プロキシ層（`notion_webhook.handler_with_proxy`）が使う「ページ全体の再取得
+（`get_raw_page`）用クライアント」を、`build_notion_clients_by_db()`が返すdb_key単位の
+クライアント辞書から`next(iter(notion_clients.values()))`で**任意に1つ選んで**構築していた
+（`get_raw_page`/`get_page`/`archive_page`のような単一ページ操作はdb_keyに依存しないため、
+「どのDBのクライアントでも良い」という設計意図自体は正しい）。
+
+ところが`src/api/app.py`の`run_project_mirror_reconcile()`（`ProjectMirror`の夜間reconcile）が、
+この「db_key不定」のクライアントをそのまま`refresh_all_projects(notion_client=...)`へ渡して
+いた。`refresh_all_projects()`は内部で`notion_client.query_all_pages()`を呼ぶが、これは
+**そのクライアントに固定されたdatabase_idの全件を返す、db_key依存の操作**である。結果として
+「辞書の先頭にたまたま入っていたDB」（実際には取引先マスターDB）の全件を取得し、それを
+`ProjectMirror`（案件管理DBのミラー）へ書き込んでしまっていた。取引先マスターDBのページには
+「チェーン」「電話番号」等ごく一部だけ`PROJECT_SCHEMA`と偶然キー名が一致するプロパティが
+あり、それ以外の「案件名」「営業ステータス」等は存在しないため丸ごと欠落する、という今回の
+症状と一致する。`run_relation_sync_reconcile()`（`ClientNameIndex`の夜間reconcile）にも
+全く同じパターンで同じ変数が渡されており、こちらは「たまたま辞書の先頭が取引先マスターDB
+だった」ため偶然正しく動いていただけで、同じ脆弱性を抱えていた。
+
+**教訓: 「db_key非依存だから」という理由で辞書から任意に選んだ共有クライアントを、
+db_key依存の操作（`query_all_pages()`等）を呼ぶ箇所へそのまま渡してはいけない。**
+`get_raw_page`のような単一ページ操作と`query_all_pages()`のような全件取得操作は、同じ
+`HttpNotionClient`という型を持ちながら、前者はdb_key非依存・後者はdb_key依存という非対称な
+性質を持つ。この非対称性が変数名からもコード上の型からも読み取れなかったことが、事故が
+半年近く（Webhook同期は2026-08-17開始、reconcileは同日以降に配線）気づかれなかった一因。
+次に同種のミラー/インデックステーブルを実装する人は、①db_key依存の操作を呼ぶ箇所には必ず
+明示的にそのDB専用のクライアントを構築・注入すること（辞書から任意に選んだクライアントの
+使い回しは単一ページ操作に限定する）、②可能であれば「任意のDBが入りうる変数」と「特定の
+DBでなければならない変数」を名前で区別すること、を徹底すること。
+
+対策として、`ProductionSyncWiring`の該当属性を`notion_page_client`から`any_db_page_client`
+へ改名し（「どのDBかは不定」であることを名前から分かるようにする）、案件管理DB専用の
+`project_mirror_notion_client`・取引先マスターDB専用の`client_master_notion_client`を
+新設した。`run_project_mirror_reconcile()`/`run_relation_sync_reconcile()`はそれぞれ専用
+クライアントを使うよう修正し、`any_db_page_client`をdb_key依存の操作へ渡すことを禁止する
+旨を`ProductionSyncWiring`のdocstringに明記した。回帰テスト
+（`tests/api/test_app_webhooks_and_cron.py`の`test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches`/
+`test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches`）では、`any_db_page_client`と
+専用クライアントに別々のフェイクオブジェクトを設定し、実際に渡されたのが専用クライアントの
+方であることをオブジェクトのアイデンティティ（`is`）で検証している。
+
 ## 動作確認チェックリスト（各ステップ共通）
 
 1. Vercelのfunction logsで対象エンドポイント（Webhook/cron）の200レスポンスを確認する。

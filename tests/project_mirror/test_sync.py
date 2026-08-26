@@ -247,6 +247,99 @@ def test_refresh_all_projects_partial_fetch_check_skipped_when_existing_count_ti
     assert result == {"synced_count": 0, "deleted_count": 0}
 
 
+# --- refresh_all_projects: 必須プロパティの充足率チェック（中身が壊れる事故の防止、2026-08-26）---
+
+
+def _raw_project_page_with_status(
+    *, page_id: str, status: str | None = "アポ"
+) -> dict[str, Any]:
+    """`_raw_project_page()`に「営業ステータス」プロパティを追加した版。`status=None`の場合は
+    追加しない（今回の事故を再現する「主要プロパティが丸ごと欠落した行」を作るため）。"""
+    page = _raw_project_page(page_id=page_id)
+    if status is not None:
+        page["properties"]["営業ステータス"] = {"type": "status", "status": {"name": status}}
+    return page
+
+
+def test_refresh_all_projects_skips_sweep_when_required_properties_mostly_missing(
+    monkeypatch: pytest.MonkeyPatch, _bypass_refresh_lock: list[Any]
+) -> None:
+    """取得した行の大半で「営業ステータス」（必須プロパティ）が欠落している場合、行数
+    自体は十分でもsweepを中止し既存データを保護すること（2026-08-26に実際に発生した
+    「10000件全件で主要プロパティが丸ごと欠落する」事故の再発防止）。"""
+    sweep_calls: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(
+        sync, "upsert_projects_and_sweep", lambda records: sweep_calls.append(records) or 0
+    )
+    slack_calls: list[str] = []
+    monkeypatch.setattr(sync, "_notify_slack_alert", lambda message: slack_calls.append(message))
+    manager_dm_calls: list[str] = []
+    monkeypatch.setattr(
+        sync, "_notify_managers_slack_dm", lambda message: manager_dm_calls.append(message)
+    )
+    # 25件中、営業ステータスが設定されているのは1件のみ(4%)で閾値90%を大きく下回る。
+    pages = [_raw_project_page_with_status(page_id="proj-0", status="アポ")] + [
+        _raw_project_page_with_status(page_id=f"proj-{i}", status=None) for i in range(1, 25)
+    ]
+    notion_client = _FakeNotionClient(pages=pages)
+
+    result = sync.refresh_all_projects(
+        notion_client=notion_client, user_directory=_FakeUserDirectory()
+    )
+
+    assert sweep_calls == []
+    assert result["skipped"] == "insufficient_required_properties"
+    assert result["synced_count"] == 25
+    assert result["deleted_count"] == 0
+    assert result["required_property_fill_ratios"]["営業ステータス"] == pytest.approx(1 / 25)
+    assert len(slack_calls) == 1
+    assert len(manager_dm_calls) == 1
+
+
+def test_refresh_all_projects_proceeds_when_required_properties_mostly_present(
+    monkeypatch: pytest.MonkeyPatch, _bypass_refresh_lock: list[Any]
+) -> None:
+    """必須プロパティがほぼ全件に設定されている場合は通常通りsweepすること（正常な本番
+    データまで誤って止めないことの確認）。"""
+    sweep_calls: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(
+        sync, "upsert_projects_and_sweep", lambda records: sweep_calls.append(records) or 0
+    )
+    pages = [
+        _raw_project_page_with_status(page_id=f"proj-{i}", status="アポ") for i in range(25)
+    ]
+    notion_client = _FakeNotionClient(pages=pages)
+
+    result = sync.refresh_all_projects(
+        notion_client=notion_client, user_directory=_FakeUserDirectory()
+    )
+
+    assert len(sweep_calls) == 1
+    assert result == {"synced_count": 25, "deleted_count": 0}
+
+
+def test_refresh_all_projects_completeness_check_skipped_when_row_count_tiny(
+    monkeypatch: pytest.MonkeyPatch, _bypass_refresh_lock: list[Any]
+) -> None:
+    """取得行数が少ない(20件未満)場合は、必須プロパティが全件欠落していても完全性チェック
+    自体は発動しない（少数データでの誤検知を避けるため、部分取得チェックと同じ考え方）。"""
+    sweep_calls: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(
+        sync, "upsert_projects_and_sweep", lambda records: sweep_calls.append(records) or 0
+    )
+    pages = [
+        _raw_project_page_with_status(page_id=f"proj-{i}", status=None) for i in range(5)
+    ]
+    notion_client = _FakeNotionClient(pages=pages)
+
+    result = sync.refresh_all_projects(
+        notion_client=notion_client, user_directory=_FakeUserDirectory()
+    )
+
+    assert len(sweep_calls) == 1
+    assert result == {"synced_count": 5, "deleted_count": 0}
+
+
 # --- refresh_all_projects: 多重実行防止ロック（shirokuma-secレビューWARN対応、2026-08-17）---
 
 

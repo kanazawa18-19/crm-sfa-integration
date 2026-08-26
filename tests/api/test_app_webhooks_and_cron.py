@@ -49,7 +49,9 @@ class _FakeWiring:
         self,
         *,
         dispatcher: _SpyDispatcher | None = None,
-        notion_page_client: Any = None,
+        any_db_page_client: Any = None,
+        project_mirror_notion_client: Any = None,
+        client_master_notion_client: Any = None,
         calendar_sync_callable: Any = None,
         lead_sync_callable: Any = None,
         project_mirror_sync_callable: Any = None,
@@ -58,7 +60,13 @@ class _FakeWiring:
         zoho_action_client: Any = None,
     ) -> None:
         self.dispatcher = dispatcher or _SpyDispatcher()
-        self.notion_page_client = notion_page_client
+        self.any_db_page_client = any_db_page_client
+        # 2026-08-26のインシデント再発防止（案件管理DB/取引先マスターDB専用クライアント）。
+        # 省略時はany_db_page_clientと同一のオブジェクトにフォールバックせず、あえてNoneの
+        # ままにする（テストがproject_mirror_notion_client/client_master_notion_clientの
+        # 指定を忘れたまま「たまたま動く」ことを防ぐため）。
+        self.project_mirror_notion_client = project_mirror_notion_client
+        self.client_master_notion_client = client_master_notion_client
         self.calendar_sync_callable = calendar_sync_callable
         self.lead_sync_callable = lead_sync_callable
         self.project_mirror_sync_callable = project_mirror_sync_callable
@@ -116,7 +124,7 @@ def test_webhook_kintone_dispatches_via_injected_wiring(
 def test_webhook_kintone_does_not_overwrite_client_master_relation_already_set_on_notion(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """本番エンドポイント（webhook_kintone）がwiring.id_mapping_store/notion_page_clientを
+    """本番エンドポイント（webhook_kintone）がwiring.id_mapping_store/any_db_page_clientを
     実際にkintone_webhook_handlerへ渡し、Notion側に既に取引先マスターリレーションが設定
     済みの場合は自動解決の結果があっても上書きしないことを確認する（2026-08-25、
     GPT-5.6クロスレビュー指摘対応: 「静かな誤紐付け防止」という機能の目的が、人による
@@ -140,7 +148,7 @@ def test_webhook_kintone_does_not_overwrite_client_master_relation_already_set_o
     notion_client = _FakeNotionRelationLookupClient()
     spy = _SpyDispatcher()
     _override_wiring(
-        _FakeWiring(dispatcher=spy, notion_page_client=notion_client, id_mapping_store=store)
+        _FakeWiring(dispatcher=spy, any_db_page_client=notion_client, id_mapping_store=store)
     )
     payload = {
         "type": "record.updated",
@@ -293,7 +301,7 @@ def test_webhook_zoho_dispatches_via_injected_wiring(
 def test_webhook_zoho_does_not_overwrite_client_master_relation_already_set_on_notion(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """本番エンドポイント（webhook_zoho）がwiring.id_mapping_store/notion_page_clientを
+    """本番エンドポイント（webhook_zoho）がwiring.id_mapping_store/any_db_page_clientを
     実際にzoho_webhook_handlerへ渡し、Notion側に既に取引先マスターリレーションが設定済みの
     場合は自動解決の結果があっても上書きしないことを確認する（2026-08-25、Round2。kintone側の
     同種テストと同じ設計思想）。"""
@@ -317,7 +325,7 @@ def test_webhook_zoho_does_not_overwrite_client_master_relation_already_set_on_n
     notion_client = _FakeNotionRelationLookupClient()
     spy = _SpyDispatcher()
     _override_wiring(
-        _FakeWiring(dispatcher=spy, notion_page_client=notion_client, id_mapping_store=store)
+        _FakeWiring(dispatcher=spy, any_db_page_client=notion_client, id_mapping_store=store)
     )
     payload = {
         "server_time": 1754960400000,
@@ -364,7 +372,7 @@ def test_webhook_notion_returns_500_when_notion_client_not_configured(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
-    _override_wiring(_FakeWiring(notion_page_client=None))
+    _override_wiring(_FakeWiring(any_db_page_client=None))
 
     response = client.post(
         "/api/webhooks/notion",
@@ -394,7 +402,7 @@ def test_webhook_notion_dispatches_via_injected_wiring(
         },
     }
     _override_wiring(
-        _FakeWiring(dispatcher=spy, notion_page_client=_FakeNotionPageClient(raw_page))
+        _FakeWiring(dispatcher=spy, any_db_page_client=_FakeNotionPageClient(raw_page))
     )
 
     response = client.post(
@@ -437,7 +445,7 @@ def test_webhook_notion_invokes_calendar_sync_callable_for_project_event(
 
     _override_wiring(
         _FakeWiring(
-            notion_page_client=_FakeNotionPageClient(raw_page),
+            any_db_page_client=_FakeNotionPageClient(raw_page),
             calendar_sync_callable=_calendar_sync,
         )
     )
@@ -482,7 +490,7 @@ def test_webhook_notion_invokes_project_mirror_sync_callable_for_project_event(
 
     _override_wiring(
         _FakeWiring(
-            notion_page_client=_FakeNotionPageClient(raw_page),
+            any_db_page_client=_FakeNotionPageClient(raw_page),
             project_mirror_sync_callable=_project_mirror_sync,
         )
     )
@@ -531,7 +539,7 @@ def test_webhook_notion_invokes_client_name_index_sync_callable_for_client_maste
 
     _override_wiring(
         _FakeWiring(
-            notion_page_client=_FakeNotionPageClient(raw_page),
+            any_db_page_client=_FakeNotionPageClient(raw_page),
             client_name_index_sync_callable=_client_name_index_sync,
         )
     )
@@ -576,7 +584,7 @@ def test_webhook_notion_invokes_lead_sync_callable_for_contact_event(
 
     _override_wiring(
         _FakeWiring(
-            notion_page_client=_FakeNotionPageClient(raw_page),
+            any_db_page_client=_FakeNotionPageClient(raw_page),
             lead_sync_callable=_lead_sync,
         )
     )
@@ -603,7 +611,7 @@ def test_webhook_notion_returns_401_when_secret_mismatches(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("NOTION_WEBHOOK_SECRET", "correct-secret")
-    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+    _override_wiring(_FakeWiring(any_db_page_client=_FakeNotionPageClient({})))
 
     response = client.post(
         "/api/webhooks/notion",
@@ -999,7 +1007,7 @@ def test_cron_project_mirror_reconcile_skips_when_sync_not_enabled_by_default(
     スキップすること(shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-17)。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.delenv("PROJECT_MIRROR_SYNC_ENABLED", raising=False)
-    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+    _override_wiring(_FakeWiring(project_mirror_notion_client=_FakeNotionPageClient({})))
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -1018,12 +1026,26 @@ def test_cron_project_mirror_reconcile_skips_when_sync_not_enabled_by_default(
 def test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """2026-08-26のインシデント再発防止の回帰テスト: `run_project_mirror_reconcile`が
+    `wiring.any_db_page_client`（辞書の先頭にたまたま入っていた、どのDBかは不定のクライアント。
+    実際に取引先マスターDBのクライアントが入り、`ProjectMirror`10000件全件で主要プロパティが
+    欠落する事故につながった）ではなく、`wiring.project_mirror_notion_client`（案件管理DB専用
+    クライアント）を`refresh_all_projects()`へ渡すことを確認する。`any_db_page_client`には
+    あえて別物のフェイクを設定し、渡されたのが`project_mirror_notion_client`の方であることを
+    オブジェクトのアイデンティティで検証する。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
     # run_project_mirror_reconcile()はNotionUserDirectory()を構築するためNOTION_API_KEYが
     # 必要(実際のAPI呼び出しは発生しない。refresh_all_projects自体を下でモック化するため)。
     monkeypatch.setenv("NOTION_API_KEY", "test-notion-api-key")
-    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+    wrong_client = _FakeNotionPageClient({"wrong": "db"})
+    project_mirror_client = _FakeNotionPageClient({"案件名": "テスト案件"})
+    _override_wiring(
+        _FakeWiring(
+            any_db_page_client=wrong_client,
+            project_mirror_notion_client=project_mirror_client,
+        )
+    )
 
     calls: list[dict[str, Any]] = []
 
@@ -1040,6 +1062,8 @@ def test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches(
     assert response.status_code == 200
     assert response.json() == {"synced_count": 42}
     assert len(calls) == 1
+    assert calls[0]["notion_client"] is project_mirror_client
+    assert calls[0]["notion_client"] is not wrong_client
 
 
 def test_cron_project_mirror_reconcile_returns_500_when_notion_not_configured(
@@ -1049,7 +1073,7 @@ def test_cron_project_mirror_reconcile_returns_500_when_notion_not_configured(
     見えるno-opにせず明確な500エラーとして表面化させる。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
-    _override_wiring(_FakeWiring(notion_page_client=None))
+    _override_wiring(_FakeWiring(project_mirror_notion_client=None))
 
     response = client.get(
         "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}
@@ -1093,7 +1117,7 @@ def test_cron_relation_sync_reconcile_skips_when_sync_not_enabled_by_default(
     スキップすること(project-mirror-reconcileと同じ設計)。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.delenv("RELATION_SYNC_ENABLED", raising=False)
-    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+    _override_wiring(_FakeWiring(client_master_notion_client=_FakeNotionPageClient({})))
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -1112,9 +1136,21 @@ def test_cron_relation_sync_reconcile_skips_when_sync_not_enabled_by_default(
 def test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """2026-08-26のインシデント再発防止の回帰テスト: `run_relation_sync_reconcile`が
+    `wiring.any_db_page_client`（辞書の先頭にたまたま入っていた、どのDBかは不定のクライアント）
+    ではなく、`wiring.client_master_notion_client`（取引先マスターDB専用クライアント）を
+    `refresh_all_client_names()`へ渡すことを確認する（`run_project_mirror_reconcile`と同じ
+    テスト設計）。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
-    _override_wiring(_FakeWiring(notion_page_client=_FakeNotionPageClient({})))
+    wrong_client = _FakeNotionPageClient({"wrong": "db"})
+    client_master_client = _FakeNotionPageClient({"取引先名": "テスト商事"})
+    _override_wiring(
+        _FakeWiring(
+            any_db_page_client=wrong_client,
+            client_master_notion_client=client_master_client,
+        )
+    )
 
     calls: list[dict[str, Any]] = []
 
@@ -1131,6 +1167,8 @@ def test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches(
     assert response.status_code == 200
     assert response.json() == {"synced_count": 9914, "deleted_count": 0}
     assert len(calls) == 1
+    assert calls[0]["notion_client"] is client_master_client
+    assert calls[0]["notion_client"] is not wrong_client
 
 
 def test_cron_relation_sync_reconcile_returns_500_when_notion_not_configured(
@@ -1140,7 +1178,7 @@ def test_cron_relation_sync_reconcile_returns_500_when_notion_not_configured(
     見えるno-opにせず明確な500エラーとして表面化させる。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
-    _override_wiring(_FakeWiring(notion_page_client=None))
+    _override_wiring(_FakeWiring(client_master_notion_client=None))
 
     response = client.get(
         "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer correct-secret"}

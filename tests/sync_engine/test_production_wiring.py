@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 
 from src.db_schema.base import Tool
+from src.db_schema.client_master import CLIENT_MASTER_SCHEMA
+from src.db_schema.project import PROJECT_SCHEMA
 from src.db_schema.registry import ALL_SCHEMAS
 from src.sync_engine.clients._http import (
     HOOK_MAX_RETRIES,
@@ -765,7 +767,7 @@ def _isolate_tool_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SYNC_ID_MAPPING_DB_PATH", ":memory:")
 
 
-def test_production_sync_wiring_notion_page_client_is_none_without_api_key(
+def test_production_sync_wiring_any_db_page_client_is_none_without_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("NOTION_API_KEY", raising=False)
@@ -773,10 +775,10 @@ def test_production_sync_wiring_notion_page_client_is_none_without_api_key(
 
     wiring = ProductionSyncWiring()
 
-    assert wiring.notion_page_client is None
+    assert wiring.any_db_page_client is None
 
 
-def test_production_sync_wiring_notion_page_client_is_set_with_api_key(
+def test_production_sync_wiring_any_db_page_client_is_set_with_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("NOTION_API_KEY", "secret-key")
@@ -784,7 +786,49 @@ def test_production_sync_wiring_notion_page_client_is_set_with_api_key(
 
     wiring = ProductionSyncWiring()
 
-    assert wiring.notion_page_client is not None
+    assert wiring.any_db_page_client is not None
+
+
+def test_production_sync_wiring_project_mirror_notion_client_is_dedicated_to_project_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`project_mirror_notion_client`は`any_db_page_client`（辞書の先頭が入る、どのDBかは
+    不定のクライアント）に頼らず、必ず案件管理DB（`PROJECT_SCHEMA`）専用のクライアントで
+    あること（2026-08-26のインシデント再発防止: 夜間reconcileが取引先マスターDBのクライアント
+    を誤って使い、`ProjectMirror`10000件全件で主要プロパティが欠落した事故の修正確認）。"""
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.project_mirror_notion_client is not None
+    assert wiring.project_mirror_notion_client._db_key == PROJECT_SCHEMA.key  # noqa: SLF001
+
+
+def test_production_sync_wiring_client_master_notion_client_is_dedicated_to_client_master_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`client_master_notion_client`は必ず取引先マスターDB（`CLIENT_MASTER_SCHEMA`）専用の
+    クライアントであること（`run_relation_sync_reconcile`が同じ罠を抱えていないことの確認）。"""
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.client_master_notion_client is not None
+    assert wiring.client_master_notion_client._db_key == CLIENT_MASTER_SCHEMA.key  # noqa: SLF001
+
+
+def test_production_sync_wiring_project_mirror_notion_client_is_none_without_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTION_API_KEY", raising=False)
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.project_mirror_notion_client is None
+    assert wiring.client_master_notion_client is None
 
 
 def test_production_sync_wiring_zoho_action_client_is_none_when_zoho_disabled(

@@ -90,7 +90,7 @@ Notion側のリレーションは変更されない。
 人がNotion上で手動修正したリレーションが、後日kintone側の`client_name`が再編集される
 たびに黙って上書きされてしまい、「静かな誤紐付けを避ける」という本機能の目的そのものに
 反する動作になる。自動反映は「Notion側がまだ未設定の場合のみ」に限定される。現在値の確認
-（`ProductionSyncWiring.id_mapping_store`での逆引き＋`notion_page_client.get_page()`）に
+（`ProductionSyncWiring.id_mapping_store`での逆引き＋`any_db_page_client.get_page()`）に
 失敗した場合も、安全側に倒して当該プロパティへの書き込みをスキップする。
 
 ### 4. RelationReviewQueueの定期確認

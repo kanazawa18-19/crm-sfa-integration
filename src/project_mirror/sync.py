@@ -35,6 +35,31 @@ logger = logging.getLogger(__name__)
 # 「ミラーが全件0件になる」事故への対策)。
 _MIN_SYNC_RATIO = 0.5
 
+# ダッシュボード集計が成立するために不可欠なプロパティ。PROJECT_SCHEMA上で
+# RequirementLevel.REQUIREDのプロパティ(2026-08-26時点で「案件名」「営業ステータス」の2つ)を
+# そのまま使う。特に「営業ステータス」はsrc/api/dashboard_service.pyのbuild_daily_report()・
+# build_member_performance()・build_manager_alerts()が`p.get(PROP_営業ステータス) is None`で
+# 案件そのものを集計から除外するために使う最重要プロパティであり、これが欠落した行が
+# 大量に混入すると、行数は正常でも集計結果が軒並み0件になる(2026-08-26に実際に発生した
+# インシデント、docs/project_mirror_activation_note.md参照)。
+_REQUIRED_PROPERTY_NAMES: tuple[str, ...] = tuple(
+    p.name for p in PROJECT_SCHEMA.properties if p.is_required
+)
+
+# 取得・変換した行のうち、上記必須プロパティそれぞれが値を持つ行の割合がこれを下回った場合、
+# 「行数は正常だが中身(必須プロパティ)が壊れている」疑いが強いとしてsweepを中止する
+# (2026-08-26、10000件全件で主要プロパティが丸ごと欠落する事故が発生し、既存の件数ベースの
+# ガード(_MIN_SYNC_RATIO/_MIN_EXPECTED_SYNCED_COUNT)ではすり抜けたための対策)。
+# 「案件名」「営業ステータス」はいずれもNotion側でTITLE/REQUIRED区分のプロパティであり、
+# 正常なデータであればほぼ全件に値が入っているはずなので、90%という閾値は正常な本番データを
+# 誤って止めてしまわないよう十分に余裕を持たせつつ、今回のような壊滅的な欠落(実績0%)は
+# 確実に検知できる水準として設定した。
+_MIN_REQUIRED_PROPERTY_RATIO = 0.9
+
+# 完全性チェックを発動させる最小行数。件数が極端に少ない場合の誤検知を避けるため、
+# _MIN_SYNC_RATIOの`current_count >= 20`と同じ考え方で最小サイズを設ける。
+_MIN_ROWS_FOR_COMPLETENESS_CHECK = 20
+
 
 class ProjectMirrorNotionClient(Protocol):
     """本モジュールが要求するNotionクライアントの最小インターフェース。"""
@@ -57,6 +82,21 @@ def _page_to_mirror_row(page: Mapping[str, Any], *, user_directory: Any) -> dict
         "notion_page_id": record["notion_page_id"],
         "data": record,
         "last_edited_at": parse_iso_datetime(last_edited_time) if last_edited_time else None,
+    }
+
+
+def _required_property_fill_ratios(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """`rows`（`_page_to_mirror_row()`の戻り値のリスト）について、必須プロパティごとに
+    値が設定されている(データに存在し、かつNone/空文字/空リストではない)行の割合を返す。
+
+    `rows`が空の場合は呼び出し元(`refresh_all_projects`)側で別途空リストの扱いをするため、
+    ここでは全て1.0(問題なし)として返す。
+    """
+    if not rows:
+        return {name: 1.0 for name in _REQUIRED_PROPERTY_NAMES}
+    return {
+        name: sum(1 for row in rows if row["data"].get(name)) / len(rows)
+        for name in _REQUIRED_PROPERTY_NAMES
     }
 
 
@@ -132,6 +172,36 @@ def refresh_all_projects(
                 "skipped": "suspected_partial_fetch",
             }
 
+        # 「行数は正常だが中身(必須プロパティ)が壊れている」事故の検知(2026-08-26)。
+        # 上のcurrent_countベースのチェックは行数の急減しか見ておらず、10000件全件の
+        # UPSERTには成功しつつ各行の主要プロパティが丸ごと欠落するという壊れ方を
+        # すり抜けた(docs/project_mirror_activation_note.md参照)。少数データでの誤検知を
+        # 避けるため、rowsが_MIN_ROWS_FOR_COMPLETENESS_CHECK未満の場合はこのチェック自体を
+        # 素通りさせる(current_count>=20のガードと同じ考え方)。
+        if len(rows) >= _MIN_ROWS_FOR_COMPLETENESS_CHECK:
+            fill_ratios = _required_property_fill_ratios(rows)
+            insufficient = {
+                name: ratio
+                for name, ratio in fill_ratios.items()
+                if ratio < _MIN_REQUIRED_PROPERTY_RATIO
+            }
+            if insufficient:
+                message = (
+                    f"refresh_all_projects: 取得した{len(rows)}件のうち必須プロパティの"
+                    f"充足率が閾値({_MIN_REQUIRED_PROPERTY_RATIO:.0%})を下回るものがあり"
+                    f"（{insufficient}）、中身が壊れている疑いがありsweepを中止しました"
+                    "（既存データは変更していません）。"
+                )
+                logger.error(message)
+                _notify_slack_alert(message)
+                _notify_managers_slack_dm(message)
+                return {
+                    "synced_count": len(rows),
+                    "deleted_count": 0,
+                    "skipped": "insufficient_required_properties",
+                    "required_property_fill_ratios": fill_ratios,
+                }
+
         deleted_count = upsert_projects_and_sweep(rows)
         return {"synced_count": len(rows), "deleted_count": deleted_count}
     finally:
@@ -140,7 +210,13 @@ def refresh_all_projects(
 
 def _notify_slack_alert(message: str) -> None:
     """`src/incident_detection/notify.py`の日次ダイジェストと同じ`SLACK_WEBHOOK_URL_ALERT`
-    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。"""
+    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。
+
+    `SLACK_WEBHOOK_URL_ALERT`は本番未設定であることが判明しており(`src/sync_engine/
+    slack_notifier.py`参照)、現状は実質no-opだが、将来設定された場合に備えてこのまま残す
+    (既存の`_MIN_SYNC_RATIO`ガードが使っている経路と同じ)。実際に運用者へ届く経路は
+    `_notify_managers_slack_dm()`側。
+    """
     url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
     if not url:
         return
@@ -148,3 +224,21 @@ def _notify_slack_alert(message: str) -> None:
         requests.post(url, json={"text": message}, timeout=10)
     except Exception:
         logger.exception("refresh_all_projects: failed to post alert to slack")
+
+
+def _notify_managers_slack_dm(message: str) -> None:
+    """`User.isManager = true`の全ユーザーへSlack DMで通知する
+    (`src/notifications/manager_dm.py`、2026-08-25新設)。`SLACK_WEBHOOK_URL_ALERT`が本番
+    未設定と判明している中で唯一本番で実際に届く通知経路であるため、`src/sync_engine/
+    slack_notifier.py`の`WebhookSlackNotifier._notify_managers()`と同じ理由でこちらを主経路と
+    する。`manager_dm`はここで遅延importする(`WebhookSlackNotifier._notify_managers()`の
+    docstring参照。循環import回避が主目的だが、project_mirror/syncからの参照でも同じ慣習に
+    揃える)。`manager_dm.notify_managers()`自体が例外を握りつぶす設計だが、念のためここでも
+    捕捉し、Slack通知の失敗でsweep中止の判断自体を失敗させない。
+    """
+    from src.notifications import manager_dm
+
+    try:
+        manager_dm.notify_managers(message, log_context="refresh_all_projects")
+    except Exception:
+        logger.exception("refresh_all_projects: failed to notify managers via Slack DM")
