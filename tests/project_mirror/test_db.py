@@ -79,6 +79,12 @@ def _set_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _patch_connect(monkeypatch: pytest.MonkeyPatch, cursor: _FakeCursor) -> _FakeConnection:
+    # db.psycopgをパッチすると、db.py内で呼ばれるsrc/db_utils.pyのpsycopg.connect()
+    # （connect_for_advisory_lock()経由）にも間接的に効く。これはdb.pyが
+    # `import psycopg`スタイルを維持している前提に依存しており、
+    # `from psycopg import connect`のような書き方に変わると無言で効かなくなる
+    # (INFO対応、2026-08-28。独立した検証はtests/test_db_utils.pyのdb_utils.psycopgへの
+    # 直接パッチ側で担保している)。
     conn = _FakeConnection(cursor)
     monkeypatch.setattr(db.psycopg, "connect", lambda *args, **kwargs: conn)
     return conn
@@ -250,6 +256,49 @@ def test_try_acquire_refresh_lock_returns_connection_when_lock_acquired(
     sql, params = fake_cursor.executed[0]
     assert "pg_try_advisory_lock" in sql
     assert params == (db._REFRESH_LOCK_KEY,)
+
+
+def test_try_acquire_refresh_lock_prefers_database_url_unpooled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PgBouncerのtransaction poolingではadvisory lockの取得/解放が別セッションに分かれ
+    無言で機能しなくなる(2026-08-28)。ロック用接続は`DATABASE_URL`(pooled)ではなく
+    `DATABASE_URL_UNPOOLED`を優先して使うこと(`db_utils.connect_for_advisory_lock()`経由)。
+    """
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", "postgresql://user:pass@direct-host/db")
+    fake_cursor = _FakeCursor(fetch_one_rows=[{"locked": True}])
+    conn = _FakeConnection(fake_cursor)
+    captured_urls: list[str] = []
+
+    def _fake_connect(url: str, **kwargs: Any) -> _FakeConnection:
+        captured_urls.append(url)
+        return conn
+
+    monkeypatch.setattr(db.psycopg, "connect", _fake_connect)
+
+    db.try_acquire_refresh_lock()
+
+    assert captured_urls == ["postgresql://user:pass@direct-host/db"]
+
+
+def test_try_acquire_refresh_lock_closes_connection_when_execute_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """呼び出し元はまだ`Connection`を受け取っていないため、`cur.execute()`が例外を投げた場合も
+    ここで接続を必ずcloseすること(closeしないと接続がリークする、QAレビューWARN対応、
+    2026-08-28。`src/document_generation/approval_db.py`の`try_acquire_approval_lock()`にも
+    同じ形で存在した既存バグで、両方まとめて修正した)。"""
+
+    class _RaisingCursor(_FakeCursor):
+        def execute(self, sql: str, params: Any = None) -> None:
+            raise RuntimeError("boom")
+
+    conn = _patch_connect(monkeypatch, _RaisingCursor())
+
+    with pytest.raises(RuntimeError):
+        db.try_acquire_refresh_lock()
+
+    assert conn.closed is True
 
 
 def test_try_acquire_refresh_lock_returns_none_and_closes_connection_when_lock_unavailable(

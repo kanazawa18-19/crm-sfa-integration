@@ -97,6 +97,41 @@ Postgres負荷軽減にもなる）。設定後、実際に全社ダッシュボ
 即座にスキップする（古い実行が後から完了して新しいデータの`syncedAt`を巻き戻し、mark-and-
 sweepで誤って削除してしまう事故を防ぐため）。
 
+### 前提: advisory lockはpooled接続では無言で機能しない（2026-08-28）
+
+PgBouncerのtransaction pooling（Neonの`-pooler`エンドポイント等）では、advisory lockの
+セッション単位の状態が前提として崩れる。ロック取得（`pg_try_advisory_lock`）と解放
+（`pg_advisory_unlock`）が別の物理セッションで実行されうるため、**例外は一切出ないまま
+排他制御だけが無言で機能しなくなる**。夜間reconcile cronと手動バックフィル
+（`scripts/backfill_project_mirror.py`）が偶発的に重なった場合の多重実行防止という
+このロックの目的そのものが、静かに無効化されうる——mark-and-sweep方式のこのモジュールに
+とっては、過去に実データを全消失させたインシデント（下記）の再発防止の要でもある。
+
+本番の`DATABASE_URL`（Vercel環境変数）が実際にNeonのpooled接続であることを確認したため、
+advisory lockを取得・解放する接続だけ**非pooledの`DATABASE_URL_UNPOOLED`**を使うよう変更した
+（`src/db_utils.py`の`connect_for_advisory_lock()`。`src/document_generation/approval_db.py`・
+`src/project_mirror/db.py`・`src/relation_sync/db.py`の3ファイルが共有する。元は3ファイルに
+ほぼ同じ`_connect()`実装がコピーされていたため、ロック専用接続の作成ロジックだけここに
+集約した。通常のクエリ用接続はtransaction poolingでも問題なく動くため、引き続き
+`DATABASE_URL`のままでよい）。
+
+**この設計は環境変数が正しく設定されていることに依存している点に注意。**
+`DATABASE_URL_UNPOOLED`が未設定の場合、例外を出さず`DATABASE_URL`へフォールバックして
+動き続ける（＝アプリは正常に見えたまま、多重実行防止だけが無言で無効化された今回と同じ
+状態に戻る）。気づけるようwarningログは必ず出す（フォールバック先のホスト名に`-pooler`を
+含む場合はさらに強い警告を出す）が、**ログを見ない限り気づけない**。デプロイ後、一度は
+本番ログで`DATABASE_URL_UNPOOLED is not set`系の警告が出ていないことを確認すること。
+
+**テストは全てモック（`psycopg.connect`の差し替え）であり、実Postgresでadvisory lockが
+実際に排他制御として機能することは未検証**（`tests/test_db_utils.py`の
+`connect_for_advisory_lock`系テスト・`tests/project_mirror/test_db.py`の
+`test_try_acquire_refresh_lock_prefers_database_url_unpooled`は、いずれも「正しいURLが
+`psycopg.connect()`に渡されること」の検証までで、Postgres側の実際のロック挙動は検証して
+いない）。確認するなら、非pooled接続（`DATABASE_URL_UNPOOLED`と同じ接続文字列）で2つの
+セッションを開き、片方で`SELECT pg_try_advisory_lock(917263540)`を実行してロックを取得した
+まま、もう片方の同じクエリが`false`を返すことを見るのが確実（`psql`を2枚起動して手動で
+確認できる）。詳細は`docs/quote_approval_note.md`の同種の記録も参照。
+
 ## 過去のインシデント: mark-and-sweepの精度不一致による誤削除（2026-08-25）
 
 `upsert_projects_and_sweep()`が基準時刻に素の`datetime.now(timezone.utc)`（マイクロ秒精度）を

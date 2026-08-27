@@ -274,6 +274,101 @@ def test_notify_new_record_issue_omits_action_hint_for_unknown_reason(
     assert "対応:" not in calls[0]["text"]
 
 
+def test_notify_update_skipped_includes_action_hint_for_update_notion_value_fetch_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """既存レコードへの通常の更新イベントでNotion現在値取得が失敗した場合の通知
+    （2026-08-27/28本番障害対応の残存リスク決着）。他のreasonと同じパターンでテストを揃える。"""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_update_skipped(
+        db_key="client_master",
+        source_tool=Tool.KINTONE,
+        external_id="1001",
+        reason="update_notion_value_fetch_failed",
+        detail="detail",
+    )
+
+    text = calls[0]["text"]
+    assert "client_master" in text
+    assert "取引先マスターDB" in text  # db_keyの人間向け表示名
+    assert "kintone" in text
+    assert "1001" in text
+    assert "update_notion_value_fetch_failed" in text
+    assert "Notion APIの障害・レート制限" in text  # 対処アクション
+
+
+def test_notify_update_skipped_includes_action_hint_for_update_target_value_fetch_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_update_skipped(
+        db_key="project",
+        source_tool=Tool.ZOHO,
+        external_id="zoho-1",
+        reason="update_target_value_fetch_failed",
+        detail="detail",
+    )
+
+    text = calls[0]["text"]
+    assert "案件管理DB" in text
+    assert "zoho" in text
+    assert "対象ツールのAPI障害・レート制限" in text
+
+
+def test_notify_update_skipped_omits_action_hint_for_unknown_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_update_skipped(
+        db_key="client_master",
+        source_tool=Tool.KINTONE,
+        external_id="1001",
+        reason="some_future_reason",
+        detail="detail",
+    )
+
+    assert "対応:" not in calls[0]["text"]
+
+
+def test_notify_update_skipped_does_not_raise_when_manager_dm_notify_managers_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def _raise(text: str, *, log_context: str) -> None:
+        raise RuntimeError("HTTP 500 from Slack")
+
+    monkeypatch.setattr("src.notifications.manager_dm.notify_managers", _raise)
+    notifier = WebhookSlackNotifier()
+
+    with caplog.at_level("WARNING"):
+        notifier.notify_update_skipped(
+            db_key="client_master",
+            source_tool=Tool.KINTONE,
+            external_id="1001",
+            reason="update_notion_value_fetch_failed",
+            detail="detail",
+        )
+
+    assert any("failed to notify managers via Slack DM" in r.getMessage() for r in caplog.records)
+
+
 def test_notify_new_record_created_falls_back_to_raw_db_key_when_schema_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

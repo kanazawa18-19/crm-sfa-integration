@@ -142,8 +142,14 @@ class HttpSpreadsheetClient:
             },
         )
         raise_for_error(response, SpreadsheetApiError)
-        values = response.json().get("values") or []
-        return values[0] if values else []
+        # shirokuma-secレビューBLOCKER対応（2026-08-28）: `append_row`と同じ理由
+        # （モジュール内`append_row`のコメント参照）で、raise_for_error()通過後（2xx）でも
+        # ボディが期待した形でない場合に生の例外が飛ばないよう正規化する。
+        try:
+            values = response.json().get("values") or []
+            return values[0] if values else []
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
+            raise SpreadsheetApiError(response.status_code, extract_error_message(response)) from exc
 
     def get_row(self, sheet: str, row: int) -> dict[str, Any] | None:
         response = self._request(
@@ -156,9 +162,12 @@ class HttpSpreadsheetClient:
             },
         )
         raise_for_error(response, SpreadsheetApiError)
-        value_ranges = response.json().get("valueRanges") or []
-        headers = _first_values_row(value_ranges, 0)
-        row_values = _first_values_row(value_ranges, 1)
+        try:
+            value_ranges = response.json().get("valueRanges") or []
+            headers = _first_values_row(value_ranges, 0)
+            row_values = _first_values_row(value_ranges, 1)
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
+            raise SpreadsheetApiError(response.status_code, extract_error_message(response)) from exc
         if not row_values:
             return None
         return {

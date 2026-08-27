@@ -17,7 +17,8 @@ from src.db_schema.base import (
     Tool,
 )
 from src.sync_engine.clients.kintone_client import KintoneApiError
-from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY
+from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY, NotionApiError
+from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.conflict_resolver import RejectedData, ResolutionAction
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import DuplicateExternalIdError, IdMapping, SQLiteIdMappingStore
@@ -35,6 +36,13 @@ class FakeSyncTarget(SyncTarget):
     `src/sync_engine/production_wiring.py`）が外部IDからdb_keyを解決できず実際には
     書き込まなかったケース等を模して、`upsert_record()`がNone（`SyncTarget`の契約上
     「実際には書き込まれなかった」を表す）を返すようにする。
+
+    `get_record_raises`は既定（`get_record_raises_after_calls=0`）では呼び出し回数に
+    関係なく毎回例外を投げるが、`get_record_raises_after_calls`にN（>0）を指定すると
+    「(このインスタンスへの)N回目までの呼び出しは成功し、N+1回目以降の呼び出しから例外を
+    投げる」動作に切り替えられる（WARN3対応、2026-08-28: 「1つ目のプロパティは
+    get_record成功→書き込み成功、2つ目のプロパティでget_recordが失敗する」という、
+    複数プロパティイベントでの部分書き込みシナリオをテストで再現するために追加）。
     """
 
     def __init__(
@@ -46,6 +54,7 @@ class FakeSyncTarget(SyncTarget):
         delete_raises: bool = False,
         upsert_raises: Exception | None = None,
         get_record_raises: Exception | None = None,
+        get_record_raises_after_calls: int = 0,
     ) -> None:
         self.tool = tool
         self._records = records or {}
@@ -53,13 +62,16 @@ class FakeSyncTarget(SyncTarget):
         self._delete_raises = delete_raises
         self._upsert_raises = upsert_raises
         self._get_record_raises = get_record_raises
+        self._get_record_raises_after_calls = get_record_raises_after_calls
         self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
         self.delete_calls: list[str] = []
         self.get_record_calls: list[str] = []
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         self.get_record_calls.append(external_id)
-        if self._get_record_raises is not None:
+        if self._get_record_raises is not None and (
+            len(self.get_record_calls) > self._get_record_raises_after_calls
+        ):
             raise self._get_record_raises
         return self._records.get(external_id)
 
@@ -172,6 +184,7 @@ class SpyNotifier:
         self.notified: list[RejectedData] = []
         self.new_record_created_calls: list[dict[str, Any]] = []
         self.new_record_issue_calls: list[dict[str, Any]] = []
+        self.update_skipped_calls: list[dict[str, Any]] = []
 
     def notify_conflict(self, rejected: RejectedData) -> None:
         self.notified.append(rejected)
@@ -206,6 +219,25 @@ class SpyNotifier:
                 "reason": reason,
                 "detail": detail,
                 "notion_page_id": notion_page_id,
+            }
+        )
+
+    def notify_update_skipped(
+        self,
+        *,
+        db_key: str,
+        source_tool: Tool,
+        external_id: str,
+        reason: str,
+        detail: str,
+    ) -> None:
+        self.update_skipped_calls.append(
+            {
+                "db_key": db_key,
+                "source_tool": source_tool,
+                "external_id": external_id,
+                "reason": reason,
+                "detail": detail,
             }
         )
 
@@ -1311,6 +1343,300 @@ def test_notion_unavailable_falls_back_to_simple_propagate_without_data_loss(
     assert targets[Tool.ZOHO].upsert_calls == [("zoho-1", {"取引先名": "新規登録名"})]
     assert targets[Tool.SPREADSHEET].upsert_calls == [("5", {"取引先名": "新規登録名"})]
     assert targets[Tool.KINTONE].upsert_calls == []  # 送信元には書き戻さない
+
+
+# --- 更新パスの現在値取得が例外を送出するケース（2026-08-27/28本番障害対応の残存リスク決着） ---
+#
+# `_try_create_new_record()`（新規作成経路）とは別の、`dispatch()`本体（既に`IdMapping`が
+# 存在するレコードへの通常の更新イベント）に残っていた未保護の`get_record()`2箇所を塞ぐ。
+# 「取得に失敗したら、この同期イベントの書き込みを中止（スキップ）してSlack通知を出す」方針
+# （`docs/relation_sync_activation_note.md`参照）。部分的に取得できた値で更新を続けたり、
+# 取得できなかったツールを無視して進めたりしないこと（＝書き込みが一切呼ばれないこと）が要点。
+
+
+def test_dispatch_update_aborts_without_writes_when_notion_current_value_fetch_raises_api_error(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(
+        Tool.NOTION, get_record_raises=NotionApiError(500, "internal error")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "update_notion_value_fetch_failed"
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert targets[Tool.KINTONE].upsert_calls == []
+    assert targets[Tool.ZOHO].upsert_calls == []
+    assert targets[Tool.SPREADSHEET].upsert_calls == []
+    # last_synced_atは更新されない（次に届く新しいイベントで再度処理されるようにするため）。
+    assert store.get("CLI-001").last_synced_at == mapping.last_synced_at
+    assert len(notifier.update_skipped_calls) == 1
+    call = notifier.update_skipped_calls[0]
+    assert call["db_key"] == "client_master"
+    assert call["source_tool"] is Tool.KINTONE
+    assert call["external_id"] == "1001"
+    assert call["reason"] == "update_notion_value_fetch_failed"
+
+
+def test_dispatch_update_aborts_without_writes_when_notion_current_value_fetch_raises_network_error(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(
+        Tool.NOTION, get_record_raises=requests.exceptions.ConnectionError("connection refused")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "update_notion_value_fetch_failed"
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert targets[Tool.KINTONE].upsert_calls == []
+    assert targets[Tool.ZOHO].upsert_calls == []
+    assert targets[Tool.SPREADSHEET].upsert_calls == []
+    assert len(notifier.update_skipped_calls) == 1
+    assert notifier.update_skipped_calls[0]["reason"] == "update_notion_value_fetch_failed"
+
+
+def test_dispatch_update_lets_programming_errors_propagate_from_notion_current_value_fetch(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """ApiError/RequestException以外は意図的に握らず従来どおり伝播すること（回帰テスト）。"""
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(Tool.NOTION, get_record_raises=AttributeError("boom"))
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称"},
+    )
+
+    with pytest.raises(AttributeError):
+        dispatcher.dispatch(event)
+
+
+def test_dispatch_update_aborts_without_writes_when_other_tool_current_value_fetch_raises_api_error(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={"CLI-001": {"取引先名": "Notion側の名前", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}},
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = FakeSyncTarget(
+        Tool.ZOHO, get_record_raises=ZohoApiError(500, "internal error")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "kintone側の名前"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "update_target_value_fetch_failed"
+    assert notion.upsert_calls == []
+    assert targets[Tool.KINTONE].upsert_calls == []
+    assert targets[Tool.ZOHO].upsert_calls == []
+    assert targets[Tool.SPREADSHEET].upsert_calls == []
+    assert store.get("CLI-001").last_synced_at == mapping.last_synced_at
+    assert len(notifier.update_skipped_calls) == 1
+    call = notifier.update_skipped_calls[0]
+    assert call["db_key"] == "client_master"
+    assert call["source_tool"] is Tool.KINTONE
+    assert call["external_id"] == "1001"
+    assert call["reason"] == "update_target_value_fetch_failed"
+
+
+def test_dispatch_update_aborts_without_writes_when_other_tool_current_value_fetch_raises_network_error(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={"CLI-001": {"取引先名": "Notion側の名前", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}},
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.SPREADSHEET] = FakeSyncTarget(
+        Tool.SPREADSHEET, get_record_raises=requests.exceptions.Timeout("timed out")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "kintone側の名前"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "update_target_value_fetch_failed"
+    assert notion.upsert_calls == []
+    assert targets[Tool.KINTONE].upsert_calls == []
+    assert targets[Tool.ZOHO].upsert_calls == []
+    assert targets[Tool.SPREADSHEET].upsert_calls == []
+    assert len(notifier.update_skipped_calls) == 1
+    assert notifier.update_skipped_calls[0]["reason"] == "update_target_value_fetch_failed"
+
+
+def test_dispatch_update_lets_programming_errors_propagate_from_other_tool_current_value_fetch(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={"CLI-001": {"取引先名": "Notion側の名前", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}},
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, get_record_raises=AttributeError("boom"))
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "kintone側の名前"},
+    )
+
+    with pytest.raises(AttributeError):
+        dispatcher.dispatch(event)
+
+
+# --- 複数プロパティイベントでの部分書き込み（BLOCKER1対応、2026-08-28、動物チームレビュー） ---
+#
+# 上記の単一プロパティのテストだけでは「書き込みゼロ」が自明に成立してしまい、複数プロパティ
+# イベントで1つ目が既に他ツールへ書き込み済みのまま2つ目の現在値取得で失敗する、という
+# 最も危険なケースを検出できない（WARN3指摘対応）。以下は1つ目のプロパティが実際に書き込まれ
+# 2つ目で失敗するケースの回帰テストで、Slack通知が「書き込みは行われていません」と誤って
+# 断定しないこと（既に適用済みのプロパティがあることを正しく伝えること）まで検証する。
+
+
+def test_dispatch_partially_applies_multi_property_event_then_aborts_on_second_property_fetch_failure(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                "住所": "旧住所",
+                NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2),
+            }
+        },
+    )
+    zoho = FakeSyncTarget(
+        Tool.ZOHO,
+        records={"zoho-1": {"取引先名": "旧名称", "住所": "旧住所", "updated_at": NOW - timedelta(hours=3)}},
+        get_record_raises=ZohoApiError(500, "internal error"),
+        get_record_raises_after_calls=1,  # 1回目(1つ目のプロパティ)は成功、2回目以降で失敗する。
+    )
+    spreadsheet = FakeSyncTarget(
+        Tool.SPREADSHEET,
+        records={"5": {"取引先名": "旧名称", "住所": "旧住所", "updated_at": NOW - timedelta(hours=3)}},
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = zoho
+    targets[Tool.SPREADSHEET] = spreadsheet
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        # dict順は挿入順で保持される: 「取引先名」が1つ目、「住所」が2つ目に処理される。
+        properties={"取引先名": "新名称", "住所": "新住所"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    # dispatch()全体としてはskipped=Trueで返るが、1つ目のプロパティは既に書き込み済み。
+    assert result.skipped
+    assert result.reason == "update_target_value_fetch_failed"
+    assert notion.upsert_calls == [("CLI-001", {"取引先名": "新名称"})]
+    assert zoho.upsert_calls == [("zoho-1", {"取引先名": "新名称"})]
+    assert spreadsheet.upsert_calls == [("5", {"取引先名": "新名称"})]
+    assert targets[Tool.KINTONE].upsert_calls == []  # 送信元には書き戻さない
+    # last_synced_atは更新されない（次に届く新しいイベントで「住所」が再度処理されるように
+    # するため）。「取引先名」は既に反映済みだが、次回イベントでも値が一致するためno-opになる。
+    assert store.get("CLI-001").last_synced_at == mapping.last_synced_at
+
+    assert len(notifier.update_skipped_calls) == 1
+    call = notifier.update_skipped_calls[0]
+    assert call["reason"] == "update_target_value_fetch_failed"
+    detail = call["detail"]
+    # 既に適用済みのプロパティ（取引先名）と、処理中に失敗したプロパティ（住所）の両方の
+    # プロパティ名が含まれること。
+    assert "取引先名" in detail
+    assert "住所" in detail
+    # 「書き込みは行われていません」という誤った断定はしないこと。
+    assert "書き込みは行われていません" not in detail
+    # 値そのもの（新旧いずれも）は一切含めないこと。
+    for leaked_value in ("新名称", "新住所", "旧名称", "旧住所"):
+        assert leaked_value not in detail
+
+
+def test_dispatch_notifies_no_writes_at_all_when_first_property_fetch_fails(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """対照ケース: 1つ目のプロパティで現在値取得が失敗した場合（＝本当に書き込みゼロ）は、
+    従来通り「書き込みは行われていません」と断定してよいことの回帰テスト。"""
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(
+        Tool.NOTION, get_record_raises=NotionApiError(500, "internal error")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称", "住所": "新住所"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "update_notion_value_fetch_failed"
+    for target in targets.values():
+        assert target.upsert_calls == []
+    assert len(notifier.update_skipped_calls) == 1
+    detail = notifier.update_skipped_calls[0]["detail"]
+    assert "書き込みは行われていません" in detail
+    assert "取引先名" in detail  # 処理中に失敗したプロパティ名
 
 
 # --- BLOCKER3: Notion・送信元の2者間比較に限定しないコンフリクト検知 -----------------------

@@ -194,6 +194,37 @@ def test_get_page_raises_notion_api_error_on_5xx(
     assert exc_info.value.status_code == 500
 
 
+def test_get_page_raises_notion_api_error_on_200_when_properties_is_not_a_dict(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """shirokuma-secレビューBLOCKER対応（2026-08-28）: HTTP 200だが`properties`が想定した
+    辞書形式ではない異常応答の場合、生のAttributeErrorではなく正規化されたNotionApiErrorに
+    なることを確認する。"""
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        status_code=200,
+        json={"id": PAGE_ID, "properties": "not-a-dict"},
+    )
+
+    with pytest.raises(NotionApiError) as exc_info:
+        client.get_page(PAGE_ID)
+    assert exc_info.value.status_code == 200
+
+
+def test_get_page_raises_notion_api_error_on_200_when_property_value_is_not_a_dict(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """個々のプロパティ値が辞書でない異常応答の場合も同様に正規化されること。"""
+    requests_mock.get(
+        f"https://api.notion.com/v1/pages/{PAGE_ID}",
+        status_code=200,
+        json={"id": PAGE_ID, "properties": {"取引先ID": "not-a-dict"}},
+    )
+
+    with pytest.raises(NotionApiError):
+        client.get_page(PAGE_ID)
+
+
 # --- get_raw_page -------------------------------------------------------------------------
 
 

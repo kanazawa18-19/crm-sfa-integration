@@ -336,12 +336,38 @@ def _patch_drive_connection(
     )
 
 
+def _patch_approval_lock(
+    monkeypatch: pytest.MonkeyPatch, *, acquired: bool = True
+) -> list[tuple[str, str]]:
+    """`try_acquire_approval_lock`/`release_approval_lock`(TOCTOU対策、2026-08-28)は
+    DBアクセスを伴うため、実際のPostgresには繋がずフェイクへ差し替える。`acquired=False`の
+    場合はロック取得自体が失敗した状況（同じ案件・カテゴリで既に別のリクエストが処理中）を
+    再現する。戻り値は`release_approval_lock`へ渡された`(notion_page_id, category)`の記録で、
+    例外発生時も含めてロックが必ず解放されることを検証するテストで使う。"""
+    released: list[tuple[str, str]] = []
+    sentinel = object() if acquired else None
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.try_acquire_approval_lock",
+        lambda notion_page_id, category: sentinel,
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.release_approval_lock",
+        lambda conn, notion_page_id, category: released.append((notion_page_id, category)),
+    )
+    return released
+
+
 def _patch_approver_and_duplicate_checks(
     monkeypatch: pytest.MonkeyPatch, *, approver_active: bool = True, duplicate: bool = False
-) -> None:
+) -> list[tuple[str, str]]:
     """`is_active_document_approver`/`find_in_progress_approval`はDBアクセスを伴うため、
     request_quote_approval()を呼ぶテストでは既定でパスする値に固定しておく
-    （どちらも異常系専用のテストで個別に上書きする）。"""
+    （どちらも異常系専用のテストで個別に上書きする）。あわせて承認ロック
+    (`try_acquire_approval_lock`/`release_approval_lock`)も既定で取得成功・正常解放に固定する
+    （ロック自体を検証したいテストは`_patch_approval_lock`を個別に呼び直す）。戻り値は
+    `_patch_approval_lock`と同じくロック解放の記録（`release_approval_lock`が必ず呼ばれた
+    ことを検証するテストで使う）。"""
+    released = _patch_approval_lock(monkeypatch)
     monkeypatch.setattr(
         "src.document_generation.quote_generator.is_active_document_approver",
         lambda email: approver_active,
@@ -350,6 +376,7 @@ def _patch_approver_and_duplicate_checks(
         "src.document_generation.quote_generator.find_in_progress_approval",
         lambda notion_page_id, category: "existing-row-id" if duplicate else None,
     )
+    return released
 
 
 def test_request_quote_approval_raises_when_approver_not_registered(
@@ -431,14 +458,16 @@ def test_request_quote_approval_raises_when_duplicate_in_progress_request_exists
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """同じ案件・カテゴリで既にin_progressの承認リクエストがある場合、Driveへは一切
-    アクセスせずDuplicateApprovalRequestErrorを送出する。"""
-    _patch_approver_and_duplicate_checks(monkeypatch, duplicate=True)
+    アクセスせずDuplicateApprovalRequestErrorを送出する。ロックは取得できた(＝
+    `find_in_progress_approval`のDB問い合わせ自体は行われる)うえで検出するケースであり、
+    例外発生後もロックが解放されることを確認する。"""
+    released = _patch_approver_and_duplicate_checks(monkeypatch, duplicate=True)
     drive_client = FakeGoogleDriveDocClient()
     monkeypatch.setattr(
         "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
     )
 
-    with pytest.raises(DuplicateApprovalRequestError, match=PAGE_ID):
+    with pytest.raises(DuplicateApprovalRequestError, match="既に承認リクエストが進行中です"):
         request_quote_approval(
             PAGE_ID,
             approver_emails=["approver@example.com"],
@@ -447,6 +476,52 @@ def test_request_quote_approval_raises_when_duplicate_in_progress_request_exists
         )
 
     assert drive_client.copy_calls == []
+    assert released == [(PAGE_ID, "見積書")]
+
+
+def test_request_quote_approval_raises_when_approval_lock_not_acquired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TOCTOU対策(2026-08-28): 同じ案件・カテゴリのアドバイザリロックが既に別のリクエスト
+    (ボタン連打・別ウィンドウからのほぼ同時送信)に取得されている場合、`find_in_progress_
+    approval`のDB問い合わせにもDriveへも一切アクセスせず、即座に`DuplicateApprovalRequest
+    Error`を送出する(新しい例外型を増やさず既存の例外を再利用する)。
+
+    メッセージ文面は`find_in_progress_approval()`が既存の`in_progress`行を検出した場合
+    (`test_request_quote_approval_raises_when_duplicate_in_progress_request_exists`)とは
+    あえて変えている(QAレビューWARN対応、2026-08-28)。こちらは一時的な取り合い負けであり
+    「少し待てば通る」ことが伝わる文面であること、後者の「既に進行中」という文面には
+    ならないことを確認する。"""
+    released = _patch_approval_lock(monkeypatch, acquired=False)
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.is_active_document_approver", lambda email: True
+    )
+    find_in_progress_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.find_in_progress_approval",
+        lambda notion_page_id, category: find_in_progress_calls.append((notion_page_id, category)),
+    )
+    drive_client = FakeGoogleDriveDocClient()
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+
+    with pytest.raises(DuplicateApprovalRequestError, match="少し待ってから、もう一度お試しください") as exc_info:
+        request_quote_approval(
+            PAGE_ID,
+            approver_emails=["approver@example.com"],
+            requested_by_email="rep@example.com",
+            registry=FakeTemplateRegistry({}),
+        )
+
+    # 「既に承認リクエストが進行中です」(数時間前送信済み・対応待ちのケース)の文面には
+    # ならないこと(取り違えると営業担当者が実際は取れる行動を「待つしかない」と誤認する)。
+    assert "既に承認リクエストが進行中です" not in str(exc_info.value)
+    assert find_in_progress_calls == []
+    assert drive_client.copy_calls == []
+    # ロック取得に失敗した場合はrelease_approval_lockを呼ぶ必要がない(取得できていない
+    # ロックを解放しようとしない)。
+    assert released == []
 
 
 def test_request_quote_approval_raises_when_rep_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -474,7 +549,7 @@ def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("src.document_generation.quote_generator._today_jst", lambda: date(2026, 8, 18))
-    _patch_approver_and_duplicate_checks(monkeypatch)
+    released = _patch_approver_and_duplicate_checks(monkeypatch)
     connection = RepDriveConnection(
         rep_email="rep@example.com",
         refresh_token_enc="encrypted-refresh-token",
@@ -573,6 +648,8 @@ def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
     assert result.drive_file_id == "copy-123"
     assert result.drive_approval_id == "approval-1"
     assert result.document_approval_id == "approval-row-id"
+    # 正常系でもロックは必ず解放される(TOCTOU対策のロックを保持したまま返らないこと)。
+    assert released == [(PAGE_ID, "見積書")]
 
 
 def test_request_quote_approval_deletes_copy_and_does_not_create_approval_row_when_fill_fails(
@@ -625,10 +702,11 @@ def test_request_quote_approval_deletes_copy_and_does_not_create_approval_row_wh
 
 def _setup_request_quote_approval_success_dependencies(
     monkeypatch: pytest.MonkeyPatch, *, drive_client: FakeGoogleDriveDocClient
-) -> None:
+) -> list[tuple[str, str]]:
     """コピー・差し込みまでは成功させ、`start_approval`/DB書き込み以降の異常系だけを
-    テストしたい場合の共通セットアップ。"""
-    _patch_approver_and_duplicate_checks(monkeypatch)
+    テストしたい場合の共通セットアップ。戻り値は`_patch_approver_and_duplicate_checks`と同じく
+    ロック解放の記録。"""
+    released = _patch_approver_and_duplicate_checks(monkeypatch)
     connection = RepDriveConnection(
         rep_email="rep@example.com",
         refresh_token_enc="enc",
@@ -646,6 +724,7 @@ def _setup_request_quote_approval_success_dependencies(
         "src.document_generation.quote_generator.HttpSheetsValuesClient",
         lambda **kwargs: FakeSheetsClient([], sheet_title=SHEET_NAME),
     )
+    return released
 
 
 def test_request_quote_approval_dedupes_approver_emails(
@@ -737,7 +816,7 @@ def test_request_quote_approval_deletes_copy_when_start_approval_fails(
         raise RuntimeError("start_approval failed")
 
     drive_client.start_approval = _raise_start_approval  # type: ignore[assignment]
-    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    released = _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
     insert_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         "src.document_generation.quote_generator.insert_document_approval",
@@ -756,6 +835,8 @@ def test_request_quote_approval_deletes_copy_when_start_approval_fails(
 
     assert drive_client.deleted_ids == ["copy-123"]
     assert insert_calls == []
+    # Drive API呼び出し中の例外でもロックは必ず解放される(try/finallyの回帰確認)。
+    assert released == [(PAGE_ID, "見積書")]
 
 
 def test_request_quote_approval_cancels_drive_approval_when_db_insert_fails(
@@ -768,7 +849,7 @@ def test_request_quote_approval_cancels_drive_approval_when_db_insert_fails(
     template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
     registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
     drive_client = FakeGoogleDriveDocClient()
-    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    released = _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
 
     def _raise_insert(**kwargs: object) -> str:
         raise RuntimeError("db insert failed")
@@ -791,6 +872,9 @@ def test_request_quote_approval_cancels_drive_approval_when_db_insert_fails(
         {"file_id": "copy-123", "reviewer_emails": ["approver@example.com"], "message": ""}
     ]
     assert drive_client.cancel_approval_calls == [{"file_id": "copy-123", "approval_id": "approval-1"}]
+    # insert_document_approval失敗という一番複雑な異常系でも、try/finallyでロックが必ず
+    # 解放されること(QAのmutation testingで検知漏れが判明したため追加、2026-08-28)。
+    assert released == [(PAGE_ID, "見積書")]
 
 
 def test_request_quote_approval_still_raises_original_error_when_cancel_approval_also_fails(
@@ -807,7 +891,7 @@ def test_request_quote_approval_still_raises_original_error_when_cancel_approval
         raise RuntimeError("cancel_approval also failed")
 
     drive_client.cancel_approval = _raise_cancel_approval  # type: ignore[assignment]
-    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    released = _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
     monkeypatch.setattr(
         "src.document_generation.quote_generator.insert_document_approval",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("db insert failed")),
@@ -822,3 +906,7 @@ def test_request_quote_approval_still_raises_original_error_when_cancel_approval
             notion_client=FakeProjectNotionClient(raw_page),
             client_master_client=FakeClientMasterClient(),
         )
+
+    # cancel_approval()自体が失敗しても、try/finallyでロックは必ず解放されること
+    # (QAのmutation testingで検知漏れが判明したため追加、2026-08-28)。
+    assert released == [(PAGE_ID, "見積書")]

@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from src.document_generation.approval_db import find_in_progress_approval, insert_document_approval
+from src.document_generation.approval_db import (
+    find_in_progress_approval,
+    insert_document_approval,
+    release_approval_lock,
+    try_acquire_approval_lock,
+)
 from src.document_generation.approver_db import is_active_document_approver
 from src.document_generation.common import (
     BASELINE_NOTE,
@@ -325,6 +330,38 @@ def request_quote_approval(
     同じ案件・カテゴリで既に`in_progress`の承認リクエストがあれば
     `DuplicateApprovalRequestError`を送出する（重複送信防止）。
 
+    この重複チェックから`insert_document_approval()`までの区間は、`(notion_page_id,
+    category)`をキーにしたPostgresアドバイザリロック（`approval_db.try_acquire_approval_lock()`
+    /`release_approval_lock()`、`src/project_mirror/db.py`の多重実行防止ロックと同じ作法）で
+    直列化している（外部モデルレビュー(Gemini)で指摘されたTOCTOU対策、2026-08-28）。
+    `find_in_progress_approval()`による事前チェックだけでは、チェック後・INSERT前の間に
+    ボタン連打や別ウィンドウからのほぼ同時送信が割り込むと両方がチェックを通過してしまい、
+    Drive上に本物の承認リクエストが2件送信されうる。ロックが取得できなかった場合
+    （＝同じ案件・カテゴリで既に別のリクエストが処理中）は、新しい例外型を増やさず既存の
+    `DuplicateApprovalRequestError`を送出する（`src/api/app.py`が422へ変換する既存経路を
+    そのまま使う）。
+
+    ただしメッセージ文面はロック競合（このケース）と、既存の`in_progress`行を検出した場合
+    （`find_in_progress_approval()`）とで意図的に分けている（QAレビューWARN対応、2026-08-28）。
+    前者はボタン連打や別ウィンドウからのほぼ同時送信による一時的な取り合い負けで「少し待てば
+    通る」、後者は数時間前に既に送信済みで「既存の承認が片付くまで送ってはいけない」と、
+    ユーザーが取るべき行動が正反対なため、同じ文面のままだと後者を前者と誤認して連打してしまう
+    （実害はないが、営業担当者が「本当に送信済みなのか」と不安になる）。例外型自体は分けて
+    いない——`src/api/app.py`は両ケースとも`DuplicateApprovalRequestError`を422へ変換する処理が
+    同一で、`dashboard/app/api/documents/quote/request-approval/route.ts`も例外型を見ず
+    `detail`文字列をそのままフロントへ渡すだけのため、型を分けても呼び出し元の分岐が増える
+    わけではない。文面を分けるだけで目的（誤認防止）を達成できると判断した。
+
+    **このロックはテンプレートコピー・セル差し込み・PDF変換・`start_approval()`という
+    一連のDrive API呼び出しを跨いで保持される**（`insert_document_approval()`完了まで
+    解放しない）。承認リクエスト送信は営業担当者が画面のボタンを押す低頻度の操作であり、
+    同じ案件へ同時に2人以上が送信を試みる頻度は低いと判断し、ロック保持が数秒〜十数秒に
+    及ぶトレードオフを許容している（詳細はdocs/quote_approval_note.md参照）。
+    部分ユニークインデックス（`("notionProjectId", category) WHERE status = 'in_progress'`）
+    ではなくロック方式を選んだ理由も同ドキュメント参照（既存データに重複した`in_progress`行が
+    1組でもあると`CREATE UNIQUE INDEX`自体が失敗し、`prisma migrate deploy`はビルド時に
+    走るためビルドごと失敗しデプロイが止まるリスクがある）。
+
     サービスアカウントでは`canStartApproval`が`false`であることを実機検証済みのため
     （計画書「認証方式の紆余曲折」参照）、`requested_by_email`本人が事前に
     `/settings/drive`から接続したDrive OAuth（`RepDriveConnection`、`RepGmailConnection`と
@@ -361,103 +398,122 @@ def request_quote_approval(
             f"{'、'.join(invalid_approver_emails)}は承認者として登録されていません。"
             "ページを再読み込みして承認者を選び直してください。"
         )
-    if find_in_progress_approval(notion_page_id, _CATEGORY) is not None:
+    # 重複チェック(find_in_progress_approval)からinsert_document_approvalまでの区間を
+    # (notion_page_id, _CATEGORY)キーのアドバイザリロックで直列化する(TOCTOU対策、
+    # 2026-08-28。詳細はこの関数のdocstring・docs/quote_approval_note.md参照)。
+    # 非ブロッキングのpg_try_advisory_lockのため、同じ案件・カテゴリで既に別のリクエストが
+    # 処理中の場合はここで即座にNoneが返り、Drive APIを一切呼ばずDuplicateApprovalRequestError
+    # を送出する(待たせて後で通すのではなく即時失敗させるUXを選んだ)。
+    lock_conn = try_acquire_approval_lock(notion_page_id, _CATEGORY)
+    if lock_conn is None:
+        # ロック競合(=今まさに同じ案件・カテゴリの別リクエストが処理中)。「進行中」と同じ
+        # 文面にすると、数秒待てば通る一時的な失敗なのか、数時間前送信済みで既存承認が
+        # 片付くまで送ってはいけないのかが区別できず誤認させる(QAレビューWARN対応、
+        # 2026-08-28。このifブロック直前のコメント・関数docstring参照)。
         raise DuplicateApprovalRequestError(
-            f"この案件（{notion_page_id}）の見積書は既に承認リクエストが進行中です。"
+            f"この案件（{notion_page_id}）の見積書承認リクエストの処理が重なりました。"
+            "少し待ってから、もう一度お試しください。"
         )
-
-    connection = get_rep_drive_connection(requested_by_email)
-    if connection is None:
-        raise DriveNotConnectedError(
-            f"{requested_by_email}のDrive連携が未接続です。設定画面（/settings/drive）から"
-            "Drive連携を行ってください。"
-        )
-    access_token = refresh_access_token(decrypt_token(connection.refresh_token_enc))
-
-    resolved_registry = registry or TemplateRegistry()
-    project_data = fetch_project_document_data(
-        notion_page_id, notion_client=notion_client, client_master_client=client_master_client
-    )
-    template = resolve_template(_CATEGORY, project_data.proposed_services, resolved_registry)
-
-    drive_client = GoogleDriveDocClient(access_token=access_token)
-    sheets_client = HttpSheetsValuesClient(access_token=access_token)
-
-    quote_name = f"{project_data.project_name or notion_page_id}_見積書"
-    copy_id, _notes = _build_quote_copy(
-        notion_page_id,
-        project_data,
-        template,
-        drive_client=drive_client,
-        sheets_client=sheets_client,
-        new_name=quote_name,
-        parents=[QUOTE_PENDING_APPROVAL_FOLDER_ID],
-        overrides=overrides,
-    )
-
     try:
-        # セル差し込みまで終えたSheetsコピーをPDFへ変換する(2026-08-19)。承認リクエストは
-        # 編集可能なSheets形式ではなくPDFで送るのが既存の運用実態だったため(過去の承認
-        # メール履歴で確認)、同じfile_idのまま中身をPDFへ置き換えてから承認をリクエストする。
-        pdf_bytes = drive_client.export(copy_id, mime_type=_PDF_MIME_TYPE)
-        drive_client.replace_content(copy_id, content=pdf_bytes, mime_type=_PDF_MIME_TYPE)
-        drive_client.rename(copy_id, name=f"{quote_name}.pdf")
-    except Exception:
-        logger.exception(
-            "failed to convert quote copy to PDF for notion_page_id=%r; deleting orphaned "
-            "Drive copy file_id=%r",
-            notion_page_id,
-            copy_id,
-        )
-        drive_client.delete(copy_id)
-        raise
+        if find_in_progress_approval(notion_page_id, _CATEGORY) is not None:
+            raise DuplicateApprovalRequestError(
+                f"この案件（{notion_page_id}）の見積書は既に承認リクエストが進行中です。"
+            )
 
-    try:
-        drive_approval_id = drive_client.start_approval(
-            copy_id, reviewer_emails=deduped_approver_emails, message=message
-        )
-    except Exception:
-        logger.exception(
-            "start_approval failed for notion_page_id=%r; deleting orphaned Drive copy "
-            "file_id=%r",
-            notion_page_id,
-            copy_id,
-        )
-        drive_client.delete(copy_id)
-        raise
+        connection = get_rep_drive_connection(requested_by_email)
+        if connection is None:
+            raise DriveNotConnectedError(
+                f"{requested_by_email}のDrive連携が未接続です。設定画面（/settings/drive）から"
+                "Drive連携を行ってください。"
+            )
+        access_token = refresh_access_token(decrypt_token(connection.refresh_token_enc))
 
-    try:
-        document_approval_id = insert_document_approval(
-            notion_project_id=notion_page_id,
-            category=_CATEGORY,
-            drive_file_id=copy_id,
-            drive_approval_id=drive_approval_id,
-            approver_emails=deduped_approver_emails,
-            requested_by_email=requested_by_email,
+        resolved_registry = registry or TemplateRegistry()
+        project_data = fetch_project_document_data(
+            notion_page_id, notion_client=notion_client, client_master_client=client_master_client
         )
-    except Exception:
-        logger.exception(
-            "insert_document_approval failed after start_approval already succeeded "
-            "(notion_page_id=%r, drive_file_id=%r, drive_approval_id=%r); attempting to "
-            "cancel the Drive approval request so it does not stay in_progress with no "
-            "DocumentApproval record",
+        template = resolve_template(_CATEGORY, project_data.proposed_services, resolved_registry)
+
+        drive_client = GoogleDriveDocClient(access_token=access_token)
+        sheets_client = HttpSheetsValuesClient(access_token=access_token)
+
+        quote_name = f"{project_data.project_name or notion_page_id}_見積書"
+        copy_id, _notes = _build_quote_copy(
             notion_page_id,
-            copy_id,
-            drive_approval_id,
+            project_data,
+            template,
+            drive_client=drive_client,
+            sheets_client=sheets_client,
+            new_name=quote_name,
+            parents=[QUOTE_PENDING_APPROVAL_FOLDER_ID],
+            overrides=overrides,
         )
+
         try:
-            drive_client.cancel_approval(copy_id, drive_approval_id)
+            # セル差し込みまで終えたSheetsコピーをPDFへ変換する(2026-08-19)。承認リクエストは
+            # 編集可能なSheets形式ではなくPDFで送るのが既存の運用実態だったため(過去の承認
+            # メール履歴で確認)、同じfile_idのまま中身をPDFへ置き換えてから承認をリクエストする。
+            pdf_bytes = drive_client.export(copy_id, mime_type=_PDF_MIME_TYPE)
+            drive_client.replace_content(copy_id, content=pdf_bytes, mime_type=_PDF_MIME_TYPE)
+            drive_client.rename(copy_id, name=f"{quote_name}.pdf")
         except Exception:
             logger.exception(
-                "cancel_approval also failed for file_id=%r approval_id=%r; manual cleanup "
-                "in Drive may be required",
+                "failed to convert quote copy to PDF for notion_page_id=%r; deleting orphaned "
+                "Drive copy file_id=%r",
+                notion_page_id,
+                copy_id,
+            )
+            drive_client.delete(copy_id)
+            raise
+
+        try:
+            drive_approval_id = drive_client.start_approval(
+                copy_id, reviewer_emails=deduped_approver_emails, message=message
+            )
+        except Exception:
+            logger.exception(
+                "start_approval failed for notion_page_id=%r; deleting orphaned Drive copy "
+                "file_id=%r",
+                notion_page_id,
+                copy_id,
+            )
+            drive_client.delete(copy_id)
+            raise
+
+        try:
+            document_approval_id = insert_document_approval(
+                notion_project_id=notion_page_id,
+                category=_CATEGORY,
+                drive_file_id=copy_id,
+                drive_approval_id=drive_approval_id,
+                approver_emails=deduped_approver_emails,
+                requested_by_email=requested_by_email,
+            )
+        except Exception:
+            logger.exception(
+                "insert_document_approval failed after start_approval already succeeded "
+                "(notion_page_id=%r, drive_file_id=%r, drive_approval_id=%r); attempting to "
+                "cancel the Drive approval request so it does not stay in_progress with no "
+                "DocumentApproval record",
+                notion_page_id,
                 copy_id,
                 drive_approval_id,
             )
-        raise
+            try:
+                drive_client.cancel_approval(copy_id, drive_approval_id)
+            except Exception:
+                logger.exception(
+                    "cancel_approval also failed for file_id=%r approval_id=%r; manual cleanup "
+                    "in Drive may be required",
+                    copy_id,
+                    drive_approval_id,
+                )
+            raise
 
-    return QuoteApprovalResult(
-        drive_file_id=copy_id,
-        drive_approval_id=drive_approval_id,
-        document_approval_id=document_approval_id,
-    )
+        return QuoteApprovalResult(
+            drive_file_id=copy_id,
+            drive_approval_id=drive_approval_id,
+            document_approval_id=document_approval_id,
+        )
+    finally:
+        release_approval_lock(lock_conn, notion_page_id, _CATEGORY)

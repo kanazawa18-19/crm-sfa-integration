@@ -252,15 +252,127 @@ APIのセマンティクス（全員承認で完了・1人でも却下すれば�
 
 ## 外部モデルレビュー(Gemini)で出たが今回は見送った指摘（2026-08-27）
 
-- **重複送信チェックのTOCTOU**: `find_in_progress_approval()`による重複チェックと、その後の
-  テンプレートコピー・PDF変換・`start_approval()`送信・`DocumentApproval` INSERTの一連の
-  処理はアトミックではない。ボタン連打や別ウィンドウからのほぼ同時送信で、チェックをすり
-  抜けて同一案件・同一カテゴリの承認リクエストが二重生成され得る。**今回の複数承認者対応で
-  新たに入った問題ではなく、単一承認者の頃から存在した元々の挙動**。
-  修正するなら`("notionProjectId", category) WHERE status = 'in_progress'`の部分ユニーク
-  インデックス追加が筋だが、**既存データに重複した`in_progress`行が無いことを先に確認しないと
-  インデックス作成自体が失敗する**ため、調査コストが発生する。今回のデプロイには含めない。
-  次にこのテーブルを触るときの最有力候補として記録しておく。
+### 重複送信チェックのTOCTOU（2026-08-28対応済み）
+
+`find_in_progress_approval()`による重複チェックと、その後のテンプレートコピー・PDF変換・
+`start_approval()`送信・`DocumentApproval` INSERTの一連の処理はアトミックではなかった。
+ボタン連打や別ウィンドウからのほぼ同時送信で、チェックをすり抜けて同一案件・同一カテゴリの
+承認リクエストが二重生成され得た。**複数承認者対応で新たに入った問題ではなく、単一承認者の
+頃から存在した元々の挙動**（2026-08-27時点ではデプロイに含めず見送っていたが、2026-08-28に
+対応した）。
+
+**部分ユニークインデックスを選ばなかった理由**: `("notionProjectId", category) WHERE
+status = 'in_progress'`の部分ユニークインデックス追加が筋の良い対処ではあるが、既存データに
+重複した`in_progress`行が1組でもあると`CREATE UNIQUE INDEX`自体が失敗する。このリポジトリの
+マイグレーションは`dashboard/package.json`のbuildスクリプト（`prisma generate && prisma
+migrate deploy && next build`）でVercelのビルド時に走るため、インデックス作成が失敗すると
+**ビルドごと落ちてデプロイが止まる**。本番DBの現状（重複行の有無）を事前確認する手段が無い
+状態でこの方式を採用するのはリスクが高いと判断し、見送った。
+
+**採った対処**: `src/project_mirror/db.py`の`try_acquire_refresh_lock()`/
+`release_refresh_lock()`（同期処理の多重実行防止で実績のあるPostgresアドバイザリロック）と
+同じ作法に揃え、`request_quote_approval()`の「重複チェック→送信→INSERT」区間を
+`(notion_page_id, category)`をキーにしたロックで直列化した
+（`approval_db.try_acquire_approval_lock()`/`release_approval_lock()`）。
+`project_mirror`/`relation_sync`の既存ロックは固定キー1個の`pg_try_advisory_lock(bigint)`
+だが、今回は案件・カテゴリごとに異なるキーで取り合う必要があるため、名前空間(int4定数)＋
+`hashtext(f"{notion_project_id}:{category}")`（Python側で`:`区切りの文字列に組み立ててから
+渡す）を使う`pg_try_advisory_lock(int, int)`版にした。
+
+ロックが取得できなかった場合（＝同じ案件・カテゴリで既に別のリクエストが処理中）は、新しい
+例外型を増やさず既存の`DuplicateApprovalRequestError`を送出する（`src/api/app.py`が422へ
+変換する既存経路をそのまま使えるため）。非ブロッキングの`pg_try_advisory_lock`を使っており、
+待たせて後で通すのではなく即座に失敗させる（Drive APIは一切呼ばない）。
+
+**ロックをDrive API呼び出しを跨いで保持するトレードオフ**: このロックはテンプレートコピー・
+セル差し込み・PDF変換・`start_approval()`・`insert_document_approval()`という一連の処理を
+跨いで保持されるため、数秒〜十数秒にわたって保持される可能性がある。承認リクエスト送信は
+営業担当者が画面のボタンを押す低頻度の操作であり、同じ案件へ同時に2人以上が送信を試みる
+頻度は低いと判断し、このロック保持時間の長さは許容できるトレードオフとして受け入れている。
+
+例外が飛んだ場合も`try/finally`で必ずロックを解放する（`tests/document_generation/
+test_quote_generator.py`の`test_request_quote_approval_deletes_copy_when_start_approval_
+fails`等で担保）。
+
+### 前提条件: `DATABASE_URL`は非pooled（direct）接続であること（QA指摘、2026-08-28）
+
+**この設計は`DATABASE_URL`が非pooled（direct）接続であることが前提。pooled接続（pgbouncerの
+transaction pooling等）だとadvisory lockは静かに機能しなくなり、二重送信対策が無言で
+無効化される。**
+
+Postgresのアドバイザリロック（`pg_try_advisory_lock`/`pg_advisory_unlock`）はセッション単位の
+状態であり、ロックを取得したセッション（コネクション）自身が明示的に解放するか、切断される
+まで保持される。`approval_db.py`/`project_mirror/db.py`/`relation_sync/db.py`のロックは
+いずれも「ロック取得に使った`Connection`をそのまま呼び出し元へ返し、処理完了後にその同じ
+`Connection`で`pg_advisory_unlock`を呼ぶ」設計（`try_acquire_approval_lock()`/
+`release_approval_lock()`等）のため、取得から解放までの間、**物理的に同じセッションが
+維持されている**ことが前提になっている。
+
+pgbouncerのtransaction pooling（Neonの`-pooler`エンドポイント等）は、クライアントから見た
+1つの「接続」の裏で、トランザクションごとに異なる物理セッションを使い回す。ロック取得
+（`SELECT pg_try_advisory_lock(...)`、1トランザクション）と解放（`SELECT
+pg_advisory_unlock(...)`、別トランザクション）が同じ物理セッション上で実行される保証が
+無くなるため、以下のいずれかが無言で起こりうる:
+
+- ロック取得直後にコネクションプール側がセッションを使い回してしまい、実質的にロックが
+  即座に失われる（＝ロックを取っていないのと同じ状態で後続処理が進む）
+- `pg_advisory_unlock`が別セッションで実行され、「そのセッションはそもそもロックを
+  持っていない」ため解放が失敗する（`false`が返るがエラーにはならない）
+
+いずれのケースもPython側の`try_acquire_approval_lock()`は`row["locked"]`が`True`である限り
+成功したように見え、例外も出ない。つまり**アプリケーションコードからは正常に動いている
+ように見えたまま、TOCTOU対策（二重送信防止）だけが無言で無効化される**。
+
+`_connect()`（`approval_db.py`/`project_mirror/db.py`/`relation_sync/db.py`のいずれも同じ
+実装）は接続文字列を`os.environ["DATABASE_URL"]`からそのまま`psycopg.connect()`に渡すのみで、
+pooled接続かどうかを検知・拒否する処理は無い（このコードを読んだだけでは分からず、Vercel側の
+実際の環境変数を見る必要がある）。
+
+**確認方法**: Vercelの環境変数設定で`DATABASE_URL`のホスト名に`-pooler`が含まれていないこと
+（Neon×Vercel連携では、pooled接続は`ep-xxxxxxxx-pooler.<region>.aws.neon.tech`のような
+`-pooler`サフィックス付きホスト名、非pooled（direct）接続は同じホスト名から`-pooler`を除いた
+`ep-xxxxxxxx.<region>.aws.neon.tech`になる。Vercelには`DATABASE_URL`と対になる
+`DATABASE_URL_UNPOOLED`が自動で用意されることが多く、advisory lockを使うならこちらを
+`DATABASE_URL`として設定する必要がある）。
+
+なお`dashboard/.env.local`（ローカル開発用、Gitには含まれない）を確認したところ、
+`DATABASE_URL`は`-pooler`付きホスト名（pooled）を指しており、`DATABASE_URL_UNPOOLED`が
+別途non-pooledホスト名で用意されていた。このモジュールのdocstringにあるとおりPython側は
+「dashboard側と同じ`DATABASE_URL`環境変数を共有する」設計のため、本番（Vercel）の
+`DATABASE_URL`も同様にpooled接続になっている可能性がある。
+
+### 対処: advisory lock専用の接続だけ`DATABASE_URL_UNPOOLED`を使う（2026-08-28）
+
+上記の懸念どおり、本番の`DATABASE_URL`（Vercel環境変数）が実際にNeonのpooled接続
+（ホスト名に`-pooler`を含む）であることを確認した。APIプロジェクトのVercel本番環境変数に
+`DATABASE_URL_UNPOOLED`（非pooled/direct接続）を追加し、以下のように設計を変更した:
+
+- **advisory lockを取得・解放する接続だけ**`DATABASE_URL_UNPOOLED`を使う
+  （`src/db_utils.py`の`connect_for_advisory_lock()`、`approval_db.py`の
+  `try_acquire_approval_lock()`が呼ぶ）。通常のSELECT/INSERT等のクエリ用接続
+  （`_connect()`）は引き続き`DATABASE_URL`（pooled）のまま——transaction poolingでも
+  単発クエリは問題なく動作し、pooledの利点（コネクション数の節約）を捨てる必要が無いため。
+- `project_mirror/db.py`・`relation_sync/db.py`の`try_acquire_refresh_lock()`も同じ
+  `connect_for_advisory_lock()`を使うよう統一した（元は3ファイルにほぼ同じ`_connect()`
+  実装がコピーされていたため、ロック専用接続の作成ロジックを`src/db_utils.py`に集約した）。
+
+**この設計は環境変数が正しく設定されていることに依存している点に注意。**
+`DATABASE_URL_UNPOOLED`が未設定の場合、`connect_for_advisory_lock()`は例外を出さず
+`DATABASE_URL`へフォールバックして動き続ける（＝アプリは正常に見え、承認リクエストの
+二重送信対策・夜間reconcileの多重実行防止だけが無言で無効化された今回と同じ状態に戻る）。
+気づけるようwarningログは必ず出す（フォールバック先のホスト名に`-pooler`を含む場合は
+さらに強い警告を出す）が、**ログを見ない限り気づけない**。デプロイ後、一度は本番ログで
+`DATABASE_URL_UNPOOLED is not set`系の警告が出ていないことを確認すること。
+
+**テストは全てモック（`psycopg.connect`の差し替え）であり、実Postgresで
+advisory lockが実際に排他制御として機能することは未検証**（`tests/test_db_utils.py`の
+`connect_for_advisory_lock`系テスト・各`test_db.py`の`prefers_database_url_unpooled`系
+テストは、いずれも「正しいURLが`psycopg.connect()`に渡されること」の検証までで、
+Postgres側の実際のロック挙動は検証していない）。確認するなら、非pooled接続
+（`DATABASE_URL_UNPOOLED`と同じ接続文字列）で2つのセッションを開き、片方で
+`SELECT pg_try_advisory_lock(917263542, hashtext('test'))`を実行してロックを取得した
+まま、もう片方の同じクエリが`false`を返すことを見るのが確実（`psql`を2枚起動して手動で
+確認できる）。
 
 ### Prisma（dashboard）側のデプロイ窓フォールバックが無い件は誤検知
 

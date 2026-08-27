@@ -131,6 +131,40 @@ WHERE id = '<row id>';
 別の値を使う）を試みる。夜間cronと手動バックフィルの実行が偶発的に重なった場合、後から取得を
 試みた側は`{"skipped": "already_running"}`を返して即座にスキップする。
 
+### 前提: advisory lockはpooled接続では無言で機能しない（2026-08-28）
+
+PgBouncerのtransaction pooling（Neonの`-pooler`エンドポイント等）では、advisory lockの
+セッション単位の状態が前提として崩れる。ロック取得（`pg_try_advisory_lock`）と解放
+（`pg_advisory_unlock`）が別の物理セッションで実行されうるため、**例外は一切出ないまま
+排他制御だけが無言で機能しなくなる**。夜間reconcile cronと手動バックフィル
+（`scripts/backfill_client_name_index.py`）が偶発的に重なった場合の多重実行防止という
+このロックの目的そのものが、静かに無効化されうる。
+
+本番の`DATABASE_URL`（Vercel環境変数）が実際にNeonのpooled接続であることを確認したため、
+advisory lockを取得・解放する接続だけ**非pooledの`DATABASE_URL_UNPOOLED`**を使うよう変更した
+（`src/db_utils.py`の`connect_for_advisory_lock()`。`src/document_generation/approval_db.py`・
+`src/project_mirror/db.py`・`src/relation_sync/db.py`の3ファイルが共有する。元は3ファイルに
+ほぼ同じ`_connect()`実装がコピーされていたため、ロック専用接続の作成ロジックだけここに
+集約した。通常のクエリ用接続はtransaction poolingでも問題なく動くため、引き続き
+`DATABASE_URL`のままでよい）。
+
+**この設計は環境変数が正しく設定されていることに依存している点に注意。**
+`DATABASE_URL_UNPOOLED`が未設定の場合、例外を出さず`DATABASE_URL`へフォールバックして
+動き続ける（＝アプリは正常に見えたまま、多重実行防止だけが無言で無効化された今回と同じ
+状態に戻る）。気づけるようwarningログは必ず出す（フォールバック先のホスト名に`-pooler`を
+含む場合はさらに強い警告を出す）が、**ログを見ない限り気づけない**。デプロイ後、一度は
+本番ログで`DATABASE_URL_UNPOOLED is not set`系の警告が出ていないことを確認すること。
+
+**テストは全てモック（`psycopg.connect`の差し替え）であり、実Postgresでadvisory lockが
+実際に排他制御として機能することは未検証**（`tests/test_db_utils.py`の
+`connect_for_advisory_lock`系テスト・`tests/relation_sync/test_db.py`の
+`test_try_acquire_refresh_lock_prefers_database_url_unpooled`は、いずれも「正しいURLが
+`psycopg.connect()`に渡されること」の検証までで、Postgres側の実際のロック挙動は検証して
+いない）。確認するなら、非pooled接続（`DATABASE_URL_UNPOOLED`と同じ接続文字列）で2つの
+セッションを開き、片方で`SELECT pg_try_advisory_lock(917263541)`を実行してロックを取得した
+まま、もう片方の同じクエリが`false`を返すことを見るのが確実（`psql`を2枚起動して手動で
+確認できる）。詳細は`docs/quote_approval_note.md`の同種の記録も参照。
+
 ## RelationReviewQueueの重複防止（部分ユニークインデックス）
 
 同一の(`sourceTool`, `sourceRecordId`, `targetDbKey`, `rawValue`)の組み合わせでpending状態の
@@ -584,12 +618,33 @@ Round1（本ドキュメント冒頭「ロールアウト順序」）と同水�
   `update_record()`（同じく`data[0]`アクセス）
 - `kintone_client.py`: `get_record()`（`response.json()["record"]`、レビューで名指しされた
   箇所）、`add_record()`（`response.json()["id"]`）
-- `notion_client.py`: `create_page()`（`response.json()["id"]`）。`get_page()`/
-  `query_all_pages()`/`query_page()`/`get_raw_page()`/`update_page()`/`archive_page()`は
-  いずれも`.get()`ベースのアクセスのみ、または生のdictをそのまま返すだけで危険な
-  未保護アクセスが無いことを確認済み
-- `spreadsheet_client.py`: `append_row()`（`response.json()["updates"]["updatedRange"]`）。
-  `_get_header_row()`/`get_row()`/`update_row()`は`.get()`ベースのみで問題無し
+- `notion_client.py`: `create_page()`（`response.json()["id"]`）
+- `spreadsheet_client.py`: `append_row()`（`response.json()["updates"]["updatedRange"]`）
+
+**訂正（2026-08-28、動物チームレビューBLOCKER対応）**: 上記時点の判断「`.get()`ベースの
+アクセスのみ、または生のdictをそのまま返すだけで危険な未保護アクセスが無い」は誤りだった。
+`raise_for_error()`は2xxなら何もしないため、「HTTP 200だがボディの構造が想定と違う」場合
+（`response.json()`が辞書でない、`page.get("properties")`の各値が辞書でない、`data`が
+空リストでなく非リスト等）は、`.get()`呼び出し自体や`data[0]`アクセスで生の`AttributeError`/
+`TypeError`/`IndexError`/`KeyError`が飛び、これらは`ApiError`でも
+`requests.exceptions.RequestException`でもないため`Dispatcher`側の保護をすり抜ける
+（`response.json()["record"]`のような明示的な角括弧アクセスだけが危険というわけではない）。
+書き込み系（`create_page()`等）と`kintone_client.py`の`get_record()`は上記の通り既に
+正規化済みだったが、**以下の読み取り系メソッドが未対応で非対称になっていた**ため、
+`kintone_client.py`の`get_record()`と同じ書き方（`raise_for_error()`通過後の辞書アクセス・
+キャストを`try/except`で囲み、`extract_error_message()`で`ApiError`サブクラスへ正規化する）
+を追加適用した:
+
+- `notion_client.py`: `get_page()`（`page.get("properties")`の各値・`last_edited_time`
+  アクセス）。`query_all_pages()`/`query_page()`/`get_raw_page()`/`update_page()`/
+  `archive_page()`は生のdictをそのまま返す、または当モジュール外の呼び出し元
+  （webhookハンドラ等）が既に構造の妥当性を検証・許容する形で使っているため対象外のまま
+  据え置いた
+- `zoho_client.py`: `get_record()`（`response.json().get("data")`・`data[0]`アクセス）
+- `spreadsheet_client.py`: `get_row()`（`response.json().get("valueRanges")`・
+  `_first_values_row()`経由のアクセス）、`_get_header_row()`（`response.json().get("values")`・
+  `values[0]`アクセス、`append_row()`/`update_row()`から間接的に呼ばれる）。`update_row()`
+  自体は`raise_for_error()`のみでレスポンスボディへのアクセスが無いため対象外
 - `notion_lookup.py`/`notion_display_resolver.py`は`raise_for_error()`を呼んでおらず対象外
 
 いずれもテスト（`tests/sync_engine/clients/test_*.py`）で「200＋エラーボディ」または
@@ -602,9 +657,9 @@ Round1（本ドキュメント冒頭「ロールアウト順序」）と同水�
 `test_notify_new_record_issue_includes_action_hint_for_source_record_fetch_failed`を
 `tests/sync_engine/test_slack_notifier.py`へ追加した。
 
-**残存リスク（kuma-qaレビューWARN、対応方針未確定・コード未変更）**: `dispatcher.py`の
-`dispatch()`本体（`_try_create_new_record()`とは別の経路）に、今回の修正の対象外の未保護
-`get_record()`呼び出しが2箇所残っている:
+**残存リスクへの決着（2026-08-28、kuma-qaレビューWARNへの対応完了）**: `dispatcher.py`の
+`dispatch()`本体（`_try_create_new_record()`とは別の経路）に残っていた未保護
+`get_record()`呼び出し2箇所を塞いだ。
 
 1. Notion側の現在値取得（`notion_target.get_record(mapping.notion_key)`）
 2. コンフリクト判定用の対象ツール（`other_tools`）の現在値取得
@@ -616,28 +671,91 @@ Round1（本ドキュメント冒頭「ロールアウト順序」）と同水�
 例外がWebhookハンドラまで伝播し500応答になる（kintone/Zoho発の通常の更新Webhookすべてが
 対象になりうるため、影響範囲は新規作成経路より広い）。
 
-**ただし、今回と同じ対処（例外を握ってスキップへ倒す）をそのまま適用してはいけない**。
+**新規作成パスと同じ対処（例外を握ってスキップへ倒す）をそのまま適用できない理由**:
 新規作成パス（`_try_create_new_record()`）では「元レコードが取得できない＝まだ何も
 書き込んでいないので何もしない」が安全な帰結だが、この2箇所は**更新パスで比較・書き込み
 判断に使う「現在値」の取得**であり、取得に失敗したのを「値が空である」かのように扱って
-処理を続けると、`prop.should_sync_to()`の判定や`resolve_conflict()`の入力が欠けたまま
+**処理を続けると**、`prop.should_sync_to()`の判定や`resolve_conflict()`の入力が欠けたまま
 進み、誤った値で他ツールを上書きしてしまう危険がある（本ドキュメント冒頭
 「`RELATION_SYNC_ENABLED`が制御する範囲」およびBLOCKER1対応のコメント
 （`notion_record is None`分岐、`dispatcher.py`）が警戒しているのと同種のリスク）。
-一方、例外を伝播させたままにすると500を返しWebhookイベント自体は失われる（kintone/Zoho側の
-リトライに委ねることになるが、リトライされない・リトライ間隔がイベント順序を壊す等の
-リスクもある）。どちらが正しいかは業務判断を含むため、今回はコードを変更せず記録のみに
-留める。
 
-次に検討する際の論点:
+**決着した方針**: 危険なのは「例外を握って処理を**続ける**」ことであって「例外を握る」こと
+自体ではない。したがって、取得に失敗したら**その時点以降のプロパティ処理を打ち切ってスキップ
+へ倒し**、Slack通知で運用者に気づけるようにする（`Dispatcher._handle_current_value_fetch_
+failure()`）。新規作成パスの`source_record_fetch_failed`と対になる、更新パス専用の
+`reason`を2つ追加した:
 
-- 取得失敗時に「書き込みを中止して`notify_new_record_issue`相当のSlack通知だけ出し
-  イベントは失われた扱いにする」のが妥当か（新規作成経路の`source_record_fetch_failed`と
-  対になる`reason`を追加する案）
-- それとも、この2箇所だけ`request_with_retry()`のリトライ予算を広げる/呼び出し元で
-  リトライするなどして、まず「取得自体が失敗しにくくする」方向で緩和すべきか
-- 500のままにして「kintone/Zoho側のWebhook再送に委ねる」現状維持が、実運用上どの程度
-  許容できるか（各ツールのWebhook再送保証の有無・間隔を要調査）
+- `update_notion_value_fetch_failed`（上記1、Notion現在値取得の失敗）
+- `update_target_value_fetch_failed`（上記2、対象ツール現在値取得の失敗）
+
+握るのは`_try_create_new_record()`と同じく`ApiError`/`requests.exceptions.RequestException`
+の2種類のみで、`AttributeError`等のプログラミングエラーは従来どおり伝播させる（実装ミスが
+静かなスキップとして隠れるのを防ぐため）。**現在値を取得できなかったプロパティ自体を
+部分的な値で更新したり、取得できなかったツールを無視して進めたりする実装はしていない**:
+例外を捕捉した時点で即座に`dispatch()`から`DispatchResult(skipped=True, reason=...)`を返し、
+**失敗したプロパティおよびそれ以降の未処理プロパティ**の書き込み・`self._store.
+update_last_synced_at()`の呼び出しは一切行わない。`update_last_synced_at()`を呼ばないことで、
+次に同じレコードへの新しいイベントが届いた際は再度処理される（このイベント自体を「失われた」
+扱いにする一方、次の更新機会での自己修復は妨げない）。
+
+**通知文面の訂正（BLOCKER1対応、2026-08-28、動物チームレビュー指摘）**: 上記の初期実装には
+重大な事実誤認があった。`SyncEvent.properties`は1つのイベントで複数プロパティを同時に
+持ちうる（Webhookハンドラが1回のペイロード中の変更フィールドを全て`properties`に詰めるため、
+フォームで複数項目を同時保存すれば日常的に発生する）。`dispatch()`はプロパティを1件ずつ
+ループしながら「現在値取得 → コンフリクト解決 → `_write_values()`で実際に書き込み」を
+順に処理するため、**1つ目のプロパティは現在値取得に成功し既に他ツールへ実際に書き込み
+済みのまま、2つ目のプロパティで現在値取得が失敗してこの経路に入る**、というケースが
+普通に起こりうる。にもかかわらず当初のSlack通知本文は「この同期イベントは適用されません
+でした（書き込みは行われていません）」と一律に断定しており、運用者に「何も起きていない、
+再送させればよい」という誤った状況認識を与えてしまう（実際には一部フィールドだけ他ツールへ
+伝播済み・残りは失われた、というより危険な状態）。
+
+対応として、`_handle_current_value_fetch_failure()`の呼び出し元（`dispatch()`）が、この
+イベントで既に処理済みのプロパティのうち`written_tools`が非空だったもの（＝実際に
+どこかのツールへ書き込みが行われたもの）を`already_applied_properties`として渡すように
+した。通知本文（`Dispatcher._build_update_skip_detail()`）は次の2パターンを明確に区別する:
+
+- `already_applied_properties`が空（＝1つ目のプロパティで失敗した、本当に書き込みゼロの
+  ケース）: 従来通り「この同期イベントは一切適用されていません（書き込みは行われて
+  いません）」と断定してよい。
+- `already_applied_properties`が非空（＝途中のプロパティで失敗した、部分書き込みの
+  ケース）: 「うち『（プロパティ名のリスト）』は既に他ツールへ書き込み済みです。
+  『（失敗したプロパティ名）』の処理中に現在値取得に失敗したため、そのプロパティおよび
+  未処理の残りのプロパティは適用されていません（一部のみ適用された状態です）」という
+  文面にし、断定を避ける。
+
+通知に含めるのは**プロパティ名のみ**（業務上の項目名であり機微情報ではない）で、**値は
+一切含めない**（既存の「レコードの中身・個人情報は出さない」方針を踏襲）。
+`_UPDATE_SKIP_REASON_ACTION_HINTS`の対処アクション文言も、「この更新イベントは適用されて
+いません」という一律の断定を「一部プロパティは既に他ツールへ書き込み済みの場合があります
+（詳細を必ず確認してください）」という表現へ改めた。
+
+**次に検討する選択肢として見送ったもの（イベント全体の真のアトミック化）**: 上記の対応は
+「通知・ドキュメントの記述を事実に合わせる」ことに留めており、**「1イベント内の全プロパティの
+現在値を先に取得し終えてから、まとめて書き込みフェーズに入る」という、部分書き込みそのものを
+起こさせない再構成は今回は行っていない**。この再構成は`Dispatcher.dispatch()`の中核ループ
+（プロパティ単位で現在値取得・コンフリクト解決・書き込みを1つずつ進める設計）の作り替えに
+なり、コンフリクト解決の入力（`resolve_conflict()`に渡す`candidates`）やSlack通知
+（`notify_conflict`のプロパティ単位の粒度）にも影響が及ぶため、今回の限られた時間で安全に
+入れるにはリスクが高すぎると判断した。将来この経路を触る際の候補として記録しておく。
+
+**失われた更新の回収について（WARN4、運用上の残存リスク）**: `already_applied_properties`が
+空・非空いずれのケースでも、**現在値取得に失敗した以降のプロパティの更新は、送信元ツールで
+同じレコードが再度更新されない限り永久に取り残される**（`update_last_synced_at()`を呼ばない
+ことで「次の更新機会での自己修復」は可能だが、次の更新機会が来るかどうかは送信元の運用に
+委ねられており、自動では発生しない）。今回のスコープでは、この種の取りこぼしを能動的に
+発見・回収する棚卸しバッチ等の仕組みは実装していない。現状の運用は**Slack通知
+（`notify_update_skipped`）で気づいた運用者が、対象レコードを送信元ツール側で手動で
+（無害な軽微な更新でもよい）再度保存し、再送を発生させて回収する**という前提に立っている。
+通知を見落とした場合、その取りこぼしに気づく手段は現状無い。
+
+Slack通知（`SlackNotifier.notify_update_skipped()`、`src/sync_engine/slack_notifier.py`）は
+`notify_new_record_issue()`と同じDM方式・パターン（`_UPDATE_SKIP_REASON_ACTION_HINTS`）を
+使うが、専用メソッドとして分離した（「まだ何も作られていない新規作成の問題」と「本来適用
+されるはずだった既存レコードへの更新が失われたこと」は性質が異なるため）。通知・ログには
+db_key/source_tool/external_id/notion_key/property_name（現在値取得に失敗したプロパティ名・
+既に反映済みのプロパティ名一覧）といった識別子のみを含め、レコードの中身・個人情報は出さない。
 
 **対応不要と判断したもの（記録のみ）**:
 

@@ -160,6 +160,32 @@ def test_get_row_raises_spreadsheet_api_error_on_5xx(
         client.get_row(SHEET, 1)
 
 
+def test_get_row_raises_spreadsheet_api_error_on_200_when_value_ranges_shape_is_unexpected(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """shirokuma-secレビューBLOCKER対応（2026-08-28）: HTTP 200だが`valueRanges`が想定した
+    リスト形式ではない異常応答の場合、生のKeyErrorではなく正規化されたSpreadsheetApiErrorに
+    なることを確認する（`append_row`と同じ穴が読み取り系の`get_row`にも残っていた）。"""
+    requests_mock.get(
+        f"{BASE}/values:batchGet", status_code=200, json={"valueRanges": {"unexpected": "shape"}}
+    )
+
+    with pytest.raises(SpreadsheetApiError) as exc_info:
+        client.get_row(SHEET, 1)
+    assert exc_info.value.status_code == 200
+
+
+def test_get_row_raises_spreadsheet_api_error_on_200_when_body_is_not_a_dict(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """HTTP 200だがレスポンスボディそのものが辞書ではない異常応答の場合、生のAttributeErrorでは
+    なく正規化されたSpreadsheetApiErrorになることを確認する。"""
+    requests_mock.get(f"{BASE}/values:batchGet", status_code=200, json=["unexpected", "shape"])
+
+    with pytest.raises(SpreadsheetApiError):
+        client.get_row(SHEET, 1)
+
+
 # --- append_row --------------------------------------------------------------------------
 
 
@@ -224,6 +250,22 @@ def test_append_row_does_not_retry_on_5xx(
         client.append_row(SHEET, {"取引先ID": "CLI-005"})
 
     assert append_mock.call_count == 1
+
+
+def test_append_row_raises_spreadsheet_api_error_on_200_when_header_values_shape_is_unexpected(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """shirokuma-secレビューBLOCKER対応（2026-08-28）: `_get_header_row()`（`append_row`/
+    `update_row`から呼ばれる読み取り系ヘルパー）がHTTP 200で`values`が想定したリスト形式で
+    ない異常応答を受け取った場合、生のKeyErrorではなく正規化されたSpreadsheetApiErrorになる
+    ことを確認する。"""
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", status_code=200, json={"values": {"unexpected": "shape"}}
+    )
+
+    with pytest.raises(SpreadsheetApiError) as exc_info:
+        client.append_row(SHEET, {"取引先ID": "CLI-005"})
+    assert exc_info.value.status_code == 200
 
 
 def test_append_row_raises_spreadsheet_api_error_on_4xx(

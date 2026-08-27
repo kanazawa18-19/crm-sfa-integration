@@ -5,7 +5,18 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime, timezone
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+
+# advisory lock専用の接続文字列を保持する環境変数名(非pooled/direct接続を想定、2026-08-28)。
+# `DATABASE_URL_UNPOOLED`はVercel×Neon連携で自動的に用意されることが多い命名に合わせている。
+_ADVISORY_LOCK_URL_ENV_VAR = "DATABASE_URL_UNPOOLED"
+_FALLBACK_URL_ENV_VAR = "DATABASE_URL"
 
 
 def db_truncated_utcnow() -> datetime:
@@ -53,3 +64,79 @@ def ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def connect_for_advisory_lock(logger: logging.Logger) -> psycopg.Connection[dict[str, Any]]:
+    """`pg_try_advisory_lock()`/`pg_advisory_unlock()`専用の接続を作る。
+
+    `src/document_generation/approval_db.py`の`try_acquire_approval_lock()`、
+    `src/project_mirror/db.py`・`src/relation_sync/db.py`の`try_acquire_refresh_lock()`が
+    共有する(元は3ファイルにほぼ同じ`_connect()`実装がコピーされていたが、advisory lock専用
+    の接続作成はここに集約した。通常のSELECT/INSERT等のクエリは引き続き各モジュールの
+    `_connect()`(`DATABASE_URL`)を使い続けてよく、この関数の対象外)。
+
+    **なぜ通常のクエリ接続と分けるか**: Postgresのアドバイザリロックはセッション単位の状態
+    であり、ロックを取得したセッション(コネクション)自身が明示的に解放するまで保持される
+    という前提に立っている。ところがPgBouncerのtransaction pooling(Neonの`-pooler`
+    エンドポイント等)は、クライアントから見た1つの「接続」の裏でトランザクションごとに
+    異なる物理セッションを使い回すため、ロック取得(`pg_try_advisory_lock`)と解放
+    (`pg_advisory_unlock`)が同じ物理セッション上で実行される保証が無くなる。この場合
+    **例外は一切出ないまま、排他制御だけが無言で機能しなくなる**(2026-08-28、本番の
+    `DATABASE_URL`がNeonのpooled接続だったことが判明して発覚。詳細は
+    `docs/quote_approval_note.md`・`docs/relation_sync_activation_note.md`参照)。
+
+    通常のSELECT/INSERT等の単発クエリはtransaction poolingでも問題なく動作するため
+    (`DATABASE_URL`のpooled接続の利点をそのまま活かせる)、advisory lockを取得・解放する
+    接続のみ非pooledの`DATABASE_URL_UNPOOLED`を使う。
+
+    `DATABASE_URL_UNPOOLED`が設定されている場合でも、その値自体がpooled接続らしき場合
+    (ホスト名に`-pooler`を含む)は警告する。専用の環境変数を用意していても値の貼り間違い
+    (Vercelでの貼り付けミス、Neon側の命名規則変更等)で無言のまま同じ問題が再現しうるため
+    (shirokuma-secレビューWARN対応、2026-08-28)。
+
+    `DATABASE_URL_UNPOOLED`が未設定の場合は`DATABASE_URL`にフォールバックするが、無言で
+    今回と同じ問題に戻ってしまうため、必ずwarningログを出す。さらにフォールバック先が
+    pooled接続らしき場合(ホスト名に`-pooler`を含む)は、advisory lockが機能しない可能性が
+    高いことをより強く警告する。この2つの警告は文面を分けており、ログを見た人が「フォール
+    バックした」のか「専用変数の値自体がpooledに見える」のかを区別できるようにしている。
+    **ログには接続文字列そのものやパスワードは一切出さない**(`-pooler`を含むかどうかの
+    真偽値のみ判定に使い、ログメッセージにも埋め込まない)。
+    """
+    url = os.environ.get(_ADVISORY_LOCK_URL_ENV_VAR)
+    if url:
+        if "-pooler" in url:
+            logger.warning(
+                "%s is set but its value looks like a pooled connection (host contains "
+                "'-pooler'); pg_try_advisory_lock/pg_advisory_unlock are very likely NOT "
+                "providing mutual exclusion right now. Check the value of %s (this is not the "
+                "fallback-to-%s warning — %s itself holds a pooled URL).",
+                _ADVISORY_LOCK_URL_ENV_VAR,
+                _ADVISORY_LOCK_URL_ENV_VAR,
+                _FALLBACK_URL_ENV_VAR,
+                _ADVISORY_LOCK_URL_ENV_VAR,
+            )
+    else:
+        fallback_url = os.environ.get(_FALLBACK_URL_ENV_VAR)
+        if not fallback_url:
+            raise ValueError(
+                f"{_ADVISORY_LOCK_URL_ENV_VAR} is not set, and {_FALLBACK_URL_ENV_VAR} "
+                "(fallback) is not set either"
+            )
+        logger.warning(
+            "%s is not set; advisory lock connection falls back to %s (pooled connections "
+            "can silently break advisory lock acquire/release under PgBouncer transaction "
+            "pooling — set %s to a non-pooled connection string to fix this).",
+            _ADVISORY_LOCK_URL_ENV_VAR,
+            _FALLBACK_URL_ENV_VAR,
+            _ADVISORY_LOCK_URL_ENV_VAR,
+        )
+        if "-pooler" in fallback_url:
+            logger.warning(
+                "%s (used as advisory lock fallback) looks like a pooled connection "
+                "(host contains '-pooler'); pg_try_advisory_lock/pg_advisory_unlock are very "
+                "likely NOT providing mutual exclusion right now. Set %s immediately.",
+                _FALLBACK_URL_ENV_VAR,
+                _ADVISORY_LOCK_URL_ENV_VAR,
+            )
+        url = fallback_url
+    return psycopg.connect(url, row_factory=dict_row, connect_timeout=10, options="-c timezone=UTC")

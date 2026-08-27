@@ -189,6 +189,32 @@ def test_get_record_raises_zoho_api_error_on_5xx(
         client.get_record("Deals", "12345")
 
 
+def test_get_record_raises_zoho_api_error_on_200_when_data_is_not_a_list(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """shirokuma-secレビューBLOCKER対応（2026-08-28）: HTTP 200だが`data`が想定したリスト
+    形式ではない異常応答の場合、生のKeyErrorではなく正規化されたZohoApiErrorになることを
+    確認する（`insert_record`/`update_record`と同じ穴が`get_record`にも残っていた）。"""
+    _mock_token(requests_mock)
+    requests_mock.get(RECORD_URL, status_code=200, json={"data": {"unexpected": "shape"}})
+
+    with pytest.raises(ZohoApiError) as exc_info:
+        client.get_record("Deals", "12345")
+    assert exc_info.value.status_code == 200
+
+
+def test_get_record_raises_zoho_api_error_on_200_when_body_is_not_a_dict(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """HTTP 200だがレスポンスボディそのものが辞書ではない異常応答の場合、生のAttributeErrorでは
+    なく正規化されたZohoApiErrorになることを確認する。"""
+    _mock_token(requests_mock)
+    requests_mock.get(RECORD_URL, status_code=200, json=["unexpected", "shape"])
+
+    with pytest.raises(ZohoApiError):
+        client.get_record("Deals", "12345")
+
+
 # --- insert_record -------------------------------------------------------------------------
 
 

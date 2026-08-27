@@ -16,6 +16,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from src import db_utils
 from src.db_utils import db_truncated_utcnow
 
 logger = logging.getLogger(__name__)
@@ -48,11 +49,24 @@ def try_acquire_refresh_lock() -> psycopg.Connection[dict[str, Any]] | None:
     取得できた場合はロックを保持したままの`Connection`を返す(呼び出し元は処理完了後に必ず
     `release_refresh_lock()`でこの接続ごと解放すること)。取得できなかった場合(既に別
     プロセスが実行中)は`None`を返す。
+
+    通常のCRUD用の`_connect()`とは異なり、`db_utils.connect_for_advisory_lock()`
+    (`DATABASE_URL_UNPOOLED`優先)を使う。理由は`docs/relation_sync_activation_note.md`の
+    「advisory lockは非pooled接続でのみ機能する」参照(2026-08-28)。
+
+    `cur.execute()`が例外を投げた場合も接続をcloseしてから再送出する(呼び出し元はまだ
+    `Connection`を受け取っていないため、ここでcloseしないと接続がリークする。
+    `src/project_mirror/db.py`の`try_acquire_refresh_lock()`と同じ形の既存バグで、
+    まとめて修正した。レビューWARN対応、2026-08-28)。
     """
-    conn = _connect()
-    with conn.cursor() as cur:
-        cur.execute("SELECT pg_try_advisory_lock(%s) AS locked", (_REFRESH_LOCK_KEY,))
-        row = cur.fetchone()
+    conn = db_utils.connect_for_advisory_lock(logger)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s) AS locked", (_REFRESH_LOCK_KEY,))
+            row = cur.fetchone()
+    except Exception:
+        conn.close()
+        raise
     if not (row and row["locked"]):
         conn.close()
         return None

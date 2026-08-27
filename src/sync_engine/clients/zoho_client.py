@@ -48,8 +48,10 @@ from src.sync_engine.clients._http import (
 # 対象で最も実際に起こりうるのは`_refresh_access_token()`: ZohoのOAuthトークンエンドポイントは
 # リフレッシュトークン失効・クライアント資格情報不正の際、HTTP 200のままエラーボディ
 # （例: `{"error": "invalid_client"}`）を返すことが知られている。他の箇所（`insert_record`/
-# `update_record`の`data[0]`/`details.id`アクセス）は発生確率は低いが、raise_for_error()
-# 通過後の辞書アクセスという同じ形の穴のため同じ方針で正規化する。
+# `update_record`の`data[0]`/`details.id`アクセス、`get_record`の`data[0]`アクセス）は
+# 発生確率は低いが、raise_for_error()通過後の辞書アクセスという同じ形の穴のため同じ方針で
+# 正規化する（`get_record`は2026-08-28、shirokuma-secレビューBLOCKER対応で追加。「読み取り系が
+# 未対応」という非対称の指摘への対応）。
 #
 # メッセージには`extract_error_message()`（`error`/`message`フィールドのみを最大200文字で
 # 拾う既存の切り詰め方針）を再利用し、トークン・資格情報が例外メッセージに混入しないようにする
@@ -230,8 +232,14 @@ class HttpZohoClient:
         if response.status_code in (404, 204):
             return None
         raise_for_error(response, ZohoApiError)
-        data = response.json().get("data") or []
-        return data[0] if data else None
+        # shirokuma-secレビューBLOCKER対応（2026-08-28）: `insert_record`/`update_record`と
+        # 同じ理由（モジュール冒頭コメント参照）で、raise_for_error()通過後（2xx）でも
+        # ボディが期待した形でない場合に生の例外が飛ばないよう正規化する。
+        try:
+            data = response.json().get("data") or []
+            return data[0] if data else None
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
 
     def insert_record(self, module: str, record: dict[str, Any]) -> str:
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複レコード作成を避けリトライしない。

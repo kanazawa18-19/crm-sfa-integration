@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 
@@ -76,3 +78,135 @@ def test_db_truncated_utcnow_is_idempotent_under_further_truncation() -> None:
 
     assert postgres_stored_value == value
     assert not (postgres_stored_value < value)
+
+
+# --- connect_for_advisory_lock ----------------------------------------------------------------
+# advisory lock専用接続(2026-08-28)。PgBouncerのtransaction poolingではセッション単位の
+# advisory lockが例外を出さないまま無言で機能しなくなる(Neonのpooled DATABASE_URLが本番で
+# 使われていたことが発覚した問題への対処)ため、DATABASE_URL_UNPOOLEDを優先して使う。
+
+
+def _capture_connect(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def _fake_connect(url: str, **kwargs: Any) -> str:
+        calls.append({"url": url, "kwargs": kwargs})
+        return "fake-connection"  # type: ignore[return-value]
+
+    monkeypatch.setattr(db_utils.psycopg, "connect", _fake_connect)
+    return calls
+
+
+def test_connect_for_advisory_lock_uses_unpooled_url_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", "postgresql://user:pass@direct-host/db")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@pooled-host-pooler/db")
+    calls = _capture_connect(monkeypatch)
+    logger = logging.getLogger("test_connect_for_advisory_lock_uses_unpooled_url_when_set")
+
+    result = db_utils.connect_for_advisory_lock(logger)
+
+    assert result == "fake-connection"
+    assert len(calls) == 1
+    assert calls[0]["url"] == "postgresql://user:pass@direct-host/db"
+
+
+def test_connect_for_advisory_lock_warns_when_unpooled_url_itself_looks_pooled(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`DATABASE_URL_UNPOOLED`は設定されているが値そのものがpooledらしき場合(Vercelでの
+    貼り付けミス、Neon側の命名規則変更等)も、フォールバック経路と同様に警告すること
+    (shirokuma-secレビューWARN対応、2026-08-28)。フォールバック時の警告と文面が
+    区別できることも確認する。"""
+    monkeypatch.setenv(
+        "DATABASE_URL_UNPOOLED", "postgresql://user:pass@ep-example-pooler.aws.neon.tech/db"
+    )
+    calls = _capture_connect(monkeypatch)
+    logger = logging.getLogger(
+        "test_connect_for_advisory_lock_warns_when_unpooled_url_itself_looks_pooled"
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        db_utils.connect_for_advisory_lock(logger)
+
+    assert calls[0]["url"] == "postgresql://user:pass@ep-example-pooler.aws.neon.tech/db"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("DATABASE_URL_UNPOOLED" in m for m in messages)
+    # フォールバックしたわけではないので、その旨の文言は出ないこと。
+    assert not any("falls back to" in m for m in messages)
+
+
+def test_connect_for_advisory_lock_falls_back_to_database_url_and_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """DATABASE_URL_UNPOOLED未設定時はDATABASE_URLへフォールバックするが、無言で今回の
+    問題に戻らないよう必ずwarningログを出すこと。"""
+    monkeypatch.delenv("DATABASE_URL_UNPOOLED", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@direct-host/db")
+    calls = _capture_connect(monkeypatch)
+    logger = logging.getLogger("test_connect_for_advisory_lock_falls_back_to_database_url_and_warns")
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        db_utils.connect_for_advisory_lock(logger)
+
+    assert calls[0]["url"] == "postgresql://user:pass@direct-host/db"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("DATABASE_URL_UNPOOLED" in m for m in messages)
+    # ホスト名に"-pooler"を含まないため、より強い(pooled接続らしき)警告までは出ない。
+    assert not any("mutual exclusion" in m for m in messages)
+
+
+def test_connect_for_advisory_lock_warns_more_strongly_when_fallback_is_pooled(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """フォールバック先のホスト名に'-pooler'が含まれる場合、advisory lockが機能しない
+    可能性が高いことをより強く警告すること。"""
+    monkeypatch.delenv("DATABASE_URL_UNPOOLED", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://user:pass@ep-example-pooler.aws.neon.tech/db"
+    )
+    _capture_connect(monkeypatch)
+    logger = logging.getLogger(
+        "test_connect_for_advisory_lock_warns_more_strongly_when_fallback_is_pooled"
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        db_utils.connect_for_advisory_lock(logger)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("DATABASE_URL_UNPOOLED" in m for m in messages)
+    assert any("mutual exclusion" in m for m in messages)
+
+
+def test_connect_for_advisory_lock_raises_when_neither_url_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL_UNPOOLED", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    logger = logging.getLogger("test_connect_for_advisory_lock_raises_when_neither_url_is_set")
+
+    with pytest.raises(ValueError, match="DATABASE_URL_UNPOOLED"):
+        db_utils.connect_for_advisory_lock(logger)
+
+
+def test_connect_for_advisory_lock_never_logs_connection_string_or_password(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """フォールバック時の警告ログに、接続文字列そのもの(ホスト名・パスワード)が含まれない
+    こと(`-pooler`を含むかどうかの真偽値のみ判定に使い、ログメッセージには埋め込まない)。"""
+    monkeypatch.delenv("DATABASE_URL_UNPOOLED", raising=False)
+    secret_password = "sup3r-secret-p4ssw0rd"
+    pooled_host = "ep-example-pooler.aws.neon.tech"
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://user:{secret_password}@{pooled_host}/db")
+    _capture_connect(monkeypatch)
+    logger = logging.getLogger(
+        "test_connect_for_advisory_lock_never_logs_connection_string_or_password"
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        db_utils.connect_for_advisory_lock(logger)
+
+    full_log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert secret_password not in full_log_text
+    assert pooled_host not in full_log_text

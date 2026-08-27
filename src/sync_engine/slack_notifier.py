@@ -9,6 +9,21 @@ Protocolを介して通知を行い、テストではモックNotifierを注入�
 （shirokuma-sec/obasan-qualityレビューWARN対応）。特に`notify_new_record_issue`は、Notion
 ページ作成後にIdMapping登録が失敗した「孤児ページ」の検知（BLOCKER1対応）にも使われる。
 
+`notify_update_skipped`は、既に`IdMapping`が存在するレコードへの**通常の更新イベント**
+（`Dispatcher.dispatch()`本体、`_try_create_new_record()`とは別経路）で、コンフリクト
+判定・書き込み判断に使う「現在値」の取得自体が例外で失敗し、この同期イベントの以降の
+プロパティの書き込みを中止（スキップ）した場合に使う（2026-08-27本番障害対応の残存リスク
+への決着、`docs/relation_sync_activation_note.md`参照）。`notify_new_record_issue`と役割が
+異なる（あちらは「まだ何も作られていない新規作成」の問題、こちらは「本来適用されるはずだった
+既存レコードへの更新が失われた」ことの通知）ため、専用のメソッドとして分離している。
+
+**1つの`SyncEvent`は複数プロパティを持ちうる**（BLOCKER1対応、2026-08-28）: `detail`引数の
+文面は`Dispatcher`側（`_build_update_skip_detail()`）で組み立てており、このイベント内で
+「どのプロパティの処理中に失敗したか」「同じイベント内で既に他ツールへ書き込み済みの
+プロパティがあるか（あれば何か）」を含む。以前は「書き込みは行われていません」と一律に
+断定していたが、複数プロパティのイベントで1つ目が既に書き込み済みのまま2つ目以降で失敗
+した場合にこれが事実と異なり、運用者に誤った状況認識を与える危険があったための対応。
+
 ■ 通知先について（2026-08-25、送信先変更）: `notify_conflict`は引き続き
 `SLACK_WEBHOOK_URL_ALERT`環境変数のIncoming Webhookへ送る（Round1から変更なし、本番で
 このWebhookは設定済み・運用実績あり）。一方`notify_new_record_created`/
@@ -79,6 +94,30 @@ _ISSUE_REASON_ACTION_HINTS: dict[str, str] = {
     ),
 }
 
+# `notify_update_skipped`のreasonごとの一言アクション（`_ISSUE_REASON_ACTION_HINTS`と同じ
+# パターン）。既存のNotionリレーション同期の残存リスク対応（2026-08-27〜28）で追加。
+#
+# ■ docs/relation_sync_activation_note.md との同期について: 本dictを変更した場合は、
+# `_ISSUE_REASON_ACTION_HINTS`と同様に同ドキュメントの対応する記載も合わせて更新すること。
+_UPDATE_SKIP_REASON_ACTION_HINTS: dict[str, str] = {
+    "update_notion_value_fetch_failed": (
+        "🚨 上記詳細の通り、このイベントに含まれる一部プロパティは既に他ツールへ書き込み"
+        "済みの場合があります（詳細を必ず確認してください）。Notion APIの障害・レート制限、"
+        "または対象ページの削除・権限不足が疑われます。ログのnotion_key/db_keyから対象ページを"
+        "特定し、Notion側の状態を確認してください。原因が解消すれば、送信元ツール側で"
+        "対象レコードを再度更新するなどして再送させる必要があります（自動リトライは"
+        "行われません。未適用のプロパティは再送されるまで反映されないままです）。"
+    ),
+    "update_target_value_fetch_failed": (
+        "🚨 上記詳細の通り、このイベントに含まれる一部プロパティは既に他ツールへ書き込み"
+        "済みの場合があります（詳細を必ず確認してください）。対象ツールのAPI障害・レート制限、"
+        "または対象レコードの不整合が疑われます。ログのexternal_id/db_keyから対象レコードを"
+        "特定し、当該ツール側の状態を確認してください。原因が解消すれば、送信元ツール側で"
+        "対象レコードを再度更新するなどして再送させる必要があります（自動リトライは"
+        "行われません。未適用のプロパティは再送されるまで反映されないままです）。"
+    ),
+}
+
 
 def _db_key_display_name(db_key: str) -> str:
     """`db_key`の人間向け表示名（例: "取引先マスターDB"）を返す。未知のdb_keyの場合は
@@ -114,6 +153,20 @@ class SlackNotifier(Protocol):
         """新規レコード作成処理で問題が発生したことを通知する（必須プロパティ不足による
         スキップ、IdMapping登録失敗による孤児ページ発生等）。`notion_page_id`は、Notion
         ページ自体は既に作成されている場合（孤児ページ）にのみ指定される。
+        """
+        ...
+
+    def notify_update_skipped(
+        self,
+        *,
+        db_key: str,
+        source_tool: Tool,
+        external_id: str,
+        reason: str,
+        detail: str,
+    ) -> None:
+        """既に`IdMapping`が存在するレコードへの通常の更新イベントが、現在値取得の失敗により
+        適用されずスキップされたことを通知する。
         """
         ...
 
@@ -229,4 +282,25 @@ class WebhookSlackNotifier:
             lines.append(f"対応: {action_hint}")
         if notion_page_id:
             lines.append(f"⚠️ Notion page ID（要確認・孤児ページの可能性あり）: {notion_page_id}")
+        self._notify_managers("\n".join(lines))
+
+    def notify_update_skipped(
+        self,
+        *,
+        db_key: str,
+        source_tool: Tool,
+        external_id: str,
+        reason: str,
+        detail: str,
+    ) -> None:
+        lines = [
+            "[同期更新イベントが適用されませんでした]",
+            f"DB: {db_key}（{_db_key_display_name(db_key)}）",
+            f"対象: {source_tool.value}（external_id={external_id}）",
+            f"理由: {reason}",
+            f"詳細: {detail}",
+        ]
+        action_hint = _UPDATE_SKIP_REASON_ACTION_HINTS.get(reason)
+        if action_hint:
+            lines.append(f"対応: {action_hint}")
         self._notify_managers("\n".join(lines))

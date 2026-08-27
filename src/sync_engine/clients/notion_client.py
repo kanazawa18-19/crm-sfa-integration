@@ -201,31 +201,40 @@ class HttpNotionClient:
         if response.status_code == 404:
             return None
         raise_for_error(response, NotionApiError)
-        page = response.json()
-        result: dict[str, Any] = {}
-        for name, value in (page.get("properties") or {}).items():
-            prop_type = value.get("type")
-            if prop_type not in PARSEABLE_NOTION_PROPERTY_TYPES:
-                # formula/rollup/files/created_time等、parse_notion_property_value()が
-                # 未対応の型はページ取得全体を落とさず読み飛ばす（実運用で案件管理DBの
-                # 粗利/契約スピード等のFORMULA型プロパティに対して発生した
-                # `ValueError: unsupported Notion property type: 'formula'`の修正）。
-                # スキーマ/実データの型が乖離しているケース（=今回の本番障害の原因そのもの）を
-                # 見逃さないよう、`notion_webhook.py`の同種のケース（未知プロパティのスキップ、
-                # 「ignoring unknown Notion property」）と同様にwarningレベルで残す。
-                logger.warning(
-                    "ignoring unparseable Notion property '%s' (type=%s) for db_key=%r, "
-                    "page_id=%s (not in PARSEABLE_NOTION_PROPERTY_TYPES)",
-                    name,
-                    prop_type,
-                    self._db_key,
-                    page_id,
-                )
-                continue
-            result[name] = parse_notion_property_value(value)
-        last_edited_time = page.get("last_edited_time")
-        if last_edited_time:
-            result[NOTION_LAST_EDITED_TIME_KEY] = parse_iso_datetime(last_edited_time)
+        # shirokuma-secレビューBLOCKER対応（2026-08-28）: raise_for_error()は2xxなら何もしない
+        # ため、「HTTP 200だがボディの構造が想定と違う」場合（`page`が辞書でない、`properties`の
+        # 各値が辞書でない等）は生の`AttributeError`/`TypeError`/`KeyError`/`IndexError`が飛び、
+        # `ApiError`でも`requests.exceptions.RequestException`でもないため呼び出し元
+        # （`Dispatcher`）が握っている例外の型をすり抜けてしまう。`kintone_client.py`の
+        # `get_record()`と同じ書き方でここもNotionApiErrorへ正規化する。
+        try:
+            page = response.json()
+            result: dict[str, Any] = {}
+            for name, value in (page.get("properties") or {}).items():
+                prop_type = value.get("type")
+                if prop_type not in PARSEABLE_NOTION_PROPERTY_TYPES:
+                    # formula/rollup/files/created_time等、parse_notion_property_value()が
+                    # 未対応の型はページ取得全体を落とさず読み飛ばす（実運用で案件管理DBの
+                    # 粗利/契約スピード等のFORMULA型プロパティに対して発生した
+                    # `ValueError: unsupported Notion property type: 'formula'`の修正）。
+                    # スキーマ/実データの型が乖離しているケース（=今回の本番障害の原因そのもの）を
+                    # 見逃さないよう、`notion_webhook.py`の同種のケース（未知プロパティのスキップ、
+                    # 「ignoring unknown Notion property」）と同様にwarningレベルで残す。
+                    logger.warning(
+                        "ignoring unparseable Notion property '%s' (type=%s) for db_key=%r, "
+                        "page_id=%s (not in PARSEABLE_NOTION_PROPERTY_TYPES)",
+                        name,
+                        prop_type,
+                        self._db_key,
+                        page_id,
+                    )
+                    continue
+                result[name] = parse_notion_property_value(value)
+            last_edited_time = page.get("last_edited_time")
+            if last_edited_time:
+                result[NOTION_LAST_EDITED_TIME_KEY] = parse_iso_datetime(last_edited_time)
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
+            raise NotionApiError(response.status_code, extract_error_message(response)) from exc
         return result
 
     def query_all_pages(
