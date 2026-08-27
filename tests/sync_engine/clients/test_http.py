@@ -318,3 +318,42 @@ def test_raise_for_error_does_nothing_on_success(requests_mock) -> None:
     response = request_with_retry("GET", "https://example.test/ok", timeout=5)
 
     raise_for_error(response, ApiError)  # noqa: no exception expected
+
+
+def test_raise_for_error_includes_error_code_when_present(requests_mock) -> None:
+    """kintone等が返す`code`をメッセージ末尾に含めること（2026-08-28）。
+
+    `HTTP 400: 不正なリクエストです。`のような汎用メッセージだけでは原因を特定できず、
+    本番で1回発生しても切り分けられなかったため、`code`を必ず残す。
+    """
+    requests_mock.get(
+        "https://example.test/kintone-400",
+        status_code=400,
+        json={"message": "不正なリクエストです。", "id": "abc123", "code": "GAIA_IL26"},
+    )
+    response = request_with_retry("GET", "https://example.test/kintone-400", timeout=5)
+
+    with pytest.raises(ApiError) as exc_info:
+        raise_for_error(response, ApiError)
+
+    assert "不正なリクエストです。" in exc_info.value.message
+    assert "GAIA_IL26" in exc_info.value.message
+
+
+def test_raise_for_error_omits_code_when_not_a_scalar(requests_mock) -> None:
+    """`code`がコード値ではない形状（辞書・リスト）のときは付けないこと。
+
+    Google系APIは`error`オブジェクトの中に別構造を持つことがあり、そのまま連結すると
+    エラーメッセージが長大になりログを汚すため。
+    """
+    requests_mock.get(
+        "https://example.test/weird-code",
+        status_code=400,
+        json={"message": "bad request", "code": {"nested": "value"}},
+    )
+    response = request_with_retry("GET", "https://example.test/weird-code", timeout=5)
+
+    with pytest.raises(ApiError) as exc_info:
+        raise_for_error(response, ApiError)
+
+    assert exc_info.value.message == "bad request"

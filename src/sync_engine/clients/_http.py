@@ -218,16 +218,32 @@ def _rate_limit_backoff_seconds(
 
 
 def extract_error_message(response: requests.Response) -> str:
-    """エラーレスポンスから簡潔なメッセージを取り出す（レスポンス全文はログに出さない）。"""
+    """エラーレスポンスから簡潔なメッセージを取り出す（レスポンス全文はログに出さない）。
+
+    ボディに`code`（エラーコード）があれば末尾に付ける。kintone/Notion/Zohoはいずれも
+    `{"message": ..., "code": ...}`形式でエラーを返すが、`message`だけでは原因を特定
+    できないことがあるため（2026-08-28、Round2の新規レコード作成で
+    `HTTP 400: 不正なリクエストです。`が発生した際、これがkintoneの汎用メッセージで
+    あるために「レコード不在」「権限不足」「パラメータ不正」のどれなのか切り分けられず、
+    次の発生を待つしかなかった。kintoneはこの汎用メッセージに対しても`code`
+    （`GAIA_RE01`/`CB_VA01`/`GAIA_NO01`等）を必ず返しており、それを拾えば1回の発生で
+    原因を名指しできる）。
+
+    `code`が辞書・リストの場合（Google系APIの`error`オブジェクト等、コード値ではない
+    形状）は付けない。値そのものはログに出るため、コード値以外の長い内容を混ぜない。
+    """
     try:
         body = response.json()
     except ValueError:
         return response.text[:200]
     if isinstance(body, dict):
         message = body.get("message") or body.get("error") or body
-    else:
-        message = body
-    return str(message)[:200]
+        text = str(message)[:200]
+        code = body.get("code")
+        if code is not None and not isinstance(code, (dict, list)):
+            return f"{text} (code={str(code)[:60]})"
+        return text
+    return str(body)[:200]
 
 
 def raise_for_error(response: requests.Response, error_cls: type[ApiError]) -> None:
