@@ -188,15 +188,23 @@ class GoogleDriveDocClient:
         )
         raise_for_error(response, GoogleDriveApiError)
 
-    def start_approval(self, file_id: str, *, reviewer_email: str, message: str = "") -> str:
-        """Google Driveの純正「承認をリクエスト」機能(Drive Approvals)で、`reviewer_email`宛に
-        承認リクエストを送信する(2026-08-18)。返り値はポーリング(`get_approval()`)に使う
-        承認リクエストID(`approvalId`)。
+    def start_approval(self, file_id: str, *, reviewer_emails: list[str], message: str = "") -> str:
+        """Google Driveの純正「承認をリクエスト」機能(Drive Approvals)で、`reviewer_emails`宛に
+        承認リクエストを送信する(2026-08-18、2026-08-27に複数承認者対応)。返り値は
+        ポーリング(`get_approval()`)に使う承認リクエストID(`approvalId`)。
 
-        リクエスト形状は公式REST référence
+        リクエスト形状は公式REST reference
         (https://developers.google.com/workspace/drive/api/reference/rest/v3/approvals/start)で
         確認済み: `POST /files/{fileId}/approvals:start`、body は
         `{"reviewerEmails": [...], "message": "..."}`。
+
+        `reviewerEmails`に複数指定した場合のセマンティクス(公式ガイド
+        https://developers.google.com/workspace/drive/api/guides/approvals で確認済み):
+        全員が承認して初めて`APPROVED`になり、1人でも却下すれば全体が`DECLINED`になる。
+        また、ファイルが編集されると全員の承認状態がリセットされ再承認が必要になる。
+        これは「1回の承認リクエスト = 1つのDrive approval」という前提で、複数承認者は
+        1つのapprovalに対する複数reviewerとして表現される(承認者ごとに別々のapprovalを
+        作るわけではない)。
 
         公式ドキュメント上は`approvals:start`のレスポンスにも`approvalId`が含まれる想定だが、
         2026-08-18の実機テストでは`fields`クエリパラメータを指定しない場合`{"kind":
@@ -207,7 +215,7 @@ class GoogleDriveDocClient:
         `list_approvals()`で直後に作成された`IN_PROGRESS`状態の承認を探すフォールバックを
         行う(結果整合性対策)。
         """
-        json_body: dict[str, Any] = {"reviewerEmails": [reviewer_email]}
+        json_body: dict[str, Any] = {"reviewerEmails": reviewer_emails}
         if message:
             json_body["message"] = message
         response = self._request(

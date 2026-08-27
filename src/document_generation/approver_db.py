@@ -5,12 +5,12 @@ dashboard(Next.js)側のPrisma(dashboard/prisma/schema.prisma)に一本化して
 raw SQLで読むのみでマイグレーションは行わない。接続文字列はdashboard側と同じDATABASE_URL
 環境変数を共有する。
 
-`POST /api/documents/quote/request-approval`のフロントセレクトボックスは
-`DocumentApprover`一覧からしか選べないが、それはUI制約に過ぎずAPIを直接叩けば任意の
-メールアドレスを送信できてしまう。承認リクエストを送信する前に、指定された
-`approver_email`が実際に登録済みの承認者(`active=true`)かをサーバー側で検証するために使う
-(shirokuma-secレビューBLOCKER対応: 未登録・社外の任意メールアドレスへ本物のDrive承認
-リクエストが送信できてしまう問題)。
+`POST /api/documents/quote/request-approval`のフロントのチェックボックス(2026-08-27に
+複数承認者対応)は`DocumentApprover`一覧からしか選べないが、それはUI制約に過ぎずAPIを
+直接叩けば任意のメールアドレスを送信できてしまう。承認リクエストを送信する前に、指定された
+`approver_emails`の各要素が実際に登録済みの承認者(`active=true`)かをサーバー側で全件検証
+するために使う(shirokuma-secレビューBLOCKER対応: 未登録・社外の任意メールアドレスへ本物の
+Drive承認リクエストが送信できてしまう問題)。
 """
 
 from __future__ import annotations

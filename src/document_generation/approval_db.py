@@ -6,8 +6,18 @@ Prisma(dashboard/prisma/schema.prisma)に一本化しており、ここではraw
 
 見積書の承認リクエスト状態(`status`: "in_progress" | "approved" | "declined" | "cancelled")を
 保持する。承認者一覧(DocumentApprover)はdashboard側がPrismaで直接CRUDする
-(承認リクエスト送信時にPython側へ渡されるのは選択済みの`approver_email`のみのため、
+(承認リクエスト送信時にPython側へ渡されるのは選択済みの`approver_emails`のみのため、
 Python側からDocumentApproverを読む必要がない)。
+
+複数承認者対応(2026-08-27): `approverEmails`(配列)が正。旧`approverEmail`(単一)カラムは
+nullableのまま残っており、insert時に先頭1件をdual-writeするが、これはロールバック時の
+経過措置に過ぎない。読み取りは必ず`approverEmails`を使うこと
+(docs/quote_approval_note.md参照)。
+
+`_row_to_approval()`は、`prisma migrate deploy`(ビルド時)適用〜新デプロイ公開までの
+デプロイ窓で旧コードがINSERTした行(`approverEmails`がNULL・旧`approverEmail`のみ埋まった行)
+を読んだ場合、`approverEmail`から1要素配列を組み立てるフォールバックを持つ。dual-writeと
+対になる経過措置であり、旧`approverEmail`列を削除する別マイグレーションの際に一緒に削除する。
 """
 
 from __future__ import annotations
@@ -41,7 +51,7 @@ class DocumentApproval:
     category: str
     drive_file_id: str
     drive_approval_id: str
-    approver_email: str
+    approver_emails: list[str]
     requested_by_email: str
     status: str
     created_at: datetime
@@ -49,19 +59,34 @@ class DocumentApproval:
 
 
 _COLUMNS = (
-    'id, "notionProjectId", category, "driveFileId", "driveApprovalId", "approverEmail", '
-    '"requestedByEmail", status, "createdAt", "resolvedAt"'
+    'id, "notionProjectId", category, "driveFileId", "driveApprovalId", "approverEmails", '
+    '"approverEmail", "requestedByEmail", status, "createdAt", "resolvedAt"'
 )
 
 
 def _row_to_approval(row: dict[str, Any]) -> DocumentApproval:
+    """行を`DocumentApproval`へ変換する。
+
+    複数承認者対応(2026-08-27)のデプロイ窓で作られた行への読み取りフォールバック
+    (shirokuma-secレビューBLOCKER対応): `prisma migrate deploy`はビルド時に走るため、
+    新デプロイが公開されるまでの数十秒は旧`insert_document_approval()`が動いており、
+    その間にINSERTされた行は`approverEmails`がNULL(psycopgではNone)のまま旧`approverEmail`
+    (単一)のみ埋まっている。この場合`approverEmails`を「承認者0人」として読んでしまうと
+    Slack通知の承認者欄が空になるため、`approverEmail`から1要素配列を組み立てて使う。
+    これはdual-write(`insert_document_approval()`が両カラムへ書く経過措置)と対になる
+    読み取り側の経過措置であり、旧`approverEmail`列を削除する別マイグレーションの際に
+    dual-writeと一緒に削除する(docs/quote_approval_note.md参照)。
+    """
+    approver_emails = row["approverEmails"] or (
+        [row["approverEmail"]] if row["approverEmail"] else []
+    )
     return DocumentApproval(
         id=row["id"],
         notion_project_id=row["notionProjectId"],
         category=row["category"],
         drive_file_id=row["driveFileId"],
         drive_approval_id=row["driveApprovalId"],
-        approver_email=row["approverEmail"],
+        approver_emails=approver_emails,
         requested_by_email=row["requestedByEmail"],
         status=row["status"],
         created_at=row["createdAt"],
@@ -75,17 +100,28 @@ def insert_document_approval(
     category: str,
     drive_file_id: str,
     drive_approval_id: str,
-    approver_email: str,
+    approver_emails: list[str],
     requested_by_email: str,
 ) -> str:
-    """承認リクエスト送信直後に1件作成する(status="in_progress")。生成したidを返す。"""
+    """承認リクエスト送信直後に1件作成する(status="in_progress")。生成したidを返す。
+
+    `approverEmail`(旧単一カラム、nullable)にも先頭1件をdual-writeする——
+    `approverEmails`が正であり、この書き込みはロールバック時に旧コードが通知文面で
+    Noneを出さないための経過措置。安定後に別マイグレーションで`approverEmail`列自体を
+    削除する予定(docs/quote_approval_note.md参照)。
+    """
+    # 明示的な列指定にしているのは、`_COLUMNS`(SELECT向け、読み取りフォールバック用に
+    # "approverEmail"を含む)をそのまま使うと"approverEmail"が二重に並んでしまうため
+    # (INSERT文は"createdAt"/"resolvedAt"がリテラル(`now()`/`NULL`)である点でもSELECT向けの
+    # 並びと異なる)。
     approval_id = uuid.uuid4().hex
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"""
+            """
             INSERT INTO "DocumentApproval"
-                ({_COLUMNS})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), NULL)
+                (id, "notionProjectId", category, "driveFileId", "driveApprovalId",
+                 "approverEmails", "approverEmail", "requestedByEmail", status, "createdAt", "resolvedAt")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), NULL)
             """,
             (
                 approval_id,
@@ -93,7 +129,8 @@ def insert_document_approval(
                 category,
                 drive_file_id,
                 drive_approval_id,
-                approver_email,
+                approver_emails,
+                approver_emails[0],
                 requested_by_email,
                 IN_PROGRESS,
             ),

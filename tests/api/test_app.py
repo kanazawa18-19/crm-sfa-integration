@@ -695,7 +695,7 @@ def test_request_quote_approval_returns_401_when_token_not_set(
         "/api/documents/quote/request-approval",
         json={
             "project_id": "abc123",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
         },
     )
@@ -720,7 +720,7 @@ def test_request_quote_approval_returns_422_when_drive_not_connected(
         headers={"Authorization": "Bearer correct-token"},
         json={
             "project_id": "abc123",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
         },
     )
@@ -746,7 +746,7 @@ def test_request_quote_approval_returns_422_when_approver_email_invalid(
         headers={"Authorization": "Bearer correct-token"},
         json={
             "project_id": "abc123",
-            "approver_email": "outsider@example.com",
+            "approver_emails": ["outsider@example.com"],
             "requested_by_email": "rep@example.com",
         },
     )
@@ -772,7 +772,7 @@ def test_request_quote_approval_returns_422_when_duplicate_in_progress_request(
         headers={"Authorization": "Bearer correct-token"},
         json={
             "project_id": "abc123",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
         },
     )
@@ -796,7 +796,7 @@ def test_request_quote_approval_returns_500_for_unexpected_error(
         headers={"Authorization": "Bearer correct-token"},
         json={
             "project_id": "abc123",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
         },
     )
@@ -826,7 +826,7 @@ def test_request_quote_approval_returns_ids_on_success(
         headers={"Authorization": "Bearer correct-token"},
         json={
             "project_id": "abc123",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
             "message": "ご確認お願いします",
         },
@@ -842,11 +842,43 @@ def test_request_quote_approval_returns_ids_on_success(
 
     assert captured == {
         "notion_project_id": "abc123",
-        "approver_email": "approver@example.com",
+        "approver_emails": ["approver@example.com"],
         "requested_by_email": "rep@example.com",
         "message": "ご確認お願いします",
         "overrides": QuoteOverrides(),
     }
+
+
+def test_request_quote_approval_passes_multiple_approver_emails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """複数承認者(2026-08-27対応)をリクエストボディに渡した場合、全件が
+    request_quote_approval()へそのまま中継されること。"""
+    from src.document_generation.quote_generator import QuoteApprovalResult
+
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "correct-token")
+    captured: dict[str, object] = {}
+
+    def fake_request_quote_approval(notion_project_id: str, **kwargs: object) -> QuoteApprovalResult:
+        captured.update(kwargs)
+        return QuoteApprovalResult(
+            drive_file_id="file-1", drive_approval_id="approval-1", document_approval_id="row-1"
+        )
+
+    monkeypatch.setattr("src.api.app.request_quote_approval", fake_request_quote_approval)
+
+    response = client.post(
+        "/api/documents/quote/request-approval",
+        headers={"Authorization": "Bearer correct-token"},
+        json={
+            "project_id": "abc123",
+            "approver_emails": ["a@example.com", "b@example.com"],
+            "requested_by_email": "rep@example.com",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["approver_emails"] == ["a@example.com", "b@example.com"]
 
 
 def test_request_quote_approval_passes_overrides(
@@ -870,7 +902,7 @@ def test_request_quote_approval_passes_overrides(
         headers={"Authorization": "Bearer correct-token"},
         json={
             "project_id": "abc123",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
             "memo": "特記事項",
             "client_name": "上書き商店",

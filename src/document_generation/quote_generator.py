@@ -62,10 +62,10 @@ class DriveNotConnectedError(Exception):
 
 
 class InvalidApproverEmailError(Exception):
-    """`approver_email`が`DocumentApprover`テーブルに`active=true`で登録されていない場合に
-    送出する(2026-08-18)。フロントのセレクトボックスはUI制約に過ぎずAPIを直接叩けば
-    任意のメールアドレスを送信できてしまうため、サーバー側で必ず検証する
-    (shirokuma-secレビューBLOCKER対応)。"""
+    """`approver_emails`が空、または`DocumentApprover`テーブルに`active=true`で登録されて
+    いないメールアドレスを1件でも含む場合に送出する(2026-08-18、2026-08-27に複数承認者
+    対応)。フロントのチェックボックスはUI制約に過ぎずAPIを直接叩けば任意のメールアドレスを
+    送信できてしまうため、サーバー側で必ず全件検証する(shirokuma-secレビューBLOCKER対応)。"""
 
 
 class DuplicateApprovalRequestError(Exception):
@@ -300,7 +300,7 @@ class QuoteApprovalResult:
 def request_quote_approval(
     notion_page_id: str,
     *,
-    approver_email: str,
+    approver_emails: list[str],
     requested_by_email: str,
     message: str = "",
     registry: TemplateRegistry | None = None,
@@ -309,12 +309,16 @@ def request_quote_approval(
     overrides: QuoteOverrides | None = None,
 ) -> QuoteApprovalResult:
     """見積書を生成して一時格納フォルダ(`QUOTE_PENDING_APPROVAL_FOLDER_ID`)へ保存し、
-    Drive純正の「承認をリクエスト」機能で`approver_email`宛に承認リクエストを送信する
-    (2026-08-18)。
+    Drive純正の「承認をリクエスト」機能で`approver_emails`宛に承認リクエストを送信する
+    (2026-08-18、2026-08-27に複数承認者対応)。1回の承認リクエスト＝Drive上の1つの
+    approvalであり、複数の`reviewerEmails`を持たせる形にする(承認者ごとに別々のapprovalを
+    作るわけではない)。Drive側は全員が承認して初めて`APPROVED`になり、1人でも却下すれば
+    全体が`DECLINED`になる（docs/quote_approval_note.md参照）。
 
-    `approver_email`はクライアント(フロントのセレクトボックス)から渡された値をそのまま
-    信頼せず、`DocumentApprover`テーブルに`active=true`で登録済みかをここで検証する
-    （未登録なら`InvalidApproverEmailError`。UI制約に過ぎないセレクトボックスを介さず
+    `approver_emails`はクライアント(フロントのチェックボックス)から渡された値をそのまま
+    信頼せず、空でないこと・順序を保ったまま重複除去したうえで全件が`DocumentApprover`
+    テーブルに`active=true`で登録済みかをここで検証する
+    （1件でも未登録なら`InvalidApproverEmailError`。UI制約に過ぎないチェックボックスを介さず
     APIを直接叩けば任意のメールアドレス——社外含む——へ本物のDrive承認リクエストを送信
     できてしまう問題への対処、shirokuma-secレビューBLOCKER対応）。
 
@@ -337,10 +341,25 @@ def request_quote_approval(
     リクエストが記録なしで残り続けないよう`cancel_approval()`で取り消す（いずれも
     shirokuma-secレビューBLOCKER対応）。
     """
-    if not is_active_document_approver(approver_email):
+    if not approver_emails:
+        raise InvalidApproverEmailError("承認者を1人以上選択してください。")
+    # 順序を保ったまま重複を除去する(dict.fromkeysはPython 3.7+で挿入順を保持する)。
+    deduped_approver_emails = list(dict.fromkeys(approver_emails))
+    invalid_approver_emails = [
+        email for email in deduped_approver_emails if not is_active_document_approver(email)
+    ]
+    if invalid_approver_emails:
+        # 実際にこのエラーが起きるのは「画面を開いたまま管理者が承認者を無効化した」ケースが
+        # 主(送信直前まで画面上はチェックできていた承認者が、サーバー側検証の時点では
+        # 無効化されている)。生のメールアドレスの列挙だけでは営業担当者が何をすればいいか
+        # 分からないため、次の行動(再読み込みして選び直す)を明記する(obasan-qualityレビュー
+        # WARN対応)。氏名への変換は行わない——Python側はDocumentApproverの氏名を持たない設計
+        # (承認リクエスト送信時にPython側へ渡されるのは選択済みのapprover_emailsのみで、
+        # DocumentApprover自体はdashboard側がPrismaで直接CRUDする、モジュールdocstring参照)の
+        # ため、ここで氏名解決のためだけにDBアクセスを増やすのは今回のスコープでは見送る。
         raise InvalidApproverEmailError(
-            f"{approver_email}は承認者として登録されていません。承認者一覧に登録済みの"
-            "メールアドレスを指定してください。"
+            f"{'、'.join(invalid_approver_emails)}は承認者として登録されていません。"
+            "ページを再読み込みして承認者を選び直してください。"
         )
     if find_in_progress_approval(notion_page_id, _CATEGORY) is not None:
         raise DuplicateApprovalRequestError(
@@ -395,7 +414,7 @@ def request_quote_approval(
 
     try:
         drive_approval_id = drive_client.start_approval(
-            copy_id, reviewer_email=approver_email, message=message
+            copy_id, reviewer_emails=deduped_approver_emails, message=message
         )
     except Exception:
         logger.exception(
@@ -413,7 +432,7 @@ def request_quote_approval(
             category=_CATEGORY,
             drive_file_id=copy_id,
             drive_approval_id=drive_approval_id,
-            approver_email=approver_email,
+            approver_emails=deduped_approver_emails,
             requested_by_email=requested_by_email,
         )
     except Exception:

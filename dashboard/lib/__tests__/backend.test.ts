@@ -259,7 +259,7 @@ describe("revenue target sheet settings", () => {
 
     const result = await requestQuoteApproval({
       projectId: "abc123",
-      approverEmail: "approver@example.com",
+      approverEmails: ["approver@example.com"],
       requestedByEmail: "rep@example.com",
       message: "ご確認お願いします",
     });
@@ -271,10 +271,37 @@ describe("revenue target sheet settings", () => {
         method: "POST",
         body: JSON.stringify({
           project_id: "abc123",
-          approver_email: "approver@example.com",
+          approver_emails: ["approver@example.com"],
           requested_by_email: "rep@example.com",
           message: "ご確認お願いします",
         }),
+      })
+    );
+  });
+
+  it("requestQuoteApproval: 複数承認者を渡すとapprover_emailsに全件配列で渡る", async () => {
+    const responseBody = {
+      drive_file_id: "file-1",
+      drive_approval_id: "approval-1",
+      document_approval_id: "row-1",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(responseBody), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestQuoteApproval({
+      projectId: "abc123",
+      approverEmails: ["a@example.com", "b@example.com"],
+      requestedByEmail: "rep@example.com",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/documents/quote/request-approval",
+      expect.objectContaining({
+        body: expect.stringContaining(
+          JSON.stringify(["a@example.com", "b@example.com"])
+        ),
       })
     );
   });
@@ -290,7 +317,7 @@ describe("revenue target sheet settings", () => {
     await expect(
       requestQuoteApproval({
         projectId: "abc123",
-        approverEmail: "approver@example.com",
+        approverEmails: ["approver@example.com"],
         requestedByEmail: "rep@example.com",
       })
     ).rejects.toMatchObject({ status: 422, message: "rep@example.comのDrive連携が未接続です。" });

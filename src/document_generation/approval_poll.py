@@ -118,8 +118,11 @@ def _resolve_one(approval: DocumentApproval, *, notion_client: Any) -> str | Non
     notify_quote_approval_result(
         requested_by_email=approval.requested_by_email,
         project_name=project_name,
-        approver_email=approval.approver_email,
+        approver_emails=approval.approver_emails,
         status=new_status,
+        # 却下者特定(未検証のフォールバック付き、approval_notify._extract_declined_reviewers
+        # 参照)のため、既に取得済みのget_approval()の生レスポンスをそのまま渡す。
+        approval_state=approval_state,
     )
     return new_status
 

@@ -384,7 +384,26 @@ model DocumentApproval {
   category         String
   driveFileId      String
   driveApprovalId  String
-  approverEmail    String
+  // 複数承認者対応(2026-08-27)。全員が承認して初めてDrive側もAPPROVEDになる
+  // (Drive Approvals APIの仕様、docs/quote_approval_note.md参照)。読み取りは必ずこちらを使う。
+  //
+  // DB上は意図的にまだNOT NULL制約を付けていない(nullable、shirokuma-secレビューBLOCKER
+  // 対応)。`prisma migrate deploy`はビルド時に走るため、新デプロイが公開される前の数十秒は
+  // このカラムへ触れない旧INSERT文がまだ本番で動いており、その窓でNOT NULL制約を付けると
+  // INSERTがconstraint violationで失敗する(migration.sqlのコメント参照)。新コードが本番で
+  // 安定稼働してから別マイグレーションでNOT NULL化する予定。
+  //
+  // Prismaのスカラーリスト(`String[]`)はスキーマ定義言語上optional(`String[]?`)にできない
+  // 仕様のため、DB側がnullableでもここでは`String[]`のまま表現する。Prisma Clientは
+  // PostgresのNULL配列を読み取り時に空配列`[]`として返すため実害は無い(Python側(psycopg)は
+  // 生SQLで直接読むためNULLがそのままNoneになる点が異なり、こちらは
+  // src/document_generation/approval_db.pyのフォールバック処理で対応している)。
+  approverEmails   String[]
+  // 旧単一承認者カラム。expand方式マイグレーションのため今回は削除せず、nullable化のみ
+  // 行った。新コードは先頭1件をdual-writeするが、これは旧コードへロールバックした場合に
+  // 通知文面がNoneにならないための経過措置であり、approverEmailsが正。安定後に別
+  // マイグレーションで削除する予定(docs/quote_approval_note.md参照)。
+  approverEmail    String?
   // 承認リクエストを送った営業担当者のメール(RepDriveConnection.repEmailと対応)。
   requestedByEmail String
   // "in_progress" | "approved" | "declined" | "cancelled"

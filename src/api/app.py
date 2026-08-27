@@ -765,7 +765,7 @@ class QuoteApprovalRequest(BaseModel):
     """
 
     project_id: str
-    approver_email: str
+    approver_emails: list[str]
     requested_by_email: str
     message: str = ""
     # 書類作成画面の手動入力欄(2026-08-19追加)。全項目任意。
@@ -796,7 +796,7 @@ def request_document_quote_approval(payload: QuoteApprovalRequest) -> dict[str, 
     try:
         result = request_quote_approval(
             payload.project_id,
-            approver_email=payload.approver_email,
+            approver_emails=payload.approver_emails,
             requested_by_email=payload.requested_by_email,
             message=payload.message,
             overrides=overrides,
@@ -806,7 +806,8 @@ def request_document_quote_approval(payload: QuoteApprovalRequest) -> dict[str, 
         # 「Drive連携が必要です」+設定画面への導線を出せるよう、422で明確に区別する。
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except InvalidApproverEmailError as exc:
-        # approver_emailがDocumentApproverに未登録(active=trueで存在しない)の場合。
+        # approver_emailsが空、またはDocumentApproverに未登録(active=trueで存在しない)の
+        # メールアドレスを含む場合。
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except DuplicateApprovalRequestError as exc:
         # 同じ案件・カテゴリで既にin_progressの承認リクエストが存在する場合。

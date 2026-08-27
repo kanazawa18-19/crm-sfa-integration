@@ -165,7 +165,9 @@ def test_start_approval_sends_reviewer_and_message_and_returns_approval_id(
 ) -> None:
     requests_mock.post(f"{BASE}/file-1/approvals:start", json={"approvalId": "approval-1"})
 
-    approval_id = client.start_approval("file-1", reviewer_email="approver@example.com", message="ご確認お願いします")
+    approval_id = client.start_approval(
+        "file-1", reviewer_emails=["approver@example.com"], message="ご確認お願いします"
+    )
 
     assert approval_id == "approval-1"
     sent_body = requests_mock.last_request.json()
@@ -179,12 +181,29 @@ def test_start_approval_sends_reviewer_and_message_and_returns_approval_id(
     assert requests_mock.last_request.qs["fields"] == ["*"]
 
 
+def test_start_approval_sends_all_reviewer_emails_when_multiple(
+    requests_mock, client: GoogleDriveDocClient
+) -> None:
+    """複数承認者(2026-08-27対応)を渡した場合、全員分が`reviewerEmails`配列として1つの
+    approvalリクエストに渡ること(承認者ごとに別々のapprovalは作らない)。"""
+    requests_mock.post(f"{BASE}/file-1/approvals:start", json={"approvalId": "approval-1"})
+
+    approval_id = client.start_approval(
+        "file-1", reviewer_emails=["approver1@example.com", "approver2@example.com"]
+    )
+
+    assert approval_id == "approval-1"
+    sent_body = requests_mock.last_request.json()
+    assert sent_body["reviewerEmails"] == ["approver1@example.com", "approver2@example.com"]
+    assert requests_mock.call_count == 1
+
+
 def test_start_approval_omits_review_instructions_when_message_empty(
     requests_mock, client: GoogleDriveDocClient
 ) -> None:
     requests_mock.post(f"{BASE}/file-1/approvals:start", json={"approvalId": "approval-1"})
 
-    client.start_approval("file-1", reviewer_email="approver@example.com")
+    client.start_approval("file-1", reviewer_emails=["approver@example.com"])
 
     sent_body = requests_mock.last_request.json()
     assert "message" not in sent_body
@@ -202,7 +221,7 @@ def test_start_approval_falls_back_to_list_approvals_when_response_has_no_approv
         json={"items": [{"approvalId": "approval-1", "status": "IN_PROGRESS"}]},
     )
 
-    approval_id = client.start_approval("file-1", reviewer_email="approver@example.com")
+    approval_id = client.start_approval("file-1", reviewer_emails=["approver@example.com"])
 
     assert approval_id == "approval-1"
     assert "supportsalldrives" not in requests_mock.last_request.qs
@@ -219,7 +238,7 @@ def test_start_approval_raises_when_no_approval_id_anywhere(
     requests_mock.get(f"{BASE}/file-1/approvals", json={"items": []})
 
     with pytest.raises(GoogleDriveApiError):
-        client.start_approval("file-1", reviewer_email="approver@example.com")
+        client.start_approval("file-1", reviewer_emails=["approver@example.com"])
 
 
 def test_start_approval_retries_list_approvals_until_found(
@@ -239,7 +258,7 @@ def test_start_approval_retries_list_approvals_until_found(
     ]
     requests_mock.get(f"{BASE}/file-1/approvals", responses)
 
-    approval_id = client.start_approval("file-1", reviewer_email="approver@example.com")
+    approval_id = client.start_approval("file-1", reviewer_emails=["approver@example.com"])
 
     assert approval_id == "approval-1"
     assert len(sleep_calls) == 2

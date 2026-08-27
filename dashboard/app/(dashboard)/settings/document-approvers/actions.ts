@@ -6,8 +6,8 @@ import { requireRole } from "@/lib/auth";
 
 // 見積書の承認者候補(平本さん・黒井さん等)の管理(2026-08-18)。DocumentApproverは
 // このdashboard側のPrisma CRUDで完結する(RepGmailConnection等と異なりPythonバックエンド側は
-// 読み書きしない——承認リクエスト送信時は選択済みのapprover_emailのみが渡される)。
-// app/(dashboard)/users/page.tsxのServer Actionパターンをそのまま踏襲する。
+// 読み書きしない——承認リクエスト送信時は選択済みのapprover_emails(複数選択可、2026-08-27)
+// のみが渡される)。app/(dashboard)/users/page.tsxのServer Actionパターンをそのまま踏襲する。
 
 export async function createDocumentApprover(formData: FormData) {
   await requireRole("master");

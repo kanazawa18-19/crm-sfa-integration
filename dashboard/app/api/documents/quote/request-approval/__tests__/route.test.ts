@@ -40,17 +40,26 @@ describe("POST /api/documents/quote/request-approval", () => {
     getCurrentUserMock.mockResolvedValue(null);
 
     const response = await POST(
-      makeRequest({ project_id: "abc", approver_email: "approver@example.com" })
+      makeRequest({ project_id: "abc", approver_emails: ["approver@example.com"] })
     );
 
     expect(response.status).toBe(401);
     expect(requestQuoteApprovalMock).not.toHaveBeenCalled();
   });
 
-  it("project_id・approver_emailが欠けている場合は400を返す", async () => {
+  it("project_id・approver_emailsが欠けている場合は400を返す", async () => {
     getCurrentUserMock.mockResolvedValue({ email: "rep@example.com" });
 
     const response = await POST(makeRequest({ project_id: "abc" }));
+
+    expect(response.status).toBe(400);
+    expect(requestQuoteApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("approver_emailsが空配列の場合は400を返す", async () => {
+    getCurrentUserMock.mockResolvedValue({ email: "rep@example.com" });
+
+    const response = await POST(makeRequest({ project_id: "abc", approver_emails: [] }));
 
     expect(response.status).toBe(400);
     expect(requestQuoteApprovalMock).not.toHaveBeenCalled();
@@ -67,7 +76,7 @@ describe("POST /api/documents/quote/request-approval", () => {
     const response = await POST(
       makeRequest({
         project_id: "abc",
-        approver_email: "approver@example.com",
+        approver_emails: ["approver@example.com"],
         // 詐称を試みても無視されることを確認する。
         requested_by_email: "someone-else@example.com",
         message: "ご確認お願いします",
@@ -77,7 +86,7 @@ describe("POST /api/documents/quote/request-approval", () => {
     expect(response.status).toBe(200);
     expect(requestQuoteApprovalMock).toHaveBeenCalledWith({
       projectId: "abc",
-      approverEmail: "approver@example.com",
+      approverEmails: ["approver@example.com"],
       requestedByEmail: "rep@example.com",
       message: "ご確認お願いします",
       overrides: {
@@ -91,6 +100,44 @@ describe("POST /api/documents/quote/request-approval", () => {
     });
   });
 
+  it("approver_emailsに複数件渡すと全件そのまま中継する", async () => {
+    getCurrentUserMock.mockResolvedValue({ email: "rep@example.com" });
+    requestQuoteApprovalMock.mockResolvedValue({
+      drive_file_id: "file-1",
+      drive_approval_id: "approval-1",
+      document_approval_id: "row-1",
+    });
+
+    await POST(
+      makeRequest({
+        project_id: "abc",
+        approver_emails: ["a@example.com", "b@example.com"],
+      })
+    );
+
+    expect(requestQuoteApprovalMock).toHaveBeenCalledWith(
+      expect.objectContaining({ approverEmails: ["a@example.com", "b@example.com"] })
+    );
+  });
+
+  it("移行期の互換: 旧フォーマットの単数approver_email(文字列)も1要素配列として受理する", async () => {
+    getCurrentUserMock.mockResolvedValue({ email: "rep@example.com" });
+    requestQuoteApprovalMock.mockResolvedValue({
+      drive_file_id: "file-1",
+      drive_approval_id: "approval-1",
+      document_approval_id: "row-1",
+    });
+
+    const response = await POST(
+      makeRequest({ project_id: "abc", approver_email: "approver@example.com" })
+    );
+
+    expect(response.status).toBe(200);
+    expect(requestQuoteApprovalMock).toHaveBeenCalledWith(
+      expect.objectContaining({ approverEmails: ["approver@example.com"] })
+    );
+  });
+
   it("手動入力欄(overrides)をそのまま中継する", async () => {
     getCurrentUserMock.mockResolvedValue({ email: "rep@example.com" });
     requestQuoteApprovalMock.mockResolvedValue({
@@ -102,7 +149,7 @@ describe("POST /api/documents/quote/request-approval", () => {
     await POST(
       makeRequest({
         project_id: "abc",
-        approver_email: "approver@example.com",
+        approver_emails: ["approver@example.com"],
         memo: "特記事項です",
         client_name: "テスト商店",
         service_name: "リピッテ",
@@ -133,7 +180,7 @@ describe("POST /api/documents/quote/request-approval", () => {
     );
 
     const response = await POST(
-      makeRequest({ project_id: "abc", approver_email: "approver@example.com" })
+      makeRequest({ project_id: "abc", approver_emails: ["approver@example.com"] })
     );
 
     expect(response.status).toBe(422);

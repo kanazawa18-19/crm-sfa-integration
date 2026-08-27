@@ -355,8 +355,9 @@ def _patch_approver_and_duplicate_checks(
 def test_request_quote_approval_raises_when_approver_not_registered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """approver_emailがDocumentApproverに未登録(active=trueで存在しない)の場合、Driveへは
-    一切アクセスせずInvalidApproverEmailErrorを送出する(shirokuma-secレビューBLOCKER対応)。"""
+    """approver_emailsがDocumentApproverに未登録(active=trueで存在しない)メールアドレスを
+    含む場合、Driveへは一切アクセスせずInvalidApproverEmailErrorを送出する
+    (shirokuma-secレビューBLOCKER対応)。"""
     _patch_approver_and_duplicate_checks(monkeypatch, approver_active=False)
     drive_client = FakeGoogleDriveDocClient()
     monkeypatch.setattr(
@@ -366,7 +367,59 @@ def test_request_quote_approval_raises_when_approver_not_registered(
     with pytest.raises(InvalidApproverEmailError, match="approver@example.com"):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
+            requested_by_email="rep@example.com",
+            registry=FakeTemplateRegistry({}),
+        )
+
+    assert drive_client.copy_calls == []
+
+
+def test_request_quote_approval_raises_when_approver_emails_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """承認者を1人も選択していない場合、Driveへは一切アクセスせず
+    InvalidApproverEmailErrorを送出する。"""
+    _patch_approver_and_duplicate_checks(monkeypatch)
+    drive_client = FakeGoogleDriveDocClient()
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+
+    with pytest.raises(InvalidApproverEmailError, match="承認者を1人以上選択してください"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_emails=[],
+            requested_by_email="rep@example.com",
+            registry=FakeTemplateRegistry({}),
+        )
+
+    assert drive_client.copy_calls == []
+
+
+def test_request_quote_approval_raises_when_one_of_multiple_approvers_not_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """複数承認者のうち1件でも未登録の場合、Driveへは一切アクセスせず
+    InvalidApproverEmailErrorを送出する(未登録分のみをメッセージに含める)。"""
+    registered = {"approver@example.com"}
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.is_active_document_approver",
+        lambda email: email in registered,
+    )
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.find_in_progress_approval",
+        lambda notion_page_id, category: None,
+    )
+    drive_client = FakeGoogleDriveDocClient()
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.GoogleDriveDocClient", lambda **kwargs: drive_client
+    )
+
+    with pytest.raises(InvalidApproverEmailError, match="outsider@example.com"):
+        request_quote_approval(
+            PAGE_ID,
+            approver_emails=["approver@example.com", "outsider@example.com"],
             requested_by_email="rep@example.com",
             registry=FakeTemplateRegistry({}),
         )
@@ -388,7 +441,7 @@ def test_request_quote_approval_raises_when_duplicate_in_progress_request_exists
     with pytest.raises(DuplicateApprovalRequestError, match=PAGE_ID):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=FakeTemplateRegistry({}),
         )
@@ -409,7 +462,7 @@ def test_request_quote_approval_raises_when_rep_not_connected(monkeypatch: pytes
     with pytest.raises(DriveNotConnectedError, match="rep@example.com"):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=FakeTemplateRegistry({}),
         )
@@ -463,7 +516,7 @@ def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
 
     result = request_quote_approval(
         PAGE_ID,
-        approver_email="approver@example.com",
+        approver_emails=["approver@example.com"],
         requested_by_email="rep@example.com",
         message="ご確認お願いします",
         registry=registry,
@@ -503,7 +556,7 @@ def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
     assert drive_client.deleted_ids == []
 
     assert drive_client.start_approval_calls == [
-        {"file_id": "copy-123", "reviewer_email": "approver@example.com", "message": "ご確認お願いします"}
+        {"file_id": "copy-123", "reviewer_emails": ["approver@example.com"], "message": "ご確認お願いします"}
     ]
 
     assert inserted_calls == [
@@ -512,7 +565,7 @@ def test_request_quote_approval_copies_into_pending_folder_and_starts_approval(
             "category": "見積書",
             "drive_file_id": "copy-123",
             "drive_approval_id": "approval-1",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "requested_by_email": "rep@example.com",
         }
     ]
@@ -558,7 +611,7 @@ def test_request_quote_approval_deletes_copy_and_does_not_create_approval_row_wh
     with pytest.raises(TemplateSheetNotFoundError):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=registry,
             notion_client=FakeProjectNotionClient(raw_page),
@@ -595,6 +648,45 @@ def _setup_request_quote_approval_success_dependencies(
     )
 
 
+def test_request_quote_approval_dedupes_approver_emails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同じメールアドレスが複数回指定されても、順序を保ったまま重複除去してから
+    start_approval/insert_document_approvalへ渡す(2026-08-27複数承認者対応)。"""
+    raw_page = build_raw_project_page(page_id=PAGE_ID, proposed_services=["リピッテ"])
+    template = TemplateInfo(file_id="TEMPLATE_ID", file_name="x.xlsx", mime_type_hint=None)
+    registry = FakeTemplateRegistry({("見積書", "リピッテホテル"): template})
+    drive_client = FakeGoogleDriveDocClient()
+    _setup_request_quote_approval_success_dependencies(monkeypatch, drive_client=drive_client)
+    inserted_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "src.document_generation.quote_generator.insert_document_approval",
+        lambda **kwargs: inserted_calls.append(kwargs) or "approval-row-id",
+    )
+
+    request_quote_approval(
+        PAGE_ID,
+        approver_emails=[
+            "approver1@example.com",
+            "approver2@example.com",
+            "approver1@example.com",
+        ],
+        requested_by_email="rep@example.com",
+        registry=registry,
+        notion_client=FakeProjectNotionClient(raw_page),
+        client_master_client=FakeClientMasterClient(),
+    )
+
+    assert drive_client.start_approval_calls == [
+        {
+            "file_id": "copy-123",
+            "reviewer_emails": ["approver1@example.com", "approver2@example.com"],
+            "message": "",
+        }
+    ]
+    assert inserted_calls[0]["approver_emails"] == ["approver1@example.com", "approver2@example.com"]
+
+
 def test_request_quote_approval_deletes_copy_when_pdf_conversion_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -619,7 +711,7 @@ def test_request_quote_approval_deletes_copy_when_pdf_conversion_fails(
     with pytest.raises(RuntimeError, match="export failed"):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=registry,
             notion_client=FakeProjectNotionClient(raw_page),
@@ -655,7 +747,7 @@ def test_request_quote_approval_deletes_copy_when_start_approval_fails(
     with pytest.raises(RuntimeError, match="start_approval failed"):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=registry,
             notion_client=FakeProjectNotionClient(raw_page),
@@ -688,7 +780,7 @@ def test_request_quote_approval_cancels_drive_approval_when_db_insert_fails(
     with pytest.raises(RuntimeError, match="db insert failed"):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=registry,
             notion_client=FakeProjectNotionClient(raw_page),
@@ -696,7 +788,7 @@ def test_request_quote_approval_cancels_drive_approval_when_db_insert_fails(
         )
 
     assert drive_client.start_approval_calls == [
-        {"file_id": "copy-123", "reviewer_email": "approver@example.com", "message": ""}
+        {"file_id": "copy-123", "reviewer_emails": ["approver@example.com"], "message": ""}
     ]
     assert drive_client.cancel_approval_calls == [{"file_id": "copy-123", "approval_id": "approval-1"}]
 
@@ -724,7 +816,7 @@ def test_request_quote_approval_still_raises_original_error_when_cancel_approval
     with pytest.raises(RuntimeError, match="db insert failed"):
         request_quote_approval(
             PAGE_ID,
-            approver_email="approver@example.com",
+            approver_emails=["approver@example.com"],
             requested_by_email="rep@example.com",
             registry=registry,
             notion_client=FakeProjectNotionClient(raw_page),

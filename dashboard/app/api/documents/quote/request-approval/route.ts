@@ -22,21 +22,50 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "リクエストボディがJSONとして不正です" }, { status: 400 });
   }
 
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    typeof (payload as { project_id?: unknown }).project_id !== "string" ||
-    typeof (payload as { approver_email?: unknown }).approver_email !== "string"
-  ) {
+  if (typeof payload !== "object" || payload === null) {
     return NextResponse.json(
-      { detail: "project_id と approver_email は必須です" },
+      { detail: "project_id と approver_emails は必須です" },
       { status: 400 }
     );
   }
 
-  const body = payload as {
+  const rawPayload = payload as {
+    project_id?: unknown;
+    approver_emails?: unknown;
+    // 移行期の互換: デプロイ直後に古いJSを掴んだままのブラウザから単数の
+    // approver_email(文字列)が送られてきても400にしない(2026-08-27)。
+    approver_email?: unknown;
+    message?: string;
+    memo?: string;
+    client_name?: string;
+    service_name?: string;
+    initial_fee?: string;
+    monthly_fee?: string;
+    creator_name?: string;
+  };
+
+  const rawApproverEmails: unknown[] | null = Array.isArray(rawPayload.approver_emails)
+    ? rawPayload.approver_emails
+    : typeof rawPayload.approver_email === "string"
+      ? [rawPayload.approver_email]
+      : null;
+
+  if (
+    typeof rawPayload.project_id !== "string" ||
+    rawApproverEmails === null ||
+    rawApproverEmails.length === 0 ||
+    !rawApproverEmails.every((email): email is string => typeof email === "string")
+  ) {
+    return NextResponse.json(
+      { detail: "project_id と approver_emails は必須です" },
+      { status: 400 }
+    );
+  }
+
+  const approverEmails: string[] = rawApproverEmails as string[];
+
+  const body = rawPayload as {
     project_id: string;
-    approver_email: string;
     message?: string;
     memo?: string;
     client_name?: string;
@@ -49,7 +78,7 @@ export async function POST(request: NextRequest) {
   try {
     const result = await requestQuoteApproval({
       projectId: body.project_id,
-      approverEmail: body.approver_email,
+      approverEmails,
       requestedByEmail: user.email,
       message: body.message ?? "",
       overrides: {

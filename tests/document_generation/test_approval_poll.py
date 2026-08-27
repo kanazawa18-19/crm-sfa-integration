@@ -27,7 +27,7 @@ def _make_approval(
         category="見積書",
         drive_file_id=drive_file_id,
         drive_approval_id="drive-approval-1",
-        approver_email="approver@example.com",
+        approver_emails=["approver@example.com"],
         requested_by_email="rep@example.com",
         status=status,
         created_at=datetime(2026, 8, 18, tzinfo=timezone.utc),
@@ -97,8 +97,9 @@ def test_poll_moves_file_and_appends_notion_file_link_when_approved(monkeypatch:
         {
             "requested_by_email": "rep@example.com",
             "project_name": "テスト案件",
-            "approver_email": "approver@example.com",
+            "approver_emails": ["approver@example.com"],
             "status": APPROVED,
+            "approval_state": {"status": "APPROVED"},
         }
     ]
     assert len(notion_client.update_calls) == 1
@@ -180,6 +181,9 @@ def test_poll_does_not_move_or_update_notion_when_declined(monkeypatch: pytest.M
     assert notion_client.update_calls == []
     assert status_updates == [("row-1", DECLINED)]
     assert notify_calls[0]["status"] == DECLINED
+    # 却下者特定(未検証のフォールバック付き、approval_notify._extract_declined_reviewers参照)の
+    # ためget_approval()の生レスポンスをそのままnotify_quote_approval_result()へ渡す。
+    assert notify_calls[0]["approval_state"] == {"status": "DECLINED"}
 
 
 def test_poll_does_not_move_or_update_notion_when_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:

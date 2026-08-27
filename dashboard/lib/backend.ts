@@ -389,7 +389,7 @@ export interface QuoteOverridesInput {
 
 export interface QuoteApprovalRequest {
   projectId: string;
-  approverEmail: string;
+  approverEmails: string[];
   requestedByEmail: string;
   message?: string;
   overrides?: QuoteOverridesInput;
@@ -408,7 +408,7 @@ export function requestQuoteApproval(
     method: "POST",
     body: {
       project_id: request.projectId,
-      approver_email: request.approverEmail,
+      approver_emails: request.approverEmails,
       requested_by_email: request.requestedByEmail,
       message: request.message ?? "",
       memo: request.overrides?.memo,

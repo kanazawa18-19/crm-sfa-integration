@@ -126,9 +126,9 @@ class FakeGoogleDriveDocClient:
     def replace_content(self, file_id: str, *, content: bytes, mime_type: str) -> None:
         self.replace_content_calls.append({"file_id": file_id, "content": content, "mime_type": mime_type})
 
-    def start_approval(self, file_id: str, *, reviewer_email: str, message: str = "") -> str:
+    def start_approval(self, file_id: str, *, reviewer_emails: list[str], message: str = "") -> str:
         self.start_approval_calls.append(
-            {"file_id": file_id, "reviewer_email": reviewer_email, "message": message}
+            {"file_id": file_id, "reviewer_emails": reviewer_emails, "message": message}
         )
         return self.approval_id
 

@@ -57,10 +57,10 @@ export default function DocumentsPageClient({
   const [serviceName, setServiceName] = useState("");
   const [creatorName, setCreatorName] = useState(creatorNameDefault);
 
-  // 見積書の承認リクエスト送信(2026-08-18)。
+  // 見積書の承認リクエスト送信(2026-08-18、2026-08-27に複数承認者対応)。
   // 先頭の承認者を自動選択すると誤って別の承認者へ送るリスクがあるため、初期値は
   // 「未選択」にする(obasan-qualityレビューWARN対応)。
-  const [approverEmail, setApproverEmail] = useState("");
+  const [approverEmails, setApproverEmails] = useState<string[]>([]);
   const [approvalMessage, setApprovalMessage] = useState("");
   const [requestingApproval, setRequestingApproval] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
@@ -233,8 +233,14 @@ export default function DocumentsPageClient({
     }
   }
 
+  function toggleApproverEmail(email: string) {
+    setApproverEmails((prev) =>
+      prev.includes(email) ? prev.filter((value) => value !== email) : [...prev, email]
+    );
+  }
+
   async function handleRequestApproval() {
-    if (!selectedProject || !approverEmail) {
+    if (!selectedProject || approverEmails.length === 0) {
       return;
     }
 
@@ -249,7 +255,7 @@ export default function DocumentsPageClient({
         redirect: "manual",
         body: JSON.stringify({
           project_id: selectedProject.notion_page_id,
-          approver_email: approverEmail,
+          approver_emails: approverEmails,
           message: approvalMessage,
           memo,
           initial_fee: initialFee,
@@ -281,6 +287,9 @@ export default function DocumentsPageClient({
   const showNoCandidates =
     query.trim() !== "" && hasSearched && !searching && !searchError && candidates.length === 0;
   const hiddenMatchCount = totalMatched - candidates.length;
+  // 送信ボタン直前の「送信先」確認表示用(2026-08-27、obasan-qualityレビューWARN対応)。
+  // window.confirm()のようなモーダルは使わず、選択状態をその場で見えるテキストにする。
+  const selectedApprovers = approvers.filter((approver) => approverEmails.includes(approver.email));
 
   return (
     <div className="flex flex-col gap-8">
@@ -511,22 +520,32 @@ export default function DocumentsPageClient({
             </p>
           ) : (
             <div className="flex flex-col gap-3">
-              <label className="flex flex-col gap-1 text-sm text-gray-700">
-                承認者
-                <select
-                  value={approverEmail}
-                  onChange={(event) => setApproverEmail(event.target.value)}
-                  className="w-full max-w-xs rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
-                >
-                  <option value="">選択してください</option>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                承認者を選ぶ前にご確認ください（Googleドライブ純正の承認機能の仕様）。
+                <ul className="mt-1 list-disc pl-5">
+                  <li>選択した承認者<strong>全員が承認</strong>して初めて完了します。</li>
+                  <li><strong>1人でも却下</strong>すると全体が却下扱いになります。</li>
+                  <li>承認待ちの間に<strong>ファイルが編集されると全員の承認がリセット</strong>
+                    され、再承認が必要になります。</li>
+                </ul>
+              </div>
+              <div className="flex flex-col gap-1 text-sm text-gray-700">
+                承認者(複数選択可)
+                <div className="flex max-w-xs flex-col gap-1.5 rounded-md border border-gray-300 px-3 py-2">
                   {approvers.map((approver) => (
-                    <option key={approver.id} value={approver.email}>
+                    <label key={approver.id} className="flex items-center gap-2 text-sm text-gray-900">
+                      <input
+                        type="checkbox"
+                        checked={approverEmails.includes(approver.email)}
+                        onChange={() => toggleApproverEmail(approver.email)}
+                        className="h-4 w-4"
+                      />
                       {approver.name}
                       {approver.title ? `（${approver.title}）` : ""}
-                    </option>
+                    </label>
                   ))}
-                </select>
-              </label>
+                </div>
+              </div>
               <label className="flex flex-col gap-1 text-sm text-gray-700">
                 メッセージ(任意)
                 <textarea
@@ -537,10 +556,17 @@ export default function DocumentsPageClient({
                 />
               </label>
               <div>
+                <p className="mb-2 text-sm text-gray-700">
+                  {selectedApprovers.length === 0
+                    ? "承認者を1人以上選択してください。"
+                    : `送信先: ${selectedApprovers
+                        .map((approver) => `${approver.name}さん`)
+                        .join("、")}（${selectedApprovers.length}名）`}
+                </p>
                 <button
                   type="button"
                   onClick={handleRequestApproval}
-                  disabled={requestingApproval || !approverEmail}
+                  disabled={requestingApproval || approverEmails.length === 0}
                   className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300"
                 >
                   {requestingApproval ? "送信中..." : "承認リクエストを送信"}
