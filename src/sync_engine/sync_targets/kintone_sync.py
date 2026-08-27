@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
 from src.sync_engine.sync_targets.base import SyncTarget
+
+logger = logging.getLogger(__name__)
 
 _DELETE_FLAG_FIELD = "削除フラグ"
 
@@ -34,7 +37,22 @@ class KintoneSyncTarget(SyncTarget):
         self._app = app
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
-        return self._client.get_record(self._app, external_id)
+        try:
+            return self._client.get_record(self._app, external_id)
+        except Exception:
+            # 2026-08-27本番障害対応: 例外自体はここでは握らず呼び出し元（Dispatcher）へ
+            # そのまま伝播させる（呼び出し元がスキップに倒すかどうかを判断する）。
+            # ただし例外メッセージ（例: KintoneApiErrorの「HTTP 400: 不正なリクエストです。」）
+            # だけでは「どのアプリ・どのレコードで失敗したか」が分からず切り分けできなかった
+            # ため、レコードの中身（PII含みうる）は出さずapp/external_id/db_keyという
+            # 識別子だけをここで記録する。
+            logger.exception(
+                "KintoneSyncTarget.get_record failed (app=%r, external_id=%r, db_key=%r)",
+                self._app,
+                external_id,
+                db_key,
+            )
+            raise
 
     def upsert_record(
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None

@@ -78,6 +78,19 @@ def test_get_record_raises_kintone_api_error_on_5xx(
     assert exc_info.value.status_code == 500
 
 
+def test_get_record_raises_kintone_api_error_on_200_missing_record_key(
+    requests_mock, client: HttpKintoneClient
+) -> None:
+    """shirokuma-secレビューWARN対応（2026-08-27）: HTTP 200だがボディに`record`キーを欠く
+    異常応答の場合、raise_for_error()は2xxを素通りするため、生のKeyErrorではなく正規化された
+    KintoneApiErrorになることを確認する。"""
+    requests_mock.get(RECORD_URL, status_code=200, json={"unexpected": "shape"})
+
+    with pytest.raises(KintoneApiError) as exc_info:
+        client.get_record("1", "1001")
+    assert exc_info.value.status_code == 200
+
+
 # --- add_record --------------------------------------------------------------------------
 
 
@@ -97,6 +110,17 @@ def test_add_record_raises_kintone_api_error_on_400(
     requests_mock, client: HttpKintoneClient
 ) -> None:
     requests_mock.post(RECORD_URL, status_code=400, json={"message": "invalid"})
+
+    with pytest.raises(KintoneApiError):
+        client.add_record("1", {"取引先名": "新規取引先"})
+
+
+def test_add_record_raises_kintone_api_error_on_200_missing_id_key(
+    requests_mock, client: HttpKintoneClient
+) -> None:
+    """shirokuma-secレビューWARN対応（2026-08-27）: 200応答で`id`キー自体を欠く想定外の
+    ボディ形状でも、生のKeyErrorではなくKintoneApiErrorへ正規化されること。"""
+    requests_mock.post(RECORD_URL, status_code=200, json={"unexpected": "shape"})
 
     with pytest.raises(KintoneApiError):
         client.add_record("1", {"取引先名": "新規取引先"})

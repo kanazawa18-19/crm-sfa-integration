@@ -30,6 +30,7 @@ from src.sync_engine.clients._http import (
     DEFAULT_MAX_RATE_LIMIT_RETRIES,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    extract_error_message,
     raise_for_error,
     request_with_retry,
 )
@@ -318,7 +319,13 @@ class HttpNotionClient:
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複ページ作成を避けリトライしない。
         response = self._request("POST", "/pages", json_body=body, idempotent=False)
         raise_for_error(response, NotionApiError)
-        page_id: str = response.json()["id"]
+        try:
+            # shirokuma-secレビューWARN対応（2026-08-27）: raise_for_error()通過後（2xx）でも
+            # ボディが期待した形でない場合に生のKeyErrorが飛ばないよう正規化する。詳細な理由は
+            # `zoho_client.py`冒頭の同種コメント参照。
+            page_id: str = response.json()["id"]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise NotionApiError(response.status_code, extract_error_message(response)) from exc
         record_notion_write(
             db_key=self._db_key,
             notion_page_id=page_id,

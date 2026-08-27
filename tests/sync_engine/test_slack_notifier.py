@@ -229,6 +229,29 @@ def test_notify_new_record_issue_includes_action_hint_for_notion_creation_status
     assert "監査ログとNotion上を突き合わせて" in calls[0]["text"]
 
 
+def test_notify_new_record_issue_includes_action_hint_for_source_record_fetch_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-08-27本番障害対応で追加したreason="source_record_fetch_failed"の対処アクション
+    行が含まれること（kuma-qaレビューINFO対応、他のreasonと同じパターンでテストを揃える）。"""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "src.notifications.manager_dm.notify_managers",
+        lambda text, *, log_context: calls.append({"text": text}),
+    )
+    notifier = WebhookSlackNotifier()
+
+    notifier.notify_new_record_issue(
+        db_key="client_master",
+        source_tool=Tool.KINTONE,
+        external_id="kintone-broken",
+        reason="source_record_fetch_failed",
+        detail="detail",
+    )
+
+    assert "kintone/Zoho側APIの障害・レート制限" in calls[0]["text"]
+
+
 def test_notify_new_record_issue_omits_action_hint_for_unknown_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -27,6 +27,7 @@ from src.sync_engine.clients._http import (
     DEFAULT_BACKOFF_BASE_SECONDS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    extract_error_message,
     raise_for_error,
     request_with_retry,
 )
@@ -178,7 +179,13 @@ class HttpSpreadsheetClient:
             idempotent=False,
         )
         raise_for_error(response, SpreadsheetApiError)
-        updated_range = response.json()["updates"]["updatedRange"]
+        try:
+            # shirokuma-secレビューWARN対応（2026-08-27）: raise_for_error()通過後（2xx）でも
+            # ボディが期待した形でない場合に生のKeyErrorが飛ばないよう正規化する。詳細な理由は
+            # `zoho_client.py`冒頭の同種コメント参照。
+            updated_range = response.json()["updates"]["updatedRange"]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise SpreadsheetApiError(response.status_code, extract_error_message(response)) from exc
         match = _UPDATED_RANGE_ROW_PATTERN.search(updated_range)
         if not match:
             raise SpreadsheetApiError(

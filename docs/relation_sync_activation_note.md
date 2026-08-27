@@ -345,7 +345,7 @@ db_key・発火元ツールの組み合わせは限られている**（安全側
 
 ### 運用可視性（Slack通知）
 
-新規レコード作成に関する以下4つのタイミングでSlackへ通知する:
+新規レコード作成に関する以下5つのタイミングでSlackへ通知する:
 
 - ✅ 新規ページ作成成功時（`notify_new_record_created`）
 - ⚠️ 必須プロパティ不足によるスキップ時（`notify_new_record_issue`、
@@ -355,6 +355,9 @@ db_key・発火元ツールの組み合わせは限られている**（安全側
 - 🚨 （最重要）Notion API呼び出し自体が例外で失敗し、ページ作成の成否が不明な時
   （`notify_new_record_issue`、`reason="notion_creation_status_unknown"`。Notion page IDは
   不明なため含まれない。手動でNotion側を直接確認する必要がある）
+- 🚨 （最重要）元レコード（kintone/Zoho側）の取得自体が例外で失敗した時（`notify_new_record_issue`、
+  `reason="source_record_fetch_failed"`。2026-08-27本番障害対応、下記「2026-08-27の本番障害と
+  対応」参照。ページはまだ作成されていない）
 
 **通知先（2026-08-25、送信方式変更）**: 当初は`SLACK_WEBHOOK_URL_ALERT`環境変数のIncoming
 Webhook（`notify_conflict`と同じ「未設定なら無効化」パターン）を想定していたが、本番環境に
@@ -488,6 +491,163 @@ Round1（本ドキュメント冒頭「ロールアウト順序」）と同水�
    - 不完全ページ（🚨アラートでアーカイブに失敗したまま残っているもの）: Notion上で直接
      内容を確認し、アーカイブまたは正式なIdMappingを手動でDBへ登録する（`IdMappingStore`の
      実装（SQLite/`NotionIdMappingStore`）に応じた方法で行うこと）。
+
+### 2026-08-27の本番障害と対応
+
+**事象**: 2026-08-27 15:13 UTC、kintone Webhook（`POST /api/webhooks/kintone`、
+`db_key='client_master'`）が500を返した。原因は`Dispatcher._try_create_new_record()`が
+「元レコードが見つからない（`source_target.get_record()`が`None`を返す）」ケースしか
+想定しておらず、「取得そのものが例外を送出する」ケース（今回は`KintoneApiError`
+「HTTP 400: 不正なリクエストです。」）を考慮していなかったこと。この経路は
+`AUTO_CREATE_NEW_RECORDS_ENABLED`を有効化した2026-08-27まで通らなかったため
+（未設定時は`unknown_record`として`dispatch()`の早い段階でスキップし、
+`_try_create_new_record()`自体が呼ばれない）、それまで露出しなかった。
+
+**対応**: `_try_create_new_record()`内の`source_target.get_record()`呼び出しを
+`try/except`で囲み、`ApiError`（`KintoneApiError`/`ZohoApiError`等）・
+`requests.exceptions.RequestException`（タイムアウト・接続断等）を捕捉した場合は
+例外を伝播させず`DispatchResult(skipped=True, reason="new_record_source_fetch_failed")`
+としてスキップへ倒すよう修正した（`raw_record is None`の既存分岐と同じ「取得できなければ
+スキップ」という方針に統一）。`logger.exception()`でスタックトレースを残しつつ、上記
+「運用可視性（Slack通知）」の`reason="source_record_fetch_failed"`で🚨通知も出す
+（Zoho発の新規レコードでも同じ経路のため、kintone/Zoho両方が対象）。
+
+意図的に`ApiError`/`RequestException`以外（`AttributeError`等のプログラミングエラーが
+疑われる例外）は握らず、従来通り伝播させる。理由はコード中のコメント
+（`src/sync_engine/dispatcher.py`の`_try_create_new_record()`該当箇所）を参照。
+
+あわせて、失敗時にどのレコードで起きたか切り分けられるよう、`KintoneSyncTarget.get_record()`/
+`ZohoSyncTarget.get_record()`（`src/sync_engine/sync_targets/`）で、例外を握らず伝播させたまま
+`logger.exception()`でapp/module・external_id・db_keyをログへ残すようにした（レコードの中身・
+個人情報はログに出さない）。
+
+**未確定の原因調査**（次回同じ障害が起きた場合の切り分け用メモ、コードを読んで分かる範囲。
+本番kintone APIへの実アクセスでの検証は未実施）:
+
+- `client_master`の`get_record`経路自体はRound2で初めて使われたわけではない。
+  `Dispatcher.dispatch()`本体（Notion以外がソースの場合のコンフリクト判定、`other_tools`の
+  現在値取得、`dispatcher.py`内`target.get_record(external_id, db_key=mapping.db_key)`）でも
+  2026-08-14のkintone Webhook有効化以降、既知（`IdMapping`が存在する）レコードに対して
+  同じ`KintoneSyncTarget.get_record()`が呼ばれている。Round2で新しいのは、**まだ`IdMapping`が
+  存在しない・妥当性が未確認のexternal_id**を使って初めて`get_record`を呼ぶ点
+  （`_try_create_new_record()`は未知レコードにのみ到達する）。
+- `app`（kintoneアプリID）は`KintoneSyncTarget.__init__`で固定され、
+  `production_wiring.build_kintone_targets_by_db()`が`KINTONE_APP_ID_CLIENT`環境変数から
+  一度だけ読む。`if not app_id or not api_token: continue`のガードがあるため、この環境変数が
+  未設定・空文字の場合は`client_master`用のターゲットが`targets_by_db_key`に一切登録されず、
+  `_MultiDbKintoneSyncTarget._resolve()`が`None`を返して`get_record`は（例外を出さず）
+  静かに`None`を返す。つまり**空文字・None自体は今回の「例外が飛ぶ」事象の説明にはならない**
+  （それなら`new_record_source_not_found`スキップになっていたはず）。一方、`app_id`の値
+  そのものが正しいかどうか（誤った環境のアプリID、末尾の余分な空白等、コード側では一切
+  検証していない）は次回のログ（上記の`KintoneSyncTarget.get_record()`の`app=...`ログ）で
+  実際の値を確認できる。
+- `HttpKintoneClient.get_record()`は`params={"app": app, "id": record_id}`をそのまま
+  `requests`に渡すのみで、`app`/`id`双方とも形式チェック（数値文字列かどうか等）を一切
+  行っていない。`record_id`はkintone Webhookペイロードの`record["$id"]["value"]`
+  （`kintone_webhook.py`）をそのまま使っており、通常は素の数値文字列のはずだが、
+  実際に届いたペイロードでの値そのものは今回のログには残っていない。
+- 次回発生時は、追加したログ（`KintoneSyncTarget.get_record()`の`app=/external_id=/db_key=`）
+  から、(a) ログの`app`値が実際の`KINTONE_APP_ID_CLIENT`設定値と一致しているか、
+  (b) `external_id`が妥当な数値のkintoneレコード番号に見えるか、の2点を確認する
+  （いずれもコード・設定の目視確認のみで足り、本番kintone APIを叩く必要はない）。
+
+### 2026-08-27の本番障害対応への追加レビュー対応
+
+上記「2026-08-27の本番障害と対応」で追加した`Dispatcher._try_create_new_record()`の
+`try/except`（`ApiError`/`requests.exceptions.RequestException`を握ってスキップへ倒す）に
+対するレビュー（shirokuma-sec/kuma-qa）で出た指摘への対応記録。
+
+**クライアント境界での`KeyError`正規化（shirokuma-secレビューWARN対応）**: `_http.py`の
+`raise_for_error()`は2xxレスポンスなら何もしないため、「HTTP 200だがボディが期待した形で
+ない」場合は`ApiError`でも`RequestException`でもない生の`KeyError`/`IndexError`等が飛び、
+上記のexcept節をすり抜けて再びWebhookが500になる同じクラスの穴が残っていた。実際に
+起こりうる例として、ZohoのOAuthトークンエンドポイントはリフレッシュトークン失効・
+クライアント資格情報不正の際、HTTP 200のままエラーボディ（例:
+`{"error": "invalid_client"}`）を返すことが知られている。
+
+対応として、Dispatcher側でcatchする例外の種類を増やすのではなく、`src/sync_engine/clients/`
+配下の各クライアントで`raise_for_error()`通過後の辞書アクセス・キャストを`try/except`で
+囲み、`ValueError`（JSONデコード失敗含む）/`KeyError`/`IndexError`/`TypeError`/
+`AttributeError`を該当ツールの`ApiError`サブクラスへ正規化した（契約を保証する場所を
+クライアント層に寄せ、呼び出し元が増えるたびにexcept節を増やさずに済むようにする方針）。
+メッセージは`extract_error_message()`（`error`/`message`フィールドのみ最大200文字で拾う
+既存の切り詰め方針）を再利用し、トークン・資格情報が例外メッセージに混入しないようにした。
+ステータスコードは実際のHTTPステータス（この文脈では2xx）をそのまま使う
+（`ApiError.status_code`は他箇所でも「実際に返ってきたステータスを記録する」という
+一貫した使われ方をしているため）。
+
+`src/sync_engine/clients/`配下をひととおり確認し、同じ形（`raise_for_error()`直後の
+未保護な辞書アクセス・キャスト）の箇所を以下すべてに適用した:
+
+- `zoho_client.py`: `_refresh_access_token()`（`body["access_token"]`、レビューで名指しされた
+  箇所）、`insert_record()`（`response.json()["data"][0]`・`result["details"]["id"]`）、
+  `update_record()`（同じく`data[0]`アクセス）
+- `kintone_client.py`: `get_record()`（`response.json()["record"]`、レビューで名指しされた
+  箇所）、`add_record()`（`response.json()["id"]`）
+- `notion_client.py`: `create_page()`（`response.json()["id"]`）。`get_page()`/
+  `query_all_pages()`/`query_page()`/`get_raw_page()`/`update_page()`/`archive_page()`は
+  いずれも`.get()`ベースのアクセスのみ、または生のdictをそのまま返すだけで危険な
+  未保護アクセスが無いことを確認済み
+- `spreadsheet_client.py`: `append_row()`（`response.json()["updates"]["updatedRange"]`）。
+  `_get_header_row()`/`get_row()`/`update_row()`は`.get()`ベースのみで問題無し
+- `notion_lookup.py`/`notion_display_resolver.py`は`raise_for_error()`を呼んでおらず対象外
+
+いずれもテスト（`tests/sync_engine/clients/test_*.py`）で「200＋エラーボディ」または
+「200＋キー欠落」の場合に生の`KeyError`ではなく正規化された`ApiError`サブクラスになる
+ことを確認済み。
+
+**Slack通知テストの追加（kuma-qaレビューINFO対応）**: `_ISSUE_REASON_ACTION_HINTS
+["source_record_fetch_failed"]`に対応するテストが無かったため、`mapping_registration_failed`/
+`notion_creation_status_unknown`と同じパターンで
+`test_notify_new_record_issue_includes_action_hint_for_source_record_fetch_failed`を
+`tests/sync_engine/test_slack_notifier.py`へ追加した。
+
+**残存リスク（kuma-qaレビューWARN、対応方針未確定・コード未変更）**: `dispatcher.py`の
+`dispatch()`本体（`_try_create_new_record()`とは別の経路）に、今回の修正の対象外の未保護
+`get_record()`呼び出しが2箇所残っている:
+
+1. Notion側の現在値取得（`notion_target.get_record(mapping.notion_key)`）
+2. コンフリクト判定用の対象ツール（`other_tools`）の現在値取得
+   （`target.get_record(external_id, db_key=mapping.db_key)`）
+
+いずれも**既知レコード（`IdMapping`が既に存在する）に対する通常の更新イベント**が通る経路
+であり、`_try_create_new_record()`（未知レコードのみが通る新規作成経路）とは別トリガーで
+ある。ここで`ApiError`/`RequestException`が飛ぶと、`_try_create_new_record()`と同様に
+例外がWebhookハンドラまで伝播し500応答になる（kintone/Zoho発の通常の更新Webhookすべてが
+対象になりうるため、影響範囲は新規作成経路より広い）。
+
+**ただし、今回と同じ対処（例外を握ってスキップへ倒す）をそのまま適用してはいけない**。
+新規作成パス（`_try_create_new_record()`）では「元レコードが取得できない＝まだ何も
+書き込んでいないので何もしない」が安全な帰結だが、この2箇所は**更新パスで比較・書き込み
+判断に使う「現在値」の取得**であり、取得に失敗したのを「値が空である」かのように扱って
+処理を続けると、`prop.should_sync_to()`の判定や`resolve_conflict()`の入力が欠けたまま
+進み、誤った値で他ツールを上書きしてしまう危険がある（本ドキュメント冒頭
+「`RELATION_SYNC_ENABLED`が制御する範囲」およびBLOCKER1対応のコメント
+（`notion_record is None`分岐、`dispatcher.py`）が警戒しているのと同種のリスク）。
+一方、例外を伝播させたままにすると500を返しWebhookイベント自体は失われる（kintone/Zoho側の
+リトライに委ねることになるが、リトライされない・リトライ間隔がイベント順序を壊す等の
+リスクもある）。どちらが正しいかは業務判断を含むため、今回はコードを変更せず記録のみに
+留める。
+
+次に検討する際の論点:
+
+- 取得失敗時に「書き込みを中止して`notify_new_record_issue`相当のSlack通知だけ出し
+  イベントは失われた扱いにする」のが妥当か（新規作成経路の`source_record_fetch_failed`と
+  対になる`reason`を追加する案）
+- それとも、この2箇所だけ`request_with_retry()`のリトライ予算を広げる/呼び出し元で
+  リトライするなどして、まず「取得自体が失敗しにくくする」方向で緩和すべきか
+- 500のままにして「kintone/Zoho側のWebhook再送に委ねる」現状維持が、実運用上どの程度
+  許容できるか（各ツールのWebhook再送保証の有無・間隔を要調査）
+
+**対応不要と判断したもの（記録のみ）**:
+
+- Slack DMの`detail`に例外の`repr`（`f" error={exc!r}"`）を載せている件: 到達範囲がログから
+  Slack DMへ広がった点は将来の確認材料だが、現状レコードの中身が含まれる実例は確認されて
+  いないため今回は変更しない
+- `SyncTarget.get_record()`層（`KintoneSyncTarget`/`ZohoSyncTarget`）と`Dispatcher`層で
+  同一例外が2重に`logger.exception`される件: 実害が小さいため許容
+- 実クライアントを通した結合テスト・Webhookハンドラのend-to-endテストが無い件:
+  レイヤーごとの単体テストで担保されているため今回は追加しない
 
 ### 今後の検討候補（2026-08-25、動物チームレビュー記録、対応不要と判断）
 

@@ -71,6 +71,12 @@ _ISSUE_REASON_ACTION_HINTS: dict[str, str] = {
         "🚨 監査ログとNotion上を突き合わせて実際にページが作成されたか確認してください。"
         "見つかった場合は正式なIdMappingを手動登録するか、不要であればアーカイブしてください。"
     ),
+    "source_record_fetch_failed": (
+        "🚨 kintone/Zoho側APIの障害・レート制限、または対象レコードのapp/IDの不整合が"
+        "疑われます。ログのexternal_id/db_keyから該当レコードを特定し、kintone/Zoho側で"
+        "手動確認してください（ページはまだ作成されていません。自動での再作成は行われ"
+        "ないため、原因が解消すれば当該ツール側の再更新等で再送させる必要があります）。"
+    ),
 }
 
 

@@ -7,11 +7,14 @@ ENABLE_ZOHOを判定し、無効時はZohoClientを一切呼び出さずスキ�
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
 from src.sync_engine.sync_targets.base import SyncTarget
+
+logger = logging.getLogger(__name__)
 
 _DELETE_FLAG_FIELD = "削除フラグ"
 
@@ -55,7 +58,20 @@ class ZohoSyncTarget(SyncTarget):
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         if not self._enabled:
             return None
-        return self._client.get_record(self._module, external_id)
+        try:
+            return self._client.get_record(self._module, external_id)
+        except Exception:
+            # 2026-08-27本番障害対応（kintone_sync.KintoneSyncTarget.get_record()と同じ
+            # 理由）: 例外はここでは握らず伝播させ、呼び出し元（Dispatcher）にスキップ判断を
+            # 委ねる。切り分けに必要なmodule/external_id/db_keyのみをここで記録する
+            # （レコードの中身は出さない）。
+            logger.exception(
+                "ZohoSyncTarget.get_record failed (module=%r, external_id=%r, db_key=%r)",
+                self._module,
+                external_id,
+                db_key,
+            )
+            raise
 
     def upsert_record(
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None

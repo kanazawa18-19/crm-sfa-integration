@@ -25,8 +25,11 @@ import os
 import time
 from dataclasses import dataclass, field
 
+import requests
+
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients._http import ApiError
 from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.conflict_resolver import (
     ConflictResolution,
@@ -401,7 +404,59 @@ class Dispatcher:
             )
             return DispatchResult(skipped=True, reason="new_record_source_unavailable")
 
-        raw_record = source_target.get_record(event.external_id, db_key=event.db_key)
+        try:
+            raw_record = source_target.get_record(event.external_id, db_key=event.db_key)
+        except (ApiError, requests.exceptions.RequestException) as exc:
+            # 2026-08-27本番障害対応: このメソッドは「元レコードが見つからない
+            # （get_record()がNoneを返す）」場合しか想定しておらず、「取得そのものが
+            # 例外を送出する」場合（kintone/Zoho APIがエラーレスポンスを返した、
+            # ネットワーク断・タイムアウトが発生した等）を考慮していなかった。この経路は
+            # AUTO_CREATE_NEW_RECORDS_ENABLEDが未設定の間（Round2有効化前）は通らなかった
+            # ため露出しなかったが、フラグOFF時は未知レコードを静かにunknown_recordへ
+            # スキップしていた（dispatch()参照）のと同じく、「取得に失敗したら従来通り
+            # スキップに倒す」のが正しい挙動であり、例外をWebhookハンドラまで伝播させて
+            # 500を返す（kintone/Zoho側のリトライを誘発する）べきではない。
+            #
+            # ■ どの例外を握るか（重要度: 握りすぎるとバグを隠す）: ここで握るのは
+            # ApiError（KintoneApiError/ZohoApiError等、外部APIがエラーレスポンスを
+            # 返したことを示す）とrequests.exceptions.RequestException（タイムアウト・
+            # 接続断等、ネットワーク層の失敗）の2つに意図的に限定する。理由:
+            # 1. これらは「元レコードを取得できなかった」という、raw_record is None
+            #    （既存のnew_record_source_not_found分岐）と本質的に同じ性質の失敗であり、
+            #    握って安全にスキップへ倒してよい。
+            # 2. AttributeError/TypeError/KeyErrorのような、コード側のバグ
+            #    （_MultiDbKintoneSyncTarget/KintoneSyncTarget/production_wiringの実装
+            #    ミス等）に起因する例外まで握ってしまうと、本来500で気づけたはずの
+            #    プログラミングエラーが「スキップ」として静かに握りつぶされ、
+            #    kintone/Zoho発の新規レコード作成が理由不明のまま機能しなくなる恐れがある。
+            #    そのためbare Exceptionでは受けない。
+            #    （なお`_handle_uncertain_notion_page_creation()`やzoho_webhook.pyの
+            #    「1フィールド単位で失敗を閉じ込める」箇所がbare Exceptionを広く受けて
+            #    いるのは、それぞれ「クライアント実装依存で例外型を保証できない外部SDK
+            #    呼び出し」「1フィールドだけ壊れても他フィールド・イベント全体は救う」
+            #    という別の事情によるものであり、本箇所にそのまま適用すべき理由ではない。
+            #    ここは`SyncTarget.get_record()`という単一の、型で契約が決まっている
+            #    呼び出しであり、想定される失敗モードを列挙して限定するほうが安全側。）
+            logger.exception(
+                "new record creation: fetching the source record raised an exception; "
+                "skipping (db_key=%r, source_tool=%s, external_id=%r)",
+                event.db_key,
+                event.source_tool.value,
+                event.external_id,
+            )
+            if self._slack_notifier is not None:
+                self._slack_notifier.notify_new_record_issue(
+                    db_key=event.db_key,
+                    source_tool=event.source_tool,
+                    external_id=event.external_id,
+                    reason="source_record_fetch_failed",
+                    detail=(
+                        "新規レコード作成で元レコードの取得に失敗しました"
+                        "（外部APIエラーまたはネットワーク障害）。"
+                        f" error={exc!r}"
+                    ),
+                )
+            return DispatchResult(skipped=True, reason="new_record_source_fetch_failed")
         if raw_record is None:
             logger.info(
                 "new record creation: source record not found; skipping (db_key=%r, "

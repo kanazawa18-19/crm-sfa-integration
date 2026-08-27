@@ -194,6 +194,20 @@ def test_append_row_raises_spreadsheet_api_error_when_updated_range_unparsable(
         client.append_row(SHEET, {"取引先ID": "CLI-005"})
 
 
+def test_append_row_raises_spreadsheet_api_error_on_200_missing_updated_range_key(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """shirokuma-secレビューWARN対応（2026-08-27）: 200応答で`updates.updatedRange`キー自体を
+    欠く想定外のボディ形状でも、生のKeyErrorではなくSpreadsheetApiErrorへ正規化されること。"""
+    requests_mock.get(f"{BASE}/values/'{SHEET}'!1:1", json={"values": [["取引先ID"]]})
+    requests_mock.post(
+        f"{BASE}/values/'{SHEET}'!A1:append", status_code=200, json={"unexpected": "shape"}
+    )
+
+    with pytest.raises(SpreadsheetApiError):
+        client.append_row(SHEET, {"取引先ID": "CLI-005"})
+
+
 def test_append_row_does_not_retry_on_5xx(
     requests_mock, client: HttpSpreadsheetClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

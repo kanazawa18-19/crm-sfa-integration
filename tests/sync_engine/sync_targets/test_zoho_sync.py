@@ -126,3 +126,31 @@ def test_target_follows_env_var_when_enabled_not_explicitly_set(
     monkeypatch.setenv("ENABLE_ZOHO", "True")
     target.get_record("zoho-1")
     assert client.calls == ["get_record"]
+
+
+def test_get_record_logs_identifiers_and_reraises_on_client_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """2026-08-27本番障害対応: kintone_sync.KintoneSyncTarget.get_record()と同じ理由で、
+    例外自体は握りつぶさず呼び出し元へ伝播させ、切り分けに必要なmodule/external_id/db_key
+    のみをログへ残す。"""
+
+    class RaisingZohoClient:
+        def get_record(self, module: str, record_id: str) -> dict[str, Any] | None:
+            raise RuntimeError("boom")
+
+        def insert_record(self, module: str, record: dict[str, Any]) -> str:
+            raise NotImplementedError
+
+        def update_record(self, module: str, record_id: str, record: dict[str, Any]) -> None:
+            raise NotImplementedError
+
+    target = ZohoSyncTarget(RaisingZohoClient(), "案件", enabled=True)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError):
+            target.get_record("zoho-1", db_key="project")
+
+    assert "案件" in caplog.text
+    assert "zoho-1" in caplog.text
+    assert "project" in caplog.text

@@ -21,9 +21,16 @@ from src.sync_engine.clients._http import (
     DEFAULT_BACKOFF_BASE_SECONDS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    extract_error_message,
     raise_for_error,
     request_with_retry,
 )
+
+# shirokuma-secレビューWARN対応（2026-08-27）: 詳細な理由は`zoho_client.py`冒頭の同種コメントを
+# 参照。raise_for_error()は2xxなら何もしないため、HTTP 200でボディが期待した形でない
+# （例: `record`/`id`キーを欠く異常応答）場合は生の`KeyError`が飛び、Dispatcher側で握っている
+# 例外の型（`ApiError`/`requests.exceptions.RequestException`）をすり抜けて再びWebhookが
+# 500になる。ここではraise_for_error()通過後の辞書アクセスを`KintoneApiError`へ正規化する。
 
 
 class KintoneApiError(ApiError):
@@ -108,14 +115,21 @@ class HttpKintoneClient:
         if response.status_code == 404:
             return None
         raise_for_error(response, KintoneApiError)
-        return unwrap_kintone_record(response.json()["record"])
+        try:
+            record = response.json()["record"]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise KintoneApiError(response.status_code, extract_error_message(response)) from exc
+        return unwrap_kintone_record(record)
 
     def add_record(self, app: str, record: dict[str, Any]) -> str:
         body = {"app": app, "record": wrap_kintone_record(record)}
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複レコード作成を避けリトライしない。
         response = self._request("POST", json_body=body, idempotent=False)
         raise_for_error(response, KintoneApiError)
-        return str(response.json()["id"])
+        try:
+            return str(response.json()["id"])
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise KintoneApiError(response.status_code, extract_error_message(response)) from exc
 
     def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
         body = {"app": app, "id": record_id, "record": wrap_kintone_record(record)}

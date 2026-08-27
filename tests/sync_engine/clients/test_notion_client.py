@@ -292,6 +292,19 @@ def test_create_page_does_not_retry_on_5xx(
     assert requests_mock.call_count == 1
 
 
+def test_create_page_raises_notion_api_error_on_200_missing_id_key(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """shirokuma-secレビューWARN対応（2026-08-27）: 200応答で`id`キー自体を欠く想定外の
+    ボディ形状でも、生のKeyErrorではなくNotionApiErrorへ正規化されること。"""
+    requests_mock.post(
+        "https://api.notion.com/v1/pages", status_code=200, json={"unexpected": "shape"}
+    )
+
+    with pytest.raises(NotionApiError):
+        client.create_page({"取引先名": "株式会社サンプル"})
+
+
 # --- update_page ---------------------------------------------------------------------------
 
 

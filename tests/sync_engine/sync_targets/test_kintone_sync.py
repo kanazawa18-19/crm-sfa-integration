@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from src.sync_engine.sync_targets.kintone_sync import KintoneSyncTarget
 
 
@@ -62,3 +64,31 @@ def test_delete_record_sets_delete_flag_instead_of_removing_record() -> None:
     record = client.records["取引先マスタ"]["1001"]
     assert record["削除フラグ"] is True
     assert record["取引先名"] == "テスト商店"
+
+
+def test_get_record_logs_identifiers_and_reraises_on_client_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """2026-08-27本番障害対応: get_record()自体は例外を握りつぶさず呼び出し元へ伝播させる
+    （握るかどうかの判断はDispatcher側の責務）。切り分けに必要なapp/external_id/db_keyを
+    ログへ残すことのみ本クラスの責務とする。"""
+
+    class RaisingKintoneClient:
+        def get_record(self, app: str, record_id: str) -> dict[str, Any] | None:
+            raise RuntimeError("HTTP 400: 不正なリクエストです。")
+
+        def add_record(self, app: str, record: dict[str, Any]) -> str:
+            raise NotImplementedError
+
+        def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
+            raise NotImplementedError
+
+    target = KintoneSyncTarget(RaisingKintoneClient(), "取引先マスタ")
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError):
+            target.get_record("1001", db_key="client_master")
+
+    assert "取引先マスタ" in caplog.text
+    assert "1001" in caplog.text
+    assert "client_master" in caplog.text

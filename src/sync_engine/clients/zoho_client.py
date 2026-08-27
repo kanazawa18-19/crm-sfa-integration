@@ -30,9 +30,35 @@ from src.sync_engine.clients._http import (
     DEFAULT_BACKOFF_BASE_SECONDS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    extract_error_message,
     raise_for_error,
     request_with_retry,
 )
+
+# shirokuma-secレビューWARN対応（2026-08-27）: raise_for_error()は2xxレスポンスなら何もしない
+# ため、「HTTP 200だがボディが期待した形でない」場合（下記の一連の`(ValueError, KeyError,
+# IndexError, TypeError)`をcatchしている箇所すべて）はraise_for_error()を素通りし、辞書アクセス
+# ・キャストで生の`KeyError`等が飛ぶ。これはApiErrorでもrequests.exceptions.RequestExceptionでも
+# ないため、Dispatcher側で握っている例外の型をすり抜けて再び呼び出し元（Webhookハンドラ）まで
+# 伝播し500を返してしまう（2026-08-27本番障害でDispatcher側に追加したexcept節と同じクラスの
+# 穴）。「Dispatcher側で握る例外の種類を増やす」のではなく「クライアント境界で例外の型を
+# ApiErrorサブクラスへ正規化する」方針で対応する（呼び出し元が増えるたびにexcept節を増やさずに
+# 済むよう、契約を保証する場所をクライアント層に寄せる）。
+#
+# 対象で最も実際に起こりうるのは`_refresh_access_token()`: ZohoのOAuthトークンエンドポイントは
+# リフレッシュトークン失効・クライアント資格情報不正の際、HTTP 200のままエラーボディ
+# （例: `{"error": "invalid_client"}`）を返すことが知られている。他の箇所（`insert_record`/
+# `update_record`の`data[0]`/`details.id`アクセス）は発生確率は低いが、raise_for_error()
+# 通過後の辞書アクセスという同じ形の穴のため同じ方針で正規化する。
+#
+# メッセージには`extract_error_message()`（`error`/`message`フィールドのみを最大200文字で
+# 拾う既存の切り詰め方針）を再利用し、トークン・資格情報が例外メッセージに混入しないようにする
+# （レスポンスボディ全体やリクエストパラメータをそのまま載せない）。
+#
+# ステータスコードは実際のHTTPステータス（この文脈では常に2xx、大半は200）をそのまま使う。
+# `ApiError.status_code`は他の箇所（`src/api/app.py`等）でも「実際に返ってきたHTTPステータス
+# コードを記録する」という一貫した使われ方をしており、ここだけ別の値（例: 502等の合成コード）に
+# 差し替えると、その記録としての一貫性が崩れるため。
 
 _ACCOUNTS_BASE_URL = "https://accounts.zoho.com"
 _API_BASE_URL = "https://www.zohoapis.com/crm/v2"
@@ -135,9 +161,12 @@ class HttpZohoClient:
             backoff_base=self._backoff_base,
         )
         raise_for_error(response, ZohoApiError)
-        body = response.json()
-        access_token = body["access_token"]
-        expires_in = int(body.get("expires_in", 3600))
+        try:
+            body = response.json()
+            access_token = body["access_token"]
+            expires_in = int(body.get("expires_in", 3600))
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
         self._access_token = access_token
         self._access_token_expires_at = now + timedelta(
             seconds=max(expires_in - _EXPIRY_SAFETY_MARGIN_SECONDS, 0)
@@ -210,15 +239,21 @@ class HttpZohoClient:
             "POST", f"/{module}", json_body={"data": [record]}, idempotent=False
         )
         raise_for_error(response, ZohoApiError)
-        result = response.json()["data"][0]
-        if result.get("code") != "SUCCESS":
-            raise ZohoApiError(response.status_code, str(result.get("message", result)))
-        return str(result["details"]["id"])
+        try:
+            result = response.json()["data"][0]
+            if result.get("code") != "SUCCESS":
+                raise ZohoApiError(response.status_code, str(result.get("message", result)))
+            return str(result["details"]["id"])
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
 
     def update_record(self, module: str, record_id: str, record: dict[str, Any]) -> None:
         body = {"data": [{**record, "id": record_id}]}
         response = self._request("PUT", f"/{module}/{record_id}", json_body=body)
         raise_for_error(response, ZohoApiError)
-        result = response.json()["data"][0]
+        try:
+            result = response.json()["data"][0]
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
         if result.get("code") != "SUCCESS":
             raise ZohoApiError(response.status_code, str(result.get("message", result)))

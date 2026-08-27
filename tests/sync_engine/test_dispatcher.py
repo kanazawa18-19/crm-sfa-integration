@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+import requests
 
 from src.db_schema.base import (
     DatabaseSchema,
@@ -15,6 +16,7 @@ from src.db_schema.base import (
     SyncScope,
     Tool,
 )
+from src.sync_engine.clients.kintone_client import KintoneApiError
 from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.conflict_resolver import RejectedData, ResolutionAction
 from src.sync_engine.dispatcher import Dispatcher
@@ -43,18 +45,22 @@ class FakeSyncTarget(SyncTarget):
         always_skip: bool = False,
         delete_raises: bool = False,
         upsert_raises: Exception | None = None,
+        get_record_raises: Exception | None = None,
     ) -> None:
         self.tool = tool
         self._records = records or {}
         self._always_skip = always_skip
         self._delete_raises = delete_raises
         self._upsert_raises = upsert_raises
+        self._get_record_raises = get_record_raises
         self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
         self.delete_calls: list[str] = []
         self.get_record_calls: list[str] = []
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         self.get_record_calls.append(external_id)
+        if self._get_record_raises is not None:
+            raise self._get_record_raises
         return self._records.get(external_id)
 
     def upsert_record(
@@ -419,6 +425,101 @@ def test_dispatch_skips_new_record_creation_when_source_record_not_found(
     assert result.skipped
     assert result.reason == "new_record_source_not_found"
     assert targets[Tool.NOTION].upsert_calls == []
+
+
+# --- 元レコード取得が例外を送出するケース（2026-08-27本番障害対応） ------------------------
+#
+# `_try_create_new_record()`は元々「元レコードが見つからない（get_record()がNoneを返す）」
+# 場合しか想定しておらず、「取得そのものが例外を送出する」場合（外部APIエラー・ネットワーク
+# 障害）は例外がWebhookハンドラまで伝播し500応答になっていた
+# （2026-08-27 15:13 UTC、kintone db_key='client_master'、KintoneApiError「HTTP 400:
+# 不正なリクエストです。」で本番発生）。以下は、その場合に例外を伝播させずスキップへ倒し、
+# Slack通知が呼ばれることの回帰テスト。
+
+
+def test_dispatch_skips_new_record_creation_when_source_fetch_raises_api_error(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, get_record_raises=KintoneApiError(400, "不正なリクエストです。")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-broken",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_source_fetch_failed"
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert store.find_by_external_id(Tool.KINTONE, "kintone-broken", db_key="client_master") is None
+    assert len(notifier.new_record_issue_calls) == 1
+    issue_call = notifier.new_record_issue_calls[0]
+    assert issue_call["db_key"] == "client_master"
+    assert issue_call["source_tool"] is Tool.KINTONE
+    assert issue_call["external_id"] == "kintone-broken"
+    assert issue_call["reason"] == "source_record_fetch_failed"
+    assert notifier.new_record_created_calls == []
+
+
+def test_dispatch_skips_new_record_creation_when_zoho_source_fetch_raises_network_error(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """Zoho発の未知レコードでも同じ経路が塞がれていること（タイムアウト等のネットワーク
+    障害系、`requests.exceptions.RequestException`のケース）。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.ZOHO] = FakeSyncTarget(
+        Tool.ZOHO, get_record_raises=requests.exceptions.ConnectionError("connection refused")
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="project",
+        external_id="zoho-broken",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert result.skipped
+    assert result.reason == "new_record_source_fetch_failed"
+    assert targets[Tool.NOTION].upsert_calls == []
+    assert len(notifier.new_record_issue_calls) == 1
+    assert notifier.new_record_issue_calls[0]["reason"] == "source_record_fetch_failed"
+
+
+def test_dispatch_new_record_creation_lets_programming_errors_propagate(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """ApiError/RequestException以外（プログラミングエラーの疑いがある例外）は、意図的に
+    握らず従来通り呼び出し元へ伝播すること（握りすぎてバグを隠さないための回帰テスト）。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, get_record_raises=AttributeError("boom")
+    )
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-broken",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    with pytest.raises(AttributeError):
+        dispatcher.dispatch(event)
 
 
 def test_dispatch_skips_new_record_creation_when_required_property_missing(

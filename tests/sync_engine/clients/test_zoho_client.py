@@ -136,6 +136,31 @@ def test_token_refresh_raises_zoho_api_error_on_failure(
         client.get_record("Deals", "12345")
 
 
+def test_token_refresh_raises_zoho_api_error_on_200_with_error_body(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """shirokuma-secレビューWARN対応（2026-08-27）: ZohoのOAuthトークンエンドポイントは
+    リフレッシュトークン失効・クライアント資格情報不正の際、HTTP 200のままエラーボディを
+    返すことが知られている。raise_for_error()は2xxを素通りするため、body["access_token"]の
+    生のKeyErrorではなく正規化されたZohoApiErrorになることを確認する。"""
+    requests_mock.post(TOKEN_URL, status_code=200, json={"error": "invalid_client"})
+
+    with pytest.raises(ZohoApiError) as exc_info:
+        client.get_record("Deals", "12345")
+    assert exc_info.value.status_code == 200
+
+
+def test_token_refresh_raises_zoho_api_error_on_200_missing_access_token_key(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """access_tokenキー自体を欠く200応答（想定外のボディ形状）でも同様にZohoApiErrorへ
+    正規化されること。"""
+    requests_mock.post(TOKEN_URL, status_code=200, json={"unexpected": "shape"})
+
+    with pytest.raises(ZohoApiError):
+        client.get_record("Deals", "12345")
+
+
 # --- get_record ------------------------------------------------------------------------
 
 
@@ -191,6 +216,18 @@ def test_insert_record_raises_zoho_api_error_when_code_not_success(
         MODULE_URL,
         json={"data": [{"code": "DUPLICATE_DATA", "message": "duplicate"}]},
     )
+
+    with pytest.raises(ZohoApiError):
+        client.insert_record("Deals", {"Deal_Name": "新規案件"})
+
+
+def test_insert_record_raises_zoho_api_error_when_data_key_missing(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """shirokuma-secレビューWARN対応（2026-08-27）: 200応答で`data`キー自体を欠く想定外の
+    ボディ形状でも、生のKeyError/IndexErrorではなくZohoApiErrorへ正規化されること。"""
+    _mock_token(requests_mock)
+    requests_mock.post(MODULE_URL, status_code=200, json={"unexpected": "shape"})
 
     with pytest.raises(ZohoApiError):
         client.insert_record("Deals", {"Deal_Name": "新規案件"})
