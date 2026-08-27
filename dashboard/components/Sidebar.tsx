@@ -47,6 +47,7 @@ const NAV_GROUPS: NavGroup[] = [
     mobileOnly: true,
     links: [
       { href: "/settings/profile", label: "プロフィール編集" },
+      { href: "/settings/google", label: "Google連携（まとめて）" },
       { href: "/settings/gmail", label: "Gmail連携" },
       { href: "/settings/drive", label: "Drive連携" },
     ],

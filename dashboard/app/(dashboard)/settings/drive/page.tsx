@@ -3,15 +3,8 @@ import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import SubmitButton from "@/components/SubmitButton";
 import { disconnectDrive } from "./actions";
-
-const ERROR_MESSAGES_JA: Record<string, string> = {
-  invalid_state: "連携セッションの有効期限が切れました。もう一度お試しください。",
-  exchange_failed: "Googleとの連携処理に失敗しました。もう一度お試しください。",
-};
-
-function formatJst(date: Date): string {
-  return date.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-}
+import { googleOauthErrorMessage } from "@/lib/googleOauthErrors";
+import { formatJst } from "@/lib/date";
 
 export default async function DriveSettingsPage({
   searchParams,
@@ -35,9 +28,7 @@ export default async function DriveSettingsPage({
 
       {connected === "1" && <div className="alert-success">Driveを連携しました。</div>}
       {disconnected === "1" && <div className="alert-success">Drive連携を解除しました。</div>}
-      {error && (
-        <div className="alert-error">{ERROR_MESSAGES_JA[error] ?? "連携に失敗しました。もう一度お試しください。"}</div>
-      )}
+      {error && <div className="alert-error">{googleOauthErrorMessage(error)}</div>}
 
       <div className="surface-card p-6 space-y-4">
         {connection ? (

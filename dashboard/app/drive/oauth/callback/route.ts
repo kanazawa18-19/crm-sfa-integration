@@ -16,8 +16,15 @@ export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.redirect(new URL("/login", request.url));
 
-  const fail = (reason: string) =>
-    NextResponse.redirect(new URL(`/settings/drive?error=${encodeURIComponent(reason)}`, request.url));
+  const fail = (reason: string) => {
+    const response = NextResponse.redirect(
+      new URL(`/settings/drive?error=${encodeURIComponent(reason)}`, request.url)
+    );
+    // The nonce is single-use — leaving it on failure would let a stale
+    // cookie satisfy the nonce check on a later retry attempt.
+    response.cookies.delete(STATE_COOKIE);
+    return response;
+  };
 
   const code = request.nextUrl.searchParams.get("code");
   const state = request.nextUrl.searchParams.get("state");

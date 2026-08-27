@@ -88,6 +88,14 @@ export default function AvatarMenu({ user }: { user: CurrentUser }) {
               プロフィール編集
             </Link>
             <Link
+              href="/settings/google"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="rounded-[6px] px-3 py-2 text-sm font-medium text-(--color-foreground)/70 transition-colors hover:bg-(--color-surface-muted)"
+            >
+              Google連携（まとめて）
+            </Link>
+            <Link
               href="/settings/gmail"
               role="menuitem"
               onClick={() => setOpen(false)}

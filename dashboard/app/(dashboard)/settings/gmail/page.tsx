@@ -3,17 +3,8 @@ import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import SubmitButton from "@/components/SubmitButton";
 import { disconnectGmail } from "./actions";
-
-const ERROR_MESSAGES_JA: Record<string, string> = {
-  invalid_state: "連携セッションの有効期限が切れました。もう一度お試しください。",
-  exchange_failed: "Googleとの連携処理に失敗しました。もう一度お試しください。",
-};
-
-// toLocaleString("ja-JP")だけでは書式(区切り文字)が日本語になるだけでタイムゾーンは
-// サーバーの実行環境(Vercelは基本UTC)のままになる — timeZoneを明示してJST表示にする。
-function formatJst(date: Date): string {
-  return date.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-}
+import { googleOauthErrorMessage } from "@/lib/googleOauthErrors";
+import { formatJst } from "@/lib/date";
 
 export default async function GmailSettingsPage({
   searchParams,
@@ -37,9 +28,7 @@ export default async function GmailSettingsPage({
 
       {connected === "1" && <div className="alert-success">Gmailを連携しました。</div>}
       {disconnected === "1" && <div className="alert-success">Gmail連携を解除しました。</div>}
-      {error && (
-        <div className="alert-error">{ERROR_MESSAGES_JA[error] ?? "連携に失敗しました。もう一度お試しください。"}</div>
-      )}
+      {error && <div className="alert-error">{googleOauthErrorMessage(error)}</div>}
 
       <div className="surface-card p-6 space-y-4">
         {connection ? (

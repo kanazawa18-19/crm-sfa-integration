@@ -4,3 +4,11 @@
 export function todayDateStringJst(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
 }
+
+// toLocaleString("ja-JP")だけでは書式(区切り文字)が日本語になるだけでタイムゾーンは
+// サーバーの実行環境(Vercelは基本UTC)のままになる — timeZoneを明示してJST表示にする。
+// settings/gmail・settings/drive・settings/googleの3画面で一字一句同じ実装が重複して
+// いたため共通化した(2026-08-27、obasan-qualityレビュー指摘)。
+export function formatJst(date: Date): string {
+  return date.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+}
