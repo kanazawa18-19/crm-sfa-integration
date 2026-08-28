@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -128,6 +129,15 @@ def build_notion_properties(properties: dict[str, Any], schema: DatabaseSchema) 
     }
 
 
+# ページ作成のタイムアウト（秒）。既定の10秒ではNotion側の処理が終わる前に読み取り
+# タイムアウトへ倒れる例が実際にあった（2026-08-28、external_id=62172）。
+_CREATE_PAGE_TIMEOUT_SECONDS = 25.0
+
+# 作成失敗後の回収で「直前に作られた」とみなす時間幅（分）。広げるほど、たまたま同名の
+# 既存ページを誤って掴むリスクが上がる。
+_CREATE_RECOVERY_WINDOW_MINUTES = 5
+
+
 class HttpNotionClient:
     """Notion API `GET/POST/PATCH /v1/pages` を用いた `NotionClient` Protocol実装。
 
@@ -183,13 +193,17 @@ class HttpNotionClient:
         *,
         json_body: Any | None = None,
         idempotent: bool = True,
+        timeout: float | None = None,
     ) -> requests.Response:
+        """`timeout`未指定時はインスタンス既定値を使う。ページ作成のように、既定
+        (`DEFAULT_TIMEOUT_SECONDS`=10秒)では足りずに読み取りタイムアウトへ倒れうる
+        呼び出しだけ、呼び出し側で個別に延ばす。"""
         return request_with_retry(
             method,
             f"{self._base_url}{path}",
             headers=self._headers(),
             json_body=json_body,
-            timeout=self._timeout,
+            timeout=self._timeout if timeout is None else timeout,
             max_retries=self._max_retries,
             max_rate_limit_retries=self._max_rate_limit_retries,
             backoff_base=self._backoff_base,
@@ -320,13 +334,95 @@ class HttpNotionClient:
         page: dict[str, Any] = response.json()
         return page
 
+    def _recover_created_page_id(self, properties: dict[str, Any]) -> str | None:
+        """`create_page()`の通信が例外で終わったあと、「実は作成されていた」ページのIDを探す。
+
+        **保守的に、確実なときだけ回収する**。タイトル（`title`型プロパティ）が完全一致し、
+        かつ作成時刻が直近`_CREATE_RECOVERY_WINDOW_MINUTES`分以内のページが**ちょうど1件**の
+        ときだけそのIDを返す。0件（＝そもそも作られていない）でも、2件以上（＝同名の別ページが
+        あり、どれが今作ったものか判別できない）でも`None`を返し、呼び出し元は従来どおり
+        例外を伝播させる。
+
+        誤って既存の別ページを掴むと、無関係なレコード同士がIdMappingで結び付き、以後の同期で
+        互いの値を上書きし合う。**回収できないこと（＝人が目視で確認する）より、間違ったページを
+        掴むことの方が明確に有害**なので、少しでも曖昧なら回収しない。
+
+        照会そのものが失敗した場合も`None`を返す（回収は最善努力であり、ここで新しい例外を
+        持ち込んで元の失敗を覆い隠さない）。
+        """
+        title_property = self._schema.title_property
+        title_value = properties.get(title_property.name)
+        if not isinstance(title_value, str) or not title_value:
+            return None
+        created_on_or_after = (
+            datetime.now(timezone.utc) - timedelta(minutes=_CREATE_RECOVERY_WINDOW_MINUTES)
+        ).isoformat()
+        try:
+            pages = self.query_page(
+                page_size=2,  # 「ちょうど1件か」を判定できればよいので2件で足りる。
+                filter={
+                    "and": [
+                        {"property": title_property.name, "title": {"equals": title_value}},
+                        {
+                            "timestamp": "created_time",
+                            "created_time": {"on_or_after": created_on_or_after},
+                        },
+                    ]
+                },
+            )
+        except (NotionApiError, requests.exceptions.RequestException):
+            logger.warning(
+                "create_page: 作成失敗後の回収照会にも失敗したため、回収せずに元の例外を"
+                "伝播させます（作成されたかどうかは不明のままです）"
+            )
+            return None
+        if len(pages) != 1:
+            logger.warning(
+                "create_page: 作成失敗後の回収照会で該当ページが%d件だったため回収しません"
+                "（1件のときだけ回収します）",
+                len(pages),
+            )
+            return None
+        page_id = pages[0].get("id")
+        return page_id if isinstance(page_id, str) and page_id else None
+
     def create_page(self, properties: dict[str, Any]) -> str:
+        """ページを1件作成し、作成されたページIDを返す。
+
+        通信が例外で終わった場合は`_recover_created_page_id()`で「実は作成されていた」ケースの
+        回収を試みる（2026-08-28）。Notion側が処理を終えていてもレスポンスが返る前に読み取り
+        タイムアウトすると、**ページは作られたのにこちらはIDを知らない**という状態になり、
+        呼び出し元（`Dispatcher._try_create_new_record()`）はIdMappingを登録できない。その結果、
+        次に同じレコードの更新Webhookが届いたときに「マッピングが無い＝未作成」と判断して
+        **2枚目のページを作ってしまう**。実際に2026-08-28、external_id=62172でこの状態が発生した。
+        """
         body = {
             "parent": {"database_id": self._database_id},
             "properties": build_notion_properties(properties, self._schema),
         }
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複ページ作成を避けリトライしない。
-        response = self._request("POST", "/pages", json_body=body, idempotent=False)
+        # タイムアウトだけは既定の10秒から延ばす（62172の実例が読み取りタイムアウトだったため。
+        # リトライしない代わりに、1回の試行が完了するまで待つ側へ倒す）。
+        try:
+            response = self._request(
+                "POST",
+                "/pages",
+                json_body=body,
+                idempotent=False,
+                timeout=_CREATE_PAGE_TIMEOUT_SECONDS,
+            )
+        except requests.exceptions.RequestException as exc:
+            recovered_page_id = self._recover_created_page_id(properties)
+            if recovered_page_id is None:
+                raise
+            logger.warning(
+                "create_page: 通信が%sで終わりましたが、直前に作成されたとみられるページを"
+                "1件だけ特定できたため、そのページIDを作成結果として返します"
+                "(page_id=%r、重複ページの作成を防ぐための回収)",
+                type(exc).__name__,
+                recovered_page_id,
+            )
+            return recovered_page_id
         raise_for_error(response, NotionApiError)
         try:
             # shirokuma-secレビューWARN対応（2026-08-27）: raise_for_error()通過後（2xx）でも

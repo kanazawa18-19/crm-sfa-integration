@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+import requests
 
 from src.db_schema.base import PropertyType
+from src.sync_engine.clients import notion_client as notion_client_module
 from src.db_schema.registry import get_schema
 from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.clients.notion_client import (
@@ -497,3 +499,101 @@ def test_build_notion_properties_raises_key_error_for_unknown_property() -> None
 
     with pytest.raises(KeyError):
         build_notion_properties({"存在しないプロパティ": "x"}, schema)
+
+
+# --- create_page の作成後回収（2026-08-28、external_id=62172の実例対応） -----------------------
+
+
+def test_create_page_recovers_page_id_when_response_times_out(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """レスポンスが返る前にタイムアウトしても、直前に作られたページを1件だけ特定できれば
+    そのIDを返すこと（IdMapping未登録による2枚目の作成を防ぐ）。"""
+    requests_mock.post(
+        "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
+    )
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+        json={"results": [{"id": "recovered-page-id"}]},
+    )
+
+    page_id = client.create_page({"取引先名": "株式会社サンプル"})
+
+    assert page_id == "recovered-page-id"
+    # 照会はタイトル完全一致＋作成時刻の窓のANDであること。
+    query_body = requests_mock.request_history[-1].json()
+    conditions = query_body["filter"]["and"]
+    assert {"property": "取引先名", "title": {"equals": "株式会社サンプル"}} in conditions
+    assert any(c.get("timestamp") == "created_time" for c in conditions)
+
+
+def test_create_page_raises_when_no_page_was_created(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """回収照会が0件（＝そもそも作られていない）なら、元の例外をそのまま伝播させること。"""
+    requests_mock.post(
+        "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
+    )
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query", json={"results": []}
+    )
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        client.create_page({"取引先名": "株式会社サンプル"})
+
+
+def test_create_page_does_not_recover_when_multiple_pages_match(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """同名ページが複数あるときは回収しないこと。
+
+    どれが今作ったものか判別できず、無関係なページを掴むとIdMappingが誤って結び付き、
+    以後の同期で互いの値を上書きし合う。回収できないこと（人が目視で確認する）より、
+    間違ったページを掴むことの方が明確に有害。
+    """
+    requests_mock.post(
+        "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
+    )
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+        json={"results": [{"id": "page-a"}, {"id": "page-b"}]},
+    )
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        client.create_page({"取引先名": "株式会社サンプル"})
+
+
+def test_create_page_raises_original_error_when_recovery_query_also_fails(
+    requests_mock, client: HttpNotionClient
+) -> None:
+    """回収照会自体が失敗しても、新しい例外で元の失敗を覆い隠さないこと。"""
+    requests_mock.post(
+        "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
+    )
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+        status_code=500,
+        json={"message": "internal error"},
+    )
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        client.create_page({"取引先名": "株式会社サンプル"})
+
+
+def test_create_page_uses_longer_timeout_than_the_default(
+    requests_mock, client: HttpNotionClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ページ作成だけは既定(10秒)より長いタイムアウトで送ること。"""
+    captured: dict[str, float] = {}
+    original = notion_client_module.request_with_retry
+
+    def spy(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(notion_client_module, "request_with_retry", spy)
+    requests_mock.post("https://api.notion.com/v1/pages", json={"id": "new-page-id"})
+
+    client.create_page({"取引先名": "株式会社サンプル"})
+
+    assert captured["timeout"] > 10.0
