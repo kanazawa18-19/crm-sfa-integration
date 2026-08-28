@@ -191,3 +191,41 @@ def test_wrap_kintone_record() -> None:
         "取引先名": {"value": "テスト商店"},
         "削除フラグ": {"value": True},
     }
+
+
+# --- Content-Type の付け方（CB_IL02対策、2026-08-28） ----------------------------------
+
+
+def test_get_record_does_not_send_content_type_header(
+    requests_mock, client: HttpKintoneClient
+) -> None:
+    """クエリ文字列でパラメータを渡すGETに`Content-Type`を付けないこと。
+
+    kintoneは「ボディが無いのにJSONボディがあると宣言している」不正なリクエストとみなし
+    `HTTP 400 (code=CB_IL02) 不正なリクエストです。`を返す。この誤りにより本番の
+    `get_record()`が常に失敗していた（2026-08-28、Round2の新規レコード作成が
+    external_id 62168〜62171と連番で全件失敗）。
+    """
+    requests_mock.get(RECORD_URL, json={"record": {}})
+
+    client.get_record("15", "62168")
+
+    assert "Content-Type" not in requests_mock.last_request.headers
+
+
+def test_add_record_sends_content_type_header(requests_mock, client: HttpKintoneClient) -> None:
+    """JSONボディを送る書き込み系では`Content-Type`を付けること（GETと対の保証）。"""
+    requests_mock.post(RECORD_URL, json={"id": "1001"})
+
+    client.add_record("15", {"会社名": "テスト"})
+
+    assert requests_mock.last_request.headers["Content-Type"] == "application/json"
+
+
+def test_update_record_sends_content_type_header(requests_mock, client: HttpKintoneClient) -> None:
+    """更新系(PUT)でも`Content-Type`を付けること。"""
+    requests_mock.put(RECORD_URL, json={})
+
+    client.update_record("15", "62168", {"会社名": "テスト"})
+
+    assert requests_mock.last_request.headers["Content-Type"] == "application/json"

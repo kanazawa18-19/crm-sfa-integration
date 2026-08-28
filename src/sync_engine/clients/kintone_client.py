@@ -84,11 +84,26 @@ class HttpKintoneClient:
         self._max_retries = max_retries
         self._backoff_base = backoff_base
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "X-Cybozu-API-Token": self._api_token or "",
-            "Content-Type": "application/json",
-        }
+    def _headers(self, *, has_json_body: bool) -> dict[str, str]:
+        """リクエストヘッダーを組み立てる。
+
+        **`Content-Type`はJSONボディを送るとき（POST/PUT）だけ付ける。**
+        kintoneはパラメータをクエリ文字列で渡すリクエスト（`get_record()`のGET）に
+        `Content-Type: application/json`が付いていると、**ボディが無いのにJSONボディが
+        あると宣言している不正なリクエスト**とみなして `HTTP 400 (code=CB_IL02)
+        不正なリクエストです。` を返す（クエリ文字列方式ではMIMEタイプを指定しない、
+        というのがkintone REST APIの共通仕様）。
+
+        2026-08-28、この誤りにより`get_record()`が**常に**失敗していた。書き込み系
+        (POST/PUT)はJSONボディがあり`Content-Type`が正しいため成功しており、読み取りだけが
+        壊れていた。リレーション同期Round2（新規レコードのNotion自動作成）が本番の
+        `get_record()`を初めて日常的に通る経路だったため、Round2の有効化ではじめて表面化した
+        （external_id 62168/62169/62170/62171と連番で全件失敗していた）。
+        """
+        headers = {"X-Cybozu-API-Token": self._api_token or ""}
+        if has_json_body:
+            headers["Content-Type"] = "application/json"
+        return headers
 
     def _request(
         self,
@@ -101,7 +116,7 @@ class HttpKintoneClient:
         return request_with_retry(
             method,
             self._base_url,
-            headers=self._headers(),
+            headers=self._headers(has_json_body=json_body is not None),
             json_body=json_body,
             params=params,
             timeout=self._timeout,
