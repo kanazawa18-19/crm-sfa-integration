@@ -72,6 +72,16 @@ _EXTERNAL_ID_PROPERTIES: dict[Tool, str] = {
 }
 
 
+# IDマッピングストアのHTTPタイムアウト（秒）。共通の既定値(DEFAULT_TIMEOUT_SECONDS=10秒)より
+# 長くしている。ここはコンテンツ同期と違い「1レコード分の小さな読み書き」しかしないが、
+# **失敗したときの後始末が最も厄介な経路**であるため（Notionページを作った直後にここが失敗すると、
+# 作成済みページをアーカイブする補償アクションへ進む。書き込みが実はサーバー側で成功していた
+# 場合、登録済みマッピングがアーカイブ済みページを指す状態になる）。Notion API側が遅いだけの
+# 一時的な状況で、この最も危険な経路を落とさないことを優先する
+# （2026-08-28、external_id=62161がread timeout=10.0で実際にこの経路へ入った）。
+_ID_MAPPING_TIMEOUT_SECONDS = 25.0
+
+
 class NotionIdMappingStoreApiError(ApiError):
     """Notion裏付けIDマッピングストアのAPI呼び出し失敗時に送出する例外。"""
 
@@ -181,7 +191,7 @@ class NotionIdMappingStore(IdMappingStore):
         api_key: str | None = None,
         base_url: str = _BASE_URL,
         notion_version: str = _NOTION_VERSION,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout: float = _ID_MAPPING_TIMEOUT_SECONDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_rate_limit_retries: int = DEFAULT_MAX_RATE_LIMIT_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,

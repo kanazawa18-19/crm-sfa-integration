@@ -2077,3 +2077,73 @@ def test_zoho_stage_change_newer_than_notion_reaches_notion_end_to_end(
     assert targets[Tool.KINTONE].upsert_calls == [("3001", {"営業ステータス": "口頭受注"})]
     assert targets[Tool.SPREADSHEET].upsert_calls == [("20", {"営業ステータス": "口頭受注"})]
     assert targets[Tool.ZOHO].upsert_calls == []  # 送信元には書き戻さない
+
+
+class _WriteLandedButFailedIdMappingStore:
+    """`upsert()`は必ず例外を投げるが、書き込み自体はサーバー側で成功しているストア。
+
+    Notionへの書き込みが完了した直後に読み取りタイムアウトした状況を再現する
+    （2026-08-28、external_id=62161で実際に発生した形）。
+    """
+
+    def __init__(self, inner: SQLiteIdMappingStore, *, exc: Exception | None = None) -> None:
+        self._inner = inner
+        self._exc = exc or RuntimeError("read timed out after the write landed")
+        self.upsert_attempts = 0
+
+    def get(self, notion_key: str) -> IdMapping | None:
+        return self._inner.get(notion_key)
+
+    def upsert(self, mapping: IdMapping, **kwargs: Any) -> None:
+        self.upsert_attempts += 1
+        self._inner.upsert(mapping, **kwargs)  # 書き込みは成功する
+        raise self._exc  # が、レスポンスは受け取れない
+
+    def delete(self, notion_key: str) -> None:
+        self._inner.delete(notion_key)
+
+    def find_by_external_id(self, tool: Tool, external_id: str, *, db_key: str) -> IdMapping | None:
+        return self._inner.find_by_external_id(tool, external_id, db_key=db_key)
+
+    def update_last_synced_at(self, notion_key: str, last_synced_at: datetime) -> None:
+        self._inner.update_last_synced_at(notion_key, last_synced_at)
+
+
+def test_dispatch_does_not_archive_page_when_mapping_write_actually_landed(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """IdMapping登録が例外で終わっても、実は登録されていたならページをアーカイブしないこと。
+
+    ここでアーカイブすると、**登録済みのマッピングがアーカイブ済みページを指す**状態を自分で
+    作ってしまい、以後その レコードの同期が壊れる。リトライも不要（既に書き込まれている）。
+    """
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    monkeypatch.setattr("src.sync_engine.dispatcher.time.sleep", lambda seconds: None)
+    flaky_store = _WriteLandedButFailedIdMappingStore(store)
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(
+        Tool.KINTONE, {"kintone-new-1": _kintone_client_master_record()}
+    )
+    notifier = SpyNotifier()
+    dispatcher = Dispatcher(flaky_store, targets, slack_notifier=notifier)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="kintone-new-1",
+        occurred_at=NOW,
+        properties={},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    assert not result.skipped
+    # 1回目の例外で「実は登録済み」と分かるため、リトライしない。
+    assert flaky_store.upsert_attempts == 1
+    # 補償アクション（アーカイブ）を実行しないこと。
+    assert targets[Tool.NOTION].delete_calls == []
+    # マッピングは実際に登録されている。
+    registered = store.find_by_external_id(Tool.KINTONE, "kintone-new-1", db_key="client_master")
+    assert registered is not None
+    # 問題としてではなく、通常の作成として通知されること。
+    assert notifier.new_record_issue_calls == []
+    assert notifier.new_record_created_calls

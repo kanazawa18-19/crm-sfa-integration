@@ -764,6 +764,41 @@ class Dispatcher:
                 ),
             )
 
+    def _mapping_was_actually_registered(self, mapping: IdMapping) -> bool:
+        """`IdMappingStore.upsert()`が例外で終わったあと、**実は登録されていた**かを確認する
+        （2026-08-28）。
+
+        本番のストアはNotionのDB（`NotionIdMappingStore`）であり、書き込みがサーバー側で
+        完了していてもレスポンスが返る前に読み取りタイムアウトすると、こちらは失敗として
+        受け取る。そのまま補償アクション（作成済みページのアーカイブ）へ進むと、
+        **登録済みのマッピングがアーカイブ済みページを指す**という、放置すると以後の同期が
+        壊れる状態を自分で作ってしまう（2026-08-28、external_id=62161で発生）。
+        リトライも同様で、既に書き込まれているのに再度書きにいくことになる。
+
+        外部IDから引き直して、**このイベントで作ったページと同じnotion_keyが登録済み**なら
+        登録成功とみなす。確認そのものが失敗した場合は`False`（＝従来どおりリトライ・補償へ）。
+        推測で成功扱いにはしない。
+        """
+        if mapping.kintone_id is not None:
+            tool, external_id = Tool.KINTONE, mapping.kintone_id
+        elif mapping.zoho_id is not None:
+            tool, external_id = Tool.ZOHO, mapping.zoho_id
+        else:
+            return False
+        try:
+            registered = self._store.find_by_external_id(tool, external_id, db_key=mapping.db_key)
+        except Exception:  # noqa: BLE001 (バックエンド実装依存の例外を広く受ける)
+            logger.warning(
+                "new record creation: could not verify whether the id mapping was actually "
+                "registered (notion_key=%r, db_key=%r); falling back to the retry/compensation "
+                "path",
+                mapping.notion_key,
+                mapping.db_key,
+                exc_info=True,
+            )
+            return False
+        return registered is not None and registered.notion_key == mapping.notion_key
+
     def _register_new_record_mapping(self, mapping: IdMapping) -> Exception | None:
         """新規作成したNotionページの`IdMapping`を登録する（BLOCKER1対応、2026-08-25）。
 
@@ -799,6 +834,17 @@ class Dispatcher:
                 return exc
             except Exception as exc:  # noqa: BLE001 (バックエンド実装依存の例外を広く受ける)
                 last_error = exc
+                if self._mapping_was_actually_registered(mapping):
+                    # 書き込みはサーバー側で完了しており、レスポンスを受け取れなかっただけ
+                    # （読み取りタイムアウト等）。リトライも補償アクションも行わない。
+                    logger.warning(
+                        "new record creation: the id mapping turned out to be registered "
+                        "despite the error (notion_key=%r, db_key=%r); treating it as a "
+                        "success and skipping both the retry and the compensating archive",
+                        mapping.notion_key,
+                        mapping.db_key,
+                    )
+                    return None
                 logger.warning(
                     "new record creation: failed to register id mapping (attempt %d/%d, "
                     "notion_key=%r, db_key=%r); %s",
