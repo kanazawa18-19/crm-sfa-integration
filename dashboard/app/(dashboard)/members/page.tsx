@@ -50,39 +50,39 @@ export default async function MembersPage() {
       <section>
         <h2 className="mb-3 text-lg font-semibold text-gray-900">実績一覧</h2>
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="data-table">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">メンバー</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">接触件数（ボリューム）</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">ボリュームスコア</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">受注率（クオリティ）</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">期限遵守率（スピード）</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">総合スコア</th>
+                <th className="text-left">メンバー</th>
+                <th className="text-right">接触件数（ボリューム）</th>
+                <th className="text-right">ボリュームスコア</th>
+                <th className="text-right">受注率（クオリティ）</th>
+                <th className="text-right">期限遵守率（スピード）</th>
+                <th className="text-right">総合スコア</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {performance.members.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-gray-500" colSpan={6}>
+                  <td colSpan={6}>
                     データがありません
                   </td>
                 </tr>
               ) : (
                 performance.members.map((member) => (
                   <tr key={member.member}>
-                    <td className="px-4 py-2 text-gray-900">{member.member}</td>
-                    <td className="px-4 py-2 text-right text-gray-900">
+                    <td>{member.member}</td>
+                    <td className="text-right">
                       {member.volume_contact_count.toLocaleString("ja-JP")}
                     </td>
-                    <td className="px-4 py-2 text-right text-gray-900">{formatPercent(member.volume_score)}</td>
-                    <td className="px-4 py-2 text-right text-gray-900">
+                    <td className="text-right">{formatPercent(member.volume_score)}</td>
+                    <td className="text-right">
                       {formatPercent(member.quality_win_rate)}
                     </td>
-                    <td className="px-4 py-2 text-right text-gray-900">
+                    <td className="text-right">
                       {formatPercent(member.speed_compliance_rate)}
                     </td>
-                    <td className="px-4 py-2 text-right font-semibold text-gray-900">
+                    <td className="text-right font-semibold">
                       {formatPercent(member.overall_score)}
                     </td>
                   </tr>

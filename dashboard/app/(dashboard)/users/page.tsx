@@ -44,20 +44,20 @@ export default async function UsersPage() {
 
       <div className="surface-card mt-6 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="data-table">
             <thead>
-              <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                <th className="px-4 py-2 font-medium">メールアドレス</th>
-                <th className="font-medium">権限</th>
-                <th className="font-medium">状態</th>
-                <th className="border-l border-(--border-subtle) px-4 font-medium">インシデント通知先</th>
+              <tr className="bg-(--color-surface-muted)/60">
+                <th>メールアドレス</th>
+                <th>権限</th>
+                <th>状態</th>
+                <th className="border-l border-(--border-subtle)">インシデント通知先</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="border-b border-(--border-subtle) last:border-0">
-                  <td className="px-4 py-2">
+                <tr key={u.id}>
+                  <td>
                     {u.email}
                     {u.id === currentUser.id && <span className="badge-blue ml-2">あなた</span>}
                   </td>
@@ -83,7 +83,7 @@ export default async function UsersPage() {
                       <span className="badge-muted">招待中</span>
                     )}
                   </td>
-                  <td className="border-l border-(--border-subtle) px-4">
+                  <td className="border-l border-(--border-subtle)">
                     {/* 通知対象が0人にならないよう、最後の1人はOFFにできない
                         (deleteUser()の「有効なmasterアカウントは削除不可」と同じ考え方
                         でフォーム自体を出さない。actions.tsのtoggleUserIsManager()にも
@@ -108,7 +108,7 @@ export default async function UsersPage() {
                       </form>
                     )}
                   </td>
-                  <td className="px-4">
+                  <td>
                     {/* 有効なmasterアカウントは削除不可。招待中(passwordHash未設定)のmaster招待は
                         キャンセルできる — app/actions.tsのdeleteUser()と同じ条件。 */}
                     {u.id !== currentUser.id && (u.role !== "master" || !u.passwordHash) && (

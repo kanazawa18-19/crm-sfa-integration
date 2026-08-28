@@ -224,21 +224,21 @@ async function StatusBreakdownSection({ summaryPromise }: SectionProps) {
           <StatusCategoryChart data={categoryChartData} colors={CATEGORY_CHART_COLORS} />
         </div>
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="data-table">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">ステータス</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">区分</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">件数</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">初期費用計</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">月額計</th>
+                <th className="text-left">ステータス</th>
+                <th className="text-left">区分</th>
+                <th className="text-right">件数</th>
+                <th className="text-right">初期費用計</th>
+                <th className="text-right">月額計</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {status_breakdown.map((item) => (
                 <tr key={item.status}>
-                  <td className="px-4 py-2 text-gray-900">{item.status}</td>
-                  <td className="px-4 py-2">
+                  <td>{item.status}</td>
+                  <td>
                     <span
                       className={`rounded px-2 py-0.5 text-xs font-medium ${
                         CATEGORY_BADGE_CLASSES[item.category] ?? "bg-gray-100 text-gray-700"
@@ -247,9 +247,9 @@ async function StatusBreakdownSection({ summaryPromise }: SectionProps) {
                       {item.category}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-right text-gray-900">{item.count.toLocaleString("ja-JP")}</td>
-                  <td className="px-4 py-2 text-right text-gray-900">{formatYen(item.initial_fee_sum)}</td>
-                  <td className="px-4 py-2 text-right text-gray-900">{formatYen(item.monthly_fee_sum)}</td>
+                  <td className="text-right">{item.count.toLocaleString("ja-JP")}</td>
+                  <td className="text-right">{formatYen(item.initial_fee_sum)}</td>
+                  <td className="text-right">{formatYen(item.monthly_fee_sum)}</td>
                 </tr>
               ))}
             </tbody>

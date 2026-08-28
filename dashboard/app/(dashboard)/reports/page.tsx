@@ -56,35 +56,35 @@ export default async function ReportsPage(props: PageProps<"/reports">) {
       <section>
         <h2 className="mb-3 text-lg font-semibold text-gray-900">メンバー別アクション件数</h2>
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="data-table">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">メンバー</th>
+                <th className="text-left">メンバー</th>
                 {actionTypes.map((type) => (
                   <th key={type} className="px-4 py-2 text-right font-medium text-gray-500">
                     {type}
                   </th>
                 ))}
-                <th className="px-4 py-2 text-right font-medium text-gray-500">合計</th>
+                <th className="text-right">合計</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {report.member_summaries.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-gray-500" colSpan={actionTypes.length + 2}>
+                  <td colSpan={actionTypes.length + 2}>
                     データがありません
                   </td>
                 </tr>
               ) : (
                 report.member_summaries.map((member) => (
                   <tr key={member.member}>
-                    <td className="px-4 py-2 text-gray-900">{member.member}</td>
+                    <td>{member.member}</td>
                     {actionTypes.map((type) => (
                       <td key={type} className="px-4 py-2 text-right text-gray-900">
                         {(member.counts_by_type[type] ?? 0).toLocaleString("ja-JP")}
                       </td>
                     ))}
-                    <td className="px-4 py-2 text-right font-semibold text-gray-900">
+                    <td className="text-right font-semibold">
                       {member.total.toLocaleString("ja-JP")}
                     </td>
                   </tr>
@@ -98,31 +98,31 @@ export default async function ReportsPage(props: PageProps<"/reports">) {
       <section>
         <h2 className="mb-3 text-lg font-semibold text-gray-900">本日の新規獲得案件</h2>
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="data-table">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">クライアント</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">提案サービス</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">初期費用</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">月額費用</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">担当者</th>
+                <th className="text-left">クライアント</th>
+                <th className="text-left">提案サービス</th>
+                <th className="text-right">初期費用</th>
+                <th className="text-right">月額費用</th>
+                <th className="text-left">担当者</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {report.new_projects.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-gray-500" colSpan={5}>
+                  <td colSpan={5}>
                     本日の新規獲得案件はありません
                   </td>
                 </tr>
               ) : (
                 report.new_projects.map((project) => (
                   <tr key={project.client_name}>
-                    <td className="px-4 py-2 text-gray-900">{project.client_name}</td>
-                    <td className="px-4 py-2 text-gray-900">{project.proposed_services.join("、")}</td>
-                    <td className="px-4 py-2 text-right text-gray-900">{formatYen(project.initial_fee)}</td>
-                    <td className="px-4 py-2 text-right text-gray-900">{formatYen(project.monthly_fee)}</td>
-                    <td className="px-4 py-2 text-gray-900">{project.assignee}</td>
+                    <td>{project.client_name}</td>
+                    <td>{project.proposed_services.join("、")}</td>
+                    <td className="text-right">{formatYen(project.initial_fee)}</td>
+                    <td className="text-right">{formatYen(project.monthly_fee)}</td>
+                    <td>{project.assignee}</td>
                   </tr>
                 ))
               )}
@@ -136,27 +136,27 @@ export default async function ReportsPage(props: PageProps<"/reports">) {
           翌営業日（{report.next_business_day}）の次回アクション予定
         </h2>
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="data-table">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">クライアント</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">担当者</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">次回アクション予定日</th>
+                <th className="text-left">クライアント</th>
+                <th className="text-left">担当者</th>
+                <th className="text-left">次回アクション予定日</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {report.upcoming_actions.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-gray-500" colSpan={3}>
+                  <td colSpan={3}>
                     予定はありません
                   </td>
                 </tr>
               ) : (
                 report.upcoming_actions.map((action, index) => (
                   <tr key={`${action.client_name}-${index}`}>
-                    <td className="px-4 py-2 text-gray-900">{action.client_name}</td>
-                    <td className="px-4 py-2 text-gray-900">{action.assignee}</td>
-                    <td className="px-4 py-2 text-gray-900">{action.next_action_date}</td>
+                    <td>{action.client_name}</td>
+                    <td>{action.assignee}</td>
+                    <td>{action.next_action_date}</td>
                   </tr>
                 ))
               )}

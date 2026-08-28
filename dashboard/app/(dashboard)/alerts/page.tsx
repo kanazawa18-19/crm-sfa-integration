@@ -48,29 +48,29 @@ const ALERT_SECTIONS: AlertSection[] = [
 function AlertTable({ entries }: { entries: ManagerAlertEntry[] }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-      <table className="min-w-full divide-y divide-gray-200 text-sm">
+      <table className="data-table">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">案件名</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">担当者</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">ステータス</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">確度</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">次回アクション予定日</th>
+            <th className="text-left">案件名</th>
+            <th className="text-left">担当者</th>
+            <th className="text-left">ステータス</th>
+            <th className="text-left">確度</th>
+            <th className="text-left">次回アクション予定日</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {entries.length === 0 ? (
             <tr>
-              <td className="px-4 py-3 text-gray-500" colSpan={5}>
+              <td colSpan={5}>
                 該当なし
               </td>
             </tr>
           ) : (
             entries.map((entry) => (
               <tr key={entry.notion_page_id}>
-                <td className="px-4 py-2 text-gray-900">{entry.project_name}</td>
-                <td className="px-4 py-2 text-gray-900">{entry.assignee}</td>
-                <td className="px-4 py-2 text-gray-900">
+                <td>{entry.project_name}</td>
+                <td>{entry.assignee}</td>
+                <td>
                   {entry.status}
                   {entry.is_proxy && (
                     <span
@@ -81,8 +81,8 @@ function AlertTable({ entries }: { entries: ManagerAlertEntry[] }) {
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-2 text-gray-900">{entry.confidence}</td>
-                <td className="px-4 py-2 text-gray-900">{entry.next_action_date ?? "未設定"}</td>
+                <td>{entry.confidence}</td>
+                <td>{entry.next_action_date ?? "未設定"}</td>
               </tr>
             ))
           )}

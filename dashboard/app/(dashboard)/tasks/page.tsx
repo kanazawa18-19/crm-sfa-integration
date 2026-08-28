@@ -49,29 +49,29 @@ export default async function TasksPage() {
 
       <section>
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="data-table">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">タスク名</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">ステータス</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">期限</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">担当者</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">ボール</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">案件紐付け</th>
+                <th className="text-left">タスク名</th>
+                <th className="text-left">ステータス</th>
+                <th className="text-left">期限</th>
+                <th className="text-left">担当者</th>
+                <th className="text-left">ボール</th>
+                <th className="text-left">案件紐付け</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {tasks.tasks.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-gray-500" colSpan={6}>
+                  <td colSpan={6}>
                     未完了のタスクはありません
                   </td>
                 </tr>
               ) : (
                 tasks.tasks.map((task) => (
                   <tr key={task.notion_page_id} className={taskRowClassName(task)}>
-                    <td className="px-4 py-2 text-gray-900">{task.title_summary}</td>
-                    <td className="px-4 py-2 text-gray-900">{task.status ?? "-"}</td>
+                    <td>{task.title_summary}</td>
+                    <td>{task.status ?? "-"}</td>
                     <td
                       className={
                         task.is_overdue
@@ -86,9 +86,9 @@ export default async function TasksPage() {
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-gray-900">{joinOrDash(task.assignees)}</td>
-                    <td className="px-4 py-2 text-gray-900">{joinOrDash(task.ball)}</td>
-                    <td className="px-4 py-2 text-gray-900">
+                    <td>{joinOrDash(task.assignees)}</td>
+                    <td>{joinOrDash(task.ball)}</td>
+                    <td>
                       {task.has_project_link ? "あり" : "なし"}
                     </td>
                   </tr>

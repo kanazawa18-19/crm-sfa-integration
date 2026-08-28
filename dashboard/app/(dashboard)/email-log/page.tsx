@@ -211,34 +211,34 @@ export default async function EmailLogPage(props: PageProps<"/email-log">) {
 
       <div className="surface-card mt-6 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="data-table">
             <thead>
-              <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                <th className="px-4 py-2 font-medium">日時</th>
-                <th className="px-4 py-2 font-medium">送受信</th>
-                <th className="px-4 py-2 font-medium">連絡先</th>
-                <th className="px-4 py-2 font-medium">担当者</th>
-                <th className="px-4 py-2 font-medium">件名</th>
-                <th className="px-4 py-2 font-medium">インシデント</th>
+              <tr className="bg-(--color-surface-muted)/60">
+                <th>日時</th>
+                <th>送受信</th>
+                <th>連絡先</th>
+                <th>担当者</th>
+                <th>件名</th>
+                <th>インシデント</th>
               </tr>
             </thead>
             <tbody>
               {logs.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={6}>
+                  <td colSpan={6}>
                     該当するメールがありません
                   </td>
                 </tr>
               ) : (
                 logs.map((log) => (
-                  <tr key={log.id} className="border-b border-(--border-subtle) align-top last:border-0">
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                  <tr key={log.id} className="align-top">
+                    <td className="whitespace-nowrap">
                       {formatDateTime(log.sentAt)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                    <td className="whitespace-nowrap">
                       {DIRECTION_LABELS[log.direction] ?? log.direction}
                     </td>
-                    <td className="px-4 py-2 text-(--color-foreground)/80">
+                    <td>
                       <a
                         href={`https://www.notion.so/${log.contactPageId.replace(/-/g, "")}`}
                         target="_blank"
@@ -248,8 +248,8 @@ export default async function EmailLogPage(props: PageProps<"/email-log">) {
                         {log.contactEmail}
                       </a>
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">{log.repEmail}</td>
-                    <td className="px-4 py-2 text-(--color-foreground)/80">
+                    <td className="whitespace-nowrap">{log.repEmail}</td>
+                    <td>
                       {log.subject ?? <span className="text-(--color-foreground)/40">(件名なし)</span>}
                       {log.snippet && (
                         <p className="mt-0.5 line-clamp-2 text-xs text-(--color-foreground)/50">{log.snippet}</p>
@@ -263,7 +263,7 @@ export default async function EmailLogPage(props: PageProps<"/email-log">) {
                         Gmailで開く
                       </a>
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2">
+                    <td className="whitespace-nowrap">
                       {log.incidentPriority ? (
                         <span className={priorityBadgeClass(log.incidentPriority)}>
                           {INCIDENT_PRIORITY_LABELS[log.incidentPriority] ?? log.incidentPriority}

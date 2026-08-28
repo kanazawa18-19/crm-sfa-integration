@@ -42,27 +42,27 @@ export default async function DocumentApproversPage() {
 
       <div className="surface-card mt-6 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="data-table">
             <thead>
-              <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                <th className="px-4 py-2 font-medium">氏名</th>
-                <th className="font-medium">メールアドレス</th>
-                <th className="font-medium">役職</th>
-                <th className="font-medium">状態</th>
+              <tr className="bg-(--color-surface-muted)/60">
+                <th>氏名</th>
+                <th>メールアドレス</th>
+                <th>役職</th>
+                <th>状態</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {approvers.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-(--color-foreground)/60" colSpan={5}>
+                  <td className="text-(--color-foreground)/60" colSpan={5}>
                     承認者が登録されていません。
                   </td>
                 </tr>
               ) : (
                 approvers.map((approver) => (
-                  <tr key={approver.id} className="border-b border-(--border-subtle) last:border-0">
-                    <td className="px-4 py-2">{approver.name}</td>
+                  <tr key={approver.id}>
+                    <td>{approver.name}</td>
                     <td>{approver.email}</td>
                     <td>{approver.title ?? "-"}</td>
                     <td>
@@ -74,7 +74,7 @@ export default async function DocumentApproversPage() {
                         <span className="badge-muted">無効</span>
                       )}
                     </td>
-                    <td className="flex gap-3 px-4 py-2">
+                    <td className="flex gap-3">
                       <form action={toggleDocumentApproverActive}>
                         <input type="hidden" name="id" value={approver.id} />
                         <SubmitButton

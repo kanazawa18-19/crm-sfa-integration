@@ -140,49 +140,49 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
         <SectionNotice capReached={projects.length === RELATED_PAGE_SIZE} />
         <div className="surface-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="data-table">
               <thead>
-                <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                  <th className="px-4 py-2 font-medium">案件名</th>
-                  <th className="px-4 py-2 font-medium">営業ステータス</th>
-                  <th className="px-4 py-2 font-medium">確度</th>
-                  <th className="px-4 py-2 font-medium">初期費用</th>
-                  <th className="px-4 py-2 font-medium">月額費用</th>
-                  <th className="px-4 py-2 font-medium">担当メンバー</th>
-                  <th className="px-4 py-2 font-medium">次回アクション日</th>
+                <tr className="bg-(--color-surface-muted)/60">
+                  <th>案件名</th>
+                  <th>営業ステータス</th>
+                  <th>確度</th>
+                  <th>初期費用</th>
+                  <th>月額費用</th>
+                  <th>担当メンバー</th>
+                  <th>次回アクション日</th>
                 </tr>
               </thead>
               <tbody>
                 {projects.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={7}>
+                    <td colSpan={7}>
                       案件がありません
                     </td>
                   </tr>
                 ) : (
                   projects.map((p) => (
-                    <tr key={p.notion_page_id} className="border-b border-(--border-subtle) last:border-0">
-                      <td className="px-4 py-2">
+                    <tr key={p.notion_page_id}>
+                      <td>
                         <a href={notionPageUrl(p.notion_page_id)} target="_blank" rel="noreferrer" className="link">
                           {p.案件名}
                         </a>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {p.営業ステータス ?? "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {p.確度 ?? "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-right text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap text-right">
                         {p.初期費用 != null ? formatYen(p.初期費用) : "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-right text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap text-right">
                         {p.月額費用 != null ? formatYen(p.月額費用) : "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {p.担当メンバー.length > 0 ? p.担当メンバー.join("、") : "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {formatOptionalDate(p.次回アクション日)}
                       </td>
                     </tr>
@@ -201,41 +201,41 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
         <SectionNotice capReached={contacts.length === RELATED_PAGE_SIZE} />
         <div className="surface-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="data-table">
               <thead>
-                <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                  <th className="px-4 py-2 font-medium">名前</th>
-                  <th className="px-4 py-2 font-medium">部署</th>
-                  <th className="px-4 py-2 font-medium">役職</th>
-                  <th className="px-4 py-2 font-medium">メールアドレス</th>
-                  <th className="px-4 py-2 font-medium">携帯番号</th>
-                  <th className="px-4 py-2 font-medium">直通TEL</th>
+                <tr className="bg-(--color-surface-muted)/60">
+                  <th>名前</th>
+                  <th>部署</th>
+                  <th>役職</th>
+                  <th>メールアドレス</th>
+                  <th>携帯番号</th>
+                  <th>直通TEL</th>
                 </tr>
               </thead>
               <tbody>
                 {contacts.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={6}>
+                    <td colSpan={6}>
                       連絡先がありません
                     </td>
                   </tr>
                 ) : (
                   contacts.map((c) => (
-                    <tr key={c.notion_page_id} className="border-b border-(--border-subtle) last:border-0">
-                      <td className="px-4 py-2">
+                    <tr key={c.notion_page_id}>
+                      <td>
                         <a href={notionPageUrl(c.notion_page_id)} target="_blank" rel="noreferrer" className="link">
                           {c.名前}
                         </a>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">{c.部署 ?? "-"}</td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">{c.役職 ?? "-"}</td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">{c.部署 ?? "-"}</td>
+                      <td className="whitespace-nowrap">{c.役職 ?? "-"}</td>
+                      <td className="whitespace-nowrap">
                         {c.メールアドレス ?? "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {c.携帯番号 ?? "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {c.直通TEL ?? "-"}
                       </td>
                     </tr>
@@ -254,33 +254,33 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
         <SectionNotice capReached={actions.length === RELATED_PAGE_SIZE} />
         <div className="surface-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="data-table">
               <thead>
-                <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                  <th className="px-4 py-2 font-medium">アクション日</th>
-                  <th className="px-4 py-2 font-medium">アクション種別</th>
-                  <th className="px-4 py-2 font-medium">内容</th>
-                  <th className="px-4 py-2 font-medium">先方担当者</th>
-                  <th className="px-4 py-2 font-medium">担当営業</th>
+                <tr className="bg-(--color-surface-muted)/60">
+                  <th>アクション日</th>
+                  <th>アクション種別</th>
+                  <th>内容</th>
+                  <th>先方担当者</th>
+                  <th>担当営業</th>
                 </tr>
               </thead>
               <tbody>
                 {actions.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={5}>
+                    <td colSpan={5}>
                       アクション履歴がありません
                     </td>
                   </tr>
                 ) : (
                   actions.map((a) => (
-                    <tr key={a.notion_page_id} className="border-b border-(--border-subtle) align-top last:border-0">
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                    <tr key={a.notion_page_id} className="align-top">
+                      <td className="whitespace-nowrap">
                         {formatOptionalDate(a.アクション日)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {a.アクション種別 ?? "-"}
                       </td>
-                      <td className="px-4 py-2 text-(--color-foreground)/80">
+                      <td>
                         <a href={notionPageUrl(a.notion_page_id)} target="_blank" rel="noreferrer" className="link">
                           {a["商談回数・電話回数・メール回数（何回目）"] ?? "-"}
                         </a>
@@ -290,10 +290,10 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
                           </p>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {a.先方担当者 ?? "-"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {a.担当営業 ?? "-"}
                       </td>
                     </tr>
@@ -312,35 +312,35 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
         <SectionNotice loadFailed={emailLogError} capReached={emailLogs.length === MAX_ROWS} />
         <div className="surface-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="data-table">
               <thead>
-                <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                  <th className="px-4 py-2 font-medium">日時</th>
-                  <th className="px-4 py-2 font-medium">送受信</th>
-                  <th className="px-4 py-2 font-medium">連絡先</th>
-                  <th className="px-4 py-2 font-medium">担当者</th>
-                  <th className="px-4 py-2 font-medium">件名</th>
+                <tr className="bg-(--color-surface-muted)/60">
+                  <th>日時</th>
+                  <th>送受信</th>
+                  <th>連絡先</th>
+                  <th>担当者</th>
+                  <th>件名</th>
                 </tr>
               </thead>
               <tbody>
                 {emailLogs.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={5}>
+                    <td colSpan={5}>
                       メール履歴がありません
                     </td>
                   </tr>
                 ) : (
                   emailLogs.map((log) => (
-                    <tr key={log.id} className="border-b border-(--border-subtle) align-top last:border-0">
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                    <tr key={log.id} className="align-top">
+                      <td className="whitespace-nowrap">
                         {formatDateTime(log.sentAt)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <td className="whitespace-nowrap">
                         {log.direction === "inbound" ? "受信" : "送信"}
                       </td>
-                      <td className="px-4 py-2 text-(--color-foreground)/80">{log.contactEmail}</td>
-                      <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">{log.repEmail}</td>
-                      <td className="px-4 py-2 text-(--color-foreground)/80">
+                      <td>{log.contactEmail}</td>
+                      <td className="whitespace-nowrap">{log.repEmail}</td>
+                      <td>
                         {log.subject ?? <span className="text-(--color-foreground)/40">(件名なし)</span>}
                       </td>
                     </tr>
@@ -360,41 +360,41 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
           <SectionNotice loadFailed={auditLogError} capReached={auditLogs.length === MAX_ROWS} />
           <div className="surface-card overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="data-table">
                 <thead>
-                  <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                    <th className="px-4 py-2 font-medium">日時</th>
-                    <th className="px-4 py-2 font-medium">操作</th>
-                    <th className="px-4 py-2 font-medium">対象ページ</th>
-                    <th className="px-4 py-2 font-medium">変更内容</th>
-                    <th className="px-4 py-2 font-medium">経路</th>
+                  <tr className="bg-(--color-surface-muted)/60">
+                    <th>日時</th>
+                    <th>操作</th>
+                    <th>対象ページ</th>
+                    <th>変更内容</th>
+                    <th>経路</th>
                   </tr>
                 </thead>
                 <tbody>
                   {auditLogs.length === 0 ? (
                     <tr>
-                      <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={5}>
+                      <td colSpan={5}>
                         変更履歴がありません
                       </td>
                     </tr>
                   ) : (
                     auditLogs.map((log) => (
-                      <tr key={log.id} className="border-b border-(--border-subtle) align-top last:border-0">
-                        <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                      <tr key={log.id} className="align-top">
+                        <td className="whitespace-nowrap">
                           {formatDateTime(log.createdAt)}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                        <td className="whitespace-nowrap">
                           {log.action === "create" ? "作成" : "更新"}
                         </td>
-                        <td className="px-4 py-2 font-mono text-xs">
+                        <td className="font-mono text-xs">
                           <a href={notionPageUrl(log.notionPageId)} target="_blank" rel="noreferrer" className="link">
                             {log.notionPageId}
                           </a>
                         </td>
-                        <td className="whitespace-pre-wrap px-4 py-2 text-xs text-(--color-foreground)/70">
+                        <td className="whitespace-pre-wrap text-xs text-(--color-foreground)/70">
                           {formatChangedFields(log.changedFields)}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                        <td className="whitespace-nowrap">
                           {log.actorSource}
                           {log.actorLabel && (
                             <span className="ml-1 text-(--color-foreground)/50">({log.actorLabel})</span>

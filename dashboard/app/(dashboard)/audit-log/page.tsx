@@ -135,37 +135,37 @@ export default async function AuditLogPage(props: PageProps<"/audit-log">) {
 
       <div className="surface-card mt-6 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="data-table">
             <thead>
-              <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                <th className="px-4 py-2 font-medium">日時</th>
-                <th className="px-4 py-2 font-medium">対象DB</th>
-                <th className="px-4 py-2 font-medium">操作</th>
-                <th className="px-4 py-2 font-medium">対象ページ</th>
-                <th className="px-4 py-2 font-medium">変更内容</th>
-                <th className="px-4 py-2 font-medium">経路</th>
+              <tr className="bg-(--color-surface-muted)/60">
+                <th>日時</th>
+                <th>対象DB</th>
+                <th>操作</th>
+                <th>対象ページ</th>
+                <th>変更内容</th>
+                <th>経路</th>
               </tr>
             </thead>
             <tbody>
               {logs.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-3 text-(--color-foreground)/50" colSpan={6}>
+                  <td colSpan={6}>
                     該当するログがありません
                   </td>
                 </tr>
               ) : (
                 logs.map((log) => (
-                  <tr key={log.id} className="border-b border-(--border-subtle) align-top last:border-0">
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                  <tr key={log.id} className="align-top">
+                    <td className="whitespace-nowrap">
                       {formatDateTime(log.createdAt)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                    <td className="whitespace-nowrap">
                       {DB_KEY_LABELS[log.dbKey] ?? log.dbKey}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                    <td className="whitespace-nowrap">
                       {ACTION_LABELS[log.action] ?? log.action}
                     </td>
-                    <td className="px-4 py-2 font-mono text-xs">
+                    <td className="font-mono text-xs">
                       <a
                         href={`https://www.notion.so/${log.notionPageId.replace(/-/g, "")}`}
                         target="_blank"
@@ -175,10 +175,10 @@ export default async function AuditLogPage(props: PageProps<"/audit-log">) {
                         {log.notionPageId}
                       </a>
                     </td>
-                    <td className="whitespace-pre-wrap px-4 py-2 text-xs text-(--color-foreground)/70">
+                    <td className="whitespace-pre-wrap text-xs text-(--color-foreground)/70">
                       {formatChangedFields(log.changedFields)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-(--color-foreground)/80">
+                    <td className="whitespace-nowrap">
                       {ACTOR_SOURCE_LABELS[log.actorSource] ?? log.actorSource}
                       {log.actorLabel && (
                         <span className="ml-1 text-(--color-foreground)/50">({log.actorLabel})</span>

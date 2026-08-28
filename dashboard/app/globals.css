@@ -145,6 +145,44 @@ body {
   /* smartHR公式のStatusLabel/Chipは塗りつぶしでなく「白背景+色付きボーダー」という
      視覚言語だったため採用したが、Chipの文字色固定(黒)には倣わず、業務一覧での
      ステータス識別性(スキャン性)を優先して文字色・色の意味づけは維持している。 */
+  /* 一覧表の共有スタイル(2026-08-28)。smarthr-uiのTableをStorybook(story.smarthr-ui.dev)で
+     実測した値に合わせている: font-size 13px / line-height 20px、th・td とも padding 10px 15px
+     (行の外端だけ 20px)、th は font-weight 700・左寄せ・背景透明・本文と同色。
+     それまでは各ページが <table className="w-full text-sm"> のようにユーティリティを直書きして
+     おり、余白(py-2 と py-3)・文字色(text-gray-500 と text-gray-900)・罫線(divide-y のあり無し)が
+     ページごとにバラついていた。
+
+     smarthr-uiとの意図的な差分: smarthr-uiのTableは既定で罫線を持たない(borderTypeで任意)が、
+     ここでは見出し下線と行間の区切り線を残している。件数の多い業務一覧では行を目で追う助けに
+     なり、既存の一部の表(divide-y)でも実際にそうしていたため。
+
+     vertical-alignは指定しない。複数行になるセルを持つ表が <tr className="align-top"> で
+     上寄せを指定しており、ここで align-middle を入れるとそれを打ち消してしまうため。 */
+  .data-table {
+    @apply w-full border-collapse text-[13px]/[20px];
+  }
+  .data-table th {
+    @apply px-[15px] py-[10px] text-left font-bold text-(--color-foreground);
+  }
+  .data-table td {
+    @apply px-[15px] py-[10px] text-(--color-foreground);
+  }
+  /* 行の外端(最初と最後の列)だけ余白を広くするのもsmarthr-uiの実測どおり。 */
+  .data-table th:first-child,
+  .data-table td:first-child {
+    @apply pl-5;
+  }
+  .data-table th:last-child,
+  .data-table td:last-child {
+    @apply pr-5;
+  }
+  .data-table thead th {
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .data-table tbody tr + tr td {
+    border-top: 1px solid var(--border-subtle);
+  }
+
   .badge-blue {
     @apply inline-flex items-center rounded-full border border-(--brand-blue) bg-(--color-surface) px-2 py-1 text-sm font-medium text-(--brand-blue-dark);
   }

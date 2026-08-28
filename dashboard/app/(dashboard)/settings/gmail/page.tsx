@@ -68,25 +68,25 @@ export default async function GmailSettingsPage({
           </p>
           <div className="surface-card mt-3 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="data-table">
                 <thead>
-                  <tr className="border-b border-(--border-subtle) bg-(--color-surface-muted)/60 text-left text-(--color-foreground)/50">
-                    <th className="px-4 py-2 font-medium">メールアドレス</th>
-                    <th className="font-medium">連携日時</th>
-                    <th className="font-medium">最終同期</th>
+                  <tr className="bg-(--color-surface-muted)/60">
+                    <th>メールアドレス</th>
+                    <th>連携日時</th>
+                    <th>最終同期</th>
                   </tr>
                 </thead>
                 <tbody>
                   {allConnections.length === 0 ? (
                     <tr>
-                      <td className="px-4 py-3 text-(--text-grey)" colSpan={3}>
+                      <td className="text-(--text-grey)" colSpan={3}>
                         まだ誰も連携していません。
                       </td>
                     </tr>
                   ) : (
                     allConnections.map((c) => (
-                      <tr key={c.id} className="border-b border-(--border-subtle) last:border-0">
-                        <td className="px-4 py-2">
+                      <tr key={c.id}>
+                        <td>
                           {c.repEmail}
                           {c.repEmail === user.email && <span className="badge-blue ml-2">あなた</span>}
                         </td>
