@@ -1,4 +1,8 @@
-"""src/api/app.pyに配線したWebhook受信エンドポイント・Cronバッチエンドポイントの検証。
+"""Webhook受信エンドポイント・Cronバッチエンドポイントの検証。
+
+cronのハンドラは2026-08-28に`src/api/routes/cron.py`へ分割したため、monkeypatchの対象も
+そちらのモジュール名になっている（パッチはハンドラが実際に名前を引くモジュールに当てる
+必要がある。`src.api.app`のままだと、テストは緑のまま本物の処理が走ってしまう）。
 
 実際のNotion/kintone/Zoho/スプレッドシートAPI・Slackへは一切アクセスしない
 （`_wiring_dependency`をapp.dependency_overridesでフェイクに差し替え、
@@ -714,7 +718,7 @@ def test_cron_daily_batch_runs_batch_when_secret_matches(
 ) -> None:
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setattr(
-        "src.api.app.run_report_batch",
+        "src.api.routes.cron.run_report_batch",
         lambda: {"date": "2026-08-11", "daily_report_sent": True, "weekly_report_sent": False},
     )
 
@@ -760,10 +764,10 @@ def test_cron_zoho_webhook_renewal_succeeds_when_secret_matches(
 ) -> None:
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setattr(
-        "src.api.app.build_zoho_client_from_env", lambda: object()
+        "src.api.routes.cron.build_zoho_client_from_env", lambda: object()
     )
     monkeypatch.setattr(
-        "src.api.app.renew_zoho_watch_channel",
+        "src.api.routes.cron.renew_zoho_watch_channel",
         lambda client, **kwargs: {"channel_id": "123", "channel_expiry": "2026-08-13T00:00:00+00:00"},
     )
 
@@ -787,12 +791,12 @@ def test_cron_zoho_webhook_renewal_returns_500_when_channel_not_configured(
     from src.sync_engine.zoho_watch_channel import ZohoWatchChannelNotConfiguredError
 
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
-    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+    monkeypatch.setattr("src.api.routes.cron.build_zoho_client_from_env", lambda: object())
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise ZohoWatchChannelNotConfiguredError("channel_id not configured")
 
-    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+    monkeypatch.setattr("src.api.routes.cron.renew_zoho_watch_channel", _raise)
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -809,12 +813,12 @@ def test_cron_zoho_webhook_renewal_returns_502_on_zoho_api_failure(
     from src.sync_engine.clients.zoho_client import ZohoApiError
 
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
-    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+    monkeypatch.setattr("src.api.routes.cron.build_zoho_client_from_env", lambda: object())
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise ZohoApiError(400, "invalid channel_id")
 
-    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+    monkeypatch.setattr("src.api.routes.cron.renew_zoho_watch_channel", _raise)
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -835,13 +839,13 @@ def test_cron_zoho_webhook_renewal_502_body_never_contains_raw_secret_from_zoho_
 
     real_secret = "super-secret-webhook-token-value"
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
-    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+    monkeypatch.setattr("src.api.routes.cron.build_zoho_client_from_env", lambda: object())
 
     def _raise(*args: object, **kwargs: object) -> None:
         entry = {"status": "error", "code": "INVALID_DATA", "token": real_secret}
         raise ZohoApiError(200, str(redact_watch_entry_token(entry)))
 
-    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+    monkeypatch.setattr("src.api.routes.cron.renew_zoho_watch_channel", _raise)
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -857,12 +861,12 @@ def test_cron_zoho_webhook_renewal_returns_clean_500_on_unexpected_exception(
     """BLOCKER3: ZohoWatchChannelNotConfiguredError/ZohoApiError以外の想定外の例外も、
     未処理のまま生のトレースバック形状で漏れず、ログに記録した上で綺麗な500を返すこと。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
-    monkeypatch.setattr("src.api.app.build_zoho_client_from_env", lambda: object())
+    monkeypatch.setattr("src.api.routes.cron.build_zoho_client_from_env", lambda: object())
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise AttributeError("'str' object has no attribute 'get'")
 
-    monkeypatch.setattr("src.api.app.renew_zoho_watch_channel", _raise)
+    monkeypatch.setattr("src.api.routes.cron.renew_zoho_watch_channel", _raise)
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -1011,7 +1015,7 @@ def test_cron_project_mirror_reconcile_skips_when_sync_not_enabled_by_default(
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.api.app.refresh_all_projects", lambda **kwargs: calls.append(kwargs)
+        "src.api.routes.cron.refresh_all_projects", lambda **kwargs: calls.append(kwargs)
     )
 
     response = client.get(
@@ -1053,7 +1057,7 @@ def test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches(
         calls.append({"notion_client": notion_client, "user_directory": user_directory})
         return {"synced_count": 42}
 
-    monkeypatch.setattr("src.api.app.refresh_all_projects", _fake_refresh_all_projects)
+    monkeypatch.setattr("src.api.routes.cron.refresh_all_projects", _fake_refresh_all_projects)
 
     response = client.get(
         "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}
@@ -1121,7 +1125,7 @@ def test_cron_relation_sync_reconcile_skips_when_sync_not_enabled_by_default(
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.api.app.refresh_all_client_names", lambda **kwargs: calls.append(kwargs)
+        "src.api.routes.cron.refresh_all_client_names", lambda **kwargs: calls.append(kwargs)
     )
 
     response = client.get(
@@ -1158,7 +1162,7 @@ def test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches(
         calls.append({"notion_client": notion_client})
         return {"synced_count": 9914, "deleted_count": 0}
 
-    monkeypatch.setattr("src.api.app.refresh_all_client_names", _fake_refresh_all_client_names)
+    monkeypatch.setattr("src.api.routes.cron.refresh_all_client_names", _fake_refresh_all_client_names)
 
     response = client.get(
         "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer correct-secret"}
@@ -1220,7 +1224,7 @@ def test_cron_document_approval_poll_runs_poll_when_secret_matches(
 ) -> None:
     monkeypatch.setenv("DOCUMENT_APPROVAL_CRON_SECRET", "correct-secret")
     monkeypatch.setattr(
-        "src.api.app.poll_document_approvals", lambda: {"checked": 2, "resolved": 1, "errors": 0}
+        "src.api.routes.cron.poll_document_approvals", lambda: {"checked": 2, "resolved": 1, "errors": 0}
     )
 
     response = client.get(

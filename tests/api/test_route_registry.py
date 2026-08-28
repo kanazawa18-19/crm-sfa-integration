@@ -69,11 +69,32 @@ _EXPECTED_ROUTES = {
 }
 
 
+def _walk_routes(routes: object) -> list[APIRoute]:
+    """`app.routes`を再帰的にたどって`APIRoute`を集める。
+
+    FastAPI 0.141以降、`include_router()`したルーターは`app.routes`へフラットに展開されず、
+    `_IncludedRouter`という1個のエントリとして保持される（実体は`original_router`が持つ）。
+    そのため`app.routes`を1段だけ見ると、**ルーターへ分割したパスが「存在しない」ように
+    見えてしまう**。実際のルーティングは正常に動くため、ここを間違えるとテストだけが
+    嘘をつく。バージョン差に強くするため、`routes`/`original_router`のどちらを持つ相手でも
+    たどれるようにしている。
+    """
+    found: list[APIRoute] = []
+    for route in routes or []:  # type: ignore[union-attr]
+        if isinstance(route, APIRoute):
+            found.append(route)
+            continue
+        inner = getattr(route, "original_router", None) or getattr(route, "router", None)
+        if inner is not None:
+            found.extend(_walk_routes(getattr(inner, "routes", [])))
+        elif hasattr(route, "routes"):
+            found.extend(_walk_routes(route.routes))
+    return found
+
+
 def _registered_routes() -> set[tuple[str, str]]:
     routes: set[tuple[str, str]] = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue  # FastAPIが自動で足す /docs 等は対象外
+    for route in _walk_routes(app.routes):
         for method in route.methods or set():
             if method in {"HEAD", "OPTIONS"}:
                 continue
@@ -124,10 +145,13 @@ def test_every_cron_route_requires_a_secret() -> None:
     新しいcronを足すときに`dependencies=[Depends(verify_cron_secret)]`を書き忘れる事故を
     ここで止める。
     """
+    cron_routes = [r for r in _walk_routes(app.routes) if r.path.startswith("/api/cron/")]
+    # 対象0件のまま素通りしないこと。ルーター分割で列挙方法が壊れると、この手のテストは
+    # 「何も検査していないのに緑」になる。
+    assert cron_routes, "cronルートが1つも見つかりません（列挙方法が壊れている可能性）"
+
     unprotected: list[str] = []
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/cron/"):
-            continue
+    for route in cron_routes:
         dependency_names = {
             call.__name__
             for call in (d.call for d in route.dependant.dependencies)
