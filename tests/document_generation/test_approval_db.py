@@ -3,9 +3,11 @@
 実際のPostgresには接続しない。`psycopg.connect`をフェイクの接続/カーソルへ差し替える
 （`tests/document_generation/test_quote_number_db.py`と同じフェイクconnectパターン）。
 
-複数承認者対応(2026-08-27)のデプロイ窓フォールバック（`approverEmails`がNULL/空で
-旧`approverEmail`のみ埋まった行を読んだ場合、1要素配列として扱う挙動、
-shirokuma-secレビューBLOCKER対応）を重点的に検証する。
+複数承認者対応(2026-08-27)のデプロイ窓フォールバック（`approverEmails`がNULLの行を旧
+`approverEmail`から読む挙動）は、2026-08-28のバックフィル＋NOT NULL化マイグレーションで
+不要になり削除した。ここでは「旧`approverEmail`列を読み書きしないこと」を回帰テストとして
+固定する（列のDROPは次のデプロイで行うため、それまでにdual-writeが復活していないことを
+保証する必要がある）。
 """
 
 from __future__ import annotations
@@ -25,6 +27,15 @@ _MIGRATION_SQL_PATH = (
     / "prisma"
     / "migrations"
     / "20260827000000_document_approval_multi_approver"
+    / "migration.sql"
+)
+
+_NOT_NULL_MIGRATION_SQL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "dashboard"
+    / "prisma"
+    / "migrations"
+    / "20260828000000_document_approval_approver_emails_not_null"
     / "migration.sql"
 )
 
@@ -98,7 +109,7 @@ def _patch_connect(monkeypatch: pytest.MonkeyPatch, cursor: _FakeCursor) -> _Fak
 _NOW = datetime(2026, 8, 27, 0, 0, 0, tzinfo=timezone.utc)
 
 
-def _row(*, approver_emails: list[str] | None, approver_email: str | None) -> dict[str, Any]:
+def _row(*, approver_emails: list[str]) -> dict[str, Any]:
     return {
         "id": "approval-1",
         "notionProjectId": "page-1",
@@ -106,7 +117,6 @@ def _row(*, approver_emails: list[str] | None, approver_email: str | None) -> di
         "driveFileId": "file-1",
         "driveApprovalId": "drive-approval-1",
         "approverEmails": approver_emails,
-        "approverEmail": approver_email,
         "requestedByEmail": "rep@example.com",
         "status": "in_progress",
         "createdAt": _NOW,
@@ -115,43 +125,38 @@ def _row(*, approver_emails: list[str] | None, approver_email: str | None) -> di
 
 
 def test_row_to_approval_uses_approver_emails_when_present() -> None:
-    row = _row(approver_emails=["a@example.com", "b@example.com"], approver_email="a@example.com")
+    row = _row(approver_emails=["a@example.com", "b@example.com"])
 
     approval = approval_db._row_to_approval(row)
 
     assert approval.approver_emails == ["a@example.com", "b@example.com"]
 
 
-def test_row_to_approval_falls_back_to_approver_email_when_approver_emails_is_none() -> None:
-    """デプロイ窓（`prisma migrate deploy`適用〜新デプロイ公開までの数十秒）で旧コードが
-    INSERTした行は`approverEmails`がNULL(psycopgではNone)のまま旧`approverEmail`のみ
-    埋まっている。この場合1要素配列として読めることを確認する(shirokuma-secレビュー
-    BLOCKER対応の中核テスト)。"""
-    row = _row(approver_emails=None, approver_email="legacy@example.com")
+def test_select_columns_do_not_include_legacy_approver_email() -> None:
+    """SELECT列に旧`approverEmail`を含めないこと（回帰テスト）。
 
-    approval = approval_db._row_to_approval(row)
-
-    assert approval.approver_emails == ["legacy@example.com"]
+    次のデプロイでこの列をDROPする。それまでにSELECTへ復活していると、DROPした瞬間に
+    参照系とポーリングcronが500になる。
+    """
+    assert '"approverEmail"' not in approval_db._COLUMNS
+    assert '"approverEmails"' in approval_db._COLUMNS
 
 
-def test_row_to_approval_falls_back_to_approver_email_when_approver_emails_is_empty_list() -> None:
-    row = _row(approver_emails=[], approver_email="legacy@example.com")
+def test_row_to_approval_returns_empty_list_when_approver_emails_is_empty() -> None:
+    """承認者0人の行(空配列)でも例外にせず空配列を返す。
 
-    approval = approval_db._row_to_approval(row)
-
-    assert approval.approver_emails == ["legacy@example.com"]
-
-
-def test_row_to_approval_returns_empty_list_when_both_columns_are_empty() -> None:
-    """両カラムとも無い(理論上起こらないはずだが)場合でも例外にせず空配列を返す。"""
-    row = _row(approver_emails=None, approver_email=None)
+    2026-08-28のバックフィルは、旧`approverEmail`もNULLだった行を空配列で埋めている
+    (NOT NULL化を確実に通すため、NULLを残さないことを優先した)。そのため空配列の行は
+    実在しうる。
+    """
+    row = _row(approver_emails=[])
 
     approval = approval_db._row_to_approval(row)
 
     assert approval.approver_emails == []
 
 
-def test_insert_document_approval_dual_writes_approver_email_and_returns_id(
+def test_insert_document_approval_does_not_write_legacy_approver_email_and_returns_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cursor = _FakeCursor()
@@ -170,9 +175,11 @@ def test_insert_document_approval_dual_writes_approver_email_and_returns_id(
     assert conn.committed is True
     assert len(cursor.executed) == 1
     sql, params = cursor.executed[0]
-    # "approverEmail"(旧単一カラム)が列挙の中で二重にならないこと(_COLUMNSの流用による
-    # バグの再発防止)。
-    assert sql.count('"approverEmail"') == 1
+    # 旧"approverEmail"へのdual-writeを復活させないこと(回帰テスト)。次のデプロイでこの列を
+    # DROPするため、書き込みが残っているとDROPした瞬間にINSERTが500になる。
+    # ("approverEmails"は部分文字列として"approverEmail"を含むため、単純なinではなく
+    # 単語境界で数える。)
+    assert re.findall(r'"approverEmail"(?!s)', sql) == []
     assert sql.count('"approverEmails"') == 1
     assert params == (
         approval_id,
@@ -181,7 +188,6 @@ def test_insert_document_approval_dual_writes_approver_email_and_returns_id(
         "file-1",
         "drive-approval-1",
         ["a@example.com", "b@example.com"],
-        "a@example.com",
         "rep@example.com",
         approval_db.IN_PROGRESS,
     )
@@ -196,8 +202,8 @@ def test_find_in_progress_approval_returns_none_when_no_row(monkeypatch: pytest.
     assert result is None
 
 
-def test_find_in_progress_approval_applies_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    cursor = _FakeCursor(fetch_one_rows=[_row(approver_emails=None, approver_email="legacy@example.com")])
+def test_find_in_progress_approval_maps_approver_emails(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = _FakeCursor(fetch_one_rows=[_row(approver_emails=["legacy@example.com"])])
     _patch_connect(monkeypatch, cursor)
 
     result = approval_db.find_in_progress_approval("page-1", "見積書")
@@ -206,19 +212,22 @@ def test_find_in_progress_approval_applies_fallback(monkeypatch: pytest.MonkeyPa
     assert result.approver_emails == ["legacy@example.com"]
 
 
-def test_list_in_progress_approvals_maps_multiple_rows_with_mixed_columns(
+def test_list_in_progress_approvals_maps_multiple_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rows = [
-        _row(approver_emails=["a@example.com"], approver_email="a@example.com"),
-        _row(approver_emails=None, approver_email="legacy@example.com"),
+        _row(approver_emails=["a@example.com"]),
+        _row(approver_emails=["b@example.com", "c@example.com"]),
     ]
     cursor = _FakeCursor(fetch_all_rows=[rows])
     _patch_connect(monkeypatch, cursor)
 
     result = approval_db.list_in_progress_approvals()
 
-    assert [a.approver_emails for a in result] == [["a@example.com"], ["legacy@example.com"]]
+    assert [a.approver_emails for a in result] == [
+        ["a@example.com"],
+        ["b@example.com", "c@example.com"],
+    ]
 
 
 def test_migration_sql_does_not_set_approver_emails_not_null() -> None:
@@ -368,3 +377,48 @@ def test_update_approval_status_commits(monkeypatch: pytest.MonkeyPatch) -> None
     sql, params = cursor.executed[0]
     assert 'UPDATE "DocumentApproval"' in sql
     assert params == (approval_db.APPROVED, "approval-1")
+
+
+def test_not_null_migration_backfills_before_setting_not_null() -> None:
+    """NOT NULL化の前に必ずバックフィルしていること。
+
+    NULLが1行でも残っているとSET NOT NULLが失敗し、`prisma migrate deploy`ごと落ちて
+    **ビルド全体が失敗し全ルートが障害になる**（web-engagement-toolで実際に起きている）。
+    順序が入れ替わっていたら落とす。
+    """
+    sql = _NOT_NULL_MIGRATION_SQL_PATH.read_text(encoding="utf-8")
+
+    backfill = re.search(r'UPDATE\s+"DocumentApproval"', sql, re.IGNORECASE)
+    set_not_null = re.search(
+        r'ALTER\s+TABLE\s+"DocumentApproval"\s+ALTER\s+COLUMN\s+"approverEmails"\s+SET\s+NOT\s+NULL',
+        sql,
+        re.IGNORECASE,
+    )
+
+    assert backfill is not None, "バックフィルのUPDATEが見当たりません"
+    assert set_not_null is not None, "approverEmailsのSET NOT NULLが見当たりません"
+    assert backfill.start() < set_not_null.start(), (
+        "バックフィルよりも先にSET NOT NULLが実行されています。NULL行が残っていると"
+        "マイグレーションが失敗し、ビルドごと落ちて全ルートが障害になります。"
+    )
+
+
+def test_not_null_migration_does_not_drop_legacy_column() -> None:
+    """同じマイグレーションで旧`approverEmail`列をDROPしないこと。
+
+    `prisma migrate deploy`はビルド時に走るため、新デプロイ公開までの数十秒は1つ前の
+    コードが動いている。そのコードはまだ`approverEmail`をSELECTしているため、ここで
+    DROPすると参照系とポーリングcronがその窓で500になる。DROPは次のデプロイで行う。
+    """
+    sql = _NOT_NULL_MIGRATION_SQL_PATH.read_text(encoding="utf-8")
+
+    drops = re.findall(
+        r'ALTER\s+TABLE\s+"DocumentApproval"\s+DROP\s+COLUMN\s+"approverEmail"(?!s)',
+        sql,
+        re.IGNORECASE,
+    )
+
+    assert not drops, (
+        "このマイグレーションで旧approverEmail列をDROPしています。デプロイ窓で1つ前の"
+        "コードのSELECTが壊れるため、DROPは次のデプロイに分けてください。"
+    )

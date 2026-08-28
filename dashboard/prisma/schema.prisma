@@ -387,11 +387,10 @@ model DocumentApproval {
   // 複数承認者対応(2026-08-27)。全員が承認して初めてDrive側もAPPROVEDになる
   // (Drive Approvals APIの仕様、docs/quote_approval_note.md参照)。読み取りは必ずこちらを使う。
   //
-  // DB上は意図的にまだNOT NULL制約を付けていない(nullable、shirokuma-secレビューBLOCKER
-  // 対応)。`prisma migrate deploy`はビルド時に走るため、新デプロイが公開される前の数十秒は
-  // このカラムへ触れない旧INSERT文がまだ本番で動いており、その窓でNOT NULL制約を付けると
-  // INSERTがconstraint violationで失敗する(migration.sqlのコメント参照)。新コードが本番で
-  // 安定稼働してから別マイグレーションでNOT NULL化する予定。
+  // 2026-08-28にDB上でNOT NULL化済み
+  // (20260828000000_document_approval_approver_emails_not_null、バックフィル→SET NOT NULL)。
+  // 複数承認者対応の新コードが本番稼働し、デプロイ窓で動く1つ前のコードも必ずこのカラムを
+  // 書くようになったため、制約を付けても窓で壊れなくなった。
   //
   // Prismaのスカラーリスト(`String[]`)はスキーマ定義言語上optional(`String[]?`)にできない
   // 仕様のため、DB側がnullableでもここでは`String[]`のまま表現する。Prisma Clientは
@@ -399,10 +398,11 @@ model DocumentApproval {
   // 生SQLで直接読むためNULLがそのままNoneになる点が異なり、こちらは
   // src/document_generation/approval_db.pyのフォールバック処理で対応している)。
   approverEmails   String[]
-  // 旧単一承認者カラム。expand方式マイグレーションのため今回は削除せず、nullable化のみ
-  // 行った。新コードは先頭1件をdual-writeするが、これは旧コードへロールバックした場合に
-  // 通知文面がNoneにならないための経過措置であり、approverEmailsが正。安定後に別
-  // マイグレーションで削除する予定(docs/quote_approval_note.md参照)。
+  // 旧単一承認者カラム。**2026-08-28にdual-writeと読み取りフォールバックを撤去済みで、
+  // アプリケーションからは一切読み書きしていない**(src/document_generation/approval_db.py)。
+  // 列そのもののDROPは次のデプロイで行う。同時にDROPすると、ビルド時マイグレーション〜
+  // 新デプロイ公開までの数十秒に動く1つ前のコードがまだこの列をSELECTしていて500になるため
+  // (docs/quote_approval_note.md参照)。
   approverEmail    String?
   // 承認リクエストを送った営業担当者のメール(RepDriveConnection.repEmailと対応)。
   requestedByEmail String

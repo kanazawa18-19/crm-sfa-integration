@@ -112,6 +112,32 @@ Python側の`insert_document_approval()`は、正である`approverEmails`に加
 Slack通知文面で`approver_email`をNoneとして出してしまう」事態を避けるための経過措置であり、
 読み取りは常に`approverEmails`のみを使う（旧`approverEmail`は書き込み専用の互換カラム）。
 
+#### 【2026-08-28】contract第1段階を実施済み（NOT NULL化＋経過措置の撤去）
+
+複数承認者対応の新コードが本番稼働した（2026-08-27デプロイ）ため、下記「まだNOT NULL制約を
+付けていない理由」で待っていた条件が満たされた。次の2つを実施した
+（`dashboard/prisma/migrations/20260828000000_document_approval_approver_emails_not_null/`）。
+
+1. **`approverEmails`のNOT NULL化**。同じマイグレーション内で**先にバックフィル**してから
+   `SET NOT NULL`する。NULLが1行でも残っていると`prisma migrate deploy`が失敗し、
+   **ビルドごと落ちて全ルートが障害になる**ため（旧`approverEmail`もNULLだった行は空配列で
+   埋める。NULLを残さないことを最優先した）。
+2. **経過措置の撤去**。`insert_document_approval()`の旧`approverEmail`へのdual-write、
+   `_row_to_approval()`の読み取りフォールバック、`_COLUMNS`からの旧カラムの参照をすべて削除。
+   アプリケーションは旧`approverEmail`を一切読み書きしなくなった。
+
+**旧`approverEmail`列そのもののDROPは、この変更が本番稼働してから次のマイグレーションで行う。**
+同じデプロイでDROPすると、ビルド時マイグレーション〜新デプロイ公開までの数十秒に動いている
+「1つ前のコード」がまだ`approverEmail`をSELECTしているため、その窓で参照系と承認ポーリングcronが
+500になる（expand方式で避けたはずの事故を、contract側で作ることになる）。
+
+回帰テストで固定している内容（`tests/document_generation/test_approval_db.py`）:
+
+- `_COLUMNS`に旧`approverEmail`が含まれないこと
+- INSERT文が旧`approverEmail`へ書かないこと（dual-writeを復活させない）
+- NOT NULL化マイグレーションが**バックフィルより後に**`SET NOT NULL`していること
+- NOT NULL化マイグレーションが旧列をDROPしていないこと
+
 #### `approverEmails`にまだNOT NULL制約を付けていない理由（shirokuma-secレビューBLOCKER対応）
 
 `migration.sql`は当初、バックフィル後に`ALTER TABLE ... ALTER COLUMN "approverEmails" SET
@@ -122,9 +148,8 @@ NOT NULL`を実行していたが、これはこのPRの設計意図そのもの
 constraint`で失敗し、承認リクエスト送信が500を返す（旧カラムをDROPして避けようとした事故を、
 ADD側のNOT NULL化で作ってしまっていた）。
 
-そのため`approverEmails`は現時点でnullableのまま残している。NOT NULL化は、新コードが本番で
-安定稼働してから（目安: 事故なく数営業日稼働）、別マイグレーションで行う（「旧`approverEmail`
-列を削除できる条件」と同じタイミング判断）。
+そのため`approverEmails`は当時nullableのまま残した（**2026-08-28に上記のとおりNOT NULL化済み**。
+以下はその判断に至った経緯の記録）。
 
 なおPrismaのスカラーリスト（`String[]`）はスキーマ定義言語上optional（`String[]?`）にできない
 仕様のため、`schema.prisma`側は`approverEmails String[]`のまま（nullableをスキーマ上表現
