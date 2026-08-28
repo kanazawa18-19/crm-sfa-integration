@@ -211,13 +211,24 @@ body {
     @apply text-2xl font-extrabold tracking-tight text-(--foreground);
   }
 
+  /* 通知ボックス(2026-08-28、smartHR監査)。smarthr-uiで対応するのはInformationPanel(箱型)と
+     NotificationBar(バー型)だが、いずれも**白背景＋アイコンの色だけで種別を表す**設計で、
+     現行の「淡い色地＋同系色ボーダー＋色文字」とはパラダイムが異なる。
+
+     **色による意味づけは残す判断にした**(Badgeのときと同じ)。業務画面では警告・エラー・成功を
+     一目で見分けられることの価値が大きく、アイコン色だけに寄せると全ての通知が白い箱になって
+     スキャン性が落ちるため。アイコンの追加もマークアップ変更(両システムで約40箇所)が必要になる。
+
+     パラダイムを変えずに寄せられる値だけ実測に合わせた:
+     角丸 6px→8px(InformationPanelの箱と同じ)、文字 14px→16px(smartHRの本文サイズ)。
+     padding 12px は元から一致していた(NotificationBarの実測値と同じ)。 */
   .alert-warning {
-    @apply rounded-[6px] border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-300;
+    @apply rounded-[8px] border border-amber-300 bg-amber-50 p-3 text-base text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-300;
   }
   .alert-error {
-    @apply rounded-[6px] border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-700/50 dark:bg-red-950/40 dark:text-red-300;
+    @apply rounded-[8px] border border-red-300 bg-red-50 p-3 text-base text-red-800 dark:border-red-700/50 dark:bg-red-950/40 dark:text-red-300;
   }
   .alert-success {
-    @apply rounded-[6px] border border-green-300 bg-green-50 p-3 text-sm text-green-800 dark:border-green-700/50 dark:bg-green-950/40 dark:text-green-300;
+    @apply rounded-[8px] border border-green-300 bg-green-50 p-3 text-base text-green-800 dark:border-green-700/50 dark:bg-green-950/40 dark:text-green-300;
   }
 }
