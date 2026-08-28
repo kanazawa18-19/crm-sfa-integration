@@ -1533,18 +1533,24 @@ def test_dispatch_update_lets_programming_errors_propagate_from_other_tool_curre
         dispatcher.dispatch(event)
 
 
-# --- 複数プロパティイベントでの部分書き込み（BLOCKER1対応、2026-08-28、動物チームレビュー） ---
+# --- 複数プロパティイベントのアトミック性（2026-08-28、取得フェーズと書き込みフェーズの分離） ---
 #
-# 上記の単一プロパティのテストだけでは「書き込みゼロ」が自明に成立してしまい、複数プロパティ
-# イベントで1つ目が既に他ツールへ書き込み済みのまま2つ目の現在値取得で失敗する、という
-# 最も危険なケースを検出できない（WARN3指摘対応）。以下は1つ目のプロパティが実際に書き込まれ
-# 2つ目で失敗するケースの回帰テストで、Slack通知が「書き込みは行われていません」と誤って
-# 断定しないこと（既に適用済みのプロパティがあることを正しく伝えること）まで検証する。
+# 以前は「プロパティごとに 現在値取得→判定→書き込み」を回していたため、2つ目のプロパティで
+# 取得に失敗すると1つ目は既に他ツールへ書き込み済み、という半端な状態が残った（当時は
+# Slack通知に「既に適用済みのプロパティ」を載せる対症療法で凌いでいた）。dispatch()を
+# 「イベント全体の現在値を取り切ってから書き込む」3フェーズ構成に変えたことで、
+# **取得フェーズで失敗した場合は書き込みが1件も発生しない**ことが保証される。
+# 単一プロパティのテストではこの保証が自明に成立してしまうため、複数プロパティで検証する。
 
 
-def test_dispatch_partially_applies_multi_property_event_then_aborts_on_second_property_fetch_failure(
+def test_dispatch_writes_nothing_when_fetch_fails_on_multi_property_event(
     store: SQLiteIdMappingStore, mapping: IdMapping
 ) -> None:
+    """複数プロパティのイベントでも、現在値の取得に失敗したら書き込みは1件も発生しないこと。
+
+    取得はプロパティ単位ではなくイベント単位（ツールごとに1回）で行うため、1つ目のプロパティ
+    だけ先に書き込まれてしまう窓が存在しない。
+    """
     notion = FakeSyncTarget(
         Tool.NOTION,
         records={
@@ -1559,7 +1565,6 @@ def test_dispatch_partially_applies_multi_property_event_then_aborts_on_second_p
         Tool.ZOHO,
         records={"zoho-1": {"取引先名": "旧名称", "住所": "旧住所", "updated_at": NOW - timedelta(hours=3)}},
         get_record_raises=ZohoApiError(500, "internal error"),
-        get_record_raises_after_calls=1,  # 1回目(1つ目のプロパティ)は成功、2回目以降で失敗する。
     )
     spreadsheet = FakeSyncTarget(
         Tool.SPREADSHEET,
@@ -1576,36 +1581,76 @@ def test_dispatch_partially_applies_multi_property_event_then_aborts_on_second_p
         db_key="client_master",
         external_id="1001",
         occurred_at=NOW,
-        # dict順は挿入順で保持される: 「取引先名」が1つ目、「住所」が2つ目に処理される。
         properties={"取引先名": "新名称", "住所": "新住所"},
     )
 
     result = dispatcher.dispatch(event)
 
-    # dispatch()全体としてはskipped=Trueで返るが、1つ目のプロパティは既に書き込み済み。
     assert result.skipped
     assert result.reason == "update_target_value_fetch_failed"
-    assert notion.upsert_calls == [("CLI-001", {"取引先名": "新名称"})]
-    assert zoho.upsert_calls == [("zoho-1", {"取引先名": "新名称"})]
-    assert spreadsheet.upsert_calls == [("5", {"取引先名": "新名称"})]
-    assert targets[Tool.KINTONE].upsert_calls == []  # 送信元には書き戻さない
-    # last_synced_atは更新されない（次に届く新しいイベントで「住所」が再度処理されるように
-    # するため）。「取引先名」は既に反映済みだが、次回イベントでも値が一致するためno-opになる。
+    # どのツールにも1件も書き込まれていないこと（これが今回の保証の中核）。
+    assert notion.upsert_calls == []
+    assert zoho.upsert_calls == []
+    assert spreadsheet.upsert_calls == []
+    assert targets[Tool.KINTONE].upsert_calls == []
+    # last_synced_atは更新されない（次に届く新しいイベントで再処理されるようにするため）。
     assert store.get("CLI-001").last_synced_at == mapping.last_synced_at
 
     assert len(notifier.update_skipped_calls) == 1
     call = notifier.update_skipped_calls[0]
     assert call["reason"] == "update_target_value_fetch_failed"
     detail = call["detail"]
-    # 既に適用済みのプロパティ（取引先名）と、処理中に失敗したプロパティ（住所）の両方の
-    # プロパティ名が含まれること。
-    assert "取引先名" in detail
-    assert "住所" in detail
-    # 「書き込みは行われていません」という誤った断定はしないこと。
-    assert "書き込みは行われていません" not in detail
+    # 書き込みが本当にゼロなので、そう断定してよい。
+    assert "書き込みは行われていません" in detail
     # 値そのもの（新旧いずれも）は一切含めないこと。
     for leaked_value in ("新名称", "新住所", "旧名称", "旧住所"):
         assert leaked_value not in detail
+
+
+def test_dispatch_fetches_each_tool_once_for_multi_property_event(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """複数プロパティのイベントでも現在値の取得はツールごとに1回で済むこと。
+
+    以前はプロパティごとに同じレコードを取り直しており、5プロパティなら同じAPIを5回叩いて
+    いた。1イベント内の全プロパティが同一スナップショットを見る、という性質も併せて固定する。
+    """
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                "住所": "旧住所",
+                NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2),
+            }
+        },
+    )
+    zoho = FakeSyncTarget(
+        Tool.ZOHO,
+        records={"zoho-1": {"取引先名": "旧名称", "住所": "旧住所", "updated_at": NOW - timedelta(hours=3)}},
+    )
+    spreadsheet = FakeSyncTarget(
+        Tool.SPREADSHEET,
+        records={"5": {"取引先名": "旧名称", "住所": "旧住所", "updated_at": NOW - timedelta(hours=3)}},
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = zoho
+    targets[Tool.SPREADSHEET] = spreadsheet
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "新名称", "住所": "新住所"},
+    )
+
+    dispatcher.dispatch(event)
+
+    assert notion.get_record_calls == ["CLI-001"]
+    assert zoho.get_record_calls == ["zoho-1"]
+    assert spreadsheet.get_record_calls == ["5"]
 
 
 def test_dispatch_notifies_no_writes_at_all_when_first_property_fetch_fails(

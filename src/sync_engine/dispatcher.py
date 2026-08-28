@@ -180,6 +180,15 @@ class Dispatcher:
         target_tools = [t for t in _ALL_TOOLS if t != event.source_tool]
 
         results: list[PropertyDispatchResult] = []
+
+        # --- フェーズ1: スキーマ解決（外部I/Oを一切行わない） ---
+        # 1イベントは複数プロパティを持ちうる。以前はプロパティごとに
+        # 「現在値を取得 → 判定 → 書き込み」を回していたため、2つ目のプロパティで現在値の
+        # 取得に失敗すると、1つ目は既に他ツールへ書き込み済みという半端な状態が残った
+        # （2026-08-28、通知文面で「既に適用済みのプロパティ」を伝える対症療法で凌いでいた）。
+        # ここではイベント全体で必要な現在値を先に取り切り、1件も書き込まないうちに失敗を
+        # 確定させる（取得フェーズで失敗したら書き込みはゼロ、が保証される）。
+        prepared: list[tuple[str, Any, Any]] = []
         for property_name, new_value in event.properties.items():
             try:
                 prop = schema.get_property(property_name)
@@ -194,9 +203,12 @@ class Dispatcher:
                     event.source_tool.value,
                 )
                 continue
+            prepared.append((property_name, prop, new_value))
 
-            if event.source_tool is Tool.NOTION:
-                # Notionは常にマスターであり、Notion発の変更に競合判定は不要。
+        if event.source_tool is Tool.NOTION:
+            # Notionは常にマスターであり、Notion発の変更に競合判定は不要。現在値の取得が
+            # 発生しないため、取得フェーズを挟まずそのまま書き込む。
+            for property_name, prop, new_value in prepared:
                 # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
                 intended = frozenset(t for t in target_tools if prop.should_sync_to(t))
                 written, skipped = self._write_values(intended, mapping, property_name, new_value)
@@ -208,45 +220,98 @@ class Dispatcher:
                         skipped_tools=skipped,
                     )
                 )
-                continue
+            self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
+            return DispatchResult(skipped=False, properties=tuple(results))
 
-            # 5. 送信元がNotion以外の場合は、sync_scope対象の全ツールの現在値を集めて
-            # コンフリクトの疑いを判定する（BLOCKER3: Notion・送信元の2者間比較のみに
-            # 限定しない）。
-            other_tools = frozenset(
-                t
-                for t in _ALL_TOOLS
-                if t is not Tool.NOTION and t is not event.source_tool and prop.should_sync_to(t)
+        if not prepared:
+            # 実処理の対象プロパティが1つも無い（全てスキーマ未定義だった）場合は、
+            # 現在値の取得自体が不要。ここで取得しに行くと、以前は発生しなかったAPI呼び出しと
+            # その失敗（＝イベント全体のスキップ）を新たに生んでしまう。
+            self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
+            return DispatchResult(skipped=False, properties=())
+
+        # --- フェーズ2: 現在値の取得（ここまでで書き込みは1件も行っていない） ---
+        # 5. 送信元がNotion以外の場合は、sync_scope対象の全ツールの現在値を集めて
+        # コンフリクトの疑いを判定する（BLOCKER3: Notion・送信元の2者間比較のみに
+        # 限定しない）。取得はツール単位に1回で済ませる（以前はプロパティごとに同じ
+        # レコードを取り直しており、5プロパティのイベントなら同じAPIを5回叩いていた）。
+        # 副次的に、1イベント内の全プロパティが同一スナップショットを見ることになる。
+        needed_tools = frozenset(
+            t
+            for _, prop, _ in prepared
+            for t in _ALL_TOOLS
+            if t is not Tool.NOTION and t is not event.source_tool and prop.should_sync_to(t)
+        )
+        # 取得失敗の通知に載せるプロパティ名。取得はイベント単位になったため特定の
+        # プロパティに紐づかないが、運用者が「どのレコードのどの更新か」を辿れるよう
+        # 先頭のプロパティ名を文脈として渡す。
+        context_property_name = prepared[0][0]
+
+        notion_target = self._targets.get(Tool.NOTION)
+        try:
+            notion_record = (
+                notion_target.get_record(mapping.notion_key) if notion_target else None
+            )
+        except (ApiError, requests.exceptions.RequestException) as exc:
+            # 2026-08-27/28本番障害対応の残存リスクへの決着（docs/relation_sync_activation_
+            # note.md「2026-08-27の本番障害対応への追加レビュー対応」参照）。ここは
+            # `_try_create_new_record()`とは異なり、既に`IdMapping`が存在するレコードへの
+            # 通常の更新イベントで、コンフリクト判定・書き込み判断に使う「現在値」を
+            # 取得している。取得できないことを「値が空である」かのように扱って処理を
+            # 続けると、prop.should_sync_to()の判定やresolve_conflict()の入力が欠けた
+            # まま進み、誤った値で他ツールを上書きしてしまう危険がある（`notion_record is
+            # None`分岐が警戒しているのと同種のリスクだが、あちらは「Notionページ自体が
+            # 読めない」という確定した状態であるのに対し、こちらは「取得できたかどうか
+            # 自体が不明」という性質が異なるため、単純補完へは倒さずこの同期イベント
+            # 全体の書き込みを中止する）。
+            return self._handle_current_value_fetch_failure(
+                event,
+                mapping,
+                tool=Tool.NOTION,
+                reason="update_notion_value_fetch_failed",
+                exc=exc,
+                property_name=context_property_name,
+                already_applied_properties=(),
             )
 
-            notion_target = self._targets.get(Tool.NOTION)
+        records_by_tool: dict[Tool, dict[str, Any]] = {}
+        # 現在値が取得できないツール（未接続・レコード未作成等）は「空欄」として比較候補には
+        # 含めず、確定した値の書き込み対象にのみ含める。
+        unavailable_tools: set[Tool] = set()
+        for tool in _ALL_TOOLS:
+            if tool not in needed_tools:
+                continue
+            target = self._targets.get(tool)
+            external_id = _external_id_for(tool, mapping)
+            if target is None or external_id is None:
+                # ツールが未接続、またはこのレコードに対する当該ツールの外部IDが
+                # まだ無い（未作成）場合は、取得の失敗ではなく「現在値が無い」正常な
+                # ケースであり、この同期イベントの中止は不要。
+                unavailable_tools.add(tool)
+                continue
             try:
-                notion_record = (
-                    notion_target.get_record(mapping.notion_key) if notion_target else None
-                )
+                record = target.get_record(external_id, db_key=mapping.db_key)
             except (ApiError, requests.exceptions.RequestException) as exc:
-                # 2026-08-27/28本番障害対応の残存リスクへの決着（docs/relation_sync_activation_
-                # note.md「2026-08-27の本番障害対応への追加レビュー対応」参照）。ここは
-                # `_try_create_new_record()`とは異なり、既に`IdMapping`が存在するレコードへの
-                # 通常の更新イベントで、コンフリクト判定・書き込み判断に使う「現在値」を
-                # 取得している。取得できないことを「値が空である」かのように扱って処理を
-                # 続けると、prop.should_sync_to()の判定やresolve_conflict()の入力が欠けた
-                # まま進み、誤った値で他ツールを上書きしてしまう危険がある（`notion_record is
-                # None`分岐が警戒しているのと同種のリスクだが、あちらは「Notionページ自体が
-                # 読めない」という確定した状態であるのに対し、こちらは「取得できたかどうか
-                # 自体が不明」という性質が異なるため、単純補完へは倒さずこの同期イベント
-                # 全体の書き込みを中止する）。
+                # 上記Notion現在値取得と同じ理由（取得失敗を「空欄」として扱って
+                # 一部のツールを無視したまま処理を続けない）でこの同期イベント全体の
+                # 書き込みを中止する。
                 return self._handle_current_value_fetch_failure(
                     event,
                     mapping,
-                    tool=Tool.NOTION,
-                    reason="update_notion_value_fetch_failed",
+                    tool=tool,
+                    reason="update_target_value_fetch_failed",
                     exc=exc,
-                    property_name=property_name,
-                    already_applied_properties=tuple(
-                        r.property_name for r in results if r.written_tools
-                    ),
+                    property_name=context_property_name,
+                    already_applied_properties=(),
                 )
+            if record is None:
+                unavailable_tools.add(tool)
+                continue
+            records_by_tool[tool] = record
+
+        # --- フェーズ3: 判定と書き込み（ここから先は現在値の取得を行わない） ---
+        for property_name, prop, new_value in prepared:
+            other_tools = frozenset(t for t in needed_tools if prop.should_sync_to(t))
 
             if notion_record is None:
                 # BLOCKER1対応：Notion側の現在値が取得できない（未取得・削除済み・API障害等）
@@ -282,37 +347,11 @@ class Dispatcher:
                 ),
                 ToolValue(tool=event.source_tool, value=new_value, updated_at=event.occurred_at),
             ]
-            # Notion・送信元以外のsync_scope対象ツールも現在値を取得し比較に加える。
-            # 現在値が取得できないツール（レコード未作成等）は「空欄」として候補に含めず、
-            # missing_tools として別管理し、確定した値の書き込み対象にのみ含める。
             missing_tools: set[Tool] = set()
-            for tool in other_tools:
-                target = self._targets.get(tool)
-                external_id = _external_id_for(tool, mapping)
-                if target is None or external_id is None:
-                    # ツールが未接続、またはこのレコードに対する当該ツールの外部IDが
-                    # まだ無い（未作成）場合は、取得の失敗ではなく「現在値が無い」正常な
-                    # ケースであり、この同期イベントの中止は不要（missing_toolsとして
-                    # 通常どおり扱う）。
-                    missing_tools.add(tool)
+            for tool in _ALL_TOOLS:
+                if tool not in other_tools:
                     continue
-                try:
-                    record = target.get_record(external_id, db_key=mapping.db_key)
-                except (ApiError, requests.exceptions.RequestException) as exc:
-                    # 上記Notion現在値取得と同じ理由（取得失敗を「空欄」として扱って
-                    # 一部のツールを無視したまま処理を続けない）でこの同期イベント全体の
-                    # 書き込みを中止する。
-                    return self._handle_current_value_fetch_failure(
-                        event,
-                        mapping,
-                        tool=tool,
-                        reason="update_target_value_fetch_failed",
-                        exc=exc,
-                        property_name=property_name,
-                        already_applied_properties=tuple(
-                            r.property_name for r in results if r.written_tools
-                        ),
-                    )
+                record = records_by_tool.get(tool)
                 if record is None:
                     missing_tools.add(tool)
                     continue
@@ -404,19 +443,17 @@ class Dispatcher:
         `self._store.update_last_synced_at()`も呼ばないため、次に同じレコードへの新しい
         イベントが届いた際に再度処理される。
 
-        **ただし1つの`SyncEvent`は複数プロパティを持ちうるため、`property_name`より前に
-        処理済みのプロパティは、この呼び出しより前に既に`_write_values()`で他ツールへ
-        実際に書き込まれている場合がある**（BLOCKER1対応、2026-08-28）。以前は通知文面が
-        「この同期イベントは適用されませんでした（書き込みは行われていません）」と一律に
-        断定しており、複数プロパティのイベントで1つ目が既に書き込み済みのまま2つ目以降で
-        この経路に入ると、運用者へ「何も起きていない」という誤った状況認識を与えてしまう
-        危険があった。呼び出し元（`dispatch()`）が`results`（このイベントで既に処理済みの
-        プロパティの一覧）から`written_tools`が非空のものだけを`already_applied_properties`
-        として渡すことで、通知に「どのプロパティが既に他ツールへ反映済みか」を含める。
-        なお、イベント全体を真にアトミックにする（全プロパティの現在値を先に取得し終えてから
-        書き込みフェーズに入る）再構成は、`Dispatcher.dispatch()`の中核ループの作り替えに
-        なりリスクが大きいため今回は見送った（検討の記録は
-        `docs/relation_sync_activation_note.md`参照）。
+        **2026-08-28以降、`dispatch()`の更新経路から呼ばれる場合の`already_applied_properties`は
+        常に空**。`dispatch()`を「イベント全体の現在値を取り切ってから書き込みフェーズに入る」
+        3フェーズ構成に作り替えたため、取得の失敗時点で書き込みは1件も発生していないことが
+        構造的に保証されるようになった（それ以前は複数プロパティのイベントで1つ目が既に
+        書き込み済みのまま2つ目以降でこの経路に入ることがあり、通知文面が
+        「書き込みは行われていません」と誤って断定しないよう、既に適用済みのプロパティ名を
+        渡す対症療法をとっていた）。
+
+        引数と分岐自体は残している。将来プロパティ単位の取得へ戻す変更が入った場合に、
+        通知文面だけが嘘になる状態を避けるため（アトミック性そのものは
+        `test_dispatch_writes_nothing_when_fetch_fails_on_multi_property_event`が固定している）。
         """
         logger.exception(
             "dispatch: fetching the current value for tool=%s raised an exception while "
