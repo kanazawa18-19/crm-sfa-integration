@@ -398,12 +398,6 @@ model DocumentApproval {
   // 生SQLで直接読むためNULLがそのままNoneになる点が異なり、こちらは
   // src/document_generation/approval_db.pyのフォールバック処理で対応している)。
   approverEmails   String[]
-  // 旧単一承認者カラム。**2026-08-28にdual-writeと読み取りフォールバックを撤去済みで、
-  // アプリケーションからは一切読み書きしていない**(src/document_generation/approval_db.py)。
-  // 列そのもののDROPは次のデプロイで行う。同時にDROPすると、ビルド時マイグレーション〜
-  // 新デプロイ公開までの数十秒に動く1つ前のコードがまだこの列をSELECTしていて500になるため
-  // (docs/quote_approval_note.md参照)。
-  approverEmail    String?
   // 承認リクエストを送った営業担当者のメール(RepDriveConnection.repEmailと対応)。
   requestedByEmail String
   // "in_progress" | "approved" | "declined" | "cancelled"

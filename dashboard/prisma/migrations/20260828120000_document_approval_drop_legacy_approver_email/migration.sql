@@ -1,0 +1,27 @@
+-- 見積書 承認フロー: 旧単一承認者カラム "approverEmail" を削除する(2026-08-28)。
+--
+-- expand/contract の contract 第2段階（最終）。
+--
+-- 【なぜ今なら安全か】
+-- `prisma migrate deploy` はビルド時に走るため、新デプロイが公開されるまでの数十秒は
+-- 「1つ前の本番コード」が動く。この列をDROPしてよいのは、その1つ前のコードが列を
+-- 読み書きしなくなってからに限られる。
+-- 直前のデプロイ(2026-08-28、`fdcfac4`)で
+--   - `insert_document_approval()` の dual-write を削除
+--   - `_row_to_approval()` の読み取りフォールバックを削除
+--   - `_COLUMNS`(SELECT列)から "approverEmail" を削除
+-- を本番へ反映済みで、いま動いている本番コードはこの列に一切触れない。よって窓が開かない。
+--
+-- 逆に、前回のマイグレーションと同時にDROPしていたら、その窓で1つ前のコードのSELECTが
+-- 存在しない列を指して、承認リクエストの参照系と承認ポーリングcronが500になっていた
+-- (expand方式で避けたはずの事故を contract 側で作ることになる)。2回のデプロイに分けたのは
+-- そのため。
+--
+-- 【元に戻す場合】
+-- この列は経過措置のdual-write専用で、`approverEmails`(正)に同じ値が入っている。
+-- 復旧が必要になった場合は列を再追加し、`ARRAY`の先頭要素から埋め直せる:
+--   ALTER TABLE "DocumentApproval" ADD COLUMN "approverEmail" TEXT;
+--   UPDATE "DocumentApproval" SET "approverEmail" = "approverEmails"[1]
+--     WHERE array_length("approverEmails", 1) >= 1;
+
+ALTER TABLE "DocumentApproval" DROP COLUMN "approverEmail";

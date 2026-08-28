@@ -126,10 +126,16 @@ Slack通知文面で`approver_email`をNoneとして出してしまう」事態�
    `_row_to_approval()`の読み取りフォールバック、`_COLUMNS`からの旧カラムの参照をすべて削除。
    アプリケーションは旧`approverEmail`を一切読み書きしなくなった。
 
-**旧`approverEmail`列そのもののDROPは、この変更が本番稼働してから次のマイグレーションで行う。**
-同じデプロイでDROPすると、ビルド時マイグレーション〜新デプロイ公開までの数十秒に動いている
-「1つ前のコード」がまだ`approverEmail`をSELECTしているため、その窓で参照系と承認ポーリングcronが
-500になる（expand方式で避けたはずの事故を、contract側で作ることになる）。
+**【2026-08-28 実施済み】旧`approverEmail`列のDROP（contract第2段階、最終）**:
+上記の「この列を読み書きしないコード」を本番へ反映したあと、別マイグレーション
+（`20260828120000_document_approval_drop_legacy_approver_email`）で列を削除した。
+同じデプロイでDROPしなかったのは、ビルド時マイグレーション〜新デプロイ公開までの数十秒に
+動いている「1つ前のコード」がまだ`approverEmail`をSELECTしており、その窓で参照系と承認
+ポーリングcronが500になるため（expand方式で避けたはずの事故を、contract側で作ることになる）。
+**2回のデプロイに分けることでこの窓を開けずに済んだ。**
+
+元に戻す必要が生じた場合の手順はmigration.sql内のコメントに書いてある（`approverEmails`の
+先頭要素から埋め直せる）。
 
 回帰テストで固定している内容（`tests/document_generation/test_approval_db.py`）:
 

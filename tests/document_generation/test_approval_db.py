@@ -422,3 +422,50 @@ def test_not_null_migration_does_not_drop_legacy_column() -> None:
         "このマイグレーションで旧approverEmail列をDROPしています。デプロイ窓で1つ前の"
         "コードのSELECTが壊れるため、DROPは次のデプロイに分けてください。"
     )
+
+
+_DROP_LEGACY_MIGRATION_SQL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "dashboard"
+    / "prisma"
+    / "migrations"
+    / "20260828120000_document_approval_drop_legacy_approver_email"
+    / "migration.sql"
+)
+
+
+def test_legacy_column_is_dropped_only_after_the_code_stopped_using_it() -> None:
+    """旧`approverEmail`列のDROPが、専用の後続マイグレーションで行われていること。
+
+    NOT NULL化のマイグレーションと同時にDROPしていないことは
+    `test_not_null_migration_does_not_drop_legacy_column`が守っている。こちらは対になる
+    確認で、「DROP自体はちゃんと別マイグレーションとして存在する」ことを固定する
+    （2段構えの2段目を忘れたまま列が残り続けるのを防ぐ）。
+    """
+    sql = _DROP_LEGACY_MIGRATION_SQL_PATH.read_text(encoding="utf-8")
+
+    assert re.search(
+        r'ALTER\s+TABLE\s+"DocumentApproval"\s+DROP\s+COLUMN\s+"approverEmail"(?!s)',
+        sql,
+        re.IGNORECASE,
+    ), "旧approverEmail列のDROP文が見当たりません"
+
+
+def test_python_code_does_not_reference_the_legacy_column() -> None:
+    """`approval_db.py`が旧`approverEmail`をSQLで参照していないこと。
+
+    列はDBから消えたため、SELECT/INSERTに復活すると即座に本番が壊れる（存在しない列を
+    指すSQLになる）。docstring中の言及は許容し、SQL文字列としての参照だけを見る。
+    """
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "document_generation"
+        / "approval_db.py"
+    ).read_text(encoding="utf-8")
+
+    # ダブルクォート付き（＝SQL内の識別子）の "approverEmail" のみを検出する。
+    assert not re.findall(r'"approverEmail"(?!s)', source), (
+        "approval_db.pyのSQLに旧approverEmail列への参照が復活しています。"
+        "この列は2026-08-28にDBから削除済みのため、参照すると本番が壊れます。"
+    )
