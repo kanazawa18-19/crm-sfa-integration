@@ -564,9 +564,12 @@ def test_create_page_does_not_recover_when_multiple_pages_match(
 
 
 def test_create_page_raises_original_error_when_recovery_query_also_fails(
-    requests_mock, client: HttpNotionClient
+    requests_mock, client: HttpNotionClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """回収照会自体が失敗しても、新しい例外で元の失敗を覆い隠さないこと。"""
+    # 回収照会は読み取り(冪等)なので5xxでリトライされる。実際に待つとこのテストだけで
+    # 数秒かかるため、待機を潰す(他の5xxテストと同じ流儀)。
+    monkeypatch.setattr("src.sync_engine.clients._http.time.sleep", lambda seconds: None)
     requests_mock.post(
         "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
     )
