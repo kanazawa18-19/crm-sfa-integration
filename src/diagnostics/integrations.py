@@ -126,14 +126,15 @@ def probe_notion() -> ProbeResult:
 
 
 def probe_kintone() -> ProbeResult:
-    """kintoneの各アプリへ、存在しないレコードIDでGETして到達を確かめる。
+    """kintoneの各アプリへ`records.json`を1件だけ問い合わせ、到達と件数を確かめる。
 
-    404（レコード無し）が返れば「ドメイン・APIトークン・アプリIDの3点が揃っている」ことの
-    証明になる。レコードを作らずに済むのでこの形にしている。
-    アプリIDやトークンが誤っていれば400/403が返り、`HttpKintoneClient`が例外を送出する。
+    レコードを作らずに済ませたいので取得系のみを使う。`limit 1`と`totalCount=true`を
+    付けることで「認証・アプリID・閲覧権限の3点が揃っている」ことと「実際に何件あるか」が
+    同時に分かる。
+
+    **GETに`Content-Type`を付けてはいけない**（付けると400 `CB_IL02`になる。2026-08-28に
+    `get_record()`が常に失敗していた原因がこれだった）。ここでもヘッダはAPIトークンのみ。
     """
-    from src.sync_engine.clients.kintone_client import HttpKintoneClient
-
     domain = os.environ.get("KINTONE_DOMAIN")
     if not domain:
         return ProbeResult("kintone", NOT_CONFIGURED, detail="KINTONE_DOMAIN未設定")
@@ -146,11 +147,19 @@ def probe_kintone() -> ProbeResult:
         if not app_id or not api_token:
             per_app[db_key] = "環境変数未設定"
             continue
-        client = HttpKintoneClient(domain, api_token=api_token, timeout=PROBE_TIMEOUT_SECONDS)
         try:
-            # 実在しないIDを引く。Noneが返れば認証とアプリ指定は通っている。
-            client.get_record(app_id, "0")
-            per_app[db_key] = "ok"
+            response = requests.get(
+                f"https://{domain}/k/v1/records.json",
+                headers={"X-Cybozu-API-Token": api_token},
+                params={"app": app_id, "query": "limit 1", "totalCount": "true"},
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
+            if not response.ok:
+                per_app[db_key] = f"HTTP {response.status_code}: {response.text[:120]}"
+                failures.append(f"{db_key}: HTTP {response.status_code}")
+                continue
+            total = response.json().get("totalCount")
+            per_app[db_key] = f"ok ({total}件)"
         except Exception as exc:  # noqa: BLE001
             per_app[db_key] = f"{type(exc).__name__}: {exc}"
             failures.append(f"{db_key}: {exc}")
@@ -160,10 +169,15 @@ def probe_kintone() -> ProbeResult:
 
 
 def probe_zoho() -> ProbeResult:
-    """Zohoの組織情報を読み、OAuthリフレッシュトークンが生きていることを確かめる。
+    """Zohoのモジュール一覧を読み、OAuthリフレッシュトークンが生きていることを確かめる。
 
-    `/org`は読み取り専用でレコードに触れないため、疎通確認に適している。
-    リフレッシュトークンが失効していればここで401として現れる。
+    読み取り専用でレコードに触れない。リフレッシュトークンが失効していればここで現れる。
+
+    **エンドポイントは付与済みスコープの内側から選ぶこと。**このトークンに付いているのは
+    `ZohoCRM.modules.ALL` / `ZohoCRM.settings.ALL` / `ZohoCRM.notifications.ALL` の3つで、
+    `/org`は`ZohoCRM.org.READ`を要求するため401 `OAUTH_SCOPE_MISMATCH`になる
+    （2026-08-31、これを「Zoho連携が壊れている」と誤診しかけた）。
+    `/settings/modules`は`settings.ALL`の範囲内で、同期先モジュールの存在確認も兼ねられる。
     """
     from src.sync_engine.production_wiring import build_zoho_client
 
@@ -172,16 +186,35 @@ def probe_zoho() -> ProbeResult:
         return ProbeResult("zoho", NOT_CONFIGURED, detail="ENABLE_ZOHO=false または認証情報未設定")
 
     base = os.environ.get("ZOHO_API_BASE_URL") or "https://www.zohoapis.jp/crm/v2"
-    response = client.request("GET", f"{base.rstrip('/')}/org")
+    response = client.request("GET", f"{base.rstrip('/')}/settings/modules")
     if not response.ok:
-        return ProbeResult("zoho", FAILED, detail=f"HTTP {response.status_code}")
+        return ProbeResult(
+            "zoho", FAILED, detail=f"HTTP {response.status_code}: {response.text[:160]}"
+        )
 
-    org_name = ""
     try:
-        org_name = (response.json().get("org") or [{}])[0].get("company_name", "")
-    except (ValueError, AttributeError, IndexError, TypeError):
-        org_name = "(組織名の読み取りに失敗)"
-    return ProbeResult("zoho", OK, extra={"org": org_name})
+        modules = response.json().get("modules") or []
+    except (ValueError, AttributeError):
+        return ProbeResult("zoho", FAILED, detail="モジュール一覧の読み取りに失敗")
+
+    api_names = {str(m.get("api_name")) for m in modules}
+    # 同期先として指定しているモジュールが実在するかまで見る（スプレッドシートのシート名と同じ考え方）。
+    expected = {schema.key: schema.zoho_api_module for schema in ALL_SCHEMAS}
+    missing = {k: v for k, v in expected.items() if v not in api_names}
+
+    status = FAILED if missing else OK
+    detail = (
+        "同期先モジュールが見つからない: "
+        + ", ".join(f"{k}→「{v}」" for k, v in missing.items())
+        if missing
+        else ""
+    )
+    return ProbeResult(
+        "zoho",
+        status,
+        detail=detail,
+        extra={"module_count": len(modules), "expected": expected},
+    )
 
 
 def probe_spreadsheet() -> ProbeResult:
@@ -202,18 +235,34 @@ def probe_spreadsheet() -> ProbeResult:
     expected = {schema.key: schema.spreadsheet_sheet_name for schema in ALL_SCHEMAS}
     missing = {k: v for k, v in expected.items() if v not in sheet_names}
 
-    status = FAILED if missing else OK
-    detail = (
-        "同期先シートが見つからない: "
-        + ", ".join(f"{k}→「{v}」" for k, v in missing.items())
-        if missing
-        else ""
-    )
+    # 「認証は通るが1件も書かれていない」を見逃さないため、実際の行数まで数える。
+    row_counts: dict[str, int] = {}
+    present = [v for v in expected.values() if v in sheet_names]
+    if present:
+        row_counts = client.count_rows(present)
+    # ヘッダ行しか無いシート（＝データ0件）を明示的に拾う。
+    empty = sorted(name for name, count in row_counts.items() if count <= 1)
+
+    problems: list[str] = []
+    if missing:
+        problems.append(
+            "同期先シートが見つからない: " + ", ".join(f"{k}→「{v}」" for k, v in missing.items())
+        )
+    if empty:
+        problems.append("データが1件も無いシート: " + ", ".join(f"「{n}」" for n in empty))
+
+    status = FAILED if problems else OK
+    detail = " / ".join(problems)
     return ProbeResult(
         "spreadsheet",
         status,
         detail=detail,
-        extra={"title": title, "sheets": sheet_names, "expected": expected},
+        extra={
+            "title": title,
+            "sheets": sheet_names,
+            "expected": expected,
+            "row_counts": row_counts,
+        },
     )
 
 

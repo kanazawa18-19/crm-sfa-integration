@@ -85,17 +85,26 @@ def test_全ての診断結果に所要時間が入る() -> None:
 
 
 class _シート名を返すだけのクライアント:
-    def __init__(self, names: list[str]) -> None:
+    def __init__(self, names: list[str], row_counts: dict[str, int] | None = None) -> None:
         self._names = names
+        self._row_counts = row_counts or {}
 
     def list_sheet_names(self) -> tuple[str, list[str]]:
         return "テスト用スプレッドシート", self._names
 
+    def count_rows(self, sheets: list[str]) -> dict[str, int]:
+        # 指定が無いシートは「ヘッダ＋データ2件」の想定にする。
+        return {name: self._row_counts.get(name, 3) for name in sheets}
 
-def _スプレッドシート診断(names: list[str], monkeypatch: pytest.MonkeyPatch) -> ProbeResult:
+
+def _スプレッドシート診断(
+    names: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    row_counts: dict[str, int] | None = None,
+) -> ProbeResult:
     monkeypatch.setattr(
         "src.sync_engine.clients.spreadsheet_client.HttpSpreadsheetClient",
-        lambda **kwargs: _シート名を返すだけのクライアント(names),
+        lambda **kwargs: _シート名を返すだけのクライアント(names, row_counts),
     )
     return integrations.probe_spreadsheet()
 
@@ -136,3 +145,19 @@ def test_スプレッドシートの認証情報が無ければ未設定とし�
     result = integrations.probe_spreadsheet()
 
     assert result.status == NOT_CONFIGURED
+
+
+def test_シートは在るがデータが0件なら失敗として報告する(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-08-31に実際に起きた状態。認証も通りシートも在るのに、全シートが
+    ヘッダ1行のままだった。到達確認だけでは「ok」と言ってしまうため、行数まで数える。"""
+    from src.db_schema.registry import ALL_SCHEMAS
+
+    全シート名 = [schema.spreadsheet_sheet_name for schema in ALL_SCHEMAS]
+    ヘッダのみ = {name: 1 for name in 全シート名}
+    result = _スプレッドシート診断(全シート名, monkeypatch, row_counts=ヘッダのみ)
+
+    assert result.status == FAILED
+    assert "データが1件も無いシート" in result.detail
+    assert result.extra["row_counts"] == ヘッダのみ

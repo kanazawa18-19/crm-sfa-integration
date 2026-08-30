@@ -172,6 +172,30 @@ class HttpSpreadsheetClient:
         ]
         return title, names
 
+    def count_rows(self, sheets: list[str]) -> dict[str, int]:
+        """各シートのA列の行数（ヘッダ含む）をまとめて返す（読み取りのみ）。
+
+        到達確認だけでは「認証は通るが1件も書かれていない」状態を見逃す。
+        実際に2026-08-31、全6シートがヘッダ1行のままであることがこれで判明した。
+        `rc=0`と「仕事が終わっている」は別、という原則をシートにも適用するための計測。
+        """
+        if not sheets:
+            return {}
+        # requestsは値がリストのキーを繰り返しクエリパラメータとして展開する
+        # （ranges=...&ranges=...）。Sheets APIのbatchGetはこの形を要求する。
+        params = {
+            "majorDimension": "COLUMNS",
+            "ranges": [f"'{sheet}'!A:A" for sheet in sheets],
+        }
+        response = self._request("GET", "/values:batchGet", params=params)
+        raise_for_error(response, SpreadsheetApiError)
+        value_ranges = response.json().get("valueRanges", [])
+        counts: dict[str, int] = {}
+        for sheet, value_range in zip(sheets, value_ranges):
+            columns = value_range.get("values") or [[]]
+            counts[sheet] = len(columns[0]) if columns else 0
+        return counts
+
     def get_row(self, sheet: str, row: int) -> dict[str, Any] | None:
         response = self._request(
             "GET",
