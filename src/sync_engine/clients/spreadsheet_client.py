@@ -151,6 +151,27 @@ class HttpSpreadsheetClient:
         except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
             raise SpreadsheetApiError(response.status_code, extract_error_message(response)) from exc
 
+    def list_sheet_names(self) -> tuple[str, list[str]]:
+        """スプレッドシートのタイトルとシート名の一覧を返す（読み取りのみ）。
+
+        同期の到達確認に使う。認証が通ることと、書き込み先のシートが実在することは別で、
+        シート名が変わっただけでも同期は静かに失敗し続けるため、名前まで照合できるようにする。
+        `_request()`はスプレッドシートID配下の相対パス専用なので、メタデータ取得
+        （`/`直下）のために空パスを渡している。
+        """
+        response = self._request(
+            "GET",
+            "",
+            params={"fields": "properties.title,sheets.properties.title"},
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        body = response.json()
+        title = str(body.get("properties", {}).get("title", ""))
+        names = [
+            str(sheet.get("properties", {}).get("title", "")) for sheet in body.get("sheets", [])
+        ]
+        return title, names
+
     def get_row(self, sheet: str, row: int) -> dict[str, Any] | None:
         response = self._request(
             "GET",

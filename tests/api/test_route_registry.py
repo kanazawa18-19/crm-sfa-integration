@@ -54,6 +54,8 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/cron/relation-sync-reconcile"),
     # --- dashboard(Next.js)から叩かれる読み取り系 ---
     ("GET", "/api/dashboard/summary"),
+    # 外部連携の疎通診断（2026-08-31追加、読み取りのみ）。
+    ("GET", "/api/diagnostics/integrations"),
     ("GET", "/api/reports/daily"),
     ("GET", "/api/members/performance"),
     ("GET", "/api/alerts/manager"),

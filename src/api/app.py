@@ -59,6 +59,7 @@ from src.sync_engine.clients._http import ApiError
 from src.sync_engine.clients.notion_client import NotionApiError
 from src.api.dependencies import wiring_dependency
 from src.api.routes.cron import router as cron_router
+from src.api.routes.diagnostics import router as diagnostics_router
 from src.api.routes.webhooks import router as webhooks_router
 from src.sync_engine.production_wiring import ProductionSyncWiring
 from src.sync_engine.webhook_handlers.gmail_push_webhook import (
@@ -142,6 +143,9 @@ def healthz() -> dict[str, str]:
 app.include_router(webhooks_router)
 # 定期実行（cron）エンドポイントは src/api/routes/cron.py へ分割した（2026-08-28）。
 app.include_router(cron_router)
+
+# 外部連携の疎通診断（読み取りのみ）。ダッシュボードAPIトークンで保護する。
+app.include_router(diagnostics_router)
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])
