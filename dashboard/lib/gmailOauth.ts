@@ -12,7 +12,11 @@
 // このファイルのものをそのままexportする。
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 
-function redirectUri(): string {
+// Googleログイン(lib/googleLoginOauth.ts)からも参照するためexportしている。
+// **このアプリのredirect_uriはこの1本だけ**で、Google Cloud Console側にも
+// これしか登録していない。新しいフローを足すときもここを再利用し、
+// stateのpurposeで分岐すること(app/google/oauth/README.md参照)。
+export function redirectUri(): string {
   const base = process.env.APP_BASE_URL;
   if (!base) throw new Error("APP_BASE_URL is not set");
   return `${base}/gmail/oauth/callback`;

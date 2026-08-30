@@ -29,7 +29,10 @@ import {
 } from "@/lib/twoFactor";
 
 // web-engagement-toolのsrc/app/admin/actions.tsのログイン・2FA・パスワード再設定・
-// ユーザー管理まわりを移植(2026-08-15)。Googleログイン等MA固有の機能は含めない。
+// ユーザー管理まわりを移植(2026-08-15)。
+// 2026-08-31にGoogleログインも移植した(app/login/google/start と
+// app/gmail/oauth/callback の admin_login 分岐)。パスワードでもGoogleでも
+// 最終的にこのファイルの establishSessionForUser() を通り、2FAの分岐は共通になる。
 
 async function establishSession(userId: string) {
   const cookieStore = await cookies();
@@ -42,10 +45,14 @@ async function establishSession(userId: string) {
 }
 
 /**
- * パスワード認証成功後の分岐。AppSettings.twoFactorEnabledがONなら2FA検証へ、
+ * 本人確認が済んだ後の共通の分岐。AppSettings.twoFactorEnabledがONなら2FA検証へ、
  * OFFならそのままセッションを確立する。
+ *
+ * パスワードログイン(login())とGoogleログイン(app/gmail/oauth/callbackの
+ * admin_login分岐)の両方から呼ぶ。**Googleでログインしても2FAを迂回させない**
+ * ために、入口を1つにまとめてある。
  */
-async function establishSessionForUser(
+export async function establishSessionForUser(
   userId: string
 ): Promise<{ needsTwoFactor: boolean; redirectTo: string }> {
   const settings = await prisma.appSettings.findUnique({ where: { id: 1 } });

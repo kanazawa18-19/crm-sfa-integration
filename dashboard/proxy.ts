@@ -11,6 +11,14 @@ import prisma from "@/lib/prisma";
 
 const PUBLIC_PATHS = [
   "/login",
+  // Googleログイン(2026-08-31)。ログイン前に叩かれるので認証を要求できない。
+  // コールバックは /gmail/oauth/callback を連携フローと共用しているため、
+  // **そちらもここで公開扱いにする必要がある**。
+  // 公開にしてよい理由: コールバック側は admin_login 以外のpurposeでは
+  // 従来どおり getCurrentUser() を要求しており、連携フローの保護は
+  // ミドルウェアではなくルート本体が担っている(app/gmail/oauth/callback/route.ts)。
+  "/login/google/start",
+  "/gmail/oauth/callback",
   "/forgot-password",
   "/set-password",
   "/login/2fa",

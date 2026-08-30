@@ -4,6 +4,9 @@ import { getCurrentUser } from "@/lib/auth";
 import { encryptToken } from "@/lib/tokenCrypto";
 import { exchangeCodeForToken, GMAIL_SCOPE } from "@/lib/gmailOauth";
 import { DRIVE_SCOPE } from "@/lib/googleOauth";
+import { exchangeCodeForGoogleIdentity } from "@/lib/googleLoginOauth";
+import { establishSessionForUser } from "@/app/actions";
+import { LOGIN_STATE_COOKIE } from "@/app/login/google/start/route";
 
 const STATE_COOKIE = "gmail_oauth_state";
 
@@ -14,6 +17,11 @@ const STATE_COOKIE = "gmail_oauth_state";
 // allowlist below so an unrecognized purpose can't route this callback
 // anywhere unexpected.
 const ALLOWED_PURPOSES = new Set(["google_all"]);
+
+// ログインフロー(app/login/google/start)。連携フローと同じredirect_uriを
+// 共用しているので、ここで最初に分岐する。**このpurposeだけはセッションが
+// 無い状態で来る**ため、下の getCurrentUser() より前に処理する必要がある。
+const LOGIN_PURPOSE = "admin_login";
 
 function parseState(state: string): { nonce: string; purpose: string | null } {
   const dotIndex = state.indexOf(".");
@@ -37,7 +45,65 @@ function parseState(state: string): { nonce: string; purpose: string | null } {
 // auth code, so exchangeCodeForToken()'s grantedScopes is checked below
 // before writing anything — a table must never end up holding a refresh
 // token that doesn't actually cover its scope (2026-08-27, review fix).
+
+// 「Googleでログイン」の2歩目(2026-08-31)。
+//
+// 守っていること:
+// - **アカウントを自動作成しない。** 既存のUserに一致するメールアドレスでなければ拒否する
+// - **Google側で所有確認済み(verified_email)のメールしか信用しない。** 未確認の
+//   メールアドレスは本人確認の材料にならない
+// - **2FAを迂回しない。** establishSessionForUser()を通すので、AppSettingsで2FAが
+//   ONなら、Googleでログインしても2FAの画面へ送られる
+// - nonceは使い捨て。成否にかかわらずcookieを消す(残すと、後の試行で古いcookieが
+//   nonce検証を満たしてしまう)
+async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
+  const failLogin = (reason: string) => {
+    const url = new URL("/login", request.url);
+    url.searchParams.set("error", reason);
+    const response = NextResponse.redirect(url);
+    response.cookies.delete(LOGIN_STATE_COOKIE);
+    return response;
+  };
+
+  const code = request.nextUrl.searchParams.get("code");
+  const rawState = request.nextUrl.searchParams.get("state");
+  const expectedNonce = request.cookies.get(LOGIN_STATE_COOKIE)?.value;
+  const nonce = rawState ? parseState(rawState).nonce : null;
+
+  if (!code || !rawState || !expectedNonce || nonce !== expectedNonce) {
+    return failLogin("ログインの検証に失敗しました。もう一度お試しください");
+  }
+
+  let identity;
+  try {
+    identity = await exchangeCodeForGoogleIdentity(code);
+  } catch (err) {
+    console.error(err);
+    return failLogin("Googleログインに失敗しました");
+  }
+
+  if (!identity.verifiedEmail) {
+    return failLogin("このGoogleアカウントはメールアドレスが確認済みではありません");
+  }
+
+  const user = await prisma.user.findUnique({ where: { email: identity.email } });
+  if (!user) {
+    // どのアドレスが登録済みかを推測させないため、理由は共通の文言にする。
+    return failLogin("このGoogleアカウントに対応する管理者アカウントが見つかりません");
+  }
+
+  const { redirectTo } = await establishSessionForUser(user.id);
+  const response = NextResponse.redirect(new URL(redirectTo, request.url));
+  response.cookies.delete(LOGIN_STATE_COOKIE);
+  return response;
+}
+
 export async function GET(request: NextRequest) {
+  const rawStateForLogin = request.nextUrl.searchParams.get("state");
+  if (rawStateForLogin && parseState(rawStateForLogin).purpose === LOGIN_PURPOSE) {
+    return handleAdminLogin(request);
+  }
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.redirect(new URL("/login", request.url));
 
