@@ -75,7 +75,8 @@ from src.sync_engine.clients.zoho_client import HttpZohoClient
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.id_mapping import IdMappingStore, SQLiteIdMappingStore
 from src.sync_engine.notion_id_mapping import NotionIdMappingStore
-from src.sync_engine.slack_notifier import WebhookSlackNotifier
+from src.sync_engine.slack_notifier import SlackNotifier, WebhookSlackNotifier
+from src.sync_engine.known_sync_gaps import KNOWN_SYNC_GAPS
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import get_sync_system_id
 from src.sync_engine.sync_targets.base import SyncTarget
@@ -815,9 +816,28 @@ class SkipTrackingDispatcher:
     レスポンスへ反映できるようにする。
     """
 
-    def __init__(self, dispatcher: Dispatcher) -> None:
+    def __init__(
+        self, dispatcher: Dispatcher, slack_notifier: SlackNotifier | None = None
+    ) -> None:
         self._dispatcher = dispatcher
+        self._slack_notifier = slack_notifier
         self.last_result: DispatchResult | None = None
+
+    def _unexpected_skips(
+        self, event: SyncEvent, prop_result: PropertyDispatchResult
+    ) -> list[Tool]:
+        """既知のズレ以外のスキップだけを返す。
+
+        **既知の89件まで通知すると洪水になり、本物の通知まで無視されるようになる**
+        （2026-08-31、Geminiクロスレビュー: 「89件あるから通知しない」は本末転倒。
+        既知は明示リストで切り離し、それ以外は即通知すべき）。
+        既知の一覧は`src/sync_engine/known_sync_gaps.py`にあり、解消したら消す運用。
+        """
+        return [
+            tool
+            for tool in prop_result.skipped_tools
+            if (tool, event.db_key, prop_result.property_name) not in KNOWN_SYNC_GAPS
+        ]
 
     def dispatch(self, event: SyncEvent) -> DispatchResult:
         result = self._dispatcher.dispatch(event)
@@ -826,6 +846,19 @@ class SkipTrackingDispatcher:
             for prop_result in result.properties:
                 if not prop_result.skipped_tools:
                     continue
+                unexpected = self._unexpected_skips(event, prop_result)
+                if unexpected and self._slack_notifier is not None:
+                    self._slack_notifier.notify_update_skipped(
+                        db_key=event.db_key,
+                        source_tool=event.source_tool,
+                        external_id=event.external_id,
+                        reason="property_write_skipped",
+                        detail=(
+                            f"「{prop_result.property_name}」を "
+                            f"{'・'.join(sorted(t.value for t in unexpected))} へ"
+                            "書き込めませんでした（既知の未対応項目ではありません）"
+                        ),
+                    )
                 logger.warning(
                     "sync write partially skipped (書き込み対象と判定されたが実際には反映"
                     "されなかったツールがあります): db_key=%r external_id=%r property=%r "
@@ -915,7 +948,9 @@ class ProductionSyncWiring:
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
             build_production_dispatcher(
                 id_mapping_store=self.id_mapping_store, zoho_client=self.zoho_action_client
-            )
+            ),
+            # 既知のズレ以外のスキップだけをSlackへ上げる（`_unexpected_skips`参照）。
+            slack_notifier=WebhookSlackNotifier(),
         )
         # build_production_dispatcher()内で改めてNotionクライアント一式を構築しており
         # 二重にはなるが、Webhook受信のたびに毎回構築するわけではない（モジュールレベルで
