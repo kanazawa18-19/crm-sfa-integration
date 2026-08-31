@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from src.db_schema.base import Tool
+from src.db_schema.base import PropertyType, Tool
+from src.db_schema.registry import get_schema
 from src.sync_engine.conflict_resolver import RejectedData
 from src.sync_engine.sync_targets.base import SyncTarget
 
@@ -17,6 +18,34 @@ SYNC_KEY_COLUMN = "同期キー"
 
 # 05_同期・競合制御「データ退避」：却下データの退避先タブ名。
 SYNC_LOG_SHEET_NAME = "同期ログ"
+
+
+def drop_relation_properties(
+    properties: dict[str, Any], db_key: str | None
+) -> dict[str, Any]:
+    """リレーションはシートへ書かない（2026-08-31）。
+
+    リレーションの値は**NotionのページID**で、シート上では
+    `3b9d8ea8-d4f3-8116-…, 3b9d8ea8-d4f3-8180-…` という32桁の羅列にしかならない。
+    実際にバックフィルを流して確認したところ、1つの商品に25件ぶら下がっていて
+    セルが完全に読めなくなった。人が見るシートに書く情報として成立していない。
+
+    kintone/Zohoへの書き込みでリレーションを対象外にしているのと**同じ理由**
+    （`src/sync_engine/outbound_field_mapping.py`）。ページIDはNotionの中でだけ
+    意味を持つ識別子で、他のツールへ持っていっても誰も辿れない。
+
+    db_keyが分からないときは何も落とさない（どれがリレーションか判断できないため）。
+    """
+    if db_key is None:
+        return dict(properties)
+    try:
+        schema = get_schema(db_key)
+    except (KeyError, ValueError):
+        return dict(properties)
+    relations = {
+        prop.name for prop in schema.properties if prop.property_type is PropertyType.RELATION
+    }
+    return {name: value for name, value in properties.items() if name not in relations}
 
 
 class SpreadsheetClient(Protocol):
@@ -44,9 +73,11 @@ class SpreadsheetSyncTarget(SyncTarget):
 
     tool = Tool.SPREADSHEET
 
-    def __init__(self, client: SpreadsheetClient, sheet: str) -> None:
+    def __init__(self, client: SpreadsheetClient, sheet: str, db_key: str | None = None) -> None:
         self._client = client
         self._sheet = sheet
+        # リレーション列を落とすためだけに使う（`drop_relation_properties`参照）。
+        self._db_key = db_key
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         return self._client.get_row(self._sheet, int(external_id))
@@ -54,10 +85,11 @@ class SpreadsheetSyncTarget(SyncTarget):
     def upsert_record(
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
     ) -> str:
+        values = drop_relation_properties(properties, db_key)
         if external_id is None:
-            row = self._client.append_row(self._sheet, properties)
+            row = self._client.append_row(self._sheet, values)
             return str(row)
-        self._client.update_row(self._sheet, int(external_id), properties)
+        self._client.update_row(self._sheet, int(external_id), values)
         return external_id
 
     # --- 同期キーによる行の解決（行番号を恒久IDにしないため） -------------------------------
@@ -84,13 +116,14 @@ class SpreadsheetSyncTarget(SyncTarget):
         「行が無い」と判断されて重複する。
         """
         self._client.ensure_sync_key_column(self._sheet, SYNC_KEY_COLUMN)
-        row = self._client.append_row(self._sheet, {**properties, SYNC_KEY_COLUMN: sync_key})
+        values = {**drop_relation_properties(properties, self._db_key), SYNC_KEY_COLUMN: sync_key}
+        row = self._client.append_row(self._sheet, values)
         self._client.remember_sync_key_row(self._sheet, sync_key, row)
         return row
 
     def with_sync_key(self, properties: dict[str, Any], sync_key: str) -> dict[str, Any]:
         """更新時の書き込み値に同期キーを混ぜる（古い行へのキー埋めを兼ねる）。"""
-        return {**properties, SYNC_KEY_COLUMN: sync_key}
+        return {**drop_relation_properties(properties, self._db_key), SYNC_KEY_COLUMN: sync_key}
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self._client.update_row(self._sheet, int(external_id), {_DELETE_FLAG_COLUMN: True})

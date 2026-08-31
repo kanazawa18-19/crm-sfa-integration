@@ -618,7 +618,7 @@ def build_spreadsheet_targets_by_db() -> dict[str, SpreadsheetSyncTarget]:
         logger.warning("スプレッドシート認証情報が未設定のため、スプレッドシート向け同期は無効化されます")
         return {}
     return {
-        schema.key: SpreadsheetSyncTarget(client, schema.spreadsheet_sheet_name)
+        schema.key: SpreadsheetSyncTarget(client, schema.spreadsheet_sheet_name, schema.key)
         for schema in ALL_SCHEMAS
     }
 

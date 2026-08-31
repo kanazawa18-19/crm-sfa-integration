@@ -15,9 +15,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from typing import Any
+from typing import Any, Mapping
 
 import requests
 
@@ -310,7 +311,7 @@ class HttpSpreadsheetClient:
 
     def append_row(self, sheet: str, values: dict[str, Any]) -> int:
         headers = self._get_header_row(sheet)
-        row_values = [values.get(name, "") for name in headers]
+        row_values = [_to_cell_value(values.get(name, "")) for name in headers]
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複行追加を避けリトライしない。
         response = self._request(
             "POST",
@@ -337,7 +338,10 @@ class HttpSpreadsheetClient:
     def update_row(self, sheet: str, row: int, values: dict[str, Any]) -> None:
         headers = self._get_header_row(sheet)
         data = [
-            {"range": f"'{sheet}'!{column_letter(i + 1)}{row}", "values": [[values[name]]]}
+            {
+                "range": f"'{sheet}'!{column_letter(i + 1)}{row}",
+                "values": [[_to_cell_value(values[name])]],
+            }
             for i, name in enumerate(headers)
             if name in values
         ]
@@ -349,6 +353,31 @@ class HttpSpreadsheetClient:
             json_body={"valueInputOption": "USER_ENTERED", "data": data},
         )
         raise_for_error(response, SpreadsheetApiError)
+
+
+def _to_cell_value(value: Any) -> Any:
+    """1セルに入る形へ変換する。
+
+    **Sheetsはセルにスカラーしか受け付けない。** リレーション（NotionページIDの配列）や
+    複数選択をそのまま渡すと `Invalid values[1][4]: list_value` で400になり、
+    その行だけでなく**バッチ全体が失敗する**（2026-08-31、バックフィルの実行で判明。
+    試算では気づけず、`--apply`して初めて出た）。
+
+    Notionのリレーションは値がページIDなので、シート上では人が読める情報にならないが、
+    ここで黙って捨てると「同期対象と宣言したのに入っていない」状態になる。
+    落とすのではなく、そのまま文字列にして残す。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        # Zohoのルックアップのような {"name": ..., "id": ...}。人が読める方を優先する。
+        name = value.get("name")
+        return str(name) if name else json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(_to_cell_value(item)) for item in value)
+    return str(value)
 
 
 def _first_values_row(value_ranges: list[dict[str, Any]], index: int) -> list[Any]:
