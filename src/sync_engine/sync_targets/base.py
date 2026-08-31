@@ -30,6 +30,20 @@ class SyncTarget(ABC):
         別アプリの同番号レコードを取り違えうるため）。
         """
 
+    def unsupported_properties(
+        self, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> frozenset[str]:
+        """このツールへ送れないプロパティ名を返す（既定は「全部送れる」）。
+
+        `Dispatcher`は**1イベント・1ツールにつき1回**にまとめて書き込む。
+        まとめると戻り値だけでは「どの項目が落ちたか」が分からないので、
+        書く前にここで聞く（2026-09-01）。
+
+        項目名や値の対応が無くて送れないツール（kintone・Zoho）が実装する。
+        Notion・スプレッドシートは受け取った値をそのまま書けるので既定のままでよい。
+        """
+        return frozenset()
+
     @abstractmethod
     def upsert_record(
         self,

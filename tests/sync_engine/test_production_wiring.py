@@ -1304,3 +1304,29 @@ def test_build_id_mapping_store_notion_backend_uses_interactive_rate_limit_retri
 
     assert isinstance(store, NotionIdMappingStore)
     assert store._max_rate_limit_retries == INTERACTIVE_MAX_RATE_LIMIT_RETRIES  # noqa: SLF001
+
+
+# --- unsupported_properties の委譲（2026-09-01、kuma-qaレビューWARN対応） -------------------
+
+
+def test_multi_db_router_delegates_unsupported_properties() -> None:
+    """まとめ書き込みの前に「送れない項目」を聞く経路が、下位ターゲットまで届くこと。"""
+    router = _MultiDbZohoSyncTarget(
+        {"project": ZohoSyncTarget(_RecordingZohoClient(), "案件", enabled=True)}
+    )
+
+    unsupported = router.unsupported_properties(
+        {"案件名": "A社", "確度": "A"}, db_key="project"
+    )
+
+    assert "確度" in unsupported
+    assert "案件名" not in unsupported
+
+
+def test_multi_db_router_says_nothing_can_be_sent_when_db_key_is_unknown() -> None:
+    """送り先のツールが構築できていないなら、1項目も送れない。"""
+    router = _MultiDbZohoSyncTarget({})
+
+    assert router.unsupported_properties({"案件名": "A社"}, db_key="project") == frozenset(
+        {"案件名"}
+    )

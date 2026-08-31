@@ -53,6 +53,7 @@ class _シート:
     def __init__(self) -> None:
         self.rows: dict[int, dict[str, Any]] = {}
         self.append_calls = 0
+        self.update_calls = 0
 
     # --- Dispatcherが使う契約（_MultiDbSpreadsheetSyncTargetと同じ形） ---
 
@@ -85,6 +86,7 @@ class _シート:
         expected_version: str | None = None,
     ) -> str | None:
         assert external_id is not None, "追記は append_row_with_sync_key を通ること"
+        self.update_calls += 1
         self.rows.setdefault(int(external_id), {}).update(properties)
         return external_id
 
@@ -407,3 +409,23 @@ def test_同期キー無しの追記は拒否する(monkeypatch: pytest.MonkeyPa
 
     assert target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master") is None
     assert シート.append_calls == 0
+
+
+def test_既にある行への更新も複数プロパティを1回でまとめる(
+    dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    """**追記だけでなく更新でも1回にまとめること**（2026-09-01、kuma-qaレビューWARN）。
+
+    追記（append）と更新（update）は別の分岐なので、追記側だけ検証していると
+    更新側のまとめ漏れに気づけない。
+    """
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+    行 = store.get("CLI-001").spreadsheet_row
+    before = シート.update_calls
+
+    dispatcher.dispatch(_イベント(経過分=1, 取引先名="更新後", 備考="メモ"))
+
+    assert シート.update_calls == before + 1, "プロパティごとに更新している"
+    assert シート.rows[行]["取引先名"] == "更新後"
+    assert シート.rows[行]["備考"] == "メモ"
+    assert シート.append_calls == 1, "更新なのに行が増えている"

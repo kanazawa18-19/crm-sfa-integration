@@ -110,3 +110,192 @@ def test_no_call_at_all_when_nothing_can_be_sent() -> None:
 
     assert client.updates == []
     assert Tool.ZOHO in result.properties[0].skipped_tools
+
+
+# --- 外部発（kintone/Zoho発）の経路 ---------------------------------------------------------
+#
+# Notion発とは別のコードパス（競合解決を通り、`decided`へ貯めてからまとめる）。
+# ここにテストが無く、`_group_by_tool`の値取り違えを混入させても検出できなかった
+# （kuma-qaレビューBLOCKER、2026-09-01）。
+
+from src.db_schema.base import PropertyType  # noqa: E402
+from src.sync_engine.clients._http import ConcurrentModificationError  # noqa: E402
+from tests.sync_engine.test_dispatcher import (  # noqa: E402
+    FakeSyncTarget,
+    NOTION_LAST_EDITED_TIME_KEY,
+    _all_targets,
+)
+
+
+def _external_dispatch(targets: dict[Tool, Any], properties: dict[str, Any]) -> Any:
+    store = SQLiteIdMappingStore()
+    store.upsert(
+        IdMapping(
+            notion_key="CLI-001",
+            db_key="client_master",
+            kintone_id="1001",
+            zoho_id="zoho-1",
+            spreadsheet_row=5,
+            last_synced_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        ),
+        expected_last_synced_at=None,
+    )
+    return Dispatcher(store, targets).dispatch(
+        SyncEvent(
+            source_tool=Tool.KINTONE,
+            db_key="client_master",
+            external_id="1001",
+            properties=properties,
+            occurred_at=NOW,
+        )
+    )
+
+
+def _stale(**values: Any) -> dict[str, Any]:
+    return {**values, "updated_at": datetime(2026, 8, 30, tzinfo=timezone.utc)}
+
+
+def test_external_event_writes_each_tool_once_with_all_properties() -> None:
+    """kintone発でも、1ツールにつき1回・全項目まとめて書くこと。"""
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                "住所": "旧住所",
+                NOTION_LAST_EDITED_TIME_KEY: datetime(2026, 8, 30, tzinfo=timezone.utc),
+            }
+        },
+    )
+    zoho = FakeSyncTarget(Tool.ZOHO, records={"zoho-1": _stale(取引先名="旧名称", 住所="旧住所")})
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = zoho
+
+    _external_dispatch(targets, {"取引先名": "新名称", "住所": "新住所"})
+
+    for target, external_id in ((notion, "CLI-001"), (zoho, "zoho-1")):
+        assert len(target.upsert_calls) == 1, target.tool
+        sent_id, sent = target.upsert_calls[0]
+        assert sent_id == external_id
+        # **値の取り違えが起きていないこと。** ここが無いと _group_by_tool のバグを見逃す。
+        assert sent == {"取引先名": "新名称", "住所": "新住所"}
+
+
+def test_no_op_property_is_not_mixed_into_the_write() -> None:
+    """一致していて書く必要のない項目が、書き込みに紛れ込まないこと。"""
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                "住所": "同じ住所",
+                NOTION_LAST_EDITED_TIME_KEY: datetime(2026, 8, 30, tzinfo=timezone.utc),
+            }
+        },
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+
+    result = _external_dispatch(targets, {"取引先名": "新名称", "住所": "同じ住所"})
+
+    assert len(notion.upsert_calls) == 1
+    _sent_id, sent = notion.upsert_calls[0]
+    assert sent == {"取引先名": "新名称"}
+    # 一致していた項目も報告には残る（書き込み対象ゼロとして）。
+    assert {p.property_name for p in result.properties} == {"取引先名", "住所"}
+
+
+def test_rejected_write_skips_every_property_for_that_tool() -> None:
+    """まとめて1回なので、拒否されたらそのツールの**全項目**がスキップになること。"""
+
+    class _Rejecting(FakeSyncTarget):
+        def upsert_record(self, external_id, properties, *, db_key=None, expected_version=None):
+            raise ConcurrentModificationError(409, "revision mismatch")
+
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                "住所": "旧住所",
+                NOTION_LAST_EDITED_TIME_KEY: datetime(2026, 8, 30, tzinfo=timezone.utc),
+            }
+        },
+    )
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = _Rejecting(
+        Tool.ZOHO, records={"zoho-1": _stale(取引先名="旧名称", 住所="旧住所")}
+    )
+
+    result = _external_dispatch(targets, {"取引先名": "新名称", "住所": "新住所"})
+
+    for prop in result.properties:
+        assert Tool.ZOHO in prop.skipped_tools, prop.property_name
+
+
+def test_falls_back_to_sending_everything_when_the_question_fails() -> None:
+    """「送れない項目は何か」を聞けなくても同期を止めない。そのまま送る。"""
+
+    class _Broken(FakeSyncTarget):
+        def unsupported_properties(self, properties, *, db_key=None):
+            raise RuntimeError("問い合わせ失敗")
+
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                NOTION_LAST_EDITED_TIME_KEY: datetime(2026, 8, 30, tzinfo=timezone.utc),
+            }
+        },
+    )
+    broken = _Broken(Tool.ZOHO, records={"zoho-1": _stale(取引先名="旧名称")})
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = broken
+
+    _external_dispatch(targets, {"取引先名": "新名称"})
+
+    assert len(broken.upsert_calls) == 1
+    assert broken.upsert_calls[0][1] == {"取引先名": "新名称"}
+
+
+def test_each_tool_gets_only_the_properties_meant_for_it() -> None:
+    """プロパティごとに送り先が違うとき、混ざらないこと。
+
+    `取引先ID`はNotionだけ（`sync_scope=INTERNAL`相当の扱い）、`取引先名`は全ツールへ。
+    まとめて書くようにしたので、ここが混ざると別ツールへ余計な項目を送ってしまう。
+    """
+    from src.db_schema.registry import get_schema
+
+    schema = get_schema("client_master")
+    notion_only = [
+        p.name
+        for p in schema.properties
+        if p.property_type is PropertyType.TEXT and not p.should_sync_to(Tool.ZOHO)
+    ]
+    if not notion_only:
+        return  # 対象が無ければ検証不要
+
+    notion = FakeSyncTarget(
+        Tool.NOTION,
+        records={
+            "CLI-001": {
+                "取引先名": "旧名称",
+                notion_only[0]: "旧値",
+                NOTION_LAST_EDITED_TIME_KEY: datetime(2026, 8, 30, tzinfo=timezone.utc),
+            }
+        },
+    )
+    zoho = FakeSyncTarget(Tool.ZOHO, records={"zoho-1": _stale(取引先名="旧名称")})
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.ZOHO] = zoho
+
+    _external_dispatch(targets, {"取引先名": "新名称", notion_only[0]: "新値"})
+
+    # Zohoへは「取引先名」だけ。Notion専用の項目が紛れ込まないこと。
+    assert len(zoho.upsert_calls) == 1
+    assert notion_only[0] not in zoho.upsert_calls[0][1]

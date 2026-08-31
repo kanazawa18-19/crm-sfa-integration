@@ -108,12 +108,17 @@ def test_disabled_target_skips_get_record_without_calling_client() -> None:
 
 
 def test_disabled_target_skips_upsert_record_without_calling_client() -> None:
+    """無効化中は更新でもNoneを返す（2026-09-01に変更）。
+
+    外部IDを返すと、呼び出し元（Dispatcher）が「書き込み成功」と数えてしまう。
+    実際には1件も書いていないので、スキップとして扱わせる。
+    """
     client = FakeZohoClient()
     target = ZohoSyncTarget(client, "案件", enabled=False)
 
     result = target.upsert_record("zoho-1", {"案件名": "新規案件"})
 
-    assert result == "zoho-1"
+    assert result is None
     assert client.calls == []
     assert client.records == {}
 

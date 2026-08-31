@@ -136,6 +136,22 @@ class DispatchResult:
         return any(p.skipped_tools for p in self.properties)
 
 
+@dataclass(frozen=True)
+class _DecidedWrite:
+    """判定が済んで、あとは書くだけになった1プロパティ分（2026-09-01）。
+
+    判定（競合解決）を全プロパティぶん先に済ませ、書き込みは最後にツールごと
+    1回にまとめるため、その間これを貯めておく。
+    """
+
+    property_name: str
+    #: 競合解決の結果。Notion発など、判定を行わなかった場合はNone。
+    resolution: "ConflictResolution | None"
+    value: Any
+    #: このプロパティを書き込むべきツール。
+    intended: frozenset[Tool]
+
+
 def _group_by_tool(
     value_by_property: Mapping[str, Any],
     intended_by_property: Mapping[str, frozenset[Tool]],
@@ -176,8 +192,17 @@ class _VersionTracker:
     **その値は再送されないので恒久的に反映されないまま残る**
     （2026-08-31、shirokuma-sec・ChatGPTが独立に指摘）。
 
-    そこで**一度使った版は取り直す**。1プロパティにつきGETが1回増えるが、
-    「守れない」より「少し遅い」を選ぶ。
+    ■ 今は使われない。将来の保険として残している
+
+    **`_write_values()`が「1イベント・1ツールにつき1回」にまとめたので
+    （2026-09-01）、この問題は根本から消えた。** いま`take()`はツールごとに
+    1回しか呼ばれず、**取り直す側の分岐には到達しない。**
+    1イベント内で同じツールへ2回書く経路を作るときのために残してある。
+    その変更を入れるときは、この分岐のテストも必ず足すこと。
+
+    なお、取り直す方式には副作用がある。2回の書き込みの間に**第三者が本当に
+    編集していても**、最新の版を持っていくので競合として弾かれない。
+    つまり偽の競合は消えるが、真の競合の検知も弱まる。使うときはそこも見ること。
 
     ■ 競合解決のスナップショットには触らない
 
@@ -185,13 +210,6 @@ class _VersionTracker:
     **1イベント内の全プロパティが同じスナップショットを見る**という性質がある。
     ここから要素を消すと、2つ目以降のプロパティで「現在値が無い」と誤判定され、
     競合判定を経ずに上書きされる。版の管理は必ず別に持つ。
-
-    ■ 本来の姿
-
-    正しくは「1イベント・1ツールにつき1回の書き込みにまとめる」。そうすれば
-    取り直し自体が要らず、API呼び出しも減る。ただし結果の報告（どのプロパティが
-    どのツールへ書けたか）の作りが変わり、Slack通知の判定にも影響するため、
-    **稼働中のこの経路に一度に重ねず、別の変更として行う。**
     """
 
     def __init__(
@@ -408,7 +426,10 @@ class Dispatcher:
             records_by_tool[tool] = record
 
         # 判定結果をいったん貯めて、書き込みは最後にツールごと1回にまとめる。
-        decided: list[tuple[str, ConflictResolution | None, Any, frozenset[Tool]]] = []
+        decided: list[_DecidedWrite] = []
+        # 書く必要が無いと判定されたプロパティ。報告の並び順を元のプロパティ順に保つため、
+        # 逐次appendせずここへ入れておく（2026-09-01、shirokuma-secレビューINFO）。
+        no_op_results: dict[str, PropertyDispatchResult] = {}
 
         # 版は書き込みのたびに進むので、専用に管理する（`_VersionTracker`参照）。
         # **`records_by_tool`はここから一切変更しない**（競合解決が見るスナップショット）。
@@ -428,7 +449,14 @@ class Dispatcher:
                 # によるupdated_at取得（Notionページは読めるが値やタイムスタンプの比較が必要な
                 # ケース）とは別物。2026-08本番障害はこちらではなく、後者でupdated_atが常に
                 # フォールバックしていたことが原因（conflict_resolver.pyの修正で対応済み）。
-                decided.append((property_name, None, new_value, frozenset({Tool.NOTION}) | other_tools))
+                decided.append(
+                    _DecidedWrite(
+                        property_name=property_name,
+                        resolution=None,
+                        value=new_value,
+                        intended=frozenset({Tool.NOTION}) | other_tools,
+                    )
+                )
                 continue
 
             candidates = [
@@ -468,8 +496,8 @@ class Dispatcher:
             )
 
             if resolution.action is ResolutionAction.NO_OP:
-                results.append(
-                    PropertyDispatchResult(property_name=property_name, resolution=resolution)
+                no_op_results[property_name] = PropertyDispatchResult(
+                    property_name=property_name, resolution=resolution
                 )
                 continue
 
@@ -477,33 +505,43 @@ class Dispatcher:
             # 異なる方。NOTION_OVERRIDE時は送信元自身の訂正も含む） ∪ missing_tools
             # （比較には参加していないが、確定した値へ補完すべきsync_scope対象ツール）。
             decided.append(
-                (
-                    property_name,
-                    resolution,
-                    resolution.resolved_value,
-                    frozenset(resolution.target_tools | missing_tools),
+                _DecidedWrite(
+                    property_name=property_name,
+                    resolution=resolution,
+                    value=resolution.resolved_value,
+                    intended=frozenset(resolution.target_tools | missing_tools),
                 )
             )
 
-            # BLOCKER2: 却下データの退避（データ退避）とSlackアラート通知（重要項目のみ）。
-            if resolution.rejected:
-                self._log_rejected(resolution.rejected)
-                if resolution.notify_slack and self._slack_notifier is not None:
-                    for rejected_item in resolution.rejected:
-                        self._slack_notifier.notify_conflict(rejected_item)
 
         # --- フェーズ4: 書き込み（ツールごとに1回だけ） ---
-        intended_by_property = {name: intended for name, _r, _v, intended in decided}
+        intended_by_property = {d.property_name: d.intended for d in decided}
         payload_by_tool = _group_by_tool(
-            {name: value for name, _r, value, _i in decided}, intended_by_property
+            {d.property_name: d.value for d in decided}, intended_by_property
         )
         written_by_tool, mapping = self._write_values(payload_by_tool, mapping, versions)
-        for property_name, resolution, _value, _intended in decided:
-            results.append(
-                _property_result(
-                    property_name, resolution, intended_by_property, written_by_tool
-                )
+        written_results = {
+            item.property_name: _property_result(
+                item.property_name, item.resolution, intended_by_property, written_by_tool
             )
+            for item in decided
+        }
+        for property_name, _prop, _value in prepared:
+            result = no_op_results.get(property_name) or written_results.get(property_name)
+            if result is not None:
+                results.append(result)
+
+        # BLOCKER2: 却下データの退避とSlackアラート通知（重要項目のみ）。
+        # **書き込みの後で行う**（2026-09-01、shirokuma-secレビューWARN）。
+        # 判定の直後に出すと、書き込みが例外で落ちてWebhookが再送されたとき、
+        # 実際には書いていない却下通知が二重に飛ぶ。
+        for item in decided:
+            if item.resolution is None or not item.resolution.rejected:
+                continue
+            self._log_rejected(item.resolution.rejected)
+            if item.resolution.notify_slack and self._slack_notifier is not None:
+                for rejected_item in item.resolution.rejected:
+                    self._slack_notifier.notify_conflict(rejected_item)
 
         self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
         return DispatchResult(skipped=False, properties=tuple(results))
@@ -1042,8 +1080,17 @@ class Dispatcher:
         （2026-08-31、shirokuma-sec・ChatGPTが独立に指摘）。
 
         まとめて1回にすると戻り値だけでは「どの項目が落ちたか」が分からないので、
-        書く前に`unsupported_properties()`でツールへ聞く（実装が無いツールは
-        「全部送れる」とみなす）。
+        書く前に`SyncTarget.unsupported_properties()`でツールへ聞く
+        （既定は「全部送れる」。Notion・スプレッドシートは受け取った値をそのまま書ける）。
+
+        ■ 却下データの記録・Slack通知は判定の時点で行っている
+
+        フェーズ3（判定）で`_log_rejected()`と`notify_conflict()`を呼ぶため、
+        このフェーズ4で`ConcurrentModificationError`が出て書き込みを取りやめた場合、
+        **「同期ログには採用/却下と残っているが、実際にはその値を書いていない」**
+        というズレが理論上ありうる。競合そのものは`skipped_tools`に出るので
+        気づけないわけではない。まとめ書き込みで新たに生じた話ではなく、
+        判定と書き込みを分けたことで見えやすくなっただけ。
 
         戻り値は {ツール: 実際に書けたプロパティ名の集合} と、更新後のmapping。
         """
@@ -1057,17 +1104,18 @@ class Dispatcher:
                 written_by_tool[tool] = frozenset()
                 continue
 
-            unsupported = frozenset()
-            asker = getattr(target, "unsupported_properties", None)
-            if callable(asker):
-                try:
-                    unsupported = frozenset(asker(properties, db_key=mapping.db_key))
-                except Exception:  # noqa: BLE001 (ツール実装依存)
-                    logger.warning(
-                        "送れない項目の問い合わせに失敗しました。そのまま送ります (tool=%s)",
-                        tool.value,
-                        exc_info=True,
-                    )
+            try:
+                unsupported = frozenset(
+                    target.unsupported_properties(properties, db_key=mapping.db_key)
+                )
+            except Exception:  # noqa: BLE001 (ツール実装依存)
+                # 聞けなかったからといって同期を止めない。そのまま送って相手の判断に任せる。
+                logger.warning(
+                    "送れない項目の問い合わせに失敗しました。そのまま送ります (tool=%s)",
+                    tool.value,
+                    exc_info=True,
+                )
+                unsupported = frozenset()
             sendable = {
                 name: value for name, value in properties.items() if name not in unsupported
             }

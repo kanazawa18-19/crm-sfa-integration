@@ -98,8 +98,10 @@ class ZohoSyncTarget(SyncTarget):
         expected_version: str | None = None,
     ) -> str | None:
         if not self._enabled:
-            # 「作成されていない」ことを型で表現する（""だと採番済みIDと誤認されうるため）。
-            return external_id
+            # **更新でもNoneを返す**（2026-09-01、shirokuma-secレビュー指摘）。
+            # 外部IDを返すと、呼び出し元が「書き込み成功」と数えてしまう。
+            # 実際には1件も書いていないので、スキップとして扱わせる。
+            return None
         payload = self._to_zoho_payload(properties, db_key)
         if payload is None:
             # 1項目も送っていないので、更新であっても「書き込めていない」を返す。
