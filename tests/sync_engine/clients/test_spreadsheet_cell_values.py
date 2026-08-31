@@ -125,3 +125,42 @@ def test_header_is_re_read_when_not_primed(requests_mock) -> None:
     client.append_row(sheet, {"名前": "B社"})
 
     assert header.call_count == 2
+
+
+def test_append_rows_writes_one_request_and_returns_row_numbers(requests_mock) -> None:
+    """まとめ追記。1行ずつだとSheetsのQuotaで1秒1行になり、3万件で18時間かかる。"""
+    from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
+
+    spreadsheet_id = "sheet-abc123"
+    base = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+    sheet = "取引先マスター"
+    client = HttpSpreadsheetClient(spreadsheet_id, access_token="t")
+
+    requests_mock.get(f"{base}/values/'{sheet}'!1:1", json={"values": [["名前", "同期キー"]]})
+    post = requests_mock.post(
+        f"{base}/values/'{sheet}'!A1:append",
+        json={"updates": {"updatedRange": f"'{sheet}'!A5:B7"}},
+    )
+
+    rows = client.append_rows(
+        sheet,
+        [
+            {"名前": "A社", "同期キー": "k1"},
+            {"名前": "B社", "同期キー": "k2"},
+            {"名前": "C社", "同期キー": "k3"},
+        ],
+    )
+
+    assert rows == [5, 6, 7]
+    assert post.call_count == 1
+    assert post.last_request.json() == {
+        "values": [["A社", "k1"], ["B社", "k2"], ["C社", "k3"]]
+    }
+
+
+def test_append_rows_with_nothing_makes_no_request(requests_mock) -> None:
+    from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
+
+    client = HttpSpreadsheetClient("sheet-abc123", access_token="t")
+
+    assert client.append_rows("取引先マスター", []) == []

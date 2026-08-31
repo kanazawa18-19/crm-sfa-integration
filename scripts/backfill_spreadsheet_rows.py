@@ -25,10 +25,15 @@ import argparse
 import dataclasses
 import logging
 import sys
-import time
+
+from typing import Any
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients.notion_client import (
+    PARSEABLE_NOTION_PROPERTY_TYPES,
+    parse_notion_property_value,
+)
 from src.sync_engine.sync_targets.spreadsheet_sync import SYNC_KEY_COLUMN
 from src.sync_engine.production_wiring import (
     build_id_mapping_store,
@@ -38,9 +43,9 @@ from src.sync_engine.production_wiring import (
 
 logger = logging.getLogger("backfill_spreadsheet_rows")
 
-#: 連続で叩き続けてGoogle Sheets APIのQuota（ユーザーあたり100リクエスト/100秒）に
-#: 当たらないよう、1件ごとに少し待つ。1件につきヘッダ取得＋追記で2〜3リクエスト。
-_SLEEP_SECONDS = 0.4
+#: まとめて追記する件数。Sheetsのappendは複数行を1リクエストで受け付ける。
+#: 大きくしすぎると失敗時のやり直しが重くなるので、ほどほどにする。
+_APPEND_BATCH_SIZE = 200
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,7 +114,59 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             logger.warning("行数の事前拡張に失敗しました。そのまま続行します", exc_info=True)
 
+    # Notionのページは**1件ずつ取らない**（2026-08-31）。get_page()を件数分呼ぶと
+    # NotionのAPIレート（およそ3リクエスト/秒）で頭打ちになる。DB全件を100件ずつの
+    # クエリで先に読んでおけば、3781件で38リクエストで済む。
+    pages_by_id: dict[str, dict[str, Any]] = {}
+    if mappings:
+        try:
+            for raw in notion.query_all_pages():
+                parsed = {}
+                for name, value in (raw.get("properties") or {}).items():
+                    if value.get("type") not in PARSEABLE_NOTION_PROPERTY_TYPES:
+                        continue
+                    parsed[name] = parse_notion_property_value(value)
+                pages_by_id[str(raw.get("id"))] = parsed
+            logger.info("Notionページを一括取得しました: %d件", len(pages_by_id))
+        except Exception:
+            logger.warning(
+                "Notionページの一括取得に失敗しました。1件ずつ取りに行きます", exc_info=True
+            )
+
     created = existing = skipped = failed = 0
+    pending: list[tuple[Any, dict[str, Any]]] = []
+
+    def _flush() -> None:
+        """溜めた行をまとめて追記し、採番された行番号をIdMappingへ入れる。
+
+        Sheetsの書き込みQuotaは100リクエスト/100秒。1行ずつ追記すると1秒に1行しか
+        書けず、3万件で18時間かかる。appendは複数行を1リクエストで受け付ける。
+        """
+        nonlocal created, failed
+        if not pending:
+            return
+        batch = list(pending)
+        pending.clear()
+        try:
+            rows = target._client.append_rows(
+                schema.spreadsheet_sheet_name,
+                [target.with_sync_key(values, m.notion_key) for m, values in batch],
+            )
+        except Exception:
+            logger.exception("まとめ追記に失敗しました（%d件）", len(batch))
+            failed += len(batch)
+            return
+        for (m, _values), row in zip(batch, rows):
+            target._client.remember_sync_key_row(
+                schema.spreadsheet_sheet_name, m.notion_key, row
+            )
+            try:
+                store.upsert(dataclasses.replace(m, spreadsheet_row=row))
+                created += 1
+            except Exception:
+                logger.exception("行番号の記録に失敗しました: %s", m.notion_key)
+                failed += 1
+
     for index, mapping in enumerate(mappings, start=1):
         try:
             row = target.find_row_by_sync_key(mapping.notion_key)
@@ -119,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
                     store.upsert(dataclasses.replace(mapping, spreadsheet_row=row))
                 continue
 
-            page = notion.get_page(mapping.notion_key)
+            page = pages_by_id.get(mapping.notion_key)
+            if page is None:
+                page = notion.get_page(mapping.notion_key)
             if page is None:
                 logger.warning("Notionページが読めませんでした: %s", mapping.notion_key)
                 skipped += 1
@@ -134,16 +193,17 @@ def main(argv: list[str] | None = None) -> int:
                 created += 1
                 continue
 
-            new_row = target.append_row_with_sync_key(values, mapping.notion_key)
-            store.upsert(dataclasses.replace(mapping, spreadsheet_row=new_row))
-            created += 1
-            time.sleep(_SLEEP_SECONDS)
+            pending.append((mapping, values))
+            if len(pending) >= _APPEND_BATCH_SIZE:
+                _flush()
         except Exception:  # noqa: BLE001 - 1件の失敗で全体を止めない
             logger.exception("失敗しました: %s", mapping.notion_key)
             failed += 1
 
-        if index % 20 == 0:
+        if index % 200 == 0:
             logger.info("進捗 %d/%d", index, len(mappings))
+
+    _flush()
 
     logger.info(
         "%s: 作成=%d / 既存=%d / スキップ=%d / 失敗=%d",

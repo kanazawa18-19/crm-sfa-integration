@@ -457,6 +457,43 @@ class HttpSpreadsheetClient:
             )
         return int(match.group(1))
 
+    def append_rows(self, sheet: str, rows: list[dict[str, Any]]) -> list[int]:
+        """複数行を**1リクエストで**追記し、採番された行番号を順に返す（2026-08-31）。
+
+        Google Sheets APIの書き込みQuotaは100リクエスト/100秒。1行ずつ追記すると
+        **1秒に1行しか書けず**、3万件で18時間かかる。appendは複数行をまとめて
+        受け付けるので、バックフィルではまとめて送る。
+
+        通常の同期（1件ずつ届くWebhook）では使わない。`append_row`のまま。
+
+        途中で失敗した場合、どこまで書けたかは戻り値からは分からないが、
+        各行に同期キーが入っているので**もう一度流せば重複せずに続きから**埋まる。
+        """
+        if not rows:
+            return []
+        headers = self._get_header_row(sheet)
+        payload = [[_to_cell_value(values.get(name, "")) for name in headers] for values in rows]
+        # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複行追加を避けリトライしない。
+        response = self._request(
+            "POST",
+            f"/values/'{sheet}'!A1:append",
+            params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+            json_body={"values": payload},
+            idempotent=False,
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        try:
+            updated_range = response.json()["updates"]["updatedRange"]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise SpreadsheetApiError(response.status_code, extract_error_message(response)) from exc
+        match = _UPDATED_RANGE_ROW_PATTERN.search(updated_range)
+        if match is None:
+            raise SpreadsheetApiError(
+                response.status_code, f"updatedRangeから行番号を読み取れません: {updated_range!r}"
+            )
+        first = int(match.group(1))
+        return list(range(first, first + len(rows)))
+
     def update_row(self, sheet: str, row: int, values: dict[str, Any]) -> None:
         headers = self._get_header_row(sheet)
         data = [
