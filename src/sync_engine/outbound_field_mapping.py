@@ -33,10 +33,11 @@ import logging
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.db_schema.base import PropertyType
 from src.db_schema.registry import ALL_SCHEMAS
+from src.sync_engine.outbound_value_mapping import CHOICE_TYPES, zoho_outbound_value_maps
 from src.sync_engine.webhook_handlers.kintone_field_transforms import KINTONE_FIELD_TRANSFORMS
 from src.sync_engine.webhook_handlers.zoho_field_transforms import ZOHO_LABEL_FIELD_MAPPINGS
 
@@ -96,15 +97,24 @@ def _zoho_api_names_by_label() -> dict[str, dict[str, list[str]]]:
     return by_label
 
 
-def _passthrough_properties() -> dict[str, dict[str, PropertyType]]:
-    """{db_key: {プロパティ名: 型}}。値変換が不要な型のみ。"""
+def _passthrough_properties(with_value_maps: bool = False) -> dict[str, dict[str, PropertyType]]:
+    """{db_key: {プロパティ名: 型}}。外部へ送ってよいプロパティ。
+
+    `with_value_maps=True`のときは、**選択肢の読み替えが用意できているもの**も含める
+    （`outbound_value_mapping.py`。Zoho向けのみ）。読み替えが無い選択肢は引き続き対象外。
+    """
+    value_maps = zoho_outbound_value_maps() if with_value_maps else {}
     result: dict[str, dict[str, PropertyType]] = {}
     for schema in ALL_SCHEMAS:
-        result[schema.key] = {
+        allowed = {
             prop.name: prop.property_type
             for prop in schema.properties
             if prop.property_type in _PASSTHROUGH_TYPES
         }
+        for property_name in value_maps.get(schema.key, {}):
+            prop = next(p for p in schema.properties if p.name == property_name)
+            allowed[property_name] = prop.property_type
+        result[schema.key] = allowed
     return result
 
 
@@ -138,7 +148,7 @@ def _choose_unique_outbound_target(
 @lru_cache(maxsize=1)
 def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
     """{db_key: {Notionプロパティ名: Zohoのapi_name}}。"""
-    safe = _passthrough_properties()
+    safe = _passthrough_properties(with_value_maps=True)
     api_by_label = _zoho_api_names_by_label()
     result: dict[str, dict[str, str]] = {}
     for schema in ALL_SCHEMAS:
@@ -183,6 +193,17 @@ def kintone_outbound_field_names() -> dict[str, dict[str, str]]:
 
 
 @lru_cache(maxsize=1)
+def _choice_properties() -> dict[str, frozenset[str]]:
+    """{db_key: 選択肢型のプロパティ名の集合}。"""
+    return {
+        schema.key: frozenset(
+            prop.name for prop in schema.properties if prop.property_type in CHOICE_TYPES
+        )
+        for schema in ALL_SCHEMAS
+    }
+
+
+@lru_cache(maxsize=1)
 def _date_properties() -> dict[str, frozenset[str]]:
     """{db_key: DATE型のプロパティ名の集合}。"""
     return {
@@ -213,7 +234,10 @@ def _normalize_outbound_value(db_key: str, property_name: str, value: Any) -> An
 
 
 def translate_properties(
-    outbound_table: dict[str, dict[str, str]], db_key: str | None, properties: dict[str, Any]
+    outbound_table: dict[str, dict[str, str]],
+    db_key: str | None,
+    properties: dict[str, Any],
+    translate_value: Callable[[str, str, Any], Any | None] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Notionのプロパティ名を外部のフィールド名へ置き換える。
 
@@ -232,6 +256,18 @@ def translate_properties(
         external = table.get(property_name)
         if external is None:
             unmapped.append(property_name)
+            continue
+        if translate_value is not None and property_name in _choice_properties().get(
+            db_key, frozenset()
+        ):
+            # 選択肢は値も読み替える。読み替えられなければ**送らない**
+            # （Zohoに無い選択肢を送れば弾かれるだけで、当てずっぽうに近い値を
+            # 入れると業務データが静かに壊れる）。
+            translated_value = translate_value(db_key, property_name, value)
+            if translated_value is None:
+                unmapped.append(property_name)
+                continue
+            translated[external] = translated_value
             continue
         if _is_empty(value):
             # **空値は送らない**（ChatGPTクロスレビューBLOCKER対応、2026-08-31）。

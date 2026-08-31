@@ -12,6 +12,7 @@ import os
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.outbound_value_mapping import translate_choice_value
 from src.sync_engine.outbound_field_mapping import (
     translate_properties,
     zoho_outbound_field_names,
@@ -125,7 +126,9 @@ class ZohoSyncTarget(SyncTarget):
         送り先を決められない項目は**送らない**。1項目も残らなければNoneを返し、
         呼び出し元に「書き込んでいない」ことを伝える（空のレコードでAPIを叩かない）。
         """
-        payload, unmapped = translate_properties(zoho_outbound_field_names(), db_key, properties)
+        payload, unmapped = translate_properties(
+            zoho_outbound_field_names(), db_key, properties, translate_choice_value
+        )
         if unmapped:
             logger.warning(
                 "ZohoSyncTarget: Zoho側の項目が特定できないため送信しません "

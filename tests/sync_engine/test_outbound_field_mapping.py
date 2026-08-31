@@ -42,16 +42,25 @@ def test_relation_properties_are_never_sent_outbound() -> None:
                 assert (db_key, property_name) not in relations
 
 
-def test_choice_properties_are_excluded_until_value_conversion_exists() -> None:
-    """選択肢の値は多対一で取り込んでいるため、機械的には逆変換できない。
+def test_choice_properties_are_sent_once_a_value_map_exists() -> None:
+    """選択肢は、値の読み替えが用意できていれば送る（2026-08-31に追加）。
 
-    例: Zohoの「メルアポ」も「メール」もNotionでは「メール」になる。
-    どちらへ戻すべきか決められないので、送らない。
+    読み替えはZohoの実際の選択肢を取り込み変換に通して反転して作る
+    （`outbound_value_mapping.py`）。手で表を書かないので、取り込み側を直せば
+    書き込み側も追随する。
     """
     table = zoho_outbound_field_names()
 
-    assert "アクション種別" not in table["action"]
-    assert "営業ステータス" not in table["project"]
+    assert table["project"]["営業ステータス"] == "Stage"
+    assert table["product"]["課金形態"] == "field15"
+
+
+def test_choice_properties_without_a_value_map_are_still_excluded() -> None:
+    """読み替えが作れない選択肢は引き続き対象外。当てずっぽうで送らない。"""
+    table = zoho_outbound_field_names()
+
+    # 「確度」はZoho側に対応する選択肢項目が無い。
+    assert "確度" not in table["project"]
 
 
 def test_ambiguous_destination_is_excluded_rather_than_guessed() -> None:
