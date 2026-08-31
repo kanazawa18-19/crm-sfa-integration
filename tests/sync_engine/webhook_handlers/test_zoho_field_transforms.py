@@ -204,3 +204,56 @@ class Test_連絡先の取引先リレーション:
         # 書き込みをスキップするセンチネル（Noneは「値を明示的にクリアする」意味で
         # 既に使われているため、区別できる別の値を返す）。
         assert self._変換()({"name": "不明な会社"}) is module.SKIP_FIELD
+
+
+# --- サービス・商品の課金形態（2026-08-31） ------------------------------------------------
+
+
+class Test_課金形態のマッピング:
+    """Zohoの「課金形態」(field15)から、サービス・商品DBの「課金形態」へ読み替える。
+
+    **これが無かったため、Zoho発の新規サービス・商品が1件も作られていなかった**
+    （必須プロパティ「課金形態」が常に欠けていた）。当時はZoho側に項目自体が無く、
+    2026-08-31に金沢さんが新設した。選択肢の言い方が両者で違う。
+
+        Zoho   : ランニング / ショット / 成果報酬
+        Notion : 月額ストック / イニシャルスポット / 成果報酬
+    """
+
+    def _変換(self):
+        _, transform = ZOHO_LABEL_FIELD_MAPPINGS["product"]["課金形態"]
+        return transform
+
+    def test_対応表に登録されている(self) -> None:
+        assert "課金形態" in ZOHO_LABEL_FIELD_MAPPINGS["product"]
+        notion_property, _ = ZOHO_LABEL_FIELD_MAPPINGS["product"]["課金形態"]
+        assert notion_property == "課金形態"
+
+    @pytest.mark.parametrize(
+        ("zoho値", "期待"),
+        [
+            ("ランニング", "月額ストック"),
+            ("ショット", "イニシャルスポット"),
+            ("成果報酬", "成果報酬"),
+        ],
+    )
+    def test_Zohoの選択肢3種がすべてNotionの選択肢へ落ちる(
+        self, zoho値: str, 期待: str
+    ) -> None:
+        assert self._変換()(zoho値) == 期待
+
+    def test_変換結果はスキーマの選択肢に必ず含まれる(self) -> None:
+        """Notionのselectに無い値を書くとAPIが弾く。"""
+        options = get_schema("product").get_property("課金形態").options
+        for zoho値 in ("ランニング", "ショット", "成果報酬"):
+            assert self._変換()(zoho値) in options
+
+    @pytest.mark.parametrize("未入力", ["", "  ", "-None-", None])
+    def test_未入力は書き込まない(self, 未入力: object) -> None:
+        """課金形態は必須プロパティ。適当な値で埋めると誤った分類のまま作られる。
+        書かずにおけば missing_required_properties としてSlackへ通知される。"""
+        assert self._変換()(未入力) is module.SKIP_FIELD
+
+    def test_未知の値も書き込まない(self) -> None:
+        """Zoho側に選択肢が増えたとき、黙って取りこぼさずに気づけるようにする。"""
+        assert self._変換()("サブスク") is module.SKIP_FIELD

@@ -58,6 +58,7 @@ Zoho「ステージ」列（契約済/失注/解約（処理済み）/返信な�
 from __future__ import annotations
 
 import contextvars
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Mapping
@@ -82,6 +83,8 @@ from src.sync_engine.webhook_handlers._relation_guard import CLIENT_MASTER_RELAT
 # `{"relation": []}`を送ってしまうと既存のリレーションを消してしまう）。既存のNoneの意味と
 # 衝突するため、このモジュール専用のセンチネル値`SKIP_FIELD`を返し、呼び出し元
 # （zoho_webhook.py）側で区別する（kintone_field_transforms.pyの同名センチネルと同じ設計）。
+logger = logging.getLogger(__name__)
+
 SKIP_FIELD = object()
 
 # `resolve_zoho_action_client_master_relation()`はRelationReviewQueueへの記録・Zoho APIでの
@@ -375,8 +378,46 @@ _CONTACT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
 #   常に既定値として書き込んでいるだけで、どのZohoラベルからも導出されていない。
 #   1フィールド単位のWebhookマッピングとして流用できる「Zohoラベル→値」の対応が
 #   存在しないため対象外（実データ精査後に手動調整する前提という元の移行方針を踏襲）。
+# Zoho「課金形態」(field15)と、サービス・商品DBの「課金形態」の対応（2026-08-31、
+# 金沢さんがZoho側に項目を新設。実APIで選択肢を確認済み）。
+#   Zoho   : ランニング / ショット / 成果報酬
+#   Notion : 月額ストック / イニシャルスポット / 成果報酬
+_ZOHO_BILLING_TYPE_TO_NOTION: dict[str, str] = {
+    "ランニング": "月額ストック",
+    "ショット": "イニシャルスポット",
+    "成果報酬": "成果報酬",
+}
+
+
+def _zoho_billing_type(value: Any) -> Any:
+    """Zohoの「課金形態」を、サービス・商品DBの選択肢へ読み替える。
+
+    **未入力（空・`-None-`）と未知の値は`SKIP_FIELD`を返す。**
+    課金形態は必須プロパティなので、適当な値で埋めると誤った分類のまま
+    ページが作られてしまう。書かずにおけば `missing_required_properties` として
+    Slackへ通知され、Zoho側の入力を促せる（アクション種別と同じ方針）。
+    Zoho側に選択肢が増えたときも、黙って取りこぼさずここで気づける。
+    """
+    text = str(value or "").strip()
+    if not text or text == "-None-":
+        return SKIP_FIELD
+    mapped = _ZOHO_BILLING_TYPE_TO_NOTION.get(text)
+    if mapped is None:
+        logger.warning(
+            "zoho: 未知の課金形態 %r（対応表: %s）。このフィールドの書き込みをスキップします",
+            text,
+            sorted(_ZOHO_BILLING_TYPE_TO_NOTION),
+        )
+        return SKIP_FIELD
+    return mapped
+
+
 _PRODUCT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
     # Zohoラベル != Notionプロパティ名。
+    # 2026-08-31追加。**これが無かったため、Zoho発の新規サービス・商品が1件も
+    # 作られていなかった**（必須プロパティ「課金形態」が常に欠けていた）。
+    # 当時はZoho側に項目自体が無く、同日に金沢さんが新設した。
+    "課金形態": ("課金形態", _zoho_billing_type),
     "サービス・商品名": ("名前", lambda v: v),
     "初期費用": ("標準初期費用", lambda v: float(v) if v not in (None, "") else None),
     "月額費用": ("標準月額費用", lambda v: float(v) if v not in (None, "") else None),
