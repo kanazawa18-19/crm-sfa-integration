@@ -388,6 +388,19 @@ _SYNC_BOT_ID = "test-sync-bot-id"
 
 
 @pytest.fixture(autouse=True)
+def _known_parent_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_lightweight_payload()`の親DBを同期対象として扱う。
+
+    同期対象外のDBはページを取りに行く前にスキップされる（2026-08-31）。
+    ここでの各テストは取得後の挙動を見たいので、対象DBとして解決できるようにしておく。
+    """
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
+        lambda: {"26d6f1e2-1111-1111-1111-111111111111": "project"},
+    )
+
+
+@pytest.fixture(autouse=True)
 def _sync_bot_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """未設定だとループ抑止が働かず、全イベントがスキップされる（それが正しい挙動）。
 
@@ -633,9 +646,15 @@ def test_handler_with_proxy_returns_500_when_notion_api_call_fails_non_404(
     assert response["statusCode"] == 500
 
 
-def test_handler_with_proxy_returns_400_for_unknown_database_id(
+def test_handler_with_proxy_skips_unknown_database_without_fetching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """同期対象外のDBは、ページを取りに行く前に200でスキップする（2026-08-31に変更）。
+
+    以前は取得してから400を返していたが、購読はインテグレーション単位なので
+    同じワークスペースの無関係なDB（IDマッピング用の「データマッピング」等）の更新まで
+    飛んでくる。**取りに行くだけ無駄**な上、400を返すとNotionが再送してくる。
+    """
     monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
@@ -646,7 +665,8 @@ def test_handler_with_proxy_returns_400_for_unknown_database_id(
 
     response = handler_with_proxy(event, context=None, notion_client=client)
 
-    assert response["statusCode"] == 400
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"skipped": "not_a_synced_database"}
 
 
 def test_handler_with_proxy_returns_401_when_secret_mismatches(

@@ -118,3 +118,52 @@ def test_the_page_is_fetched_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
     handler_with_proxy(_event(), None, notion_client=client, dispatcher=None)
 
     assert client.fetches == 1
+
+
+def test_pages_from_other_databases_are_skipped_without_fetching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """購読はインテグレーション単位なので、同期対象外のDBの更新まで飛んでくる。
+
+    IDマッピング用DB（「データマッピング」）はバックフィル中に数万件更新される。
+    1件ごとにNotion APIでページを取りに行くのは純粋な無駄なので、
+    **取りに行く前に**親DBを見て弾く。
+    """
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", _BOT_ID)
+    client = _FakeClient(_page("human-user-id"))
+    event = {
+        "headers": {WEBHOOK_SECRET_HEADER: "shhh"},
+        "body": json.dumps(
+            {
+                "entity": {"id": "3bad8ea8-d4f3-8131-85c8-da41833aef2d", "type": "page"},
+                "data": {"parent": {"id": "3b9d8ea8-d4f3-8059-8b04-ee5308d2cbf0"}},
+            }
+        ),
+    }
+
+    result = handler_with_proxy(event, None, notion_client=client, dispatcher=None)
+
+    assert json.loads(result["body"]) == {"skipped": "not_a_synced_database"}
+    assert client.fetches == 0
+
+
+def test_pages_from_synced_databases_are_processed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同期対象のDBなら、ハイフンの有無に関わらず通すこと。"""
+    from src.db_schema.registry import ALL_SCHEMAS
+
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", _BOT_ID)
+    database_id = next(s.notion_database_id for s in ALL_SCHEMAS if s.key == "action")
+    client = _FakeClient(_page("human-user-id"))
+    event = {
+        "headers": {WEBHOOK_SECRET_HEADER: "shhh"},
+        "body": json.dumps(
+            {
+                "entity": {"id": "26d6f1e2-0000-0000-0000-000000000000", "type": "page"},
+                "data": {"parent": {"id": database_id.replace("-", "")}},
+            }
+        ),
+    }
+
+    handler_with_proxy(event, None, notion_client=client, dispatcher=None)
+
+    assert client.fetches == 1

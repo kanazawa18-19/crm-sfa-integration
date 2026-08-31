@@ -234,6 +234,16 @@ class NotionPageClient(Protocol):
 NOTION_SYNC_BOT_ID_ENV_VAR = "NOTION_SYNC_BOT_ID"
 
 
+def _normalize_notion_id(value: Any) -> str:
+    """NotionのIDはハイフン有無の両方の表記で来る。比較用に揃える。"""
+    if not isinstance(value, str) or not value:
+        return ""
+    raw = value.replace("-", "")
+    if len(raw) != 32:
+        return value
+    return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
+
 def _page_last_edited_by(page: Mapping[str, Any]) -> str:
     editor = page.get("last_edited_by")
     return str(editor.get("id") or "") if isinstance(editor, Mapping) else ""
@@ -465,6 +475,15 @@ def handler_with_proxy(
         updated_property_ids = (raw_payload.get("data") or {}).get("updated_properties") or None
     except (KeyError, TypeError) as exc:
         return bad_request_response(f"missing required field: {exc}")
+
+    # **ページを取りに行く前に、同期対象のDBかどうかを見る**（2026-08-31）。
+    # 購読はインテグレーション単位なので、同じワークスペースにあるIDマッピング用DB
+    # （「データマッピング」）の更新まで全部飛んでくる。バックフィル中は数万件になり、
+    # 1件ごとにNotion APIでページを取りに行くのは純粋な無駄。
+    parent_id = _normalize_notion_id((raw_payload.get("data") or {}).get("parent", {}).get("id"))
+    if parent_id and parent_id not in _default_db_id_to_db_key():
+        logger.debug("notion webhook: 同期対象外のDBなのでスキップします (parent=%s)", parent_id)
+        return {"statusCode": 200, "body": json.dumps({"skipped": "not_a_synced_database"})}
 
     try:
         raw_page = notion_client.get_raw_page(page_id)
