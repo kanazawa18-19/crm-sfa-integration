@@ -38,20 +38,31 @@ def test_upsert_record_adds_when_external_id_none() -> None:
     client = FakeKintoneClient()
     target = KintoneSyncTarget(client, "取引先マスタ")
 
-    record_id = target.upsert_record(None, {"取引先名": "新規取引先"})
+    # Notionのプロパティ名「取引先名」はkintoneのフィールドコード「顧客名」へ置き換える
+    # （kintoneのフィールドコードは画面のラベルと別物）。
+    record_id = target.upsert_record(None, {"取引先名": "新規取引先"}, db_key="client_master")
 
-    assert client.records["取引先マスタ"][record_id] == {"取引先名": "新規取引先"}
+    assert client.records["取引先マスタ"][record_id] == {"顧客名": "新規取引先"}
 
 
 def test_upsert_record_updates_existing_record() -> None:
     client = FakeKintoneClient()
-    client.records["取引先マスタ"] = {"1001": {"取引先名": "旧名称"}}
+    client.records["取引先マスタ"] = {"1001": {"顧客名": "旧名称"}}
     target = KintoneSyncTarget(client, "取引先マスタ")
 
-    result = target.upsert_record("1001", {"取引先名": "新名称"})
+    result = target.upsert_record("1001", {"取引先名": "新名称"}, db_key="client_master")
 
     assert result == "1001"
-    assert client.records["取引先マスタ"]["1001"] == {"取引先名": "新名称"}
+    assert client.records["取引先マスタ"]["1001"] == {"顧客名": "新名称"}
+
+
+def test_upsert_record_skips_when_field_code_cannot_be_determined() -> None:
+    """フィールドコードが決まらない項目は送らない（レコードは作らない）。"""
+    client = FakeKintoneClient()
+    target = KintoneSyncTarget(client, "取引先マスタ")
+
+    assert target.upsert_record(None, {"存在しない項目": "x"}, db_key="client_master") is None
+    assert client.records == {}
 
 
 def test_delete_record_sets_delete_flag_instead_of_removing_record() -> None:

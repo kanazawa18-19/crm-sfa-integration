@@ -12,6 +12,10 @@ import os
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.outbound_field_mapping import (
+    translate_properties,
+    zoho_outbound_field_names,
+)
 from src.sync_engine.sync_targets.base import SyncTarget
 
 logger = logging.getLogger(__name__)
@@ -79,10 +83,37 @@ class ZohoSyncTarget(SyncTarget):
         if not self._enabled:
             # 「作成されていない」ことを型で表現する（""だと採番済みIDと誤認されうるため）。
             return external_id
+        payload = self._to_zoho_payload(properties, db_key)
+        if payload is None:
+            return None if external_id is None else external_id
         if external_id is None:
-            return self._client.insert_record(self._module, properties)
-        self._client.update_record(self._module, external_id, properties)
+            return self._client.insert_record(self._module, payload)
+        self._client.update_record(self._module, external_id, payload)
         return external_id
+
+    def _to_zoho_payload(
+        self, properties: dict[str, Any], db_key: str | None
+    ) -> dict[str, Any] | None:
+        """Notionのプロパティ名をZohoのapi_nameへ置き換える。
+
+        2026-08-31の棚卸しで、ここへNotionのプロパティ名がそのまま渡り、そのままAPIへ
+        送られていたことが判明した（Zohoのapi_nameは`field7`のような自動採番なので、
+        名前が一致するのは104項目中1項目だけだった）。詳細は
+        `src/sync_engine/outbound_field_mapping.py`。
+
+        送り先を決められない項目は**送らない**。1項目も残らなければNoneを返し、
+        呼び出し元に「書き込んでいない」ことを伝える（空のレコードでAPIを叩かない）。
+        """
+        payload, unmapped = translate_properties(zoho_outbound_field_names(), db_key, properties)
+        if unmapped:
+            logger.warning(
+                "ZohoSyncTarget: Zoho側の項目が特定できないため送信しません "
+                "(module=%r, db_key=%r, properties=%r)",
+                self._module,
+                db_key,
+                unmapped,
+            )
+        return payload or None
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         if not self._enabled:

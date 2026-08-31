@@ -57,16 +57,41 @@ def test_enabled_target_performs_normal_crud() -> None:
     client = FakeZohoClient()
     target = ZohoSyncTarget(client, "案件", enabled=True)
 
-    record_id = target.upsert_record(None, {"案件名": "新規案件"})
-    assert client.records["案件"][record_id] == {"案件名": "新規案件"}
+    # Notionのプロパティ名「案件名」はZohoのapi_name「Deal_Name」へ置き換えて送る
+    # （2026-08-31まで置き換えておらず、Zoho側に一切書けていなかった）。
+    record_id = target.upsert_record(None, {"案件名": "新規案件"}, db_key="project")
+    assert client.records["案件"][record_id] == {"Deal_Name": "新規案件"}
 
-    target.upsert_record(record_id, {"案件名": "更新後"})
-    assert client.records["案件"][record_id]["案件名"] == "更新後"
+    target.upsert_record(record_id, {"案件名": "更新後"}, db_key="project")
+    assert client.records["案件"][record_id]["Deal_Name"] == "更新後"
 
-    assert target.get_record(record_id) == {"案件名": "更新後"}
+    assert target.get_record(record_id) == {"Deal_Name": "更新後"}
 
     target.delete_record(record_id)
     assert client.records["案件"][record_id]["削除フラグ"] is True
+
+
+def test_upsert_record_skips_when_zoho_field_cannot_be_determined() -> None:
+    """送り先のapi_nameが決まらない項目は送らない。
+
+    以前はNotionのプロパティ名をそのままZohoへ渡していたため、Zoho側では
+    「知らない項目」として無視され、書けていないのに成功として数えられていた。
+    """
+    client = FakeZohoClient()
+    target = ZohoSyncTarget(client, "案件", enabled=True)
+
+    assert target.upsert_record(None, {"存在しない項目": "x"}, db_key="project") is None
+    assert target.upsert_record("zoho-1", {"存在しない項目": "x"}, db_key="project") == "zoho-1"
+    assert client.records == {}
+
+
+def test_upsert_record_skips_when_db_key_is_missing() -> None:
+    """db_keyが分からなければ変換表を引けないので、素通しせず書き込まない。"""
+    client = FakeZohoClient()
+    target = ZohoSyncTarget(client, "案件", enabled=True)
+
+    assert target.upsert_record(None, {"案件名": "新規案件"}) is None
+    assert client.records == {}
 
 
 # --- ENABLE_ZOHO=False: クライアントを一切呼び出さずスキップする ------------------------

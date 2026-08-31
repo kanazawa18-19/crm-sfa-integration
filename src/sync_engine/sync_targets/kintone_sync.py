@@ -6,6 +6,10 @@ import logging
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.outbound_field_mapping import (
+    kintone_outbound_field_names,
+    translate_properties,
+)
 from src.sync_engine.sync_targets.base import SyncTarget
 
 logger = logging.getLogger(__name__)
@@ -56,11 +60,35 @@ class KintoneSyncTarget(SyncTarget):
 
     def upsert_record(
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
-    ) -> str:
+    ) -> str | None:
+        payload = self._to_kintone_payload(properties, db_key)
+        if payload is None:
+            return external_id
         if external_id is None:
-            return self._client.add_record(self._app, properties)
-        self._client.update_record(self._app, external_id, properties)
+            return self._client.add_record(self._app, payload)
+        self._client.update_record(self._app, external_id, payload)
         return external_id
+
+    def _to_kintone_payload(
+        self, properties: dict[str, Any], db_key: str | None
+    ) -> dict[str, Any] | None:
+        """Notionのプロパティ名をkintoneのフィールドコードへ置き換える。
+
+        kintoneのフィールドコードは画面上のラベルと別物（「施設名（会社名）」は`店舗名`、
+        「契約進捗状況」は`ドロップダウン_2`）。2026-08-31の棚卸しまで、ここには
+        Notionのプロパティ名がそのまま渡っていた。詳細は
+        `src/sync_engine/outbound_field_mapping.py`。
+        """
+        payload, unmapped = translate_properties(kintone_outbound_field_names(), db_key, properties)
+        if unmapped:
+            logger.warning(
+                "KintoneSyncTarget: kintone側のフィールドコードが特定できないため送信しません "
+                "(app=%r, db_key=%r, properties=%r)",
+                self._app,
+                db_key,
+                unmapped,
+            )
+        return payload or None
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         # 05_同期・競合制御「削除の扱い」：物理削除ではなく削除フラグを立てる論理削除。

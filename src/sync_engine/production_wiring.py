@@ -204,7 +204,7 @@ class _MultiDbKintoneSyncTarget(SyncTarget):
             logger.warning(
                 "_MultiDbKintoneSyncTarget: 新規kintoneレコード作成(external_id未指定)はdb_keyを"
                 "特定できないため未サポートです。書き込みをスキップします: properties=%r",
-                properties,
+                list(properties),
             )
             return None
         target = self._resolve(db_key)
@@ -216,7 +216,7 @@ class _MultiDbKintoneSyncTarget(SyncTarget):
                 external_id,
             )
             return None
-        return target.upsert_record(external_id, properties)
+        return target.upsert_record(external_id, properties, db_key=db_key)
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)
@@ -251,7 +251,7 @@ class _MultiDbZohoSyncTarget(SyncTarget):
             logger.warning(
                 "_MultiDbZohoSyncTarget: 新規Zohoレコード作成(external_id未指定)はdb_keyを"
                 "特定できないため未サポートです。書き込みをスキップします: properties=%r",
-                properties,
+                list(properties),
             )
             return None
         target = self._resolve(db_key)
@@ -263,7 +263,7 @@ class _MultiDbZohoSyncTarget(SyncTarget):
                 external_id,
             )
             return None
-        return target.upsert_record(external_id, properties)
+        return target.upsert_record(external_id, properties, db_key=db_key)
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)
@@ -371,7 +371,7 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
                 external_id,
             )
             return None
-        return target.upsert_record(external_id, properties)
+        return target.upsert_record(external_id, properties, db_key=db_key)
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)
