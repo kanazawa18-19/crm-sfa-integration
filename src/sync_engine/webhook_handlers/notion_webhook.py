@@ -49,6 +49,8 @@ from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import HEADER_NAME
 from src.sync_engine.webhook_handlers._common import (
+    extract_notion_verification_token,
+    verify_notion_webhook_signature,
     bad_request_response,
     get_header,
     internal_error_response,
@@ -427,17 +429,40 @@ def handler_with_proxy(
     壊さないため）。
     """
     headers = event.get("headers") or {}
-    if not verify_webhook_secret(headers, "NOTION_WEBHOOK_SECRET"):
+    raw_body = event.get("body")
+    body_text = raw_body if isinstance(raw_body, str) else json.dumps(raw_body or {})
+
+    try:
+        raw_payload = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        return bad_request_response(f"invalid JSON payload: {exc}")
+    if not isinstance(raw_payload, Mapping):
+        return bad_request_response("payload must be a JSON object")
+
+    # 購読作成時の検証リクエスト。まだ鍵を知らないので署名が付いていない。
+    verification_token = extract_notion_verification_token(raw_payload)
+    if verification_token is not None:
+        logger.warning(
+            "notion webhook: 購読の検証リクエストを受け取りました。この値を "
+            "NOTION_WEBHOOK_SECRET に設定してください（設定後はログから消えます）: %s",
+            verification_token,
+        )
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"received": "verification_token"}),
+        }
+
+    # **Notionはカスタムヘッダーを送れない**ので署名で検証する。
+    # 手動リプレイ・内部ツール向けに、従来の共有シークレット方式も引き続き受け付ける。
+    if not verify_notion_webhook_signature(headers, body_text) and not verify_webhook_secret(
+        headers, "NOTION_WEBHOOK_SECRET"
+    ):
         return unauthorized_response()
 
     try:
-        body = event.get("body")
-        raw_payload = json.loads(body) if isinstance(body, str) else (body or {})
         page_id = raw_payload["entity"]["id"]
         # 変更されたプロパティIDだけへ絞る（上記docstring参照）。
         updated_property_ids = (raw_payload.get("data") or {}).get("updated_properties") or None
-    except json.JSONDecodeError as exc:
-        return bad_request_response(f"invalid JSON payload: {exc}")
     except (KeyError, TypeError) as exc:
         return bad_request_response(f"missing required field: {exc}")
 

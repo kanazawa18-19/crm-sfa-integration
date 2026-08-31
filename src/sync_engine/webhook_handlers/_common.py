@@ -6,6 +6,7 @@ BLOCKER5（ペイロード不正・欠損時の未捕捉例外）・BLOCKER7（�
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -66,6 +67,46 @@ def verify_webhook_secret(headers: Mapping[str, str], env_var: str) -> bool:
         # （単純な==比較は文字列長・一致文字数に応じて比較時間が変わり得るため避ける）。
         return hmac.compare_digest(actual, expected)
     return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
+
+
+#: Notion API Webhooksが付けてくる署名ヘッダー。
+NOTION_SIGNATURE_HEADER = "X-Notion-Signature"
+
+
+def verify_notion_webhook_signature(
+    headers: Mapping[str, str], body: str, env_var: str = "NOTION_WEBHOOK_SECRET"
+) -> bool:
+    """Notion API Webhooksの署名検証（2026-08-31）。fail-closed。
+
+    **Notion はカスタムヘッダーを送れない**ので、他ツールで使っている
+    `X-Webhook-Secret` 方式（`verify_webhook_secret`）は成立しない。Notion は代わりに
+    購読作成時に一度だけ送られる `verification_token` を鍵として、リクエストボディ全体の
+    HMAC-SHA256 を `X-Notion-Signature: sha256=<hex>` として付けてくる。
+
+    これを実装していなかったため、**購読を作っても全イベントが401で弾かれる状態だった**
+    （2026-08-31、購読を作る直前に判明）。
+    """
+    secret = os.environ.get(env_var)
+    if not secret:
+        return False
+    signature = get_header(headers, NOTION_SIGNATURE_HEADER)
+    if not isinstance(signature, str) or not signature:
+        return False
+    expected = (
+        "sha256="
+        + hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    )
+    return hmac.compare_digest(signature, expected)
+
+
+def extract_notion_verification_token(body: Mapping[str, Any]) -> str | None:
+    """購読作成時にNotionが一度だけ送ってくる検証トークン。無ければNone。
+
+    このリクエストには署名が付いていない（鍵をまだこちらが知らないため）。
+    受け取って200を返し、値を`NOTION_WEBHOOK_SECRET`として設定すると購読が有効になる。
+    """
+    token = body.get("verification_token")
+    return str(token) if isinstance(token, str) and token else None
 
 
 def verify_webhook_body_token(body: Mapping[str, Any], *, token_field: str, env_var: str) -> bool:
