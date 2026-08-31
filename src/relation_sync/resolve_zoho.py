@@ -62,6 +62,23 @@ class ZohoActionRecordClient(Protocol):
     def get_record(self, module: str, record_id: str) -> dict[str, Any] | None: ...
 
 
+def extract_zoho_lookup_name(value: Any) -> str:
+    """Zohoのルックアップ項目から会社名を取り出す。
+
+    **ルックアップ項目の値は`{"name": "◯◯", "id": "..."}`という辞書で返る。**
+    これをそのまま`str()`すると`"{'name': '◯◯', 'id': '...'}"`という文字列になり、
+    名寄せが必ず失敗する（2026-08-31、本番ログで発覚。
+    `resolve_client_master_relation: 解決できなかったためレビューキューへ記録します
+    (raw_name="{'name': 'ホテルユクエスタ旭橋', 'id': '...'}")`）。
+    **Zoho発のアクションの取引先リレーションは、この不具合で一度も解決できていなかった。**
+
+    文字列で来た場合はそのまま返す（Webhookのdeltaでは文字列で来ることもある）。
+    """
+    if isinstance(value, Mapping):
+        return str(value.get("name") or "")
+    return str(value) if value is not None else ""
+
+
 def resolve_zoho_action_client_master_relation(
     *,
     record_id: str,
@@ -121,7 +138,7 @@ def resolve_zoho_action_client_master_relation(
         raw_name = _fetch_record_once().get(_RAW_CLIENT_NAME_FIELD)
 
     return resolve_client_master_relation(
-        str(raw_name) if raw_name is not None else "",
+        extract_zoho_lookup_name(raw_name),
         source_tool="zoho",
         source_record_id=record_id,
     )

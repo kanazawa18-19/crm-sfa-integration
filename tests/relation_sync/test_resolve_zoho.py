@@ -10,6 +10,9 @@ from typing import Any
 
 import pytest
 
+from src.relation_sync import resolve_zoho as module
+from src.relation_sync.resolve_zoho import extract_zoho_lookup_name
+
 from src.relation_sync import resolve_zoho
 
 
@@ -182,3 +185,49 @@ def test_returns_none_without_any_calls_when_relation_sync_disabled(
     assert result is None
     assert zoho_client.get_record_calls == []
     assert resolver_calls == []
+
+
+# --- ルックアップ項目の値の取り出し（2026-08-31、本番ログで発覚した不具合） ----------------
+
+
+class Test_ルックアップ項目から会社名を取り出す:
+    """**Zohoのルックアップ項目は`{"name": ..., "id": ...}`という辞書で返る。**
+
+    これをそのまま`str()`していたため、名寄せに
+    `"{'name': 'ホテルユクエスタ旭橋', 'id': '...'}"` という文字列が渡り、
+    **Zoho発のアクションの取引先リレーションが一度も解決できていなかった**
+    （毎回レビューキューに積まれていた）。
+    """
+
+    def test_辞書からnameを取り出す(self) -> None:
+        assert (
+            extract_zoho_lookup_name({"name": "ホテルユクエスタ旭橋", "id": "2233"})
+            == "ホテルユクエスタ旭橋"
+        )
+
+    def test_文字列はそのまま(self) -> None:
+        """Webhookのdeltaでは文字列で来ることもある。"""
+        assert extract_zoho_lookup_name("株式会社ABC") == "株式会社ABC"
+
+    def test_値が無ければ空文字(self) -> None:
+        assert extract_zoho_lookup_name(None) == ""
+        assert extract_zoho_lookup_name({"id": "2233"}) == ""
+
+    def test_辞書のまま名寄せに渡さない(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """回帰防止。解決関数へ辞書の文字列表現が渡ると必ず名寄せに失敗する。"""
+        渡された: list[str] = []
+        monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
+        monkeypatch.setattr(
+            module,
+            "resolve_client_master_relation",
+            lambda raw_name, **_: (渡された.append(raw_name), None)[1],
+        )
+
+        module.resolve_zoho_action_client_master_relation(
+            record_id="1",
+            changed_values={"field6": {"name": "ホテルABC", "id": "9"}},
+            zoho_client=None,
+        )
+
+        assert 渡された == ["ホテルABC"]
+        assert "{" not in 渡された[0]

@@ -71,6 +71,7 @@ from src.migration.zoho_client_master import normalize_prefecture
 from src.migration.zoho_project import _parse_bool, _parse_first_touch
 from src.relation_sync.resolve import resolve_client_master_relation
 from src.relation_sync.resolve_zoho import (
+    extract_zoho_lookup_name,
     ZohoActionRecordClient,
     resolve_zoho_action_client_master_relation,
 )
@@ -345,12 +346,8 @@ def _resolve_client_master_from_zoho_lookup(value: Any) -> Any:
     そのフィールドだけ書き込みをスキップする。新規作成なら必須プロパティ不足として
     Slackへ通知され、人が判断できる。
     """
-    if isinstance(value, Mapping):
-        name = value.get("name") or ""
-    else:
-        name = value or ""
     resolved = resolve_client_master_relation(
-        str(name),
+        extract_zoho_lookup_name(value),
         source_tool="zoho",
         source_record_id=_current_zoho_relation_record_id(),
     )
