@@ -364,3 +364,115 @@ def test_column_letter(index: int, expected: str) -> None:
 def test_column_letter_rejects_non_positive_index() -> None:
     with pytest.raises(ValueError):
         column_letter(0)
+
+
+# --- 同期キー列（行の同一性を行番号に頼らないための列。2026-08-31） ---------------------------
+
+
+def _header_response(headers: list[str]) -> dict:
+    return {"values": [headers]}
+
+
+def test_同期キー列が無ければヘッダの末尾に作る(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """シートを作り直さなくても、最初の書き込み時に列が増えるようにしている。"""
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "備考"])
+    )
+    put = requests_mock.put(f"{BASE}/values/'{SHEET}'!C1", json={})
+
+    column = client.ensure_sync_key_column(SHEET, "同期キー")
+
+    assert column == 3
+    assert put.call_count == 1
+    assert put.last_request.json() == {"values": [["同期キー"]]}
+
+
+def test_同期キー列が既にあれば作らない(requests_mock, client: HttpSpreadsheetClient) -> None:
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー", "備考"])
+    )
+
+    assert client.ensure_sync_key_column(SHEET, "同期キー") == 2
+
+
+def test_同期キーから行番号を引ける(requests_mock, client: HttpSpreadsheetClient) -> None:
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー"])
+    )
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!B:B",
+        json={"values": [["同期キー", "CLI-001", "", "CLI-003"]]},
+    )
+
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-001") == 2
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-003") == 4
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-999") is None
+
+
+def test_同じ同期キーが複数行にあれば最初の行を採用する(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """後から増えた重複行を正としてしまうと、正しい行の更新が止まる。"""
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー"])
+    )
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!B:B",
+        json={"values": [["同期キー", "CLI-001", "CLI-001"]]},
+    )
+
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-001") == 2
+
+
+def test_キャッシュが外れたら列を読み直す(requests_mock, client: HttpSpreadsheetClient) -> None:
+    """**「見つからない」で終わる前に必ず1度は実データを読む。**
+    古いキャッシュのせいで重複行を作らないための性質。"""
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー"])
+    )
+    column = requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!B:B", json={"values": [["同期キー", "CLI-001"]]}
+    )
+
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-001") == 2
+    assert column.call_count == 1
+
+    # ヒットした2回目は読み直さない。
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-001") == 2
+    assert column.call_count == 1
+
+    # 外れたら読み直す。
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-002") is None
+    assert column.call_count == 2
+
+
+def test_追記した行はキャッシュに覚える(requests_mock, client: HttpSpreadsheetClient) -> None:
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー"])
+    )
+    column = requests_mock.get(f"{BASE}/values/'{SHEET}'!B:B", json={"values": [["同期キー"]]})
+
+    client.remember_sync_key_row(SHEET, "CLI-009", 7)
+
+    assert client.find_row_by_sync_key(SHEET, "同期キー", "CLI-009") == 7
+    assert column.call_count == 0, "覚えているのに列を読み直している"
+
+
+def test_指定行の同期キーを1セルだけ読む(requests_mock, client: HttpSpreadsheetClient) -> None:
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー"])
+    )
+    requests_mock.get(f"{BASE}/values/'{SHEET}'!B5", json={"values": [["CLI-001"]]})
+
+    assert client.read_sync_key(SHEET, 5, "同期キー") == "CLI-001"
+
+
+def test_同期キーが空のセルはNoneで返す(requests_mock, client: HttpSpreadsheetClient) -> None:
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "同期キー"])
+    )
+    requests_mock.get(f"{BASE}/values/'{SHEET}'!B5", json={})
+
+    assert client.read_sync_key(SHEET, 5, "同期キー") is None

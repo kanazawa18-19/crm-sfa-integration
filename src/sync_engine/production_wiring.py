@@ -351,11 +351,16 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
                     db_key,
                 )
                 return None
-            # 追記した行番号が返る。呼び出し元（Dispatcher）はこれを
-            # `IdMapping.spreadsheet_row`へ必ず永続化すること。
-            # **永続化しないと、次のプロパティ書き込みでまた新しい行が追記され、
-            # 1レコードにつき行が増え続ける。**
-            return target.upsert_record(None, properties, db_key=db_key)
+            # ここへ来るのは`sync_key`が渡されなかった場合だけ。Dispatcherは
+            # `append_row_with_sync_key()`（下の`append_with_sync_key`経由）を使うため、
+            # 通常は通らない。同期キー無しで追記すると、その行は次回また
+            # 「行が無い」と判断されて重複するので、書かずにスキップする。
+            logger.warning(
+                "_MultiDbSpreadsheetSyncTarget: 同期キーが指定されていないため、"
+                "行の新規作成をスキップします（キー無しで追記すると重複行になる）: db_key=%r",
+                db_key,
+            )
+            return None
 
         target = self._resolve(db_key)
         if target is None:
@@ -372,6 +377,51 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
         target = self._resolve(db_key)
         if target is not None:
             target.delete_record(external_id)
+
+    # --- 同期キーによる行の解決（Dispatcherから使う） ------------------------------------
+
+    def find_row_by_sync_key(self, sync_key: str, *, db_key: str | None = None) -> int | None:
+        target = self._resolve(db_key)
+        return target.find_row_by_sync_key(sync_key) if target is not None else None
+
+    def row_matches_sync_key(self, row: int, sync_key: str, *, db_key: str | None = None) -> bool:
+        target = self._resolve(db_key)
+        # タブが解決できないならそもそも書き込まないので、照合は「一致しない」で返す。
+        return target.row_matches_sync_key(row, sync_key) if target is not None else False
+
+    def append_with_sync_key(
+        self, properties: dict[str, Any], sync_key: str, *, db_key: str | None = None
+    ) -> str | None:
+        """同期キー付きで行を追記する。フラグとdb_keyの両方で許可されたときだけ書く。"""
+        if not spreadsheet_row_creation_enabled(db_key):
+            logger.info(
+                "_MultiDbSpreadsheetSyncTarget: db_key=%r の行が未作成ですが、"
+                "%s と %s の両方で許可されていないため行の新規作成をスキップします",
+                db_key,
+                SPREADSHEET_ROW_CREATION_ENV_VAR,
+                SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR,
+            )
+            return None
+        target = self._resolve(db_key)
+        if target is None:
+            logger.warning(
+                "_MultiDbSpreadsheetSyncTarget: db_key=%r 用のスプレッドシートタブが"
+                "未設定のため、行の新規作成をスキップします",
+                db_key,
+            )
+            return None
+        return str(target.append_row_with_sync_key(properties, sync_key))
+
+    def update_with_sync_key(
+        self, external_id: str, properties: dict[str, Any], sync_key: str, *, db_key: str | None = None
+    ) -> str | None:
+        """同期キーを併せて書き込む更新。古い行へのキー埋めを兼ねる。"""
+        target = self._resolve(db_key)
+        if target is None:
+            return None
+        return target.upsert_record(
+            external_id, target.with_sync_key(properties, sync_key), db_key=db_key
+        )
 
     def _resolve(self, db_key: str | None) -> SpreadsheetSyncTarget | None:
         if db_key is None:

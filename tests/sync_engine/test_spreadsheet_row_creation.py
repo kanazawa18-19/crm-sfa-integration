@@ -1,17 +1,19 @@
-"""スプレッドシートの行を新規作成する経路の検証（2026-08-31）。
+"""スプレッドシートの行を新規作成・更新する経路の検証（2026-08-31）。
 
-**背景。** スプレッドシートのexternal_idは行番号（`IdMapping.spreadsheet_row`）で、
-行がまだ無いレコードでは必ずNoneになる。従来はNoneの時点で一律スキップしていたため
-**最初の1行を作る経路が存在せず、同期先6シートは全てヘッダ1行のままだった**
-（2026-08-31に疎通診断で判明。認証もシート名も正常だったため、到達確認だけでは
-検出できなかった）。
+**背景。** スプレッドシートのexternal_idは行番号で、行がまだ無いレコードでは必ずNoneになる。
+従来はNoneの時点で一律スキップしていたため**最初の1行を作る経路が存在せず、同期先6シートは
+全てヘッダ1行のままだった**（疎通診断で判明。認証もシート名も正常だったため、
+到達確認だけでは検出できなかった）。
 
-ここで固定したいのは3点。
-1. **既定では行を作らない。** 有効化すると6万件規模が一気に書かれるため、明示的なオプトインにする
-2. **追記した行番号を必ず永続化する。** しないと、同じイベントの次のプロパティでまた
-   新しい行が追記され、1レコードにつき行が増え続ける
-3. **永続化に失敗したら行番号を持ったmappingを返さない。** 中途半端に持たせると
-   「保存されていないのに行があることになっている」状態になる
+行を作れるようにしたうえで、Gemini・ChatGPTのレビューを受けて**行番号を恒久IDとして
+信用しない**形に変えた。ここで固定したいのは以下。
+
+1. **既定では行を作らない。**フラグとdb_keyの両方が揃って初めて書く
+2. **同じイベント内で行が増えない**（プロパティの数だけ行ができない）
+3. **追記したがDBに保存できなかった行を、次回ちゃんと拾う**
+   （SheetsとPostgresにまたがるので、try/exceptでは解決できない）
+4. **人が行を挿入・削除・並べ替えて行番号がずれても、別レコードを上書きしない**
+5. **追記するときは必ず同期キーも書く**（書き忘れた行は次回また重複する）
 """
 
 from __future__ import annotations
@@ -37,41 +39,64 @@ from src.sync_engine.production_wiring import (
     _MultiDbSpreadsheetSyncTarget,
 )
 from src.sync_engine.sync_event import SyncEvent
-from src.sync_engine.sync_targets.base import SyncTarget
+from src.sync_engine.sync_targets.spreadsheet_sync import SYNC_KEY_COLUMN
 
 NOW = datetime(2026, 8, 31, 9, 0, 0, tzinfo=timezone.utc)
 
 
-class _追記できるスプレッドシート(SyncTarget):
-    """本番の`_MultiDbSpreadsheetSyncTarget`と同じ契約を持つテスト用ターゲット。
+class _シート:
+    """1枚のシートを模したFake。行番号 -> 値の辞書を持ち、同期キー列も再現する。
 
-    external_idがNoneなら新しい行を採番して返し、指定されていればその行を更新する。
+    本物と同じく「行を挿入すると以降の行番号がずれる」ところまで再現できるようにしてある。
     """
 
-    tool = Tool.SPREADSHEET
-
     def __init__(self) -> None:
-        self.upsert_calls: list[tuple[str | None, dict[str, Any]]] = []
-        self._next_row = 10
+        self.rows: dict[int, dict[str, Any]] = {}
+        self.append_calls = 0
 
-    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+    # --- Dispatcherが使う契約（_MultiDbSpreadsheetSyncTargetと同じ形） ---
+
+    def find_row_by_sync_key(self, sync_key: str) -> int | None:
+        for row in sorted(self.rows):
+            if self.rows[row].get(SYNC_KEY_COLUMN) == sync_key:
+                return row
         return None
+
+    def row_matches_sync_key(self, row: int, sync_key: str) -> bool:
+        actual = self.rows.get(row, {}).get(SYNC_KEY_COLUMN)
+        # キー未設定の行（この仕組みより前に作られた行）は一致扱い。
+        return actual is None or actual == sync_key
+
+    def append_row_with_sync_key(self, properties: dict[str, Any], sync_key: str) -> int:
+        self.append_calls += 1
+        row = (max(self.rows) if self.rows else 1) + 1
+        self.rows[row] = {**properties, SYNC_KEY_COLUMN: sync_key}
+        return row
+
+    def with_sync_key(self, properties: dict[str, Any], sync_key: str) -> dict[str, Any]:
+        return {**properties, SYNC_KEY_COLUMN: sync_key}
 
     def upsert_record(
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
     ) -> str | None:
-        self.upsert_calls.append((external_id, dict(properties)))
-        if external_id is None:
-            self._next_row += 1
-            return str(self._next_row)
+        assert external_id is not None, "追記は append_row_with_sync_key を通ること"
+        self.rows.setdefault(int(external_id), {}).update(properties)
         return external_id
 
-    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
-        return None
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        return self.rows.get(int(external_id))
 
-    @property
-    def 追記した回数(self) -> int:
-        return sum(1 for external_id, _ in self.upsert_calls if external_id is None)
+    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
+        self.rows.pop(int(external_id), None)
+
+    # --- テストから使う操作 ---
+
+    def 人が行を挿入する(self, at: int) -> None:
+        """`at`行目に空行を挿入し、それ以降の行番号を1つずつ後ろへずらす。"""
+        self.rows = {
+            (row + 1 if row >= at else row): values for row, values in self.rows.items()
+        }
+        self.rows[at] = {}
 
 
 def _2プロパティのスキーマ() -> DatabaseSchema:
@@ -100,11 +125,32 @@ def _2プロパティのスキーマ() -> DatabaseSchema:
     )
 
 
+@pytest.fixture(autouse=True)
+def 行作成を許可する(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "client_master")
+
+
+@pytest.fixture(autouse=True)
+def スキーマを差し替える(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
+
+
 @pytest.fixture
 def store() -> SQLiteIdMappingStore:
     s = SQLiteIdMappingStore(":memory:")
     yield s
     s.close()
+
+
+@pytest.fixture
+def シート() -> _シート:
+    return _シート()
+
+
+@pytest.fixture
+def dispatcher(store: SQLiteIdMappingStore, シート: _シート) -> Dispatcher:
+    return Dispatcher(store, {Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート})})
 
 
 @pytest.fixture
@@ -120,248 +166,192 @@ def 行がまだ無いmapping(store: SQLiteIdMappingStore) -> IdMapping:
     return m
 
 
-def _2プロパティのイベント() -> SyncEvent:
+def _イベント(*, 経過分: int = 0, **properties: Any) -> SyncEvent:
+    """`経過分`をずらすのは、Dispatcherが`last_synced_at`以前のイベントを
+    ループ防止のためスキップするため（2回目以降のイベントは必ず後の時刻にする）。"""
     return SyncEvent(
         source_tool=Tool.NOTION,
         db_key="client_master",
         external_id="CLI-001",
-        occurred_at=NOW,
-        properties={"取引先名": "サンライズホテルズ", "備考": "テスト"},
+        occurred_at=NOW + timedelta(minutes=経過分),
+        properties=properties,
     )
 
 
-# --- Dispatcher: 行番号の永続化 -------------------------------------------------------
+# --- 行の新規作成 -------------------------------------------------------------------------
 
 
-def test_追記された行番号がIdMappingへ保存される(
-    store: SQLiteIdMappingStore,
-    行がまだ無いmapping: IdMapping,
+def test_行が無ければ追記し行番号を保存する(
+    dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+
+    assert シート.append_calls == 1
+    row = store.get("CLI-001").spreadsheet_row
+    assert row is not None
+    assert シート.rows[row]["取引先名"] == "サンライズホテルズ"
+
+
+def test_追記するときは同期キーも必ず書く(
+    dispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    """キーを書き忘れた行は、次回また「行が無い」と判断されて重複する。"""
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+
+    assert [values[SYNC_KEY_COLUMN] for values in シート.rows.values()] == ["CLI-001"]
+
+
+def test_同じイベントの2つ目のプロパティで行が増えない(
+    dispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ", 備考="テスト"))
+
+    assert シート.append_calls == 1
+    assert len(シート.rows) == 1
+    (values,) = シート.rows.values()
+    assert values["取引先名"] == "サンライズホテルズ"
+    assert values["備考"] == "テスト"
+
+
+def test_2回目のイベントでも行は増えない(
+    dispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    dispatcher.dispatch(_イベント(取引先名="1回目"))
+    dispatcher.dispatch(_イベント(経過分=1, 取引先名="2回目"))
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["取引先名"] == "2回目"
+
+
+# --- 保存失敗・クラッシュからの復帰 ---------------------------------------------------------
+
+
+def test_行番号をDBに保存できなくても次回に重複しない(
+    dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート, 行がまだ無いmapping: IdMapping,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
-    sheet = _追記できるスプレッドシート()
-    dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
-
-    dispatcher.dispatch(
-        SyncEvent(
-            source_tool=Tool.NOTION,
-            db_key="client_master",
-            external_id="CLI-001",
-            occurred_at=NOW,
-            properties={"取引先名": "サンライズホテルズ"},
-        )
-    )
-
-    assert store.get("CLI-001").spreadsheet_row == 11
-
-
-def test_同じイベントの2つ目のプロパティは同じ行を更新する(
-    store: SQLiteIdMappingStore,
-    行がまだ無いmapping: IdMapping,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """**このテストが本体。**行番号を永続化して呼び出し元へ返さないと、
-    プロパティの数だけ行が追記され、1レコードが複数行に散らばる。"""
-    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
-    sheet = _追記できるスプレッドシート()
-    dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
-
-    dispatcher.dispatch(_2プロパティのイベント())
-
-    assert sheet.追記した回数 == 1, "行が2回追記されている（1レコードが2行に分かれる）"
-    assert sheet.upsert_calls == [
-        (None, {"取引先名": "サンライズホテルズ"}),
-        ("11", {"備考": "テスト"}),
-    ]
-    assert store.get("CLI-001").spreadsheet_row == 11
-
-
-def test_行番号の保存に失敗しても同じイベント内では追記を繰り返さない(
-    store: SQLiteIdMappingStore,
-    行がまだ無いmapping: IdMapping,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """**シートには既に行が物理的に追記されている**ので、保存に失敗したからといって
-    「行が無い」扱いに戻すと、同じイベントの次のプロパティで即座にもう1行追記され、
-    1レコードがプロパティの数だけの行に散らばる。
-
-    当初は「保存できていないのに行があることにしない」として更新前のmappingを返していたが、
-    Gemini・ChatGPTの両方から独立に「それは重複を増やす」と指摘され修正した（2026-08-31）。
-    保存失敗時に残るのは「次回のイベントで1行余分に追記される」可能性だけで、
-    こちらの方が明確に被害が小さい。
+    """**これがレビューで一番重かった指摘。**
+    「Sheetsへの追記は成功したが、行番号をPostgresへ保存する前にプロセスが落ちた」は
+    分散トランザクションなので try/except では防げない。
+    シート側に同期キーを書いておくことで、次のイベントで拾い直せる。
     """
-    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
     monkeypatch.setattr("src.sync_engine.dispatcher.time.sleep", lambda _s: None)
-    sheet = _追記できるスプレッドシート()
-    dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
     monkeypatch.setattr(
         store, "upsert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("保存できません"))
     )
 
-    dispatcher.dispatch(_2プロパティのイベント())
+    dispatcher.dispatch(_イベント(取引先名="1回目"))
+    assert シート.append_calls == 1
 
-    assert sheet.追記した回数 == 1, "保存に失敗しただけで、同じイベント内で2行目が追記されている"
-    assert [external_id for external_id, _ in sheet.upsert_calls] == [None, "11"]
+    # 保存できていないので、次のイベントでもDB上の行番号はNoneのまま。
+    monkeypatch.undo()
+    dispatcher.dispatch(_イベント(経過分=1, 取引先名="2回目"))
+
+    assert シート.append_calls == 1, "同期キーで拾えず、2行目が追記されている"
+    (values,) = シート.rows.values()
+    assert values["取引先名"] == "2回目"
 
 
-def test_追記の直前に他プロセスが作った行を拾う(
-    store: SQLiteIdMappingStore,
-    行がまだ無いmapping: IdMapping,
-    monkeypatch: pytest.MonkeyPatch,
+# --- 人がシートを触った場合 -----------------------------------------------------------------
+
+
+def test_人が行を挿入して行番号がずれても別レコードを上書きしない(
+    dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート, 行がまだ無いmapping: IdMapping
 ) -> None:
-    """並行するWebhookが先に行を作っていた場合、追記の直前に読み直して拾えれば
-    2行目を作らずに済む（完全な排他ではないが、窓は大きく狭まる）。"""
-    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
-    sheet = _追記できるスプレッドシート()
-    dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
+    """行番号を恒久IDにしていると、人が1行挿入しただけで隣のレコードを壊す。
+    更新前に同期キーを照合し、ずれていたら引き直す。"""
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+    元の行 = store.get("CLI-001").spreadsheet_row
+    assert 元の行 is not None
 
-    # ディスパッチ開始後・書き込み直前に、別プロセスが行3を作った状況を作る。
-    store.upsert(
-        IdMapping(
-            notion_key="CLI-001",
-            db_key="client_master",
-            kintone_id="1001",
-            spreadsheet_row=3,
-            last_synced_at=行がまだ無いmapping.last_synced_at,
-        )
-    )
+    シート.人が行を挿入する(at=元の行)
+    ずれた後の行 = 元の行 + 1
 
-    dispatcher.dispatch(
-        SyncEvent(
-            source_tool=Tool.NOTION,
-            db_key="client_master",
-            external_id="CLI-001",
-            occurred_at=NOW,
-            properties={"取引先名": "サンライズホテルズ"},
-        )
-    )
+    dispatcher.dispatch(_イベント(経過分=1, 取引先名="更新後"))
 
-    assert sheet.追記した回数 == 0
-    assert sheet.upsert_calls == [("3", {"取引先名": "サンライズホテルズ"})]
+    assert シート.append_calls == 1, "引き直せず、新しい行が追記されている"
+    assert シート.rows[ずれた後の行]["取引先名"] == "更新後"
+    assert シート.rows[元の行] == {}, "人が挿入した空行を上書きしている"
+    assert store.get("CLI-001").spreadsheet_row == ずれた後の行, "行番号が直っていない"
 
 
-def test_既に行があるレコードは追記せず更新する(
-    store: SQLiteIdMappingStore, monkeypatch: pytest.MonkeyPatch
+def test_同期キーが空の行はそのまま使いキーを埋める(
+    dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート
 ) -> None:
-    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
-    store.upsert(
-        IdMapping(notion_key="CLI-002", db_key="client_master", spreadsheet_row=7)
-    )
-    sheet = _追記できるスプレッドシート()
-    dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
+    """この仕組みより前に作られた行（キーが空）は、取り違えではないので
+    そのまま使い、書き込みのついでにキーを埋める。"""
+    store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", spreadsheet_row=5))
+    シート.rows[5] = {"取引先名": "旧データ"}
 
-    dispatcher.dispatch(
-        SyncEvent(
-            source_tool=Tool.NOTION,
-            db_key="client_master",
-            external_id="CLI-002",
-            occurred_at=NOW,
-            properties={"取引先名": "既存"},
-        )
-    )
+    dispatcher.dispatch(_イベント(取引先名="更新後"))
 
-    assert sheet.追記した回数 == 0
-    assert sheet.upsert_calls == [("7", {"取引先名": "既存"})]
-    assert store.get("CLI-002").spreadsheet_row == 7
+    assert シート.append_calls == 0
+    assert シート.rows[5]["取引先名"] == "更新後"
+    assert シート.rows[5][SYNC_KEY_COLUMN] == "CLI-001"
 
 
-# --- production_wiring: 既定OFFのフラグ ------------------------------------------------
+# --- 段階的な有効化 -------------------------------------------------------------------------
 
 
-class _行を数えるシート:
-    """`SpreadsheetSyncTarget`の代わり。追記と更新の呼び出しを記録する。"""
-
-    def __init__(self) -> None:
-        self.appended: list[dict[str, Any]] = []
-        self.updated: list[tuple[str, dict[str, Any]]] = []
-
-    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
-        return None
-
-    def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
-    ) -> str:
-        if external_id is None:
-            self.appended.append(dict(properties))
-            return "42"
-        self.updated.append((external_id, dict(properties)))
-        return external_id
-
-    def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
-        return None
-
-
-def test_既定では行を作らない(monkeypatch: pytest.MonkeyPatch) -> None:
-    """有効化すると6万件規模が一気に書かれるため、既定は必ずOFF。"""
+def test_既定では行を作らない(monkeypatch: pytest.MonkeyPatch, シート: _シート) -> None:
+    """有効化すると6万件規模が対象になるため、既定は必ずOFF。"""
     monkeypatch.delenv(SPREADSHEET_ROW_CREATION_ENV_VAR, raising=False)
     monkeypatch.delenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, raising=False)
-    sheet = _行を数えるシート()
-    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})
 
-    result = target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master")
-
-    assert result is None
-    assert sheet.appended == []
-
-
-def test_フラグとdb_keyの両方を許可して初めて行を追記する(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
-    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "client_master")
-    sheet = _行を数えるシート()
-    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
-
-    result = target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master")
-
-    assert result == "42"
-    assert sheet.appended == [{"取引先名": "新規"}]
+    assert target.append_with_sync_key({"取引先名": "新規"}, "CLI-001", db_key="client_master") is None
+    assert シート.append_calls == 0
 
 
 def test_フラグだけ立てても対象db_keyを指定しなければ追記しない(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, シート: _シート
 ) -> None:
     """真偽値1つで6万件が対象になるのは事故の範囲が大きすぎる、という指摘への対応
-    （2026-08-31、Gemini・ChatGPT双方から）。まず件数の少ないDBだけで試せるようにする。"""
-    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+    （Gemini・ChatGPT双方から）。まず件数の少ないDBだけで試せるようにする。"""
     monkeypatch.delenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, raising=False)
-    sheet = _行を数えるシート()
-    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})
 
-    assert target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master") is None
-    assert sheet.appended == []
+    assert target.append_with_sync_key({"取引先名": "新規"}, "CLI-001", db_key="client_master") is None
+    assert シート.append_calls == 0
 
 
-def test_許可されていないdb_keyには追記しない(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+def test_許可されていないdb_keyには追記しない(
+    monkeypatch: pytest.MonkeyPatch, シート: _シート
+) -> None:
     monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "product")
-    sheet = _行を数えるシート()
-    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})
 
-    assert target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master") is None
-    assert sheet.appended == []
+    assert target.append_with_sync_key({"取引先名": "新規"}, "CLI-001", db_key="client_master") is None
+    assert シート.append_calls == 0
 
 
-def test_フラグが有効でもdb_keyを解決できなければ追記しない(
-    monkeypatch: pytest.MonkeyPatch,
+def test_db_keyを解決できなければ追記しない(
+    monkeypatch: pytest.MonkeyPatch, シート: _シート
 ) -> None:
     """どのシートに書くか決まらないまま追記すると、別のDBの行を汚す。"""
-    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
     monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "*")
-    sheet = _行を数えるシート()
-    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})
 
-    assert target.upsert_record(None, {"取引先名": "新規"}, db_key=None) is None
-    assert target.upsert_record(None, {"取引先名": "新規"}, db_key="unknown_db") is None
-    assert sheet.appended == []
+    assert target.append_with_sync_key({"取引先名": "新規"}, "CLI-001", db_key=None) is None
+    assert target.append_with_sync_key({"取引先名": "新規"}, "CLI-001", db_key="unknown") is None
+    assert シート.append_calls == 0
 
 
 @pytest.mark.parametrize("値", ["", "false", "False", "0", "yes", "TRUE  "])
-def test_フラグはtrue以外を有効と解釈しない(値: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`AUTO_CREATE_NEW_RECORDS_ENABLED`と同じ判定にそろえる（前後の空白は除く）。"""
+def test_フラグはtrue以外を有効と解釈しない(
+    値: str, monkeypatch: pytest.MonkeyPatch, シート: _シート
+) -> None:
     monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, 値)
-    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "client_master")
-    sheet = _行を数えるシート()
-    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})
 
-    expected_none = 値.strip().lower() != "true"
-    result = target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master")
-    assert (result is None) is expected_none
+    result = target.append_with_sync_key({"取引先名": "新規"}, "CLI-001", db_key="client_master")
+    assert (result is None) is (値.strip().lower() != "true")
+
+
+def test_同期キー無しの追記は拒否する(monkeypatch: pytest.MonkeyPatch, シート: _シート) -> None:
+    """キー無しで追記すると、その行は次回また「行が無い」と判断されて重複する。"""
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})
+
+    assert target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master") is None
+    assert シート.append_calls == 0

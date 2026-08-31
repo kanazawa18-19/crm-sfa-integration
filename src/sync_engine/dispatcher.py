@@ -961,33 +961,74 @@ class Dispatcher:
         target = self._targets.get(tool)
         if target is None:
             return False, mapping
+        if tool is Tool.SPREADSHEET and _supports_sync_key(target):
+            return self._write_spreadsheet_value(target, mapping, property_name, value)
+
         external_id = _external_id_for(tool, mapping)
-        if tool is Tool.SPREADSHEET and external_id is None:
-            # 追記の直前にもう一度ストアを読む。別のWebhookが並行して同じレコードの行を
-            # 作っていた場合、ここで拾えれば2行目を作らずに済む
-            # （Geminiのレビュー指摘、2026-08-31）。読み直しと追記の間の窓は残るため
-            # **完全な排他ではない**。フラグを有効化する前に、レコード単位の直列化か
-            # advisory lockを入れること。
-            latest = self._store.get(mapping.notion_key)
-            if latest is not None and latest.spreadsheet_row is not None:
-                mapping = latest
-                external_id = _external_id_for(tool, mapping)
-
         result = target.upsert_record(external_id, {property_name: value}, db_key=mapping.db_key)
-        if result is None:
-            return False, mapping
+        return result is not None, mapping
 
-        # スプレッドシートに行を新規作成した場合、返ってきた行番号を必ず永続化する。
-        # `IdMapping`はfrozenなので差し替えた新しいmappingを呼び出し元へ返し、
-        # **同じイベント内の次のプロパティ書き込みが同じ行を更新する**ようにする。
-        # ここを怠ると、1レコードにつきプロパティの数だけ行が追記される。
-        #
-        # kintone/Zoho/Notionを同じ扱いにしていないのは意図的で、これらの新規作成は
-        # `_try_create_new_record()`が専用の経路（重複作成のガードとマッピング登録を含む）で
-        # 担っているため。ここで二重に登録すると、その保護を迂回することになる。
-        if tool is Tool.SPREADSHEET and external_id is None:
-            return True, self._register_spreadsheet_row(mapping, result)
-        return True, mapping
+    def _write_spreadsheet_value(
+        self, target: Any, mapping: IdMapping, property_name: str, value: object
+    ) -> tuple[bool, IdMapping]:
+        """スプレッドシートへの書き込み。**行番号ではなく同期キーで行を確定させる。**
+
+        行番号を恒久IDとして信用すると、次の2つで壊れる（2026-08-31、
+        Gemini・ChatGPTのレビュー指摘）。
+
+        1. **人がシートに行を挿入・削除・並べ替える**と行番号がずれ、別レコードを上書きする
+        2. **追記は成功したが行番号をDBに保存する前にプロセスが落ちる**と、次回また追記されて
+           重複する（SheetsとPostgresにまたがるので、try/exceptでは解決できない）
+
+        どちらも、シート側に書いたNotionキーから引き直せば直る。
+        """
+        db_key = mapping.db_key
+        sync_key = mapping.notion_key
+
+        # 1. **まずシートに書かれた同期キーで引く。これが正。**
+        #    行番号（`IdMapping.spreadsheet_row`）より優先するのは、人が行を挿入・削除・
+        #    並べ替えると行番号がずれるため。ここで引ければ、ずれていても正しい行に書ける。
+        #    「追記は成功したがDBに保存できなかった」行もここで拾えるので、重複を作らずに済む。
+        row = target.find_row_by_sync_key(sync_key, db_key=db_key)
+        if row is not None and mapping.spreadsheet_row != row:
+            logger.info(
+                "spreadsheet: 同期キーで行を引き直しました "
+                "(notion_key=%r, 保存されていた行=%r, 実際の行=%d)",
+                sync_key,
+                mapping.spreadsheet_row,
+                row,
+            )
+
+        # 2. 見つからず、`IdMapping`が持つ行のキーがまだ空なら、その行を引き継いでキーを埋める。
+        #    この仕組みより前に作られた行が対象。**キーが入っている行は1で見つかるはず**なので、
+        #    ここへ来る「キーが空の行」は、まだ誰のものでもない行だけ。
+        if row is None and mapping.spreadsheet_row is not None:
+            if target.row_matches_sync_key(mapping.spreadsheet_row, sync_key, db_key=db_key):
+                row = mapping.spreadsheet_row
+            else:
+                logger.warning(
+                    "spreadsheet: 保存されていた行が別のレコードのものになっています。"
+                    "上書きせず新しい行を作ります (notion_key=%r, row=%d)",
+                    sync_key,
+                    mapping.spreadsheet_row,
+                )
+
+        if row is not None:
+            result = target.update_with_sync_key(
+                str(row), {property_name: value}, sync_key, db_key=db_key
+            )
+            if result is None:
+                return False, mapping
+            # 引き直した行が`IdMapping`と違うなら、保存し直して次回以降の読み直しを減らす。
+            if mapping.spreadsheet_row != row:
+                mapping = self._register_spreadsheet_row(mapping, str(row))
+            return True, mapping
+
+        # 3. どこにも無ければ新規に追記する（同期キーを必ず一緒に書く）。
+        created = target.append_with_sync_key({property_name: value}, sync_key, db_key=db_key)
+        if created is None:
+            return False, mapping
+        return True, self._register_spreadsheet_row(mapping, created)
 
     def _register_spreadsheet_row(self, mapping: IdMapping, row: str) -> IdMapping:
         """追記されたスプレッドシートの行番号を`IdMapping`へ保存し、更新後のmappingを返す。
@@ -1074,6 +1115,23 @@ def _build_update_skip_detail(
             "この同期イベントは一切適用されていません（書き込みは行われていません）。"
         )
     return f"{status} error={exc!r}"
+
+
+def _supports_sync_key(target: object) -> bool:
+    """同期キーで行を解決できるスプレッドシートターゲットか。
+
+    テストの単純なFakeターゲットは対応していないため、能力の有無で分岐する
+    （対応していない場合は従来どおり行番号だけで書く）。
+    """
+    return all(
+        hasattr(target, name)
+        for name in (
+            "row_matches_sync_key",
+            "find_row_by_sync_key",
+            "append_with_sync_key",
+            "update_with_sync_key",
+        )
+    )
 
 
 def _external_id_for(tool: Tool, mapping: IdMapping) -> str | None:

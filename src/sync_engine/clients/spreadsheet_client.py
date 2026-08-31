@@ -106,6 +106,10 @@ class HttpSpreadsheetClient:
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+        # シート名 -> {同期キー: 行番号}。プロセス内シングルトンのwiringから使われるため
+        # 長生きするが、`find_row_by_sync_key`はミス時に必ず読み直すので、
+        # 古いキャッシュが「見つからない」を誤って返すことはない。
+        self._sync_key_rows: dict[str, dict[str, int]] = {}
 
     def _headers(self) -> dict[str, str]:
         token = self._access_token if self._access_token is not None else get_google_access_token()
@@ -195,6 +199,89 @@ class HttpSpreadsheetClient:
             columns = value_range.get("values") or [[]]
             counts[sheet] = len(columns[0]) if columns else 0
         return counts
+
+    # --- 同期キー（行の同一性を行番号に頼らないための列） ---------------------------------
+    #
+    # 行番号を恒久IDにすると、**人がシートに行を挿入・削除・並べ替えただけで別レコードを
+    # 上書きする**。また「追記は成功したが行番号をDBに保存する前にプロセスが落ちた」場合、
+    # 次回また追記されて重複する（Sheetsとpostgresの2者にまたがるので、try/exceptでは
+    # 解決できない）。どちらも**シート側にNotionキーを書いておき、そこから引き直す**ことで
+    # 直る（2026-08-31、Gemini・ChatGPTのレビュー指摘）。
+
+    def ensure_sync_key_column(self, sheet: str, header: str) -> int:
+        """同期キー列の列番号（1始まり）を返す。無ければヘッダ行の末尾に作る。
+
+        シートを作り直さなくても、最初の書き込み時に自動で列が増える。
+        """
+        headers = self._get_header_row(sheet)
+        for index, name in enumerate(headers):
+            if name == header:
+                return index + 1
+
+        column = len(headers) + 1
+        response = self._request(
+            "PUT",
+            f"/values/'{sheet}'!{column_letter(column)}1",
+            params={"valueInputOption": "RAW"},
+            json_body={"values": [[header]]},
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        # ヘッダが変わったので、この後の`append_row`/`update_row`が読み直せるよう
+        # キャッシュは持たない（`_get_header_row`は元々毎回取りに行く）。
+        self._sync_key_rows.pop(sheet, None)
+        return column
+
+    def read_sync_key(self, sheet: str, row: int, header: str) -> str | None:
+        """指定行の同期キーを1セルだけ読む（更新前の照合用）。"""
+        column = self.ensure_sync_key_column(sheet, header)
+        response = self._request(
+            "GET",
+            f"/values/'{sheet}'!{column_letter(column)}{row}",
+            params={"valueRenderOption": _VALUE_RENDER_OPTION},
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        values = response.json().get("values") or []
+        if not values or not values[0]:
+            return None
+        value = str(values[0][0]).strip()
+        return value or None
+
+    def find_row_by_sync_key(self, sheet: str, header: str, key: str) -> int | None:
+        """同期キーから行番号を引く。
+
+        キャッシュが外れたときだけ列を読み直す。**「見つからない」で終わる前に必ず
+        1度は実データを読む**ので、古いキャッシュのせいで重複行を作ることはない
+        （高々1回の余分な読み取りで済む）。
+        """
+        cached = self._sync_key_rows.get(sheet)
+        if cached is not None and key in cached:
+            return cached[key]
+        rows = self._load_sync_key_rows(sheet, header)
+        return rows.get(key)
+
+    def remember_sync_key_row(self, sheet: str, key: str, row: int) -> None:
+        """追記した直後の対応をキャッシュへ入れる（同じイベント内の再検索を省くため）。"""
+        self._sync_key_rows.setdefault(sheet, {})[key] = row
+
+    def _load_sync_key_rows(self, sheet: str, header: str) -> dict[str, int]:
+        column = self.ensure_sync_key_column(sheet, header)
+        response = self._request(
+            "GET",
+            f"/values/'{sheet}'!{column_letter(column)}:{column_letter(column)}",
+            params={"majorDimension": "COLUMNS", "valueRenderOption": _VALUE_RENDER_OPTION},
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        columns = response.json().get("values") or [[]]
+        cells = columns[0] if columns else []
+        rows: dict[str, int] = {}
+        # 1行目はヘッダなので飛ばす。同じキーが複数行にあった場合は**最初の行**を採用する
+        # （後から増えた重複行を正としてしまうと、正しい行の更新が止まるため）。
+        for index, value in enumerate(cells[1:], start=2):
+            key = str(value).strip()
+            if key and key not in rows:
+                rows[key] = index
+        self._sync_key_rows[sheet] = rows
+        return rows
 
     def get_row(self, sheet: str, row: int) -> dict[str, Any] | None:
         response = self._request(
