@@ -5,8 +5,8 @@ import { encryptToken } from "@/lib/tokenCrypto";
 import { exchangeCodeForToken, GMAIL_SCOPE } from "@/lib/gmailOauth";
 import { DRIVE_SCOPE } from "@/lib/googleOauth";
 import { exchangeCodeForGoogleIdentity } from "@/lib/googleLoginOauth";
-import { establishSessionForUser } from "@/app/actions";
-import { LOGIN_STATE_COOKIE } from "@/app/login/google/start/route";
+import { establishSessionForUser } from "@/lib/loginSession";
+import { LOGIN_STATE_COOKIE, LOGIN_STATE_COOKIE_PATH } from "@/app/login/google/start/route";
 
 const STATE_COOKIE = "gmail_oauth_state";
 
@@ -61,7 +61,10 @@ async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
     const url = new URL("/login", request.url);
     url.searchParams.set("error", reason);
     const response = NextResponse.redirect(url);
-    response.cookies.delete(LOGIN_STATE_COOKIE);
+    // **pathを明示しないと消えない。** cookieは path="/gmail/oauth" で発行されており、
+    // delete()の既定は path="/" のため、指定しないと古いnonceが残って使い回せてしまう
+    // （2026-08-31、Geminiのレビュー指摘）。
+    response.cookies.delete({ name: LOGIN_STATE_COOKIE, path: LOGIN_STATE_COOKIE_PATH });
     return response;
   };
 
@@ -94,7 +97,7 @@ async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
 
   const { redirectTo } = await establishSessionForUser(user.id);
   const response = NextResponse.redirect(new URL(redirectTo, request.url));
-  response.cookies.delete(LOGIN_STATE_COOKIE);
+  response.cookies.delete({ name: LOGIN_STATE_COOKIE, path: LOGIN_STATE_COOKIE_PATH });
   return response;
 }
 

@@ -12,13 +12,7 @@ import prisma from "@/lib/prisma";
 const PUBLIC_PATHS = [
   "/login",
   // Googleログイン(2026-08-31)。ログイン前に叩かれるので認証を要求できない。
-  // コールバックは /gmail/oauth/callback を連携フローと共用しているため、
-  // **そちらもここで公開扱いにする必要がある**。
-  // 公開にしてよい理由: コールバック側は admin_login 以外のpurposeでは
-  // 従来どおり getCurrentUser() を要求しており、連携フローの保護は
-  // ミドルウェアではなくルート本体が担っている(app/gmail/oauth/callback/route.ts)。
   "/login/google/start",
-  "/gmail/oauth/callback",
   "/forgot-password",
   "/set-password",
   "/login/2fa",
@@ -26,6 +20,17 @@ const PUBLIC_PATHS = [
   "/login/2fa-email",
   "/confirm-email-change",
 ];
+
+const GOOGLE_LOGIN_CALLBACK_PATH = "/gmail/oauth/callback";
+const ADMIN_LOGIN_PURPOSE = "admin_login";
+
+/** stateが `<nonce>.admin_login` 形式かどうか。nonce自体の検証はルート本体が行う。 */
+function isAdminLoginCallback(request: NextRequest): boolean {
+  const state = request.nextUrl.searchParams.get("state");
+  if (!state) return false;
+  const dotIndex = state.indexOf(".");
+  return dotIndex !== -1 && state.slice(dotIndex + 1) === ADMIN_LOGIN_PURPOSE;
+}
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -46,6 +51,17 @@ export async function proxy(request: NextRequest) {
   }
 
   if (PUBLIC_PATHS.includes(pathname)) return NextResponse.next();
+
+  // Googleログインのコールバックだけは、Gmail/Drive連携フローと同じ
+  // /gmail/oauth/callback を共用している(Google Cloud Consoleに登録済みの
+  // redirect_uriが1本しかないため)。ログイン前に来るので認証は要求できない。
+  //
+  // **パス全体を公開にはしない。** stateのpurposeが admin_login のときだけ通す。
+  // 全体を公開にすると、連携フローの保護がルート本体の getCurrentUser() だけになり
+  // 多層防御が消える(2026-08-31、Geminiのレビュー指摘)。
+  if (pathname === GOOGLE_LOGIN_CALLBACK_PATH && isAdminLoginCallback(request)) {
+    return NextResponse.next();
+  }
 
   const token = request.cookies.get(COOKIE_NAME)?.value;
   if (!isValidSessionToken(token)) {

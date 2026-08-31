@@ -962,6 +962,17 @@ class Dispatcher:
         if target is None:
             return False, mapping
         external_id = _external_id_for(tool, mapping)
+        if tool is Tool.SPREADSHEET and external_id is None:
+            # 追記の直前にもう一度ストアを読む。別のWebhookが並行して同じレコードの行を
+            # 作っていた場合、ここで拾えれば2行目を作らずに済む
+            # （Geminiのレビュー指摘、2026-08-31）。読み直しと追記の間の窓は残るため
+            # **完全な排他ではない**。フラグを有効化する前に、レコード単位の直列化か
+            # advisory lockを入れること。
+            latest = self._store.get(mapping.notion_key)
+            if latest is not None and latest.spreadsheet_row is not None:
+                mapping = latest
+                external_id = _external_id_for(tool, mapping)
+
         result = target.upsert_record(external_id, {property_name: value}, db_key=mapping.db_key)
         if result is None:
             return False, mapping
@@ -981,11 +992,19 @@ class Dispatcher:
     def _register_spreadsheet_row(self, mapping: IdMapping, row: str) -> IdMapping:
         """追記されたスプレッドシートの行番号を`IdMapping`へ保存し、更新後のmappingを返す。
 
-        保存に失敗した場合は**更新前のmappingを返す**。行番号を持ったmappingを返しつつ
-        永続化されていない状態にすると、次回の同期でまた新しい行が追記され、
-        しかもこちらはそれを検知できない。保存できなかったことをログに残し、
-        次のプロパティも「行が無い」扱い（＝もう一度追記を試みる）にしておく方が、
-        少なくとも状態が一貫する。
+        **保存に失敗しても、行番号を持ったmappingを返す。**
+        当初は「保存できていないのに行があることにしない」という理由で更新前のmappingを
+        返していたが、Gemini・ChatGPTの両方から独立に「それは重複を増やす」と指摘され修正した
+        （2026-08-31）。**シートには既に行が物理的に追記されている**ので、
+        更新前のmappingを返すと同じイベントの次のプロパティで即座にもう1行追記され、
+        1レコードがプロパティの数だけの行に散らばる。
+        保存失敗時に残るのは「次回のイベントで1行余分に追記される」可能性だけで、
+        こちらの方が明確に被害が小さい。
+
+        例外を送出して同期イベント全体を失敗させる案も出たが採らなかった。
+        この時点で他のツール（Notion/kintone/Zoho）への書き込みは既に成功している場合があり、
+        ここで中断すると**部分書き込みのまま落ちる**。それを避けるために
+        `dispatch()`は「取得フェーズを全部終えてから書く」3フェーズ構成にしてある。
         """
         try:
             row_number = int(row)
@@ -999,16 +1018,25 @@ class Dispatcher:
             return mapping
 
         updated = dataclasses.replace(mapping, spreadsheet_row=row_number)
-        try:
-            self._store.upsert(updated)
-        except Exception:  # noqa: BLE001 - 保存できないこと自体は同期を止める理由にしない
-            logger.exception(
-                "spreadsheet row registration: 行番号の保存に失敗しました "
-                "(notion_key=%r, row=%d)",
-                mapping.notion_key,
-                row_number,
-            )
-            return mapping
+        # 一時的な障害（DB接続断・レート制限）で行番号を失うと、次回また追記されて
+        # 行が重複する。`_register_new_record_mapping()`と同じ回数だけ再試行する。
+        for attempt in range(_MAPPING_REGISTRATION_RETRIES + 1):
+            try:
+                self._store.upsert(updated)
+                return updated
+            except Exception:  # noqa: BLE001 - 保存できないこと自体は同期を止める理由にしない
+                if attempt < _MAPPING_REGISTRATION_RETRIES:
+                    time.sleep(_MAPPING_REGISTRATION_RETRY_BACKOFF_SECONDS)
+                    continue
+                logger.exception(
+                    "spreadsheet row registration: 行番号の保存に%d回失敗しました。"
+                    "**シートには既に行が追記済み**なので、行番号を持ったmappingをそのまま返し、"
+                    "少なくとも同じイベント内での重複追記は防ぐ "
+                    "(notion_key=%r, row=%d)",
+                    _MAPPING_REGISTRATION_RETRIES + 1,
+                    mapping.notion_key,
+                    row_number,
+                )
         return updated
 
 

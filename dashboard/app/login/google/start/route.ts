@@ -14,6 +14,9 @@ import { buildLoginAuthUrl } from "@/lib/googleLoginOauth";
 // Gmail連携の途中でログインし直したときに片方のnonceがもう片方を上書きし、
 // 進行中のフローが無言で invalid_state になるため。
 export const LOGIN_STATE_COOKIE = "admin_login_oauth_state";
+//: cookieのpath。**削除するときも同じpathを渡さないと消えない**（Next.jsの
+//: `cookies.delete()` は既定で path="/" を対象にするため）。
+export const LOGIN_STATE_COOKIE_PATH = "/gmail/oauth";
 const PURPOSE = "admin_login";
 
 export async function GET(_request: NextRequest) {
@@ -25,7 +28,7 @@ export async function GET(_request: NextRequest) {
     sameSite: "lax",
     maxAge: 600,
     // コールバックが /gmail/oauth/callback なので、そこから読める範囲に置く。
-    path: "/gmail/oauth",
+    path: LOGIN_STATE_COOKIE_PATH,
   });
   return response;
 }

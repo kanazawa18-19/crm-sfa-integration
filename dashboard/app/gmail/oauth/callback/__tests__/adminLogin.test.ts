@@ -33,7 +33,10 @@ vi.mock("@/lib/googleLoginOauth", () => ({
   exchangeCodeForGoogleIdentity: (code: string) => exchangeIdentityMock(code),
 }));
 
-vi.mock("@/app/actions", () => ({
+// セッション確立は lib/loginSession.ts にある（app/actions.ts は "use server" なので、
+// そこから export すると任意のuserIdで呼べる公開Server Functionになってしまうため。
+// 2026-08-31、ChatGPTのレビュー指摘で移動した）。
+vi.mock("@/lib/loginSession", () => ({
   establishSessionForUser: (userId: string) => establishSessionMock(userId),
 }));
 
@@ -150,6 +153,15 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
     const response = await GET(makeRequest());
 
     expect(response.headers.get("set-cookie") ?? "").toContain("admin_login_oauth_state=;");
+  });
+
+  it("cookie削除にpathを付ける（付けないと発行時のpathと違って消えない）", async () => {
+    // Next.jsの cookies.delete() は既定で path="/" を対象にする。
+    // cookieは path="/gmail/oauth" で発行しているので、pathを渡さないと残る
+    // （2026-08-31、Geminiのレビュー指摘）。
+    const response = await GET(makeRequest());
+
+    expect(response.headers.get("set-cookie") ?? "").toContain("Path=/gmail/oauth");
   });
 
   it("purposeがadmin_loginでなければ、この分岐に入らない（連携フローのまま扱う）", async () => {

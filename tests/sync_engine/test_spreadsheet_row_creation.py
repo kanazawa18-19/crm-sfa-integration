@@ -175,14 +175,22 @@ def test_同じイベントの2つ目のプロパティは同じ行を更新す�
     assert store.get("CLI-001").spreadsheet_row == 11
 
 
-def test_行番号の保存に失敗したら次のプロパティも追記を試みる(
+def test_行番号の保存に失敗しても同じイベント内では追記を繰り返さない(
     store: SQLiteIdMappingStore,
     行がまだ無いmapping: IdMapping,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """保存できていないのに「行がある」ことにすると、次回の同期でまた新しい行が
-    追記され、しかもこちらは検知できない。保存前の状態を返して一貫させる。"""
+    """**シートには既に行が物理的に追記されている**ので、保存に失敗したからといって
+    「行が無い」扱いに戻すと、同じイベントの次のプロパティで即座にもう1行追記され、
+    1レコードがプロパティの数だけの行に散らばる。
+
+    当初は「保存できていないのに行があることにしない」として更新前のmappingを返していたが、
+    Gemini・ChatGPTの両方から独立に「それは重複を増やす」と指摘され修正した（2026-08-31）。
+    保存失敗時に残るのは「次回のイベントで1行余分に追記される」可能性だけで、
+    こちらの方が明確に被害が小さい。
+    """
     monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
+    monkeypatch.setattr("src.sync_engine.dispatcher.time.sleep", lambda _s: None)
     sheet = _追記できるスプレッドシート()
     dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
     monkeypatch.setattr(
@@ -191,8 +199,44 @@ def test_行番号の保存に失敗したら次のプロパティも追記を�
 
     dispatcher.dispatch(_2プロパティのイベント())
 
-    # 保存できなかったので、2つ目のプロパティも「行が無い」扱いのまま。
-    assert [external_id for external_id, _ in sheet.upsert_calls] == [None, None]
+    assert sheet.追記した回数 == 1, "保存に失敗しただけで、同じイベント内で2行目が追記されている"
+    assert [external_id for external_id, _ in sheet.upsert_calls] == [None, "11"]
+
+
+def test_追記の直前に他プロセスが作った行を拾う(
+    store: SQLiteIdMappingStore,
+    行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """並行するWebhookが先に行を作っていた場合、追記の直前に読み直して拾えれば
+    2行目を作らずに済む（完全な排他ではないが、窓は大きく狭まる）。"""
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: _2プロパティのスキーマ())
+    sheet = _追記できるスプレッドシート()
+    dispatcher = Dispatcher(store, {Tool.SPREADSHEET: sheet})
+
+    # ディスパッチ開始後・書き込み直前に、別プロセスが行3を作った状況を作る。
+    store.upsert(
+        IdMapping(
+            notion_key="CLI-001",
+            db_key="client_master",
+            kintone_id="1001",
+            spreadsheet_row=3,
+            last_synced_at=行がまだ無いmapping.last_synced_at,
+        )
+    )
+
+    dispatcher.dispatch(
+        SyncEvent(
+            source_tool=Tool.NOTION,
+            db_key="client_master",
+            external_id="CLI-001",
+            occurred_at=NOW,
+            properties={"取引先名": "サンライズホテルズ"},
+        )
+    )
+
+    assert sheet.追記した回数 == 0
+    assert sheet.upsert_calls == [("3", {"取引先名": "サンライズホテルズ"})]
 
 
 def test_既に行があるレコードは追記せず更新する(

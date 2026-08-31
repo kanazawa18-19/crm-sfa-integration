@@ -15,6 +15,14 @@ import {
   PENDING_2FA_COOKIE_NAME,
 } from "@/lib/adminSession";
 import { requireRole } from "@/lib/auth";
+// ログインセッションの確立は lib/loginSession.ts に置いている。
+// このファイルは "use server" なので、ここから export するとクライアントから
+// 任意のuserIdで呼べる公開Server Functionになってしまうため（2026-08-31）。
+import {
+  establishSession,
+  establishSessionForUser,
+  sendEmailOtpCode,
+} from "@/lib/loginSession";
 import { sendEmail } from "@/lib/email";
 import { encryptToken, decryptToken } from "@/lib/tokenCrypto";
 import { validateAvatarFile } from "@/lib/avatar";
@@ -32,56 +40,9 @@ import {
 // ユーザー管理まわりを移植(2026-08-15)。
 // 2026-08-31にGoogleログインも移植した(app/login/google/start と
 // app/gmail/oauth/callback の admin_login 分岐)。パスワードでもGoogleでも
-// 最終的にこのファイルの establishSessionForUser() を通り、2FAの分岐は共通になる。
-
-async function establishSession(userId: string) {
-  const cookieStore = await cookies();
-  cookieStore.set(COOKIE_NAME, createSessionToken(userId), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-  });
-}
-
-/**
- * 本人確認が済んだ後の共通の分岐。AppSettings.twoFactorEnabledがONなら2FA検証へ、
- * OFFならそのままセッションを確立する。
- *
- * パスワードログイン(login())とGoogleログイン(app/gmail/oauth/callbackの
- * admin_login分岐)の両方から呼ぶ。**Googleでログインしても2FAを迂回させない**
- * ために、入口を1つにまとめてある。
- */
-export async function establishSessionForUser(
-  userId: string
-): Promise<{ needsTwoFactor: boolean; redirectTo: string }> {
-  const settings = await prisma.appSettings.findUnique({ where: { id: 1 } });
-  if (settings?.twoFactorEnabled) {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    const cookieStore = await cookies();
-    cookieStore.set(PENDING_2FA_COOKIE_NAME, createPending2FAToken(userId), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-    });
-
-    let redirectTo: string;
-    if (user?.totpEnabled) {
-      redirectTo = "/login/2fa";
-    } else if (user?.emailOtpEnabled) {
-      await sendEmailOtpCode(user.id);
-      redirectTo = "/login/2fa-email";
-    } else {
-      redirectTo = "/login/2fa-setup";
-    }
-
-    return { needsTwoFactor: true, redirectTo };
-  }
-
-  await establishSession(userId);
-  return { needsTwoFactor: false, redirectTo: "/" };
-}
+// 最終的に lib/loginSession.ts の establishSessionForUser() を通り、2FAの分岐は共通になる。
+// **セッション確立の関数をこのファイルから export しないこと。**
+// "use server" のファイルから export した関数はクライアントから呼べる公開APIになる。
 
 export async function login(_prevState: string | undefined, formData: FormData) {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
@@ -111,23 +72,6 @@ async function requirePending2FAUser() {
   const user = await prisma.user.findUnique({ where: { id: pending.userId } });
   if (!user) redirect("/login");
   return user;
-}
-
-export async function sendEmailOtpCode(userId: string): Promise<void> {
-  const code = generateEmailOtpPlaintext();
-  const codeHash = hashPassword(code);
-  await prisma.emailOtpCode.create({
-    data: { userId, codeHash, expiresAt: new Date(Date.now() + EMAIL_OTP_TTL_MS) },
-  });
-
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) return;
-
-  await sendEmail({
-    to: user.email,
-    subject: "【営業管理ダッシュボード】ログイン確認コード",
-    text: `ログイン確認コード: ${code}\n\n10分間有効です。心当たりがない場合はこのメールを無視してください。`,
-  });
 }
 
 export async function chooseEmailOtpMethod(_prevState: void | undefined, _formData: FormData) {
