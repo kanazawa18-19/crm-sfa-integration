@@ -76,3 +76,52 @@ def test_without_priming_a_miss_still_re_reads(requests_mock) -> None:
     assert client.find_row_by_sync_key(sheet, "同期キー", "key-missing") is None
     assert client.find_row_by_sync_key(sheet, "同期キー", "key-missing") is None
     assert column.call_count == 2
+
+
+def test_primed_sheet_reads_the_header_only_once(requests_mock) -> None:
+    """ヘッダ行の読み直しでQuotaに当たっていた（1件24秒まで落ちた）。"""
+    from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
+
+    spreadsheet_id = "sheet-abc123"
+    base = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+    sheet = "取引先マスター"
+    client = HttpSpreadsheetClient(spreadsheet_id, access_token="t")
+
+    header = requests_mock.get(
+        f"{base}/values/'{sheet}'!1:1", json={"values": [["名前", "同期キー"]]}
+    )
+    requests_mock.get(f"{base}/values/'{sheet}'!B:B", json={"values": [["同期キー"]]})
+    requests_mock.post(
+        f"{base}/values/'{sheet}'!A1:append",
+        json={"updates": {"updatedRange": f"'{sheet}'!A2:B2"}},
+    )
+
+    client.prime_sync_key_rows(sheet, "同期キー")
+    before = header.call_count
+    client.append_row(sheet, {"名前": "A社"})
+    client.append_row(sheet, {"名前": "B社"})
+
+    assert header.call_count == before
+
+
+def test_header_is_re_read_when_not_primed(requests_mock) -> None:
+    """通常運用ではキャッシュしない（人が列を足すことがあるため）。"""
+    from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
+
+    spreadsheet_id = "sheet-abc123"
+    base = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+    sheet = "取引先マスター"
+    client = HttpSpreadsheetClient(spreadsheet_id, access_token="t")
+
+    header = requests_mock.get(
+        f"{base}/values/'{sheet}'!1:1", json={"values": [["名前"]]}
+    )
+    requests_mock.post(
+        f"{base}/values/'{sheet}'!A1:append",
+        json={"updates": {"updatedRange": f"'{sheet}'!A2:A2"}},
+    )
+
+    client.append_row(sheet, {"名前": "A社"})
+    client.append_row(sheet, {"名前": "B社"})
+
+    assert header.call_count == 2

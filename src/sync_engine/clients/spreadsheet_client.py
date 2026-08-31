@@ -117,6 +117,7 @@ class HttpSpreadsheetClient:
         # `prime_sync_key_rows()`を通したシート。ここに入っているものは
         # 「キャッシュに無い＝本当に無い」と扱う（バックフィル専用、同メソッド参照）。
         self._trusted_sync_key_sheets: set[str] = set()
+        self._header_rows: dict[str, list[str]] = {}
 
     def _headers(self) -> dict[str, str]:
         token = self._access_token if self._access_token is not None else get_google_access_token()
@@ -144,6 +145,15 @@ class HttpSpreadsheetClient:
         )
 
     def _get_header_row(self, sheet: str) -> list[str]:
+        # `prime_sync_key_rows()`を通したシートではヘッダ行をキャッシュする（2026-08-31）。
+        # 1件の追記につき`ensure_sync_key_column`と`append_row`で2回読んでおり、
+        # Google Sheets APIのQuota（100リクエスト/100秒）に当たって指数バックオフが
+        # 効き、1件あたり24秒まで落ちていた（本番のバックフィルで実測）。
+        # 列構成が変わるのは`ensure_sync_key_column`が列を足したときだけで、
+        # そこではキャッシュを捨てている。
+        cached_header = self._header_rows.get(sheet)
+        if cached_header is not None and sheet in self._trusted_sync_key_sheets:
+            return cached_header
         response = self._request(
             "GET",
             f"/values/'{sheet}'!1:1",
@@ -158,9 +168,11 @@ class HttpSpreadsheetClient:
         # ボディが期待した形でない場合に生の例外が飛ばないよう正規化する。
         try:
             values = response.json().get("values") or []
-            return values[0] if values else []
+            header = values[0] if values else []
         except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
             raise SpreadsheetApiError(response.status_code, extract_error_message(response)) from exc
+        self._header_rows[sheet] = header
+        return header
 
     def list_sheet_names(self) -> tuple[str, list[str]]:
         """スプレッドシートのタイトルとシート名の一覧を返す（読み取りのみ）。
@@ -318,6 +330,7 @@ class HttpSpreadsheetClient:
         # ヘッダが変わったので、この後の`append_row`/`update_row`が読み直せるよう
         # キャッシュは持たない（`_get_header_row`は元々毎回取りに行く）。
         self._sync_key_rows.pop(sheet, None)
+        self._header_rows.pop(sheet, None)
         self._trusted_sync_key_sheets.discard(sheet)
         return column
 
