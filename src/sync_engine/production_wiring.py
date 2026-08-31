@@ -276,6 +276,16 @@ class _MultiDbZohoSyncTarget(SyncTarget):
         return self._targets_by_db_key.get(db_key)
 
 
+#: スプレッドシートに行を新規作成してよいかの環境変数。既定は無効。
+#: 有効化すると次の同期から未作成の全レコードが順次追記されるため、
+#: `AUTO_CREATE_NEW_RECORDS_ENABLED`と同じく明示的なオプトインにしている。
+SPREADSHEET_ROW_CREATION_ENV_VAR = "SPREADSHEET_ROW_CREATION_ENABLED"
+
+
+def spreadsheet_row_creation_enabled() -> bool:
+    return os.environ.get(SPREADSHEET_ROW_CREATION_ENV_VAR, "").strip().lower() == "true"
+
+
 class _MultiDbSpreadsheetSyncTarget(SyncTarget):
     """db_key単位で構築した`SpreadsheetSyncTarget`を、呼び出し元が渡す`db_key`で選択するルーター。
 
@@ -295,12 +305,37 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
         self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
     ) -> str | None:
         if external_id is None:
-            logger.warning(
-                "_MultiDbSpreadsheetSyncTarget: 新規行追加(external_id未指定)はdb_keyを"
-                "特定できないため未サポートです。書き込みをスキップします: properties=%r",
-                properties,
-            )
-            return None
+            # external_idはスプレッドシートの行番号（`IdMapping.spreadsheet_row`）。
+            # まだ行が無いレコードでは必ずNoneになるため、ここで一律スキップすると
+            # **最初の1行を作る経路が存在せず、シートは永久に空のまま**になる。
+            # 2026-08-31、同期先6シートが全てヘッダ1行のままであることが実際に判明した
+            # （認証もシート名も正常だったため、到達確認だけでは検出できなかった）。
+            #
+            # 有効化すると次の同期から大量の行が書かれるため、既定OFFの環境変数で守る
+            # （案件・取引先だけで6万件規模。Googleスプレッドシートのセル上限にも関わる
+            # 業務判断なので、コード側の既定では書かない）。
+            if not spreadsheet_row_creation_enabled():
+                logger.info(
+                    "_MultiDbSpreadsheetSyncTarget: db_key=%r の行が未作成ですが、"
+                    "%s が有効でないため行の新規作成をスキップします",
+                    db_key,
+                    SPREADSHEET_ROW_CREATION_ENV_VAR,
+                )
+                return None
+            target = self._resolve(db_key)
+            if target is None:
+                logger.warning(
+                    "_MultiDbSpreadsheetSyncTarget: db_key=%r 用のスプレッドシートタブが"
+                    "未設定のため、行の新規作成をスキップします",
+                    db_key,
+                )
+                return None
+            # 追記した行番号が返る。呼び出し元（Dispatcher）はこれを
+            # `IdMapping.spreadsheet_row`へ必ず永続化すること。
+            # **永続化しないと、次のプロパティ書き込みでまた新しい行が追記され、
+            # 1レコードにつき行が増え続ける。**
+            return target.upsert_record(None, properties, db_key=db_key)
+
         target = self._resolve(db_key)
         if target is None:
             logger.warning(

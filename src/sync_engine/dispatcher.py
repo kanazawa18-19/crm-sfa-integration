@@ -20,6 +20,7 @@ Notion APIページング（100件/回）への対応は、この即時処理で
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import time
@@ -211,7 +212,9 @@ class Dispatcher:
             for property_name, prop, new_value in prepared:
                 # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
                 intended = frozenset(t for t in target_tools if prop.should_sync_to(t))
-                written, skipped = self._write_values(intended, mapping, property_name, new_value)
+                written, skipped, mapping = self._write_values(
+                    intended, mapping, property_name, new_value
+                )
                 results.append(
                     PropertyDispatchResult(
                         property_name=property_name,
@@ -324,7 +327,9 @@ class Dispatcher:
                 # ケース）とは別物。2026-08本番障害はこちらではなく、後者でupdated_atが常に
                 # フォールバックしていたことが原因（conflict_resolver.pyの修正で対応済み）。
                 intended = frozenset({Tool.NOTION}) | other_tools
-                written, skipped = self._write_values(intended, mapping, property_name, new_value)
+                written, skipped, mapping = self._write_values(
+                    intended, mapping, property_name, new_value
+                )
                 results.append(
                     PropertyDispatchResult(
                         property_name=property_name,
@@ -379,7 +384,7 @@ class Dispatcher:
             # 異なる方。NOTION_OVERRIDE時は送信元自身の訂正も含む） ∪ missing_tools
             # （比較には参加していないが、確定した値へ補完すべきsync_scope対象ツール）。
             intended = frozenset(resolution.target_tools | missing_tools)
-            written, skipped = self._write_values(
+            written, skipped, mapping = self._write_values(
                 intended, mapping, property_name, resolution.resolved_value
             )
 
@@ -922,21 +927,28 @@ class Dispatcher:
 
     def _write_values(
         self, tools: frozenset[Tool], mapping: IdMapping, property_name: str, value: object
-    ) -> tuple[frozenset[Tool], frozenset[Tool]]:
+    ) -> tuple[frozenset[Tool], frozenset[Tool], IdMapping]:
         """`tools`（書き込み対象として意図した全ツール）へ書き込みを試み、実際に書き込めた
-        ツール・書き込めなかった（スキップされた）ツールを返す（両者は排反）。
+        ツール・書き込めなかった（スキップされた）ツール・**更新後のmapping**を返す
+        （書き込めたツールとスキップされたツールは排反）。
+
+        mappingを返すのは、スプレッドシートに行を新規作成したときに採番された行番号を
+        呼び出し元へ伝えるため。呼び出し元は必ず返り値で自分のmappingを差し替えること。
         """
         written: set[Tool] = set()
         skipped: set[Tool] = set()
         for tool in tools:
-            if self._write_value(tool, mapping, property_name, value):
+            ok, mapping = self._write_value(tool, mapping, property_name, value)
+            if ok:
                 written.add(tool)
             else:
                 skipped.add(tool)
-        return frozenset(written), frozenset(skipped)
+        return frozenset(written), frozenset(skipped), mapping
 
-    def _write_value(self, tool: Tool, mapping: IdMapping, property_name: str, value: object) -> bool:
-        """1ツールへの書き込みを試み、実際に書き込めたかどうかを返す。
+    def _write_value(
+        self, tool: Tool, mapping: IdMapping, property_name: str, value: object
+    ) -> tuple[bool, IdMapping]:
+        """1ツールへの書き込みを試み、「実際に書き込めたか」と「更新後のmapping」を返す。
 
         `SyncTarget.upsert_record()`の契約（`src/sync_engine/sync_targets/base.py`docstring）
         通り、ツール側の都合で実際にはレコードが作成・更新されなかった場合はNoneが返る
@@ -948,10 +960,56 @@ class Dispatcher:
         """
         target = self._targets.get(tool)
         if target is None:
-            return False
+            return False, mapping
         external_id = _external_id_for(tool, mapping)
         result = target.upsert_record(external_id, {property_name: value}, db_key=mapping.db_key)
-        return result is not None
+        if result is None:
+            return False, mapping
+
+        # スプレッドシートに行を新規作成した場合、返ってきた行番号を必ず永続化する。
+        # `IdMapping`はfrozenなので差し替えた新しいmappingを呼び出し元へ返し、
+        # **同じイベント内の次のプロパティ書き込みが同じ行を更新する**ようにする。
+        # ここを怠ると、1レコードにつきプロパティの数だけ行が追記される。
+        #
+        # kintone/Zoho/Notionを同じ扱いにしていないのは意図的で、これらの新規作成は
+        # `_try_create_new_record()`が専用の経路（重複作成のガードとマッピング登録を含む）で
+        # 担っているため。ここで二重に登録すると、その保護を迂回することになる。
+        if tool is Tool.SPREADSHEET and external_id is None:
+            return True, self._register_spreadsheet_row(mapping, result)
+        return True, mapping
+
+    def _register_spreadsheet_row(self, mapping: IdMapping, row: str) -> IdMapping:
+        """追記されたスプレッドシートの行番号を`IdMapping`へ保存し、更新後のmappingを返す。
+
+        保存に失敗した場合は**更新前のmappingを返す**。行番号を持ったmappingを返しつつ
+        永続化されていない状態にすると、次回の同期でまた新しい行が追記され、
+        しかもこちらはそれを検知できない。保存できなかったことをログに残し、
+        次のプロパティも「行が無い」扱い（＝もう一度追記を試みる）にしておく方が、
+        少なくとも状態が一貫する。
+        """
+        try:
+            row_number = int(row)
+        except (TypeError, ValueError):
+            logger.warning(
+                "spreadsheet row registration: 追記された行番号が数値ではありません "
+                "(notion_key=%r, row=%r)",
+                mapping.notion_key,
+                row,
+            )
+            return mapping
+
+        updated = dataclasses.replace(mapping, spreadsheet_row=row_number)
+        try:
+            self._store.upsert(updated)
+        except Exception:  # noqa: BLE001 - 保存できないこと自体は同期を止める理由にしない
+            logger.exception(
+                "spreadsheet row registration: 行番号の保存に失敗しました "
+                "(notion_key=%r, row=%d)",
+                mapping.notion_key,
+                row_number,
+            )
+            return mapping
+        return updated
 
 
 def _build_update_skip_detail(
