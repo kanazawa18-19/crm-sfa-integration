@@ -380,6 +380,12 @@ def test_同期キー列が無ければヘッダの末尾に作る(
     requests_mock.get(
         f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["取引先名", "備考"])
     )
+    # 枠の確認（列が足りていれば広げない）。
+    requests_mock.get(
+        BASE,
+        json={"sheets": [{"properties": {"sheetId": 7, "title": SHEET,
+                                         "gridProperties": {"columnCount": 26}}}]},
+    )
     put = requests_mock.put(f"{BASE}/values/'{SHEET}'!C1", json={})
 
     column = client.ensure_sync_key_column(SHEET, "同期キー")
@@ -387,6 +393,34 @@ def test_同期キー列が無ければヘッダの末尾に作る(
     assert column == 3
     assert put.call_count == 1
     assert put.last_request.json() == {"values": [["同期キー"]]}
+
+
+def test_枠が足りなければ列を広げてから同期キー列を作る(
+    requests_mock, client: HttpSpreadsheetClient
+) -> None:
+    """**シートの枠は自動では広がらない。**
+
+    列数ちょうどまでしか列が無いシートに同期キー列を作ろうとすると
+    `exceeds grid limits` で400になる（2026-08-31、バックフィルの実行で判明）。
+    """
+    requests_mock.get(
+        f"{BASE}/values/'{SHEET}'!1:1", json=_header_response(["A", "B", "C"])
+    )
+    requests_mock.get(
+        BASE,
+        json={"sheets": [{"properties": {"sheetId": 7, "title": SHEET,
+                                         "gridProperties": {"columnCount": 3}}}]},
+    )
+    batch = requests_mock.post(f"{BASE}:batchUpdate", json={})
+    requests_mock.put(f"{BASE}/values/'{SHEET}'!D1", json={})
+
+    assert client.ensure_sync_key_column(SHEET, "同期キー") == 4
+    assert batch.call_count == 1
+    assert batch.last_request.json() == {
+        "requests": [
+            {"appendDimension": {"sheetId": 7, "dimension": "COLUMNS", "length": 1}}
+        ]
+    }
 
 
 def test_同期キー列が既にあれば作らない(requests_mock, client: HttpSpreadsheetClient) -> None:

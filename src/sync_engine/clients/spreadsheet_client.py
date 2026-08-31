@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Mapping
@@ -48,6 +49,8 @@ _VALUE_RENDER_OPTION = "UNFORMATTED_VALUE"
 # には影響しない。日付の正規化が必要になった場合は別途対応すること。
 _DATE_TIME_RENDER_OPTION = "FORMATTED_STRING"
 
+
+logger = logging.getLogger(__name__)
 
 class SpreadsheetApiError(ApiError):
     """Google Sheets API呼び出し失敗時に送出する例外。"""
@@ -209,6 +212,86 @@ class HttpSpreadsheetClient:
     # 解決できない）。どちらも**シート側にNotionキーを書いておき、そこから引き直す**ことで
     # 直る（2026-08-31、Gemini・ChatGPTのレビュー指摘）。
 
+    def _grid_properties(self, sheet: str) -> dict[str, Any]:
+        """シートの現在の枠（行数・列数）とsheetIdを返す。"""
+        response = self._request(
+            "GET",
+            "",
+            params={"fields": "sheets.properties(sheetId,title,gridProperties)"},
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        for entry in response.json().get("sheets", []):
+            props = entry.get("properties") or {}
+            if props.get("title") == sheet:
+                return props
+        raise SpreadsheetApiError(404, f"sheet not found: {sheet!r}")
+
+    def ensure_column_capacity(self, sheet: str, columns: int) -> None:
+        """列が足りなければ枠を広げる。
+
+        **シートの枠は自動では広がらない。** 既存シートの列数ちょうどまでしか列が無いと、
+        同期キー列を作ろうとした時点で
+        `Range ('チェーン'!AC1) exceeds grid limits. Max rows: 1000, max columns: 28`
+        で400になる（2026-08-31、バックフィルの実行で判明）。行は追記で自動的に増えるが、
+        列は増えないので、ここで明示的に広げる。
+        """
+        props = self._grid_properties(sheet)
+        grid = props.get("gridProperties") or {}
+        current = int(grid.get("columnCount") or 0)
+        if current >= columns:
+            return
+        response = self._request(
+            "POST",
+            ":batchUpdate",
+            json_body={
+                "requests": [
+                    {
+                        "appendDimension": {
+                            "sheetId": props.get("sheetId"),
+                            "dimension": "COLUMNS",
+                            "length": columns - current,
+                        }
+                    }
+                ]
+            },
+            idempotent=False,
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        logger.info(
+            "spreadsheet: シート%rの列を%d→%dへ広げました", sheet, current, columns
+        )
+
+    def ensure_row_capacity(self, sheet: str, rows: int) -> None:
+        """行が足りなければ枠を広げる（バックフィル前に一度だけ呼ぶ想定）。
+
+        既定のシートは1000行しかない。追記で自動的に伸びることを当てにせず、
+        流す件数が分かっている場面では先に広げておく（途中で止まると、
+        どこまで書けたかを数え直す羽目になるため）。
+        """
+        props = self._grid_properties(sheet)
+        grid = props.get("gridProperties") or {}
+        current = int(grid.get("rowCount") or 0)
+        if current >= rows:
+            return
+        response = self._request(
+            "POST",
+            ":batchUpdate",
+            json_body={
+                "requests": [
+                    {
+                        "appendDimension": {
+                            "sheetId": props.get("sheetId"),
+                            "dimension": "ROWS",
+                            "length": rows - current,
+                        }
+                    }
+                ]
+            },
+            idempotent=False,
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        logger.info("spreadsheet: シート%rの行を%d→%dへ広げました", sheet, current, rows)
+
     def ensure_sync_key_column(self, sheet: str, header: str) -> int:
         """同期キー列の列番号（1始まり）を返す。無ければヘッダ行の末尾に作る。
 
@@ -220,6 +303,8 @@ class HttpSpreadsheetClient:
                 return index + 1
 
         column = len(headers) + 1
+        # 枠が足りないと、この直後のヘッダ書き込みが400になる（上記参照）。
+        self.ensure_column_capacity(sheet, column)
         response = self._request(
             "PUT",
             f"/values/'{sheet}'!{column_letter(column)}1",

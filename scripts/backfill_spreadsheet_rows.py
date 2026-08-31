@@ -86,6 +86,16 @@ def main(argv: list[str] | None = None) -> int:
         "実行" if args.apply else "試算のみ（--applyで実行）",
     )
 
+    if args.apply and mappings:
+        # 既定のシートは1000行しかない。追記で自動的に伸びることを当てにせず、
+        # 流す件数が分かっているここで先に広げておく（2026-08-31、実行して判明）。
+        try:
+            target._client.ensure_row_capacity(
+                schema.spreadsheet_sheet_name, len(mappings) + 10
+            )
+        except Exception:
+            logger.warning("行数の事前拡張に失敗しました。そのまま続行します", exc_info=True)
+
     created = existing = skipped = failed = 0
     for index, mapping in enumerate(mappings, start=1):
         try:
