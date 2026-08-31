@@ -29,7 +29,10 @@ vi.mock("@/lib/googleOauth", () => ({
 
 vi.mock("@/lib/tokenCrypto", () => ({ encryptToken: (s: string) => s }));
 
-vi.mock("@/lib/googleLoginOauth", () => ({
+// 定数は実物を使い、トークン交換だけ差し替える（定数までモックすると、
+// 発行と削除でpathがずれるような不具合をテストが見逃す）。
+vi.mock("@/lib/googleLoginOauth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/googleLoginOauth")>()),
   exchangeCodeForGoogleIdentity: (code: string) => exchangeIdentityMock(code),
 }));
 

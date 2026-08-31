@@ -4,9 +4,13 @@ import { getCurrentUser } from "@/lib/auth";
 import { encryptToken } from "@/lib/tokenCrypto";
 import { exchangeCodeForToken, GMAIL_SCOPE } from "@/lib/gmailOauth";
 import { DRIVE_SCOPE } from "@/lib/googleOauth";
-import { exchangeCodeForGoogleIdentity } from "@/lib/googleLoginOauth";
+import {
+  LOGIN_PURPOSE,
+  LOGIN_STATE_COOKIE,
+  LOGIN_STATE_COOKIE_PATH,
+  exchangeCodeForGoogleIdentity,
+} from "@/lib/googleLoginOauth";
 import { establishSessionForUser } from "@/lib/loginSession";
-import { LOGIN_STATE_COOKIE, LOGIN_STATE_COOKIE_PATH } from "@/app/login/google/start/route";
 
 const STATE_COOKIE = "gmail_oauth_state";
 
@@ -19,9 +23,9 @@ const STATE_COOKIE = "gmail_oauth_state";
 const ALLOWED_PURPOSES = new Set(["google_all"]);
 
 // ログインフロー(app/login/google/start)。連携フローと同じredirect_uriを
-// 共用しているので、ここで最初に分岐する。**このpurposeだけはセッションが
-// 無い状態で来る**ため、下の getCurrentUser() より前に処理する必要がある。
-const LOGIN_PURPOSE = "admin_login";
+// 共用しているので、GET()の先頭で分岐する。**このpurposeだけはセッションが
+// 無い状態で来る**ため、getCurrentUser() より前に処理する必要がある。
+// 定数は lib/googleLoginOauth.ts に集約している。
 
 function parseState(state: string): { nonce: string; purpose: string | null } {
   const dotIndex = state.indexOf(".");

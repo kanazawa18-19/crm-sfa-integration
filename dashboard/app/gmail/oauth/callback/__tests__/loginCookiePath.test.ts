@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LOGIN_STATE_COOKIE,
   LOGIN_STATE_COOKIE_PATH,
-} from "@/app/login/google/start/route";
+} from "@/lib/googleLoginOauth";
 
 /**
  * nonce cookie の path（2026-08-31、Geminiのレビュー指摘）。

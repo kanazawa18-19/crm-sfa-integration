@@ -1,6 +1,11 @@
 import { randomBytes } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { buildLoginAuthUrl } from "@/lib/googleLoginOauth";
+import {
+  LOGIN_PURPOSE,
+  LOGIN_STATE_COOKIE,
+  LOGIN_STATE_COOKIE_PATH,
+  buildLoginAuthUrl,
+} from "@/lib/googleLoginOauth";
 
 // 「Googleでログイン」の1歩目(2026-08-31)。**ログイン前に叩かれるので
 // proxy.tsのPUBLIC_PATHSに入っている。**
@@ -13,15 +18,13 @@ import { buildLoginAuthUrl } from "@/lib/googleLoginOauth";
 // stateのnonceは連携フローとは**別のcookie**に入れる。同じcookie名を使い回すと、
 // Gmail連携の途中でログインし直したときに片方のnonceがもう片方を上書きし、
 // 進行中のフローが無言で invalid_state になるため。
-export const LOGIN_STATE_COOKIE = "admin_login_oauth_state";
-//: cookieのpath。**削除するときも同じpathを渡さないと消えない**（Next.jsの
-//: `cookies.delete()` は既定で path="/" を対象にするため）。
-export const LOGIN_STATE_COOKIE_PATH = "/gmail/oauth";
-const PURPOSE = "admin_login";
+// 定数は lib/googleLoginOauth.ts に置いている。route.ts の export surface は
+// Next.jsが規定しており、独自exportはビルド・typegenの条件で壊れうるため
+// (2026-08-31、ChatGPTのレビュー指摘)。
 
 export async function GET(_request: NextRequest) {
   const nonce = randomBytes(16).toString("hex");
-  const response = NextResponse.redirect(buildLoginAuthUrl(`${nonce}.${PURPOSE}`));
+  const response = NextResponse.redirect(buildLoginAuthUrl(`${nonce}.${LOGIN_PURPOSE}`));
   response.cookies.set(LOGIN_STATE_COOKIE, nonce, {
     httpOnly: true,
     secure: true,

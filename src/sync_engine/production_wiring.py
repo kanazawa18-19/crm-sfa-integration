@@ -281,9 +281,29 @@ class _MultiDbZohoSyncTarget(SyncTarget):
 #: `AUTO_CREATE_NEW_RECORDS_ENABLED`と同じく明示的なオプトインにしている。
 SPREADSHEET_ROW_CREATION_ENV_VAR = "SPREADSHEET_ROW_CREATION_ENABLED"
 
+#: 行の新規作成を許可するdb_keyのカンマ区切り一覧。**未設定なら1つも許可しない。**
+#: 真偽値1つで6万件が対象になるのは事故の範囲が大きすぎる、という指摘への対応
+#: （2026-08-31、Gemini・ChatGPT双方から）。まず件数の少ないDB（例: product）だけで
+#: 挙動を確かめてから広げられるようにする。
+SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR = "SPREADSHEET_ROW_CREATION_DB_KEYS"
 
-def spreadsheet_row_creation_enabled() -> bool:
-    return os.environ.get(SPREADSHEET_ROW_CREATION_ENV_VAR, "").strip().lower() == "true"
+
+def spreadsheet_row_creation_enabled(db_key: str | None = None) -> bool:
+    """指定のdb_keyについて行の新規作成が許可されているか。
+
+    **2つの環境変数の両方を満たしたときだけ有効。**
+    フラグを立てるだけでは何も起きず、対象のdb_keyを明示して初めて書き込む。
+    """
+    if os.environ.get(SPREADSHEET_ROW_CREATION_ENV_VAR, "").strip().lower() != "true":
+        return False
+    allowed = {
+        key.strip()
+        for key in os.environ.get(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "").split(",")
+        if key.strip()
+    }
+    if not allowed:
+        return False
+    return "*" in allowed or (db_key is not None and db_key in allowed)
 
 
 class _MultiDbSpreadsheetSyncTarget(SyncTarget):
@@ -314,12 +334,13 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
             # 有効化すると次の同期から大量の行が書かれるため、既定OFFの環境変数で守る
             # （案件・取引先だけで6万件規模。Googleスプレッドシートのセル上限にも関わる
             # 業務判断なので、コード側の既定では書かない）。
-            if not spreadsheet_row_creation_enabled():
+            if not spreadsheet_row_creation_enabled(db_key):
                 logger.info(
                     "_MultiDbSpreadsheetSyncTarget: db_key=%r の行が未作成ですが、"
-                    "%s が有効でないため行の新規作成をスキップします",
+                    "%s と %s の両方で許可されていないため行の新規作成をスキップします",
                     db_key,
                     SPREADSHEET_ROW_CREATION_ENV_VAR,
+                    SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR,
                 )
                 return None
             target = self._resolve(db_key)

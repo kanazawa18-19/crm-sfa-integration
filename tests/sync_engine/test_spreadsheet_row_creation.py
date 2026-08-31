@@ -32,6 +32,7 @@ from src.db_schema.base import (
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 from src.sync_engine.production_wiring import (
+    SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR,
     SPREADSHEET_ROW_CREATION_ENV_VAR,
     _MultiDbSpreadsheetSyncTarget,
 )
@@ -293,6 +294,7 @@ class _行を数えるシート:
 def test_既定では行を作らない(monkeypatch: pytest.MonkeyPatch) -> None:
     """有効化すると6万件規模が一気に書かれるため、既定は必ずOFF。"""
     monkeypatch.delenv(SPREADSHEET_ROW_CREATION_ENV_VAR, raising=False)
+    monkeypatch.delenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, raising=False)
     sheet = _行を数えるシート()
     target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
 
@@ -302,8 +304,9 @@ def test_既定では行を作らない(monkeypatch: pytest.MonkeyPatch) -> None
     assert sheet.appended == []
 
 
-def test_フラグを有効にすると行を追記して行番号を返す(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_フラグとdb_keyの両方を許可して初めて行を追記する(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "client_master")
     sheet = _行を数えるシート()
     target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
 
@@ -313,11 +316,36 @@ def test_フラグを有効にすると行を追記して行番号を返す(monk
     assert sheet.appended == [{"取引先名": "新規"}]
 
 
+def test_フラグだけ立てても対象db_keyを指定しなければ追記しない(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真偽値1つで6万件が対象になるのは事故の範囲が大きすぎる、という指摘への対応
+    （2026-08-31、Gemini・ChatGPT双方から）。まず件数の少ないDBだけで試せるようにする。"""
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+    monkeypatch.delenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, raising=False)
+    sheet = _行を数えるシート()
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+
+    assert target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master") is None
+    assert sheet.appended == []
+
+
+def test_許可されていないdb_keyには追記しない(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "product")
+    sheet = _行を数えるシート()
+    target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
+
+    assert target.upsert_record(None, {"取引先名": "新規"}, db_key="client_master") is None
+    assert sheet.appended == []
+
+
 def test_フラグが有効でもdb_keyを解決できなければ追記しない(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """どのシートに書くか決まらないまま追記すると、別のDBの行を汚す。"""
     monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, "true")
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "*")
     sheet = _行を数えるシート()
     target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
 
@@ -330,6 +358,7 @@ def test_フラグが有効でもdb_keyを解決できなければ追記しな�
 def test_フラグはtrue以外を有効と解釈しない(値: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """`AUTO_CREATE_NEW_RECORDS_ENABLED`と同じ判定にそろえる（前後の空白は除く）。"""
     monkeypatch.setenv(SPREADSHEET_ROW_CREATION_ENV_VAR, 値)
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "client_master")
     sheet = _行を数えるシート()
     target = _MultiDbSpreadsheetSyncTarget({"client_master": sheet})
 

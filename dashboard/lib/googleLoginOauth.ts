@@ -16,6 +16,19 @@
 //    `getCurrentUser()` の前に処理する必要がある。
 import { redirectUri } from "@/lib/gmailOauth";
 
+//: stateのnonceを入れるcookie。**連携フローとは別名**にする。同じ名前を使い回すと、
+//: Gmail連携の途中でログインし直したときに互いのnonceを上書きし、進行中のフローが
+//: 無言で invalid_state になる。
+export const LOGIN_STATE_COOKIE = "admin_login_oauth_state";
+
+//: cookieのpath。コールバックが /gmail/oauth/callback なので、そこから読める範囲に置く。
+//: **削除するときも同じpathを渡さないと消えない**（Next.jsの `cookies.delete()` は
+//: 既定で path="/" を対象にするため。2026-08-31、Geminiのレビュー指摘）。
+export const LOGIN_STATE_COOKIE_PATH = "/gmail/oauth";
+
+//: stateに付ける印。コールバックはこれを見てログインフローと連携フローを分ける。
+export const LOGIN_PURPOSE = "admin_login";
+
 /** ログインに必要な最小のスコープ。カレンダーもGmailも要求しない。 */
 export const LOGIN_SCOPES = ["openid", "email", "profile"].join(" ");
 

@@ -1017,7 +1017,13 @@ class Dispatcher:
             )
             return mapping
 
-        updated = dataclasses.replace(mapping, spreadsheet_row=row_number)
+        # **保存の直前にストアを読み直してから行番号を載せる。**
+        # `IdMappingStore.upsert()`は全カラムを上書きするため、古いスナップショットから
+        # 組み立てると、その間に別プロセスが更新した`kintone_id`/`zoho_id`を
+        # 巻き戻してしまう（lost update。2026-08-31、ChatGPTのレビュー指摘）。
+        latest = self._store.get(mapping.notion_key)
+        base = latest if latest is not None else mapping
+        updated = dataclasses.replace(base, spreadsheet_row=row_number)
         # 一時的な障害（DB接続断・レート制限）で行番号を失うと、次回また追記されて
         # 行が重複する。`_register_new_record_mapping()`と同じ回数だけ再試行する。
         for attempt in range(_MAPPING_REGISTRATION_RETRIES + 1):
