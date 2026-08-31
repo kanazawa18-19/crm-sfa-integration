@@ -115,10 +115,16 @@ def kintone_action_record_context(record_id: str) -> Iterator[None]:
 
 
 def _resolve_client_master_for_kintone_action(client_name: Any) -> Any:
-    """アクション管理の`client_name`（顧客名、自由入力テキスト）を、⑥アクション履歴DBの
-    「👨‍👩‍👧‍👦 取引先マスター」リレーションへ解決する。解決できた場合はNotion page ID
-    （`build_notion_property_value`のRELATION型は単一idも受け付ける）、解決できなかった
-    場合（曖昧・候補なし。呼び出し先でRelationReviewQueueへ記録済み）は`SKIP_FIELD`を返す。
+    """kintoneの自由入力の会社名テキストを、取引先マスターDBへのリレーションへ解決する。
+
+    解決できた場合はNotion page ID（`build_notion_property_value`のRELATION型は単一idも
+    受け付ける）、解決できなかった場合（曖昧・候補なし。呼び出し先で
+    RelationReviewQueueへ記録済み）は`SKIP_FIELD`を返す。
+
+    アクション管理の`client_name`（顧客名）と、案件管理の`店舗名`（ラベル: 施設名（会社名））の
+    両方から使う（2026-08-31に案件も対象化した）。書き込み先のNotionプロパティ名は
+    呼び出し元の対応表が決めるため、この関数はDBごとの違いを知らない
+    （アクションは「👨‍👩‍👧‍👦 取引先マスター」、案件は「取引先マスター」）。
     """
     record_id = _current_kintone_action_record_id.get()
     resolved = resolve_client_master_relation(
@@ -146,6 +152,13 @@ _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any
     # フィールド作成順に由来する命名で、コード文字列とラベルの対応が直感に反する）。
     "初期費用_0": ("月額費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（ランニング）
     "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（イニシャル）
+    # 2026-08-31追加。ラベルは「施設名（会社名）」。アクション管理の`client_name`と同じく
+    # `ClientNameIndex`（Postgresのローカルミラー）へのSELECT一発で解決できるため、
+    # Webhookの同期応答時間内に収まる。
+    # **案件名の組み立てにも同じ値を使うが、そちらは新規作成時だけの処理として
+    # `new_record_builder.py`に置いている**（1フィールド→1プロパティ固定のこの表では
+    # 同じフィールドから2つのプロパティへ書けないため）。
+    "店舗名": ("取引先マスター", _resolve_client_master_for_kintone_action),
 }
 
 # 対象は transform_client_master() が実際にNotionプロパティへ書き込んでいるフィールドのうち、

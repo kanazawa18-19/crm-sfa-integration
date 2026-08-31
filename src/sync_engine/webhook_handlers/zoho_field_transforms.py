@@ -68,6 +68,7 @@ from src.migration.zoho_action import classify_zoho_action_type
 from src.migration.zoho_chain import normalize_approach_status
 from src.migration.zoho_client_master import normalize_prefecture
 from src.migration.zoho_project import _parse_bool, _parse_first_touch
+from src.relation_sync.resolve import resolve_client_master_relation
 from src.relation_sync.resolve_zoho import (
     ZohoActionRecordClient,
     resolve_zoho_action_client_master_relation,
@@ -314,8 +315,50 @@ _CLIENT_MASTER_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], 
 #   CONTACT_SCHEMA上いずれも`RequirementLevel.AUTO`かつ「Eight連携で自動投入」専用の
 #   プロパティ（`SyncScope.NOTION_ONLY`）。金沢さん確認済みの方針により今回のZoho連携では
 #   意図的に書き込まない（transform_zoho_contact()のdocstring参照）。
+def _current_zoho_relation_record_id() -> str:
+    """RelationReviewQueueへの記録に使う、いま処理中のZohoレコードID。
+
+    `zoho_action_relation_context()`はアクション用に導入したものだが、
+    Webhookハンドラ・新規レコード作成のどちらも**db_keyに関係なく**このコンテキストを
+    張っているため、連絡先からも同じものを読める。
+    """
+    context = _current_zoho_action_relation_context.get()
+    return context.record_id if context is not None else "unknown"
+
+
+def _resolve_client_master_from_zoho_lookup(value: Any) -> Any:
+    """Zohoのルックアップ項目（`{"name": ..., "id": ...}`）の会社名から、
+    取引先マスターDBへのリレーションを解決する。
+
+    連絡先の「お取引先」（api_name=field25）から使う（2026-08-31追加）。
+    それまで連絡先には取引先マスターを埋める経路が無く、**必須プロパティが常に欠けるため
+    Zoho発の新規連絡先はNotionに1件も作られていなかった**。
+
+    アクションで使っている`resolve_zoho_action_client_master_relation()`はZoho APIを
+    追加で叩いて関連レコードを辿るが、こちらは**ルックアップ項目に会社名が入っている**ため
+    APIを叩かずに済む。`ClientNameIndex`（Postgresのローカルミラー）へのSELECT一発で完結する。
+
+    解決できなかった場合（曖昧・候補なし・未入力）は`SKIP_FIELD`を返し、
+    そのフィールドだけ書き込みをスキップする。新規作成なら必須プロパティ不足として
+    Slackへ通知され、人が判断できる。
+    """
+    if isinstance(value, Mapping):
+        name = value.get("name") or ""
+    else:
+        name = value or ""
+    resolved = resolve_client_master_relation(
+        str(name),
+        source_tool="zoho",
+        source_record_id=_current_zoho_relation_record_id(),
+    )
+    return resolved if resolved is not None else SKIP_FIELD
+
+
 _CONTACT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
     # Zohoラベル != Notionプロパティ名。
+    # 2026-08-31追加。**これが無かったため、Zoho発の新規連絡先が1件も作られていなかった**
+    # （必須プロパティ「取引先マスター」が常に欠けて missing_required_properties で中止）。
+    "お取引先": ("取引先マスター", _resolve_client_master_from_zoho_lookup),
     "氏名": ("名前", lambda v: v),
     "部署名": ("部署", lambda v: v or None),
     "役職": ("役職", lambda v: v or None),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.db_schema.registry import get_schema
+from src.sync_engine.webhook_handlers import zoho_field_transforms as module
 from src.sync_engine.webhook_handlers.zoho_field_transforms import (
     ZOHO_LABEL_FIELD_MAPPINGS,
 )
@@ -153,3 +154,53 @@ class Test_アクション種別のマッピング:
         Noneのままなら missing_required_properties としてSlackへ通知され、
         Zoho側の入力を促せる（それが通知文の意図）。"""
         assert self._変換(未入力) is None
+
+
+# --- 連絡先の取引先リレーション（2026-08-31） ----------------------------------------------
+
+
+class Test_連絡先の取引先リレーション:
+    """Zoho連絡先の「お取引先」（api_name=field25、ルックアップ項目）から、
+    連絡先DBの「取引先マスター」リレーションを解決する。
+
+    **これが無かったため、Zoho発の新規連絡先が1件も作られていなかった**
+    （必須プロパティ「取引先マスター」が常に欠けて missing_required_properties で中止）。
+
+    アクションで使っている解決関数はZoho APIを追加で叩いて関連レコードを辿るが、
+    連絡先はルックアップ項目に会社名が入っているためAPIを叩かずに済む。
+    """
+
+    def _変換(self):
+        _, transform = ZOHO_LABEL_FIELD_MAPPINGS["contact"]["お取引先"]
+        return transform
+
+    def test_対応表に登録されている(self) -> None:
+        assert "お取引先" in ZOHO_LABEL_FIELD_MAPPINGS["contact"]
+        notion_property, _ = ZOHO_LABEL_FIELD_MAPPINGS["contact"]["お取引先"]
+        assert notion_property == "取引先マスター"
+
+    def test_ルックアップの会社名で名寄せする(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        渡された名前: list[str] = []
+
+        def _fake(raw_name: str, **_: object) -> str:
+            渡された名前.append(raw_name)
+            return "notion-page-5"
+
+        monkeypatch.setattr(module, "resolve_client_master_relation", _fake)
+
+        assert self._変換()({"name": "合同会社HB2", "id": "2233"}) == "notion-page-5"
+        assert 渡された名前 == ["合同会社HB2"]
+
+    def test_文字列で来ても扱える(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(module, "resolve_client_master_relation", lambda raw_name, **_: "p1")
+
+        assert self._変換()("合同会社HB2") == "p1"
+
+    def test_名寄せできなければ書き込まない(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """曖昧・候補なしのまま書くと、別の取引先に紐づけてしまう。
+        新規作成なら必須プロパティ不足としてSlackへ通知され、人が判断できる。"""
+        monkeypatch.setattr(module, "resolve_client_master_relation", lambda raw_name, **_: None)
+
+        # 書き込みをスキップするセンチネル（Noneは「値を明示的にクリアする」意味で
+        # 既に使われているため、区別できる別の値を返す）。
+        assert self._変換()({"name": "不明な会社"}) is module.SKIP_FIELD

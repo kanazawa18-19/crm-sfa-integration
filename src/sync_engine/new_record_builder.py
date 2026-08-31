@@ -67,6 +67,82 @@ def build_notion_properties_for_new_record(
     raise ValueError(f"unsupported source_tool for new record creation: {source_tool!r}")
 
 
+# kintone案件管理の実フィールドコード（2026-08-31、GET /k/v1/app/form/fields.json で検証）。
+# コードとラベルが一致しないので、必ずコードで持つ。
+_ACTION_TITLE_PROPERTY = "商談回数・電話回数・メール回数（何回目）"
+
+_KINTONE_PROJECT_FACILITY_FIELD = "店舗名"  # ラベル: 施設名（会社名）
+_KINTONE_PROJECT_SERVICE_FIELDS = (
+    "ドロップダウン_0",  # ラベル: サービス（ショット）
+    "複数選択",  # ラベル: サービス（ランニング）
+    "複数選択_0",  # ラベル: サービス（イニシャル）
+)
+
+
+# kintoneアクション管理の実フィールドコード（2026-08-31、実APIで検証）。
+_KINTONE_ACTION_CLIENT_FIELD = "client_name"  # ラベル: 顧客名（法人・個人・施設）
+_KINTONE_ACTION_CONTENT_FIELD = "actionContent"  # ラベル: アクション内容
+
+
+def _flatten_kintone_value(value: Any) -> list[str]:
+    """kintoneの単一選択/複数選択の値を、空を除いた文字列のリストにする。"""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def compose_kintone_project_name(raw_record: Mapping[str, Any]) -> str | None:
+    """kintoneの案件レコードから、案件管理DBの「案件名」を組み立てる。
+
+    **kintoneの案件管理アプリには「案件名」に相当する項目が無い**（2026-08-31確認）。
+    そのため、そのままでは必須プロパティが埋まらず、kintone発の新規案件は
+    Notionに1件も作られない状態だった。
+
+    金沢さんの方針（2026-08-31）に従い「施設名（会社名）＋提案サービス名」で組み立てる。
+    **片方しか無ければ、あるほうだけを使う。** 両方無ければNoneを返し、
+    従来どおり必須プロパティ不足としてSlackへ通知する（勝手に埋めない）。
+
+    サービスはショット/ランニング/イニシャルの3項目に分かれているため、
+    重複を除いて出現順に「・」でつなぐ。
+    """
+    facility = str(raw_record.get(_KINTONE_PROJECT_FACILITY_FIELD) or "").strip()
+
+    services: list[str] = []
+    for field in _KINTONE_PROJECT_SERVICE_FIELDS:
+        for name in _flatten_kintone_value(raw_record.get(field)):
+            if name not in services:
+                services.append(name)
+
+    parts = [part for part in (facility, "・".join(services)) if part]
+    return " ".join(parts) if parts else None
+
+
+def compose_kintone_action_title(raw_record: Mapping[str, Any]) -> str | None:
+    """kintoneのアクションレコードから、アクション履歴DBのタイトルを組み立てる。
+
+    **kintoneのアクション管理にはタイトルに相当する項目が無い**（2026-08-31確認。
+    フィールドは 顧客名／アクション内容／対応者／コメント／次回アクション日／
+    提案サービス／担当者名 のみ）。移行スクリプトもこのプロパティを作っていない。
+    そのため、そのままでは必須プロパティが埋まらず、kintone発の新規アクションは
+    Notionに1件も作られない状態だった。
+
+    案件名と同じ方針で「顧客名＋アクション内容」を組み立てる。
+    **片方しか無ければ、あるほうだけを使う。** 両方無ければNoneを返し、
+    従来どおり必須プロパティ不足としてSlackへ通知する（勝手に埋めない）。
+
+    プロパティ名が「商談回数・電話回数・メール回数（何回目）」なのは、Notion側で
+    タイトル列に付けられている名前がこれだから（回数そのものを入れる欄ではなく、
+    実際にはZoho側も「テレアポ」等のアクション名が入っている）。
+    """
+    client = str(raw_record.get(_KINTONE_ACTION_CLIENT_FIELD) or "").strip()
+    content = str(raw_record.get(_KINTONE_ACTION_CONTENT_FIELD) or "").strip()
+    parts = [part for part in (client, content) if part]
+    return " ".join(parts) if parts else None
+
+
 def _build_from_kintone_record(
     *, db_key: str, external_id: str, raw_record: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -99,6 +175,22 @@ def _build_from_kintone_record(
                 # 部分更新の「既存値を上書きしない」とは異なり、単に空欄のまま作成される）。
                 continue
             properties[notion_property] = transformed_value
+
+    # kintoneの案件管理には「案件名」に相当する項目が無いため、ここで組み立てる。
+    # 1フィールド→1プロパティ固定の対応表では複数フィールドを合成できないので、
+    # レコード全体を持っているこの新規作成の経路でだけ行う（更新時は組み立て直さない。
+    # 一度付いた案件名が更新のたびに書き換わるのは意図と違う）。
+    if db_key == "project" and "案件名" not in properties:
+        composed = compose_kintone_project_name(raw_record)
+        if composed is not None:
+            properties["案件名"] = composed
+
+    # アクション管理も同じ理由（kintone側にタイトルに相当する項目が無い）。
+    if db_key == "action" and _ACTION_TITLE_PROPERTY not in properties:
+        composed = compose_kintone_action_title(raw_record)
+        if composed is not None:
+            properties[_ACTION_TITLE_PROPERTY] = composed
+
     return properties
 
 

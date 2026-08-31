@@ -12,7 +12,11 @@ from __future__ import annotations
 import pytest
 
 from src.db_schema.base import Tool
-from src.sync_engine.new_record_builder import build_notion_properties_for_new_record
+from src.sync_engine.new_record_builder import (
+    build_notion_properties_for_new_record,
+    compose_kintone_action_title,
+    compose_kintone_project_name,
+)
 
 
 def test_build_from_kintone_client_master_record() -> None:
@@ -60,6 +64,10 @@ def test_build_from_kintone_action_resolves_client_master_relation(
     assert properties == {
         "履歴メモ": "折り返し予定",
         "👨‍👩‍👧‍👦 取引先マスター": "notion-page-1",
+        # kintoneのアクション管理にはタイトルに相当する項目が無いため、
+        # 顧客名＋アクション内容から組み立てる（2026-08-31）。
+        # ここでは顧客名しか無いので顧客名だけになる。
+        "商談回数・電話回数・メール回数（何回目）": "テスト商事",
     }
 
 
@@ -194,3 +202,66 @@ def test_build_raises_for_unsupported_source_tool() -> None:
         build_notion_properties_for_new_record(
             source_tool=Tool.NOTION, db_key="project", external_id="x", raw_record={}
         )
+
+
+# --- kintone側にタイトル・案件名が無い問題への対応（2026-08-31） --------------------------
+#
+# kintoneの案件管理には「案件名」、アクション管理にはタイトルに相当する項目が無い。
+# どちらも必須プロパティなので、そのままではkintone発の新規レコードが1件も作られない。
+# 「あるものを組み立て、片方しか無ければあるほうだけ、両方無ければ作らない」方針
+# （2026-08-31、金沢さん）。
+
+
+class Test_kintone案件の案件名を組み立てる:
+    def test_施設名とサービス名をつなぐ(self) -> None:
+        assert (
+            compose_kintone_project_name({"店舗名": "ホテルABC", "ドロップダウン_0": "リピッテ"})
+            == "ホテルABC リピッテ"
+        )
+
+    def test_サービスは3項目をまとめて重複を除く(self) -> None:
+        """kintoneのサービスはショット/ランニング/イニシャルの3項目に分かれている。"""
+        composed = compose_kintone_project_name(
+            {
+                "店舗名": "ホテルABC",
+                "ドロップダウン_0": "リピッテ",
+                "複数選択": ["メイリー", "リピッテ"],
+                "複数選択_0": "ホテラボ",
+            }
+        )
+        assert composed == "ホテルABC リピッテ・メイリー・ホテラボ"
+
+    def test_施設名しか無ければ施設名だけ(self) -> None:
+        assert compose_kintone_project_name({"店舗名": "ホテルABC"}) == "ホテルABC"
+
+    def test_サービスしか無ければサービスだけ(self) -> None:
+        assert compose_kintone_project_name({"ドロップダウン_0": "リピッテ"}) == "リピッテ"
+
+    def test_両方無ければNone(self) -> None:
+        """勝手に埋めない。必須プロパティ不足としてSlackへ通知させる。"""
+        assert compose_kintone_project_name({}) is None
+        assert compose_kintone_project_name({"店舗名": "  ", "ドロップダウン_0": ""}) is None
+
+    def test_新規作成の結果に案件名が入る(self) -> None:
+        properties = build_notion_properties_for_new_record(
+            source_tool=Tool.KINTONE,
+            db_key="project",
+            external_id="1",
+            raw_record={"店舗名": "ホテルABC", "複数選択": ["メイリー"]},
+        )
+        assert properties["案件名"] == "ホテルABC メイリー"
+
+
+class Test_kintoneアクションのタイトルを組み立てる:
+    def test_顧客名とアクション内容をつなぐ(self) -> None:
+        assert (
+            compose_kintone_action_title({"client_name": "ホテルABC", "actionContent": "テレアポ"})
+            == "ホテルABC テレアポ"
+        )
+
+    def test_片方しか無ければあるほうだけ(self) -> None:
+        assert compose_kintone_action_title({"client_name": "ホテルABC"}) == "ホテルABC"
+        assert compose_kintone_action_title({"actionContent": "テレアポ"}) == "テレアポ"
+
+    def test_両方無ければNone(self) -> None:
+        assert compose_kintone_action_title({}) is None

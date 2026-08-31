@@ -82,6 +82,7 @@ from src.sync_engine.webhook_handlers._common import (
 from src.sync_engine.webhook_handlers._relation_guard import (
     CLIENT_MASTER_RELATION_PROPERTY,
     NotionRelationLookupClient,
+    CLIENT_MASTER_RELATION_PROPERTIES,
     drop_client_master_relation_if_already_set,
 )
 from src.sync_engine.webhook_handlers.kintone_field_transforms import (
@@ -213,19 +214,21 @@ def kintone_payload_to_sync_event(
                 continue
             properties[notion_property] = value
 
-    if (
-        _CLIENT_MASTER_RELATION_PROPERTY in properties
-        and id_mapping_store is not None
-        and notion_client is not None
-    ):
-        drop_client_master_relation_if_already_set(
-            properties,
-            tool=Tool.KINTONE,
-            record_id=record_id,
-            db_key=db_key,
-            id_mapping_store=id_mapping_store,
-            notion_client=notion_client,
-        )
+    # プロパティ名はDBごとに違う（アクションは絵文字付き、案件・連絡先は素の名前）。
+    # **両方を見ないと、案件・連絡先で上書き防止が効かない**（2026-08-31）。
+    if id_mapping_store is not None and notion_client is not None:
+        for relation_property in CLIENT_MASTER_RELATION_PROPERTIES:
+            if relation_property not in properties:
+                continue
+            drop_client_master_relation_if_already_set(
+                properties,
+                tool=Tool.KINTONE,
+                record_id=record_id,
+                db_key=db_key,
+                id_mapping_store=id_mapping_store,
+                notion_client=notion_client,
+                property_name=relation_property,
+            )
 
     return SyncEvent(
         source_tool=Tool.KINTONE,

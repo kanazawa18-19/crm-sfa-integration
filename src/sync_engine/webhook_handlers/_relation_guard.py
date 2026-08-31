@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 # zoho_field_transforms.py参照）。両ハンドラで共通のNotionプロパティ名。
 CLIENT_MASTER_RELATION_PROPERTY = "👨‍👩‍👧‍👦 取引先マスター"
 
+# 案件管理DB・連絡先DBの同じ意味のリレーションは、絵文字の付かない素の名前
+# （2026-08-31、案件・連絡先の取引先リレーション自動解決を追加した際に判明）。
+# **プロパティ名がDBごとに違うので、ガードは両方を見る必要がある。**
+# 片方しか見ないと、案件・連絡先では上書き防止が効かないまま自動解決値が書かれる。
+CLIENT_MASTER_RELATION_PROPERTY_PLAIN = "取引先マスター"
+
+#: 上書き防止ガードの対象になりうるプロパティ名。
+CLIENT_MASTER_RELATION_PROPERTIES: tuple[str, ...] = (
+    CLIENT_MASTER_RELATION_PROPERTY,
+    CLIENT_MASTER_RELATION_PROPERTY_PLAIN,
+)
+
 
 class NotionRelationLookupClient(Protocol):
     """`drop_client_master_relation_if_already_set`が要求するNotionクライアントの

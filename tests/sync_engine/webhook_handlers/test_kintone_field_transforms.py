@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 
 from src.db_schema.registry import get_schema
+from src.sync_engine.webhook_handlers import kintone_field_transforms as module
 from src.sync_engine.webhook_handlers.kintone_field_transforms import (
     KINTONE_FIELD_TRANSFORMS,
+    SKIP_FIELD,
 )
 
 
@@ -148,7 +150,9 @@ def test_relation_dependent_fields_are_intentionally_excluded() -> None:
     # （下記test_action_client_name_field_*参照）。「案件名」は今回もスコープ外のまま
     # （kintoneのアクション管理には案件を特定できる情報が無いため。同モジュールdocstring
     # 参照）。
-    assert "店舗名" not in KINTONE_FIELD_TRANSFORMS["project"]  # ラベル: 施設名（会社名）
+    # 案件管理の"店舗名"（ラベル: 施設名（会社名））も2026-08-31に例外対応済み。
+    # client_nameと同じくClientNameIndexへのSELECT一発で解決できるため
+    # （下記Test_案件の取引先リレーション参照）。
     assert "cnctorMember" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 対応者
     assert "toPerson" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 担当者名
     assert "service" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 提案サービス
@@ -205,3 +209,36 @@ def test_action_client_name_field_passes_current_record_id_via_context(
             "source_record_id": "action-record-77",
         }
     ]
+
+
+# --- 案件の取引先リレーション（2026-08-31） ------------------------------------------------
+
+
+class Test_案件の取引先リレーション:
+    """kintone案件管理の「店舗名」（ラベル: 施設名（会社名））から、案件管理DBの
+    「取引先マスター」リレーションを解決する。
+
+    アクション管理の`client_name`と同じく、`ClientNameIndex`（Postgresのローカルミラー）への
+    SELECT一発で完結するため、Webhookの同期応答時間内に収まる。
+    **リレーションのプロパティ名はDBごとに違う**（アクションは絵文字付き、案件は素の名前）。
+    """
+
+    def test_対応表に登録されている(self) -> None:
+        assert "店舗名" in KINTONE_FIELD_TRANSFORMS["project"]
+        notion_property, _ = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
+        assert notion_property == "取引先マスター"
+
+    def test_名寄せできたらNotionページIDを返す(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            module, "resolve_client_master_relation", lambda raw_name, **_: "notion-page-9"
+        )
+        _, transform = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
+
+        assert transform("ホテルABC") == "notion-page-9"
+
+    def test_名寄せできなければ書き込まない(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """曖昧・候補なしのまま書くと、別の取引先に紐づけてしまう。"""
+        monkeypatch.setattr(module, "resolve_client_master_relation", lambda raw_name, **_: None)
+        _, transform = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
+
+        assert transform("ホテルABC") is SKIP_FIELD

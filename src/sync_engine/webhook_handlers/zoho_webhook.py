@@ -104,6 +104,7 @@ from src.sync_engine.webhook_handlers._common import (
 from src.sync_engine.webhook_handlers._relation_guard import (
     CLIENT_MASTER_RELATION_PROPERTY,
     NotionRelationLookupClient,
+    CLIENT_MASTER_RELATION_PROPERTIES,
     drop_client_master_relation_if_already_set,
 )
 from src.sync_engine.webhook_handlers.zoho_field_transforms import (
@@ -288,20 +289,23 @@ def zoho_payload_to_sync_events(
                     continue
                 properties[label] = value
 
-        if (
-            db_key == _ACTION_DB_KEY
-            and CLIENT_MASTER_RELATION_PROPERTY in properties
-            and id_mapping_store is not None
-            and notion_client is not None
-        ):
-            drop_client_master_relation_if_already_set(
-                properties,
-                tool=Tool.ZOHO,
-                record_id=record_id,
-                db_key=db_key,
-                id_mapping_store=id_mapping_store,
-                notion_client=notion_client,
-            )
+        # プロパティ名はDBごとに違う（アクションは絵文字付き、案件・連絡先は素の名前）。
+        # **両方を見ないと、案件・連絡先で上書き防止が効かない**（2026-08-31）。
+        # db_keyでの絞り込みもやめた。取引先リレーションの自動解決はアクション以外にも
+        # 広がったため、propertiesに入っているかどうかだけで判定すれば足りる。
+        if id_mapping_store is not None and notion_client is not None:
+            for relation_property in CLIENT_MASTER_RELATION_PROPERTIES:
+                if relation_property not in properties:
+                    continue
+                drop_client_master_relation_if_already_set(
+                    properties,
+                    tool=Tool.ZOHO,
+                    record_id=record_id,
+                    db_key=db_key,
+                    id_mapping_store=id_mapping_store,
+                    notion_client=notion_client,
+                    property_name=relation_property,
+                )
 
         events.append(
             SyncEvent(
