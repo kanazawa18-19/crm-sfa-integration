@@ -136,6 +136,59 @@ class DispatchResult:
         return any(p.skipped_tools for p in self.properties)
 
 
+class _VersionTracker:
+    """1イベントの間、書き込みに添える「版」を管理する（2026-09-01）。
+
+    版（kintoneの`$revision`・Zohoの`Modified_Time`）は**こちらが書くたびに相手側で
+    進む**。イベントの先頭で読んだ版を同じイベント内で使い回すと、2つ目以降の
+    プロパティで「読んだ後に誰かが更新した」と誤判定されて409/412で拒否され、
+    **その値は再送されないので恒久的に反映されないまま残る**
+    （2026-08-31、shirokuma-sec・ChatGPTが独立に指摘）。
+
+    そこで**一度使った版は取り直す**。1プロパティにつきGETが1回増えるが、
+    「守れない」より「少し遅い」を選ぶ。
+
+    ■ 競合解決のスナップショットには触らない
+
+    `records_by_tool`は競合解決が参照する「イベント開始時点の現在値」で、
+    **1イベント内の全プロパティが同じスナップショットを見る**という性質がある。
+    ここから要素を消すと、2つ目以降のプロパティで「現在値が無い」と誤判定され、
+    競合判定を経ずに上書きされる。版の管理は必ず別に持つ。
+
+    ■ 本来の姿
+
+    正しくは「1イベント・1ツールにつき1回の書き込みにまとめる」。そうすれば
+    取り直し自体が要らず、API呼び出しも減る。ただし結果の報告（どのプロパティが
+    どのツールへ書けたか）の作りが変わり、Slack通知の判定にも影響するため、
+    **稼働中のこの経路に一度に重ねず、別の変更として行う。**
+    """
+
+    def __init__(
+        self,
+        dispatcher: "Dispatcher",
+        mapping: IdMapping,
+        records_by_tool: Mapping[Tool, Mapping[str, Any]],
+    ) -> None:
+        self._dispatcher = dispatcher
+        self._mapping = mapping
+        self._initial = {
+            tool: dispatcher._expected_version(tool, record)
+            for tool, record in records_by_tool.items()
+        }
+        self._used: set[Tool] = set()
+
+    def take(self, tool: Tool) -> str | None:
+        if tool not in self._used:
+            version = self._initial.get(tool)
+            if version is not None:
+                # 版が取れた時だけ「使った」と覚える。版を持たないツール
+                # （Notion・スプレッドシート）で無駄な取り直しをしないため。
+                self._used.add(tool)
+            return version
+        record = self._dispatcher._fetch_one_version(tool, self._mapping)
+        return self._dispatcher._expected_version(tool, record) if record is not None else None
+
+
 class Dispatcher:
     """SyncEventを受け取り、各SyncTargetへの反映を指示するハブ。"""
 
@@ -217,12 +270,14 @@ class Dispatcher:
             # 行わないまま、**版（kintoneのrevision / ZohoのModified_Time）だけ**を読んで
             # 書き込みに添える。相手側で更新されていれば相手が弾いてくれる
             # （`_write_value`の`ConcurrentModificationError`）。
-            versions_by_tool = self._fetch_versions(target_tools, mapping)
+            versions = self._version_tracker(
+                mapping, self._fetch_versions(target_tools, mapping)
+            )
             for property_name, prop, new_value in prepared:
                 # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
                 intended = frozenset(t for t in target_tools if prop.should_sync_to(t))
                 written, skipped, mapping = self._write_values(
-                    intended, mapping, property_name, new_value, versions_by_tool
+                    intended, mapping, property_name, new_value, versions
                 )
                 results.append(
                     PropertyDispatchResult(
@@ -321,7 +376,11 @@ class Dispatcher:
                 continue
             records_by_tool[tool] = record
 
-        # --- フェーズ3: 判定と書き込み（ここから先は現在値の取得を行わない） ---
+        # 版は書き込みのたびに進むので、専用に管理する（`_VersionTracker`参照）。
+        # **`records_by_tool`はここから一切変更しない**（競合解決が見るスナップショット）。
+        versions = self._version_tracker(mapping, records_by_tool)
+
+        # --- フェーズ3: 判定と書き込み（現在値の再取得は版の取り直しだけ） ---
         for property_name, prop, new_value in prepared:
             other_tools = frozenset(t for t in needed_tools if prop.should_sync_to(t))
 
@@ -337,7 +396,7 @@ class Dispatcher:
                 # フォールバックしていたことが原因（conflict_resolver.pyの修正で対応済み）。
                 intended = frozenset({Tool.NOTION}) | other_tools
                 written, skipped, mapping = self._write_values(
-                    intended, mapping, property_name, new_value, records_by_tool
+                    intended, mapping, property_name, new_value, versions
                 )
                 results.append(
                     PropertyDispatchResult(
@@ -394,7 +453,7 @@ class Dispatcher:
             # （比較には参加していないが、確定した値へ補完すべきsync_scope対象ツール）。
             intended = frozenset(resolution.target_tools | missing_tools)
             written, skipped, mapping = self._write_values(
-                intended, mapping, property_name, resolution.resolved_value, records_by_tool
+                intended, mapping, property_name, resolution.resolved_value, versions
             )
 
             # BLOCKER2: 却下データの退避（データ退避）とSlackアラート通知（重要項目のみ）。
@@ -942,7 +1001,7 @@ class Dispatcher:
         mapping: IdMapping,
         property_name: str,
         value: object,
-        records_by_tool: MutableMapping[Tool, Mapping[str, Any]] | None = None,
+        versions: "_VersionTracker | None" = None,
     ) -> tuple[frozenset[Tool], frozenset[Tool], IdMapping]:
         """`tools`（書き込み対象として意図した全ツール）へ書き込みを試み、実際に書き込めた
         ツール・書き込めなかった（スキップされた）ツール・**更新後のmapping**を返す
@@ -959,7 +1018,7 @@ class Dispatcher:
                 mapping,
                 property_name,
                 value,
-                self._take_expected_version(tool, records_by_tool),
+                versions.take(tool) if versions is not None else None,
             )
             if ok:
                 written.add(tool)
@@ -967,33 +1026,36 @@ class Dispatcher:
                 skipped.add(tool)
         return frozenset(written), frozenset(skipped), mapping
 
-    def _take_expected_version(
-        self, tool: Tool, records_by_tool: MutableMapping[Tool, Mapping[str, Any]] | None
-    ) -> str | None:
-        """このイベントで、そのツールへ**最初に書くときだけ**版を添える（2026-08-31）。
+    def _version_tracker(
+        self, mapping: IdMapping, records_by_tool: Mapping[Tool, Mapping[str, Any]] | None
+    ) -> _VersionTracker:
+        return _VersionTracker(self, mapping, records_by_tool or {})
 
-        ■ なぜ「最初だけ」なのか（shirokuma-secレビューBLOCKER対応）
+    def _fetch_one_version(self, tool: Tool, mapping: IdMapping) -> Mapping[str, Any] | None:
+        """1ツールぶんの現在値を取り直す（版を取るためだけ）。
 
-        現在値はイベントの先頭で1回だけ読む。ところが版（kintoneの`$revision`・Zohoの
-        `Modified_Time`）は**こちらが書くたびに相手側で進む**。同じイベントで同じツールへ
-        2つ以上のプロパティを書くと、2つ目以降は古い版を送ることになり、相手からは
-        「読んだ後に誰かが更新した」ように見えて409/412で拒否される。
-        しかも拒否された値は再送されないため、**恒久的に反映されないまま残る**。
-        「案件名と電話番号を同時に変更」のような日常的な操作で起きる。
+        `_take_expected_version()`が「使った版を捨てたあと」に呼ぶ。
+        取れなければNoneを返し、版なしで書く（読めないことを理由に同期を止めない）。
 
-        本来は「1イベント・1ツールにつき1回の書き込みにまとめる」のが正しい
-        （プロパティごとにAPIを叩いている今の作りは、そもそも回数も無駄）。
-        そこまでの作り替えは影響が大きいので、まずは**偽の競合による値の消失**だけを
-        確実に止める。2つ目以降は版なしで書く（保護されるのは1つ目だけになるが、
-        窓は「自分がこのイベントを処理している間」に縮まる。何も書けないよりよい）。
+        **`mapping`は引数で受け取る。** Dispatcherはプロセス内で使い回される単一の
+        インスタンスなので、インスタンス変数に置くと並行リクエストで混ざる。
         """
-        if records_by_tool is None:
+        target = self._targets.get(tool)
+        external_id = _external_id_for(tool, mapping)
+        if target is None or external_id is None:
             return None
-        version = self._expected_version(tool, records_by_tool.get(tool))
-        if version is not None:
-            # 使ったら落とす。同じイベントの2回目以降は版なしになる。
-            records_by_tool.pop(tool, None)
-        return version
+        try:
+            return target.get_record(external_id, db_key=mapping.db_key)
+        except Exception:  # noqa: BLE001 (クライアント実装依存の例外を広く受ける)
+            logger.warning(
+                "版の取り直しに失敗しました。版なしで書き込みます "
+                "(tool=%s, db_key=%r, external_id=%r)",
+                tool.value,
+                mapping.db_key,
+                external_id,
+                exc_info=True,
+            )
+            return None
 
     def _fetch_versions(
         self, tools: frozenset[Tool], mapping: IdMapping

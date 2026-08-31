@@ -36,6 +36,10 @@ class _KintoneClient:
         self, app: str, record_id: str, record: dict[str, Any], *, expected_version=None
     ) -> None:
         self.updates.append((record_id, dict(record), expected_version))
+        # **kintoneは書き込みのたびにrevisionを進める。** 本物と同じ振る舞いにしないと、
+        # 「同じイベント内で版を使い回す」不具合をテストで検出できない。
+        if self.revision is not None:
+            self.revision = str(int(self.revision) + 1)
 
 
 class _ZohoClient:
@@ -113,13 +117,16 @@ def test_rejected_write_is_reported_as_skipped() -> None:
     assert Tool.KINTONE in result.properties[0].skipped_tools
 
 
-def test_version_is_only_attached_to_the_first_write_per_tool() -> None:
-    """**同じイベントで同じツールへ2回書くとき、2回目に古い版を送ってはいけない。**
+def test_version_is_refreshed_between_writes_in_the_same_event() -> None:
+    """**同じイベントで同じツールへ2回書くとき、2回目は取り直した版を送る。**
 
     版はこちらが書くたびに相手側で進む。同じ版を使い回すと、2回目以降が
     「読んだ後に誰かが更新した」と誤判定されて拒否され、その値は再送されないため
-    恒久的に反映されないまま残る（shirokuma-secレビューBLOCKER、2026-08-31）。
+    恒久的に反映されないまま残る（shirokuma-sec・ChatGPTが独立に指摘、2026-08-31）。
     「案件名と電話番号を同時に変更」のような日常的な操作で起きる。
+
+    暫定対応では「最初の1回だけ版を添える」にしていたが、それは2回目以降の保護を
+    捨てているのと同じなので、**取り直す**方式に変えた（2026-09-01）。
     """
     client = _KintoneClient(revision="7")
     store = SQLiteIdMappingStore()
@@ -149,5 +156,79 @@ def test_version_is_only_attached_to_the_first_write_per_tool() -> None:
     versions = [version for _id, _record, version in client.updates]
     assert len(versions) == 2
     assert versions[0] == "7"
-    # 2回目は版なし。古い版を送って偽の競合を起こすより、保護を諦める方がまし。
-    assert versions[1] is None
+    # 2回目は取り直した版（1回目の書き込みで進んでいる）。**古い"7"を送ってはいけない。**
+    assert versions[1] == "8"
+
+
+def test_conflict_snapshot_is_not_disturbed_by_version_refresh() -> None:
+    """**版の取り直しが、競合解決の見るスナップショットを壊さないこと。**
+
+    1イベント内の全プロパティは同じスナップショットを見る、という性質がある。
+    版を管理するために現在値の辞書から要素を消すと、2つ目以降のプロパティで
+    「現在値が無い」と誤判定され、競合判定を経ずに上書きされる
+    （暫定対応でこの不具合を作りかけた。既存テストが捕まえた）。
+    """
+    client = _KintoneClient(revision="7")
+    store = SQLiteIdMappingStore()
+    store.upsert(
+        IdMapping(
+            notion_key="page-1",
+            db_key="client_master",
+            kintone_id="1001",
+            last_synced_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        ),
+        expected_last_synced_at=None,
+    )
+    dispatcher = Dispatcher(
+        store, {Tool.KINTONE: KintoneSyncTarget(client, "取引先マスタ")}, sync_system_id="test"
+    )
+
+    result = dispatcher.dispatch(
+        SyncEvent(
+            source_tool=Tool.NOTION,
+            db_key="client_master",
+            external_id="page-1",
+            properties={"取引先名": "新名称", "TEL": "03-1111-2222"},
+            occurred_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        )
+    )
+
+    # 2プロパティとも kintone へ書き込まれ、片方だけ落ちたりしないこと
+    # （Zoho・スプレッドシートはこのテストで未設定なのでスキップされる）。
+    assert all(Tool.KINTONE in p.written_tools for p in result.properties)
+    assert len(client.updates) == 2
+
+
+def test_version_is_not_refetched_for_tools_without_a_version() -> None:
+    """版を持たないツールでは取り直しを走らせない（無駄なAPI呼び出しを増やさない）。"""
+
+    class _NoVersion(_KintoneClient):
+        def get_record(self, app: str, record_id: str):
+            self.get_calls = getattr(self, "get_calls", 0) + 1
+            return {"顧客名": "旧名称"}  # $revision が無い
+
+    client = _NoVersion()
+    store = SQLiteIdMappingStore()
+    store.upsert(
+        IdMapping(
+            notion_key="page-1",
+            db_key="client_master",
+            kintone_id="1001",
+            last_synced_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        ),
+        expected_last_synced_at=None,
+    )
+    Dispatcher(
+        store, {Tool.KINTONE: KintoneSyncTarget(client, "取引先マスタ")}, sync_system_id="test"
+    ).dispatch(
+        SyncEvent(
+            source_tool=Tool.NOTION,
+            db_key="client_master",
+            external_id="page-1",
+            properties={"取引先名": "新名称", "TEL": "03-1111-2222"},
+            occurred_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        )
+    )
+
+    # 版取得の1回だけ。2プロパティ目で取り直さない。
+    assert client.get_calls == 1
