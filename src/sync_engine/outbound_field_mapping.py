@@ -44,9 +44,14 @@ logger = logging.getLogger(__name__)
 
 _ZOHO_FIELD_MAPPING_PATH = Path(__file__).resolve().parents[2] / "config" / "zoho_field_mapping.json"
 
-#: 値をそのまま外部へ渡してよいNotionプロパティ型。
-#: 選択肢系（SELECT/STATUS/MULTI_SELECT）とCHECKBOX、RELATIONは値の逆変換が要るため除く。
-#: RELATIONの値はNotionのページIDで、外部ツールには存在しない識別子なので原理的に送れない。
+#: 値をそのまま外部へ渡してよいNotionプロパティ型。**ここに無い型は全て対象外**。
+#: 除外している型と理由（`PropertyType`の全列挙に対する差分、2026-08-31）:
+#:   SELECT / STATUS / MULTI_SELECT / CHECKBOX … 取り込みが多対一なので機械的に逆変換できない
+#:     （Zohoの「メルアポ」も「メール」もNotionでは「メール」になる。どちらへ戻すか決められない）
+#:   RELATION / USER … 値がNotionのページID・ユーザーIDで、外部ツールには存在しない識別子
+#:   DATETIME / JSON_TEXT … 外部側の受け入れ形式を実データで確認できていないため保留
+#:   ROLLUP / FORMULA / UNIQUE_ID / CREATED_TIME / LAST_EDITED_TIME / CREATED_BY / FILES
+#:     … Notion側が計算・自動採番する読み取り専用の型（`sync_scope=INTERNAL`が強制される）
 _PASSTHROUGH_TYPES = frozenset(
     {
         PropertyType.TITLE,
@@ -64,15 +69,19 @@ _ISO_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T")
 
 
 @lru_cache(maxsize=1)
-def _zoho_api_name_by_label() -> dict[str, dict[str, str]]:
-    """{モジュール名: {ラベル: api_name}}。同一ラベルが複数api_nameに割り当たることがある。"""
+def _zoho_api_names_by_label() -> dict[str, dict[str, list[str]]]:
+    """{モジュール名: {ラベル: [api_name, ...]}}。
+
+    同一ラベルが複数のapi_nameに割り当たることが実際にある（例: Deals の「作成日時」は
+    `Created_Time`と`field42`の2つ）。**ここで先勝ちに畳み込むと曖昧さが消えてしまい、
+    `_choose()`の安全弁が働かない**ので、候補は全部持ち上げる。
+    """
     raw: dict[str, dict[str, str]] = json.loads(_ZOHO_FIELD_MAPPING_PATH.read_text(encoding="utf-8"))
-    by_label: dict[str, dict[str, str]] = {}
+    by_label: dict[str, dict[str, list[str]]] = {}
     for module, fields in raw.items():
-        table: dict[str, str] = {}
+        table: dict[str, list[str]] = {}
         for api_name, label in fields.items():
-            # 先勝ち。ラベル重複時はどちらでも曖昧なので、下の候補選定で弾く。
-            table.setdefault(label, api_name)
+            table.setdefault(label, []).append(api_name)
         by_label[module] = table
     return by_label
 
@@ -89,7 +98,9 @@ def _passthrough_properties() -> dict[str, dict[str, PropertyType]]:
     return result
 
 
-def _choose(property_name: str, candidates: list[tuple[str, str]]) -> str | None:
+def _choose_unique_outbound_target(
+    property_name: str, candidates: list[tuple[str, str]]
+) -> str | None:
     """候補が複数あるとき、**ラベルがNotionのプロパティ名と完全一致するもの**を採る。
 
     一致するものが無ければ、どちらへ書くべきか機械的には決められないのでNoneを返す
@@ -100,6 +111,8 @@ def _choose(property_name: str, candidates: list[tuple[str, str]]) -> str | None
     exact = [external for label, external in candidates if label == property_name]
     if len(exact) == 1:
         return exact[0]
+    # 完全一致が2つ以上あるのは「同じラベルが複数のフィールドに付いている」ケース。
+    # どちらが本命か判断材料が無いので、ここも対象外に倒す。
     logger.warning(
         "outbound_field_mapping: 送り先を一意に決められないため対象外にします "
         "(property=%r, candidates=%r)",
@@ -113,7 +126,7 @@ def _choose(property_name: str, candidates: list[tuple[str, str]]) -> str | None
 def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
     """{db_key: {Notionプロパティ名: Zohoのapi_name}}。"""
     safe = _passthrough_properties()
-    api_by_label = _zoho_api_name_by_label()
+    api_by_label = _zoho_api_names_by_label()
     result: dict[str, dict[str, str]] = {}
     for schema in ALL_SCHEMAS:
         allowed = safe.get(schema.key, {})
@@ -124,13 +137,11 @@ def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
         ).items():
             if property_name not in allowed:
                 continue
-            api_name = labels.get(label)
-            if api_name is None:
-                continue
-            candidates.setdefault(property_name, []).append((label, api_name))
+            for api_name in labels.get(label, ()):
+                candidates.setdefault(property_name, []).append((label, api_name))
         table = {}
         for property_name, found in candidates.items():
-            chosen = _choose(property_name, found)
+            chosen = _choose_unique_outbound_target(property_name, found)
             if chosen is not None:
                 table[property_name] = chosen
         result[schema.key] = table
@@ -151,19 +162,36 @@ def kintone_outbound_field_names() -> dict[str, dict[str, str]]:
             candidates.setdefault(property_name, []).append((field_code, field_code))
         table = {}
         for property_name, found in candidates.items():
-            chosen = _choose(property_name, found)
+            chosen = _choose_unique_outbound_target(property_name, found)
             if chosen is not None:
                 table[property_name] = chosen
         result[db_key] = table
     return result
 
 
-def _normalize_outbound_value(value: Any) -> Any:
+@lru_cache(maxsize=1)
+def _date_properties() -> dict[str, frozenset[str]]:
+    """{db_key: DATE型のプロパティ名の集合}。"""
+    return {
+        schema.key: frozenset(
+            prop.name for prop in schema.properties if prop.property_type is PropertyType.DATE
+        )
+        for schema in ALL_SCHEMAS
+    }
+
+
+def _normalize_outbound_value(db_key: str, property_name: str, value: Any) -> Any:
     """外部が受け取れる形へ最小限だけ整える。
 
     Notionの日付は時刻付き（`2026-08-31T09:00:00.000+09:00`）で返ることがあり、
     kintoneのDATEフィールドもZohoの日付項目も日付部分しか受け付けない。
+
+    **DATE型のプロパティにだけ適用する。** 型を見ずに全文字列へ掛けると、
+    たまたまISO日時から始まる自由記述テキストが日付だけに切り詰められ、本文が消える
+    （shirokuma-secレビューWARN、2026-08-31）。
     """
+    if property_name not in _date_properties().get(db_key, frozenset()):
+        return value
     if isinstance(value, str):
         match = _ISO_DATETIME_RE.match(value)
         if match:
@@ -172,7 +200,7 @@ def _normalize_outbound_value(value: Any) -> Any:
 
 
 def translate_properties(
-    tool_table: dict[str, dict[str, str]], db_key: str | None, properties: dict[str, Any]
+    outbound_table: dict[str, dict[str, str]], db_key: str | None, properties: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
     """Notionのプロパティ名を外部のフィールド名へ置き換える。
 
@@ -182,7 +210,7 @@ def translate_properties(
     Notionのプロパティ名がそのまま外部APIへ渡るという元の不具合に戻るため
     （「変換できないから、とりあえずそのまま送る」は、送った気になるだけで何も起きない）。
     """
-    table = tool_table.get(db_key) if db_key is not None else None
+    table = outbound_table.get(db_key) if db_key is not None else None
     if table is None:
         return {}, list(properties)
     translated: dict[str, Any] = {}
@@ -192,5 +220,5 @@ def translate_properties(
         if external is None:
             unmapped.append(property_name)
             continue
-        translated[external] = _normalize_outbound_value(value)
+        translated[external] = _normalize_outbound_value(db_key, property_name, value)
     return translated, unmapped

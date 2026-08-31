@@ -20,6 +20,10 @@ from src.sync_engine.sync_targets.base import SyncTarget
 
 logger = logging.getLogger(__name__)
 
+# **★ この項目はZoho側に存在しない**（2026-08-31、config/zoho_field_mapping.jsonで全項目を確認）。
+# つまり論理削除は現状どのツールでも成立しない。ただし呼び出し元が無く（Dispatcherは
+# Notionに対してのみdelete_record()を呼ぶ）、実害は出ていない休眠経路。
+# ここを配線する前に、Zoho側へ削除フラグ相当の項目を作るか、別の削除方式を決めること。
 _DELETE_FLAG_FIELD = "削除フラグ"
 
 
@@ -85,7 +89,10 @@ class ZohoSyncTarget(SyncTarget):
             return external_id
         payload = self._to_zoho_payload(properties, db_key)
         if payload is None:
-            return None if external_id is None else external_id
+            # 1項目も送っていないので、更新であっても「書き込めていない」を返す。
+            # ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、
+            # まさにこの変更が無くそうとしている「スキップが成功に見える」状態に戻る。
+            return None
         if external_id is None:
             return self._client.insert_record(self._module, payload)
         self._client.update_record(self._module, external_id, payload)

@@ -14,6 +14,10 @@ from src.sync_engine.sync_targets.base import SyncTarget
 
 logger = logging.getLogger(__name__)
 
+# **★ この項目はkintone側に存在しない**（2026-08-31、GET /k/v1/app/form/fields.jsonで全項目を確認）。
+# つまり論理削除は現状どのツールでも成立しない。ただし呼び出し元が無く（Dispatcherは
+# Notionに対してのみdelete_record()を呼ぶ）、実害は出ていない休眠経路。
+# ここを配線する前に、kintone側へ削除フラグ相当の項目を作るか、別の削除方式を決めること。
 _DELETE_FLAG_FIELD = "削除フラグ"
 
 
@@ -63,7 +67,10 @@ class KintoneSyncTarget(SyncTarget):
     ) -> str | None:
         payload = self._to_kintone_payload(properties, db_key)
         if payload is None:
-            return external_id
+            # 1項目も送っていないので、更新であっても「書き込めていない」を返す。
+            # ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、
+            # まさにこの変更が無くそうとしている「スキップが成功に見える」状態に戻る。
+            return None
         if external_id is None:
             return self._client.add_record(self._app, payload)
         self._client.update_record(self._app, external_id, payload)

@@ -81,7 +81,9 @@ def test_upsert_record_skips_when_zoho_field_cannot_be_determined() -> None:
     target = ZohoSyncTarget(client, "案件", enabled=True)
 
     assert target.upsert_record(None, {"存在しない項目": "x"}, db_key="project") is None
-    assert target.upsert_record("zoho-1", {"存在しない項目": "x"}, db_key="project") == "zoho-1"
+    # 更新でも「書き込めていない」を返す。ここでexternal_idを返すとDispatcherが
+    # 書き込み成功として数えてしまう。
+    assert target.upsert_record("zoho-1", {"存在しない項目": "x"}, db_key="project") is None
     assert client.records == {}
 
 

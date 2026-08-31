@@ -425,3 +425,14 @@ model QuoteNumberSequence {
   datePrefix String @id
   lastSeq    Int    @default(0)
 }
+
+/// Webhookを「いつ・どこから」最後に受け取ったかの記録（2026-08-31）。
+/// 購読が切れているのか、たまたま変更が無かっただけなのかを後から判別するために持つ。
+/// Vercel Hobbyのランタイムログは保持が約1時間しかなく、ログでは答えが出ないため。
+/// 書き込みはPython側（src/sync_engine/webhook_receipts.py）から行う。
+model WebhookReceipt {
+  /// 送信元。Webhookのパス名と揃える（notion / kintone / zoho / spreadsheet）。
+  source         String   @id
+  lastReceivedAt DateTime
+  receiptCount   BigInt   @default(0)
+}

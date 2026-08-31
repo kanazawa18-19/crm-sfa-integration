@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, Response
 
 from src.api.dependencies import wiring_dependency
+from src.sync_engine import webhook_receipts
 from src.sync_engine.production_wiring import ProductionSyncWiring
 from src.sync_engine.webhook_handlers.gmail_push_webhook import (
     handler as gmail_push_webhook_handler,
@@ -135,6 +136,8 @@ async def webhook_notion(
     実際のNotion API Webhooksのペイロードはページ全体を含まないため、
     `handler_with_proxy()`（ページ全体をNotion APIから再取得するプロキシ層）を使う。
     """
+    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
+    webhook_receipts.record_webhook_receipt(webhook_receipts.NOTION)
     event = await _lambda_event_from_request(request)
     if wiring.any_db_page_client is None:
         logger.error(
@@ -163,6 +166,8 @@ async def webhook_notion(
 async def webhook_kintone(
     request: Request, wiring: ProductionSyncWiring = Depends(wiring_dependency)
 ) -> Response:
+    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
+    webhook_receipts.record_webhook_receipt(webhook_receipts.KINTONE)
     event = await _lambda_event_from_request(request)
     # id_mapping_store/notion_client: 取引先マスターリレーションの「後勝ち」上書き防止ガード用
     # （2026-08-25、GPT-5.6クロスレビュー指摘対応。kintone_webhook.pyのモジュールdocstring
@@ -182,6 +187,8 @@ async def webhook_kintone(
 async def webhook_zoho(
     request: Request, wiring: ProductionSyncWiring = Depends(wiring_dependency)
 ) -> Response:
+    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
+    webhook_receipts.record_webhook_receipt(webhook_receipts.ZOHO)
     event = await _lambda_event_from_request(request)
     # id_mapping_store/notion_client/zoho_client: ⑥アクション履歴DBの取引先マスターリレーション
     # 自動解決・「後勝ち」上書き防止ガード用（2026-08-25、Round2。kintone側と同じ設計、
@@ -203,6 +210,8 @@ async def webhook_zoho(
 async def webhook_spreadsheet(
     request: Request, wiring: ProductionSyncWiring = Depends(wiring_dependency)
 ) -> Response:
+    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
+    webhook_receipts.record_webhook_receipt(webhook_receipts.SPREADSHEET)
     event = await _lambda_event_from_request(request)
     result = spreadsheet_webhook_handler(event, context=None, dispatcher=wiring.dispatcher)
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)

@@ -29,6 +29,7 @@ from src.sync_engine.production_wiring import (
     SkipTrackingDispatcher,
     _MultiDbKintoneSyncTarget,
     _MultiDbNotionSyncTarget,
+    _MultiDbZohoSyncTarget,
     _warn_if_id_mapping_store_not_persistent,
     build_calendar_sync_callable,
     build_client_name_index_sync_callable,
@@ -45,6 +46,8 @@ from src.sync_engine.production_wiring import (
     reset_production_wiring,
 )
 from src.sync_engine.sync_event import SyncEvent
+from src.sync_engine.sync_targets.kintone_sync import KintoneSyncTarget
+from src.sync_engine.sync_targets.zoho_sync import ZohoSyncTarget
 
 NOW = datetime(2026, 8, 11, 9, 0, 0, tzinfo=timezone.utc)
 
@@ -739,6 +742,148 @@ def test_multi_db_kintone_sync_target_get_record_returns_none_when_no_target() -
     router = _MultiDbKintoneSyncTarget({})
 
     assert router.get_record("no-such-id", db_key="project") is None
+
+
+# --- ルーターから末端までの結合（2026-08-31、kuma-qaレビューBLOCKER対応） -----------------------
+#
+# ルーターがdb_keyを下位ターゲットへ渡さないと項目名の逆変換が効かない。実際、
+# `db_key=db_key` を外しても既存テストは1件も落ちなかった（Fakeがdb_keyを記録していないため）。
+# ここでは**本物の**KintoneSyncTarget/ZohoSyncTargetを噛ませ、APIクライアントだけ差し替えて
+# 「Notionのプロパティ名が外部のフィールド名に変わって届くこと」を末端で確かめる。
+
+
+class _RecordingKintoneClient:
+    def __init__(self) -> None:
+        self.updates: list[tuple[str, str, dict[str, Any]]] = []
+
+    def get_record(self, app: str, record_id: str) -> dict[str, Any] | None:
+        return None
+
+    def add_record(self, app: str, record: dict[str, Any]) -> str:
+        raise AssertionError("この結合テストでは新規作成しない")
+
+    def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
+        self.updates.append((app, record_id, dict(record)))
+
+
+class _RecordingZohoClient:
+    def __init__(self) -> None:
+        self.updates: list[tuple[str, str, dict[str, Any]]] = []
+
+    def get_record(self, module: str, record_id: str) -> dict[str, Any] | None:
+        return None
+
+    def insert_record(self, module: str, record: dict[str, Any]) -> str:
+        raise AssertionError("この結合テストでは新規作成しない")
+
+    def update_record(self, module: str, record_id: str, record: dict[str, Any]) -> None:
+        self.updates.append((module, record_id, dict(record)))
+
+
+def test_multi_db_kintone_router_passes_db_key_so_field_codes_are_resolved() -> None:
+    client = _RecordingKintoneClient()
+    router = _MultiDbKintoneSyncTarget(
+        {"client_master": KintoneSyncTarget(client, "取引先マスタ")}
+    )
+
+    result = router.upsert_record("1001", {"取引先名": "テスト商事"}, db_key="client_master")
+
+    assert result == "1001"
+    # 「取引先名」ではなくフィールドコード「顧客名」で届くこと。
+    # （`{"value": ...}`の包みはHTTPクライアント側の仕事なので、ここでは素の値で届く）
+    assert client.updates == [("取引先マスタ", "1001", {"顧客名": "テスト商事"})]
+
+
+def test_multi_db_zoho_router_passes_db_key_so_api_names_are_resolved() -> None:
+    client = _RecordingZohoClient()
+    router = _MultiDbZohoSyncTarget({"project": ZohoSyncTarget(client, "案件", enabled=True)})
+
+    result = router.upsert_record("zoho-1", {"案件名": "A社 リピッテ"}, db_key="project")
+
+    assert result == "zoho-1"
+    # 「案件名」ではなくapi_name「Deal_Name」で届くこと。
+    assert client.updates == [("案件", "zoho-1", {"Deal_Name": "A社 リピッテ"})]
+
+
+def test_multi_db_zoho_router_routes_by_db_key() -> None:
+    project_client = _RecordingZohoClient()
+    client_master_client = _RecordingZohoClient()
+    router = _MultiDbZohoSyncTarget(
+        {
+            "project": ZohoSyncTarget(project_client, "案件", enabled=True),
+            "client_master": ZohoSyncTarget(client_master_client, "取引先", enabled=True),
+        }
+    )
+
+    router.upsert_record("zoho-1", {"案件名": "A社 リピッテ"}, db_key="project")
+    router.upsert_record("zoho-2", {"取引先名": "A社"}, db_key="client_master")
+
+    assert [m for m, _i, _r in project_client.updates] == ["案件"]
+    assert [m for m, _i, _r in client_master_client.updates] == ["取引先"]
+
+
+def test_multi_db_zoho_router_skips_write_when_db_key_unconfigured(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _RecordingZohoClient()
+    router = _MultiDbZohoSyncTarget({"project": ZohoSyncTarget(client, "案件", enabled=True)})
+
+    with caplog.at_level("WARNING"):
+        result = router.upsert_record("zoho-1", {"取引先名": "A社"}, db_key="client_master")
+
+    assert result is None
+    assert client.updates == []
+    assert any("client_master" in r.getMessage() for r in caplog.records)
+
+
+def test_router_reports_not_written_when_no_property_can_be_translated() -> None:
+    """1項目も送れなかったときは、更新であってもNoneを返すこと。
+
+    ここで外部IDを返すとDispatcherが「書き込み成功」と数え、Notion側の変更が外部へ
+    反映されていないことに誰も気づけない（レビュー3体が独立に指摘、2026-08-31）。
+    """
+    client = _RecordingZohoClient()
+    router = _MultiDbZohoSyncTarget({"project": ZohoSyncTarget(client, "案件", enabled=True)})
+
+    # 「営業ステータス」はSTATUS型で、値の逆変換が未実装のため送信対象外。
+    result = router.upsert_record("zoho-1", {"営業ステータス": "受注"}, db_key="project")
+
+    assert result is None
+    assert client.updates == []
+
+
+def test_partially_translatable_payload_sends_only_the_resolved_fields() -> None:
+    """一部だけ送れる場合は、送れた分だけ送って成功を返す。"""
+    client = _RecordingZohoClient()
+    router = _MultiDbZohoSyncTarget({"project": ZohoSyncTarget(client, "案件", enabled=True)})
+
+    result = router.upsert_record(
+        "zoho-1", {"案件名": "A社 リピッテ", "営業ステータス": "受注"}, db_key="project"
+    )
+
+    assert result == "zoho-1"
+    assert client.updates == [("案件", "zoho-1", {"Deal_Name": "A社 リピッテ"})]
+
+
+def test_kintone_target_skips_write_when_db_key_is_missing() -> None:
+    """db_keyが無ければ変換表を引けないので、素通しせず書き込まないこと（Zoho側と同じ）。"""
+    client = _RecordingKintoneClient()
+    target = KintoneSyncTarget(client, "取引先マスタ")
+
+    assert target.upsert_record("1001", {"取引先名": "テスト商事"}) is None
+    assert client.updates == []
+
+
+def test_date_values_are_truncated_through_the_sync_target() -> None:
+    """日付の切り詰めが、変換関数の単体だけでなくターゲット経由でも効くこと。"""
+    client = _RecordingKintoneClient()
+    target = KintoneSyncTarget(client, "案件管理")
+
+    target.upsert_record(
+        "1001", {"契約日 / 予想契約日": "2026-08-31T09:00:00.000+09:00"}, db_key="project"
+    )
+
+    assert client.updates == [("案件管理", "1001", {"日付_3": "2026-08-31"})]
 
 
 # --- ProductionSyncWiring / get_production_wiring -----------------------------------------------

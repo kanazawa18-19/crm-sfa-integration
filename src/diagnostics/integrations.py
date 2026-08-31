@@ -24,11 +24,20 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
+import psycopg
 import requests
 
 from src.db_schema.registry import ALL_SCHEMAS
+from src.sync_engine.webhook_receipts import (
+    KINTONE,
+    NOTION,
+    SPREADSHEET,
+    ZOHO,
+    list_webhook_receipts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +375,43 @@ def probe_web_engagement_tool() -> ProbeResult:
     return ProbeResult("web_engagement_tool", OK, extra={"http_status": response.status_code})
 
 
+def probe_webhook_receipts() -> ProbeResult:
+    """各ツールのWebhookを最後に受け取った時刻（`src/sync_engine/webhook_receipts.py`）。
+
+    **ここでは異常判定をしない。** 受信が無いのは「購読が切れている」場合もあれば
+    「単に変更が無かった」場合もあり、機械的には区別できない。誤報を鳴らすと本物の通知まで
+    無視されるようになるため、事実（最終受信時刻と経過時間）だけを返し、解釈は人に任せる。
+    """
+    if not os.environ.get("DATABASE_URL"):
+        return ProbeResult("webhook_receipts", NOT_CONFIGURED, detail="DATABASE_URL未設定")
+    try:
+        rows = list_webhook_receipts()
+    except psycopg.errors.UndefinedTable:
+        return ProbeResult(
+            "webhook_receipts",
+            NOT_CONFIGURED,
+            detail="WebhookReceiptテーブルが未作成（マイグレーション未適用）",
+        )
+    now = datetime.now(timezone.utc)
+    sources = {}
+    for row in rows:
+        last = row["lastReceivedAt"]
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        sources[row["source"]] = {
+            "last_received_at": last.isoformat(),
+            "hours_since": round((now - last).total_seconds() / 3600, 1),
+            "count": int(row["receiptCount"]),
+        }
+    never = [name for name in (NOTION, KINTONE, ZOHO, SPREADSHEET) if name not in sources]
+    return ProbeResult(
+        "webhook_receipts",
+        OK,
+        detail=("記録開始以降まだ受信していない: " + ", ".join(never)) if never else "",
+        extra={"sources": sources},
+    )
+
+
 #: 実行する診断の一覧。追加はここに1行足すだけで済むようにしている。
 PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
     ("postgres", probe_postgres),
@@ -377,6 +423,7 @@ PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
     ("spreadsheet", probe_spreadsheet),
     ("slack", probe_slack),
     ("web_engagement_tool", probe_web_engagement_tool),
+    ("webhook_receipts", probe_webhook_receipts),
 )
 
 

@@ -92,3 +92,28 @@ def test_datetime_values_are_truncated_to_date() -> None:
     )
 
     assert translated == {"日付_3": "2026-08-31"}
+
+
+def test_free_text_starting_with_a_timestamp_is_not_truncated() -> None:
+    """日付の切り詰めはDATE型にだけ効かせる。
+
+    型を見ずに全文字列へ掛けると、たまたまISO日時から書き始められた自由記述が
+    日付だけに切り詰められ、本文がサイレントに消える。
+    """
+    body = "2026-08-31T09:00 に先方から連絡あり。条件は据え置き。"
+    translated, _unmapped = translate_properties(
+        zoho_outbound_field_names(), "project", {"メモ": body}
+    )
+
+    assert translated == {"field70": body}
+
+
+def test_labels_shared_by_multiple_zoho_fields_are_treated_as_ambiguous() -> None:
+    """同じラベルが複数のapi_nameに付いているとき、先勝ちで畳み込まない。
+
+    Deals の「作成日時」は `Created_Time` と `field42` の2つに割り当たっている。
+    先勝ちにすると、読み取り専用のシステム項目へ書きに行く事故が起きうる。
+    """
+    from src.sync_engine.outbound_field_mapping import _zoho_api_names_by_label
+
+    assert sorted(_zoho_api_names_by_label()["Deals"]["作成日時"]) == ["Created_Time", "field42"]
