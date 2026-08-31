@@ -136,6 +136,37 @@ class DispatchResult:
         return any(p.skipped_tools for p in self.properties)
 
 
+def _group_by_tool(
+    value_by_property: Mapping[str, Any],
+    intended_by_property: Mapping[str, frozenset[Tool]],
+) -> dict[Tool, dict[str, Any]]:
+    """{プロパティ: 値} と {プロパティ: 送る先ツール} から、{ツール: {プロパティ: 値}} を作る。"""
+    payload: dict[Tool, dict[str, Any]] = {}
+    for property_name, tools in intended_by_property.items():
+        for tool in tools:
+            payload.setdefault(tool, {})[property_name] = value_by_property[property_name]
+    return payload
+
+
+def _property_result(
+    property_name: str,
+    resolution: "ConflictResolution | None",
+    intended_by_property: Mapping[str, frozenset[Tool]],
+    written_by_tool: Mapping[Tool, frozenset[str]],
+) -> "PropertyDispatchResult":
+    """ツール単位の書き込み結果を、プロパティ単位の報告へ組み直す。"""
+    intended = intended_by_property.get(property_name, frozenset())
+    written = frozenset(
+        tool for tool in intended if property_name in written_by_tool.get(tool, frozenset())
+    )
+    return PropertyDispatchResult(
+        property_name=property_name,
+        resolution=resolution,
+        written_tools=written,
+        skipped_tools=intended - written,
+    )
+
+
 class _VersionTracker:
     """1イベントの間、書き込みに添える「版」を管理する（2026-09-01）。
 
@@ -273,20 +304,20 @@ class Dispatcher:
             versions = self._version_tracker(
                 mapping, self._fetch_versions(target_tools, mapping)
             )
-            for property_name, prop, new_value in prepared:
-                # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
-                intended = frozenset(t for t in target_tools if prop.should_sync_to(t))
-                written, skipped, mapping = self._write_values(
-                    intended, mapping, property_name, new_value, versions
-                )
-                results.append(
-                    PropertyDispatchResult(
-                        property_name=property_name,
-                        resolution=None,
-                        written_tools=written,
-                        skipped_tools=skipped,
-                    )
-                )
+            # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
+            #    **プロパティごとに書かず、ツールごとに1回にまとめる**（`_write_values`参照）。
+            intended_by_property = {
+                property_name: frozenset(t for t in target_tools if prop.should_sync_to(t))
+                for property_name, prop, _new_value in prepared
+            }
+            payload_by_tool = _group_by_tool(
+                {name: value for name, _prop, value in prepared}, intended_by_property
+            )
+            written_by_tool, mapping = self._write_values(payload_by_tool, mapping, versions)
+            results = [
+                _property_result(property_name, None, intended_by_property, written_by_tool)
+                for property_name, _prop, _value in prepared
+            ]
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
             return DispatchResult(skipped=False, properties=tuple(results))
 
@@ -376,6 +407,9 @@ class Dispatcher:
                 continue
             records_by_tool[tool] = record
 
+        # 判定結果をいったん貯めて、書き込みは最後にツールごと1回にまとめる。
+        decided: list[tuple[str, ConflictResolution | None, Any, frozenset[Tool]]] = []
+
         # 版は書き込みのたびに進むので、専用に管理する（`_VersionTracker`参照）。
         # **`records_by_tool`はここから一切変更しない**（競合解決が見るスナップショット）。
         versions = self._version_tracker(mapping, records_by_tool)
@@ -394,18 +428,7 @@ class Dispatcher:
                 # によるupdated_at取得（Notionページは読めるが値やタイムスタンプの比較が必要な
                 # ケース）とは別物。2026-08本番障害はこちらではなく、後者でupdated_atが常に
                 # フォールバックしていたことが原因（conflict_resolver.pyの修正で対応済み）。
-                intended = frozenset({Tool.NOTION}) | other_tools
-                written, skipped, mapping = self._write_values(
-                    intended, mapping, property_name, new_value, versions
-                )
-                results.append(
-                    PropertyDispatchResult(
-                        property_name=property_name,
-                        resolution=None,
-                        written_tools=written,
-                        skipped_tools=skipped,
-                    )
-                )
+                decided.append((property_name, None, new_value, frozenset({Tool.NOTION}) | other_tools))
                 continue
 
             candidates = [
@@ -445,15 +468,21 @@ class Dispatcher:
             )
 
             if resolution.action is ResolutionAction.NO_OP:
-                results.append(PropertyDispatchResult(property_name=property_name, resolution=resolution))
+                results.append(
+                    PropertyDispatchResult(property_name=property_name, resolution=resolution)
+                )
                 continue
 
             # 書き込み対象 = resolution.target_tools（現在値を比較できたツールのうち採用値と
             # 異なる方。NOTION_OVERRIDE時は送信元自身の訂正も含む） ∪ missing_tools
             # （比較には参加していないが、確定した値へ補完すべきsync_scope対象ツール）。
-            intended = frozenset(resolution.target_tools | missing_tools)
-            written, skipped, mapping = self._write_values(
-                intended, mapping, property_name, resolution.resolved_value, versions
+            decided.append(
+                (
+                    property_name,
+                    resolution,
+                    resolution.resolved_value,
+                    frozenset(resolution.target_tools | missing_tools),
+                )
             )
 
             # BLOCKER2: 却下データの退避（データ退避）とSlackアラート通知（重要項目のみ）。
@@ -463,12 +492,16 @@ class Dispatcher:
                     for rejected_item in resolution.rejected:
                         self._slack_notifier.notify_conflict(rejected_item)
 
+        # --- フェーズ4: 書き込み（ツールごとに1回だけ） ---
+        intended_by_property = {name: intended for name, _r, _v, intended in decided}
+        payload_by_tool = _group_by_tool(
+            {name: value for name, _r, value, _i in decided}, intended_by_property
+        )
+        written_by_tool, mapping = self._write_values(payload_by_tool, mapping, versions)
+        for property_name, resolution, _value, _intended in decided:
             results.append(
-                PropertyDispatchResult(
-                    property_name=property_name,
-                    resolution=resolution,
-                    written_tools=written,
-                    skipped_tools=skipped,
+                _property_result(
+                    property_name, resolution, intended_by_property, written_by_tool
                 )
             )
 
@@ -997,34 +1030,59 @@ class Dispatcher:
 
     def _write_values(
         self,
-        tools: frozenset[Tool],
+        payload_by_tool: Mapping[Tool, dict[str, Any]],
         mapping: IdMapping,
-        property_name: str,
-        value: object,
         versions: "_VersionTracker | None" = None,
-    ) -> tuple[frozenset[Tool], frozenset[Tool], IdMapping]:
-        """`tools`（書き込み対象として意図した全ツール）へ書き込みを試み、実際に書き込めた
-        ツール・書き込めなかった（スキップされた）ツール・**更新後のmapping**を返す
-        （書き込めたツールとスキップされたツールは排反）。
+    ) -> tuple[dict[Tool, frozenset[str]], IdMapping]:
+        """**1イベント・1ツールにつき1回だけ書き込む**（2026-09-01）。
 
-        mappingを返すのは、スプレッドシートに行を新規作成したときに採番された行番号を
-        呼び出し元へ伝えるため。呼び出し元は必ず返り値で自分のmappingを差し替えること。
+        以前はプロパティごとにAPIを叩いていた。5項目なら同じレコードへ5回。
+        呼び出し回数が無駄なだけでなく、**版（楽観的排他）が書くたびに進むため、
+        2つ目以降で偽の競合を起こす**という不具合の温床でもあった
+        （2026-08-31、shirokuma-sec・ChatGPTが独立に指摘）。
+
+        まとめて1回にすると戻り値だけでは「どの項目が落ちたか」が分からないので、
+        書く前に`unsupported_properties()`でツールへ聞く（実装が無いツールは
+        「全部送れる」とみなす）。
+
+        戻り値は {ツール: 実際に書けたプロパティ名の集合} と、更新後のmapping。
         """
-        written: set[Tool] = set()
-        skipped: set[Tool] = set()
-        for tool in tools:
+        written_by_tool: dict[Tool, frozenset[str]] = {}
+        for tool in _ALL_TOOLS:
+            properties = payload_by_tool.get(tool)
+            if not properties:
+                continue
+            target = self._targets.get(tool)
+            if target is None:
+                written_by_tool[tool] = frozenset()
+                continue
+
+            unsupported = frozenset()
+            asker = getattr(target, "unsupported_properties", None)
+            if callable(asker):
+                try:
+                    unsupported = frozenset(asker(properties, db_key=mapping.db_key))
+                except Exception:  # noqa: BLE001 (ツール実装依存)
+                    logger.warning(
+                        "送れない項目の問い合わせに失敗しました。そのまま送ります (tool=%s)",
+                        tool.value,
+                        exc_info=True,
+                    )
+            sendable = {
+                name: value for name, value in properties.items() if name not in unsupported
+            }
+            if not sendable:
+                written_by_tool[tool] = frozenset()
+                continue
+
             ok, mapping = self._write_value(
                 tool,
                 mapping,
-                property_name,
-                value,
+                sendable,
                 versions.take(tool) if versions is not None else None,
             )
-            if ok:
-                written.add(tool)
-            else:
-                skipped.add(tool)
-        return frozenset(written), frozenset(skipped), mapping
+            written_by_tool[tool] = frozenset(sendable) if ok else frozenset()
+        return written_by_tool, mapping
 
     def _version_tracker(
         self, mapping: IdMapping, records_by_tool: Mapping[Tool, Mapping[str, Any]] | None
@@ -1105,8 +1163,7 @@ class Dispatcher:
         self,
         tool: Tool,
         mapping: IdMapping,
-        property_name: str,
-        value: object,
+        properties: dict[str, Any],
         expected_version: str | None = None,
     ) -> tuple[bool, IdMapping]:
         """1ツールへの書き込みを試み、「実際に書き込めたか」と「更新後のmapping」を返す。
@@ -1123,13 +1180,13 @@ class Dispatcher:
         if target is None:
             return False, mapping
         if tool is Tool.SPREADSHEET and _supports_sync_key(target):
-            return self._write_spreadsheet_value(target, mapping, property_name, value)
+            return self._write_spreadsheet_value(target, mapping, properties)
 
         external_id = _external_id_for(tool, mapping)
         try:
             result = target.upsert_record(
                 external_id,
-                {property_name: value},
+                properties,
                 db_key=mapping.db_key,
                 expected_version=expected_version,
             )
@@ -1139,17 +1196,17 @@ class Dispatcher:
             # （既知のズレでなければSlackへも上がる）。
             logger.warning(
                 "sync write rejected: %s 側でこちらが読んだ後に更新されていたため上書きしません"
-                " (db_key=%r, property=%r, external_id=%r)",
+                " (db_key=%r, properties=%r, external_id=%r)",
                 tool.value,
                 mapping.db_key,
-                property_name,
+                sorted(properties),
                 external_id,
             )
             return False, mapping
         return result is not None, mapping
 
     def _write_spreadsheet_value(
-        self, target: Any, mapping: IdMapping, property_name: str, value: object
+        self, target: Any, mapping: IdMapping, properties: dict[str, Any]
     ) -> tuple[bool, IdMapping]:
         """スプレッドシートへの書き込み。**行番号ではなく同期キーで行を確定させる。**
 
@@ -1194,9 +1251,7 @@ class Dispatcher:
                 )
 
         if row is not None:
-            result = target.update_with_sync_key(
-                str(row), {property_name: value}, sync_key, db_key=db_key
-            )
+            result = target.update_with_sync_key(str(row), properties, sync_key, db_key=db_key)
             if result is None:
                 return False, mapping
             # 引き直した行が`IdMapping`と違うなら、保存し直して次回以降の読み直しを減らす。
@@ -1218,13 +1273,13 @@ class Dispatcher:
             row = target.find_row_by_sync_key(sync_key, db_key=db_key)
             if row is not None:
                 result = target.update_with_sync_key(
-                    str(row), {property_name: value}, sync_key, db_key=db_key
+                    str(row), properties, sync_key, db_key=db_key
                 )
                 if result is None:
                     return False, mapping
                 return True, self._register_spreadsheet_row(mapping, str(row))
 
-            created = target.append_with_sync_key({property_name: value}, sync_key, db_key=db_key)
+            created = target.append_with_sync_key(properties, sync_key, db_key=db_key)
 
         if created is None:
             return False, mapping

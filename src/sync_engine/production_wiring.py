@@ -230,6 +230,14 @@ class _MultiDbKintoneSyncTarget(SyncTarget):
             external_id, properties, db_key=db_key, expected_version=expected_version
         )
 
+    def unsupported_properties(
+        self, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> frozenset[str]:
+        target = self._resolve(db_key)
+        if target is None:
+            return frozenset(properties)
+        return target.unsupported_properties(properties, db_key=db_key)
+
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)
         if target is not None:
@@ -283,6 +291,14 @@ class _MultiDbZohoSyncTarget(SyncTarget):
         return target.upsert_record(
             external_id, properties, db_key=db_key, expected_version=expected_version
         )
+
+    def unsupported_properties(
+        self, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> frozenset[str]:
+        target = self._resolve(db_key)
+        if target is None:
+            return frozenset(properties)
+        return target.unsupported_properties(properties, db_key=db_key)
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)

@@ -113,6 +113,19 @@ class ZohoSyncTarget(SyncTarget):
         )
         return external_id
 
+    def unsupported_properties(
+        self, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> frozenset[str]:
+        """このツールへ送れないプロパティ名。呼び出し元が「書けなかった」と判定するのに使う。
+
+        1回の書き込みに複数プロパティをまとめると、戻り値だけでは
+        「どの項目が落ちたか」が分からない。書く前にここで聞く。
+        """
+        _payload, unmapped = translate_properties(
+            zoho_outbound_field_names(), db_key, properties, translate_choice_value
+        )
+        return frozenset(unmapped)
+
     def _to_zoho_payload(
         self, properties: dict[str, Any], db_key: str | None
     ) -> dict[str, Any] | None:

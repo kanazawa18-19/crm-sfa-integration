@@ -117,16 +117,16 @@ def test_rejected_write_is_reported_as_skipped() -> None:
     assert Tool.KINTONE in result.properties[0].skipped_tools
 
 
-def test_version_is_refreshed_between_writes_in_the_same_event() -> None:
-    """**同じイベントで同じツールへ2回書くとき、2回目は取り直した版を送る。**
+def test_multiple_properties_are_written_in_one_call_with_the_version() -> None:
+    """**1イベント・1ツールにつき1回だけ書く。**
 
-    版はこちらが書くたびに相手側で進む。同じ版を使い回すと、2回目以降が
-    「読んだ後に誰かが更新した」と誤判定されて拒否され、その値は再送されないため
-    恒久的に反映されないまま残る（shirokuma-sec・ChatGPTが独立に指摘、2026-08-31）。
+    以前はプロパティごとにAPIを叩いていた。版はこちらが書くたびに相手側で進むので、
+    2つ目以降で「読んだ後に誰かが更新した」と誤判定されて拒否され、その値は
+    再送されないため恒久的に反映されないまま残っていた
+    （shirokuma-sec・ChatGPTが独立に指摘、2026-08-31）。
     「案件名と電話番号を同時に変更」のような日常的な操作で起きる。
 
-    暫定対応では「最初の1回だけ版を添える」にしていたが、それは2回目以降の保護を
-    捨てているのと同じなので、**取り直す**方式に変えた（2026-09-01）。
+    まとめて1回にすれば、そもそも版が進む隙が無い（2026-09-01）。
     """
     client = _KintoneClient(revision="7")
     store = SQLiteIdMappingStore()
@@ -153,15 +153,15 @@ def test_version_is_refreshed_between_writes_in_the_same_event() -> None:
         )
     )
 
-    versions = [version for _id, _record, version in client.updates]
-    assert len(versions) == 2
-    assert versions[0] == "7"
-    # 2回目は取り直した版（1回目の書き込みで進んでいる）。**古い"7"を送ってはいけない。**
-    assert versions[1] == "8"
+    # 2プロパティが1回の書き込みにまとまり、読んだ時点の版が添えられていること。
+    assert len(client.updates) == 1
+    _record_id, record, version = client.updates[0]
+    assert version == "7"
+    assert record == {"顧客名": "新名称", "TEL": "03-1111-2222"}
 
 
-def test_conflict_snapshot_is_not_disturbed_by_version_refresh() -> None:
-    """**版の取り直しが、競合解決の見るスナップショットを壊さないこと。**
+def test_conflict_snapshot_is_not_disturbed_by_version_handling() -> None:
+    """**版の管理が、競合解決の見るスナップショットを壊さないこと。**
 
     1イベント内の全プロパティは同じスナップショットを見る、という性質がある。
     版を管理するために現在値の辞書から要素を消すと、2つ目以降のプロパティで
@@ -196,7 +196,7 @@ def test_conflict_snapshot_is_not_disturbed_by_version_refresh() -> None:
     # 2プロパティとも kintone へ書き込まれ、片方だけ落ちたりしないこと
     # （Zoho・スプレッドシートはこのテストで未設定なのでスキップされる）。
     assert all(Tool.KINTONE in p.written_tools for p in result.properties)
-    assert len(client.updates) == 2
+    assert len(client.updates) == 1
 
 
 def test_version_is_not_refetched_for_tools_without_a_version() -> None:
@@ -230,5 +230,5 @@ def test_version_is_not_refetched_for_tools_without_a_version() -> None:
         )
     )
 
-    # 版取得の1回だけ。2プロパティ目で取り直さない。
+    # 版取得の1回だけ（書き込みも1回にまとまるので取り直しは発生しない）。
     assert client.get_calls == 1

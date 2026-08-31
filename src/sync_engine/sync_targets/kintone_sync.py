@@ -90,6 +90,15 @@ class KintoneSyncTarget(SyncTarget):
         )
         return external_id
 
+    def unsupported_properties(
+        self, properties: dict[str, Any], *, db_key: str | None = None
+    ) -> frozenset[str]:
+        """このツールへ送れないプロパティ名（`ZohoSyncTarget`と同じ理由）。"""
+        _payload, unmapped = translate_properties(
+            kintone_outbound_field_names(), db_key, properties
+        )
+        return frozenset(unmapped)
+
     def _to_kintone_payload(
         self, properties: dict[str, Any], db_key: str | None
     ) -> dict[str, Any] | None:
