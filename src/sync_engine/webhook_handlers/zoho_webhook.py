@@ -211,7 +211,9 @@ def zoho_payload_to_sync_events(
         # 当該レコードの変更差分全体・レコードID・Zoho APIクライアントを暗黙に参照できるよう
         # 伝播させる（zoho_field_transforms.pyのモジュールdocstring参照）。他db_key/フィールドは
         # このコンテキストを参照しないため無害。
-        with zoho_action_relation_context(record_id, matched_values, zoho_client):
+        with zoho_action_relation_context(
+            record_id, matched_values, zoho_client, id_mapping_store
+        ):
             for api_name, value in matched_values.items():
                 # api_name -> ラベルへ変換できない（マッピング未登録）場合と、ラベルは解決できても
                 # 後続のマッピングでNotionプロパティへ対応付けられない場合を、同じ「未知の

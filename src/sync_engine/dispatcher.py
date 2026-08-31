@@ -630,6 +630,8 @@ class Dispatcher:
             db_key=event.db_key,
             external_id=event.external_id,
             raw_record=raw_record,
+            # ルックアップ項目からリレーションを引くのに使う（2026-08-31）。
+            id_mapping_store=self._store,
         )
 
         schema = get_schema(event.db_key)

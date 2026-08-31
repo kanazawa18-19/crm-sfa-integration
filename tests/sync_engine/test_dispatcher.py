@@ -979,8 +979,16 @@ def test_dispatch_new_record_creation_uses_new_record_builder_and_propagates_rel
     captured: dict[str, Any] = {}
 
     def _fake_builder(
-        *, source_tool: Tool, db_key: str, external_id: str, raw_record: dict[str, Any]
+        *,
+        source_tool: Tool,
+        db_key: str,
+        external_id: str,
+        raw_record: dict[str, Any],
+        id_mapping_store: Any = None,
     ) -> dict[str, Any]:
+        # ルックアップ項目からリレーションを引くため、DispatcherがIdMappingStoreを渡す
+        # （2026-08-31）。
+        assert id_mapping_store is not None
         captured.update(
             source_tool=source_tool, db_key=db_key, external_id=external_id, raw_record=raw_record
         )

@@ -70,11 +70,14 @@ from src.migration.zoho_chain import normalize_approach_status
 from src.migration.zoho_client_master import normalize_prefecture
 from src.migration.zoho_project import _parse_bool, _parse_first_touch
 from src.relation_sync.resolve import resolve_client_master_relation
+from src.sync_engine.id_mapping import IdMappingStore
 from src.relation_sync.resolve_zoho import (
     extract_zoho_lookup_name,
     ZohoActionRecordClient,
     resolve_zoho_action_client_master_relation,
+    resolve_zoho_relation_by_lookup_id,
 )
+from src.sync_engine.id_mapping import IdMappingStore
 from src.sync_engine.webhook_handlers._relation_guard import CLIENT_MASTER_RELATION_PROPERTY
 
 # 変換関数の戻り値は`None`が「Notion側の値を明示的にクリアする」という意味で使われている
@@ -103,6 +106,9 @@ class _ZohoActionRelationContext:
     record_id: str
     changed_values: Mapping[str, Any]
     zoho_client: ZohoActionRecordClient | None
+    # ルックアップ項目（`{"name":..., "id":...}`）から相手のNotionページを引くのに使う。
+    # 未注入なら、そのリレーションは解決せずスキップする（推測で紐付けない）。
+    id_mapping_store: IdMappingStore | None = None
 
 
 _current_zoho_action_relation_context: contextvars.ContextVar[
@@ -115,19 +121,50 @@ def zoho_action_relation_context(
     record_id: str,
     changed_values: Mapping[str, Any],
     zoho_client: ZohoActionRecordClient | None,
+    id_mapping_store: IdMappingStore | None = None,
 ) -> Iterator[None]:
     """このwithブロック内での`_resolve_client_master_for_zoho_action()`呼び出しに、現在処理中
     のZohoレコードID・当該レコードのWebhook変更差分(delta)・Zohoクライアント（レコード全体
     取得用、省略可）を伝播させる。"""
     token = _current_zoho_action_relation_context.set(
         _ZohoActionRelationContext(
-            record_id=record_id, changed_values=changed_values, zoho_client=zoho_client
+            record_id=record_id,
+            changed_values=changed_values,
+            zoho_client=zoho_client,
+            id_mapping_store=id_mapping_store,
         )
     )
     try:
         yield
     finally:
         _current_zoho_action_relation_context.reset(token)
+
+
+def _relation_from_zoho_lookup(
+    property_name: str, target_db_key: str
+) -> Callable[[Any], Any]:
+    """Zohoのルックアップ項目 → Notionリレーション の変換を作る（2026-08-31）。
+
+    ルックアップの値には相手モジュールのZohoレコードidが入っているので、
+    IdMappingを引けば会社名の突き合わせなしに確定できる（名寄せが要るのは、
+    kintoneの`client_name`のような自由入力テキストの場合だけ）。
+
+    解決できなければ`SKIP_FIELD`を返し、そのプロパティだけ書き込みを見送る
+    （相手がまだNotionに無い、という理由がほとんど。レビューキューには記録される）。
+    """
+
+    def _transform(value: Any) -> Any:
+        ctx = _current_zoho_action_relation_context.get()
+        resolved = resolve_zoho_relation_by_lookup_id(
+            value,
+            target_db_key=target_db_key,
+            property_name=property_name,
+            id_mapping_store=ctx.id_mapping_store if ctx is not None else None,
+            source_record_id=_current_zoho_relation_record_id(),
+        )
+        return resolved if resolved is not None else SKIP_FIELD
+
+    return _transform
 
 
 def _resolve_client_master_for_zoho_action(_value: Any) -> Any:
@@ -160,6 +197,14 @@ def _resolve_client_master_for_zoho_action(_value: Any) -> Any:
 #   アクションログ）: Notion側で自動計算される読み取り専用プロパティで、書き込もうとすると
 #   確実に失敗する。
 _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
+    # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
+    # Account_Name。実測200/200件で値あり
+    '取引先名': ('取引先マスター', _relation_from_zoho_lookup('取引先マスター', 'client_master')),
+    # field10。実測195/200件で値あり
+    '取引先担当者': ('連絡先', _relation_from_zoho_lookup('連絡先', 'contact')),
+    # field72。実測194/200件で値あり
+    '提案サービス1': ('サービス・商品', _relation_from_zoho_lookup('サービス・商品', 'product')),
     # Zohoラベル == Notionプロパティ名だが、値変換が必要なもの（"同名だから変換不要"ではない）。
     "案件名": ("案件名", lambda v: v),
     "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),
@@ -200,6 +245,10 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
 # 上記モジュールdocstring参照: CustomModule3（正しいチェーンモジュール）の実際のライブAPI
 # ラベルとここで使うZohoラベルは一致することを確認済み。
 _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
+    # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
+    # CustomModule3のfield10。実測2/200件で値あり
+    '連絡先': ('連絡先', _relation_from_zoho_lookup('連絡先', 'contact')),
     "チェーン名・グループ名": ("グループ名", lambda v: v),
     "アプローチ状況": ("アプローチ状況", normalize_approach_status),
     "施設数": ("施設数", lambda v: v or None),
@@ -271,6 +320,10 @@ def _zoho_action_type(value: Any) -> str | None:
 
 
 _ACTION_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
+    # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
+    # field1。実測6/200件で値あり
+    'チェーン': ('👯\u200d♀️ チェーンリスト', _relation_from_zoho_lookup('👯\u200d♀️ チェーンリスト', 'chain')),
     "アクション名": ("商談回数・電話回数・メール回数（何回目）", lambda v: v or ""),
     # 2026-08-31追加。**これが無かったため、Zoho発の新規アクションが1件も作られていなかった**
     # （必須プロパティ「アクション種別」が常に欠けて missing_required_properties で中止）。
@@ -410,6 +463,10 @@ def _zoho_billing_type(value: Any) -> Any:
 
 
 _PRODUCT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
+    # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
+    # field12。実測10/200件で値あり
+    '案件': ('案件管理', _relation_from_zoho_lookup('案件管理', 'project')),
     # Zohoラベル != Notionプロパティ名。
     # 2026-08-31追加。**これが無かったため、Zoho発の新規サービス・商品が1件も
     # 作られていなかった**（必須プロパティ「課金形態」が常に欠けていた）。

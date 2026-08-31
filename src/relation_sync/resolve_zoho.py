@@ -36,8 +36,11 @@ import logging
 import os
 from typing import Any, Mapping, Protocol
 
+from src.db_schema.base import Tool
 from src.migration._utils import extract_notion_page_id
 from src.relation_sync.resolve import resolve_client_master_relation
+from src.relation_sync.review_queue import enqueue_for_review
+from src.sync_engine.id_mapping import IdMappingStore
 
 logger = logging.getLogger(__name__)
 
@@ -142,3 +145,93 @@ def resolve_zoho_action_client_master_relation(
         source_tool="zoho",
         source_record_id=record_id,
     )
+
+
+def resolve_zoho_relation_by_lookup_id(
+    value: Any,
+    *,
+    target_db_key: str,
+    property_name: str,
+    id_mapping_store: IdMappingStore | None,
+    source_record_id: str,
+) -> str | None:
+    """Zohoのルックアップ項目から、**名寄せせずに**リレーション先Notion page IDを解決する。
+
+    ルックアップの値は`{"name": "◯◯", "id": "22334000..."}`で、この`id`は**相手モジュールの
+    Zohoレコードid**。同じレコードは既にNotionへ同期されていればIdMappingを持っているので、
+    `find_by_external_id()`で引けば会社名の突き合わせを一切せずに確定できる。
+
+    取引先マスターの解決（`resolve_client_master_relation()`）が自由入力テキストの名寄せに
+    頼っているのは、kintone側の`client_name`が単なる文字列だから。ルックアップ項目には
+    idが入っているので、こちらの経路の方が原理的に正確で速い。
+
+    実測（2026-08-31、各モジュール200件）で、以下は実際に値が入っていることを確認済み:
+      Deals  取引先名(Account_Name) 200/200 / 取引先担当者(field10) 195/200
+             提案サービス1(field72) 194/200
+      Products 案件(field12) 10/200
+      CustomModule2 チェーン(field1) 6/200
+      CustomModule3 連絡先(field10) 2/200
+    一方、CustomModule2の案件(field8)・案件名(field11)・連絡先(field5)は**200件すべて空**で、
+    Zoho側にデータが無い。アクション→案件のリレーションは、実装しても解決するものが無い。
+
+    解決できない主因は「相手のレコードがまだNotionへ同期されていない」こと。推測で別の
+    ページに紐付けると静かな誤紐付けになるため、Noneを返して`RelationReviewQueue`へ積む。
+    """
+    if os.environ.get(_RELATION_SYNC_ENV_VAR, "").strip().lower() != "true":
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    target_zoho_id = value.get("id")
+    if not target_zoho_id:
+        return None
+    if id_mapping_store is None:
+        logger.info(
+            "resolve_zoho_relation_by_lookup_id: IdMappingStoreが渡されていないため解決できません"
+            " (property=%r, source_record_id=%r)",
+            property_name,
+            source_record_id,
+        )
+        return None
+    try:
+        mapping = id_mapping_store.find_by_external_id(
+            Tool.ZOHO, str(target_zoho_id), db_key=target_db_key
+        )
+    except Exception:
+        logger.warning(
+            "resolve_zoho_relation_by_lookup_id: IdMappingの逆引きに失敗しました"
+            " (property=%r, target_db_key=%r, target_zoho_id=%r)",
+            property_name,
+            target_db_key,
+            target_zoho_id,
+            exc_info=True,
+        )
+        return None
+    if mapping is not None:
+        return mapping.notion_key
+
+    raw_name = extract_zoho_lookup_name(value)
+    logger.info(
+        "resolve_zoho_relation_by_lookup_id: 相手レコードのIdMappingが無いため解決できません"
+        "（Notionへ未同期の可能性）。レビューキューへ記録します"
+        " (property=%r, target_db_key=%r, target_zoho_id=%r, raw_name=%r)",
+        property_name,
+        target_db_key,
+        target_zoho_id,
+        raw_name,
+    )
+    try:
+        enqueue_for_review(
+            source_tool="zoho",
+            source_record_id=source_record_id,
+            target_db_key=target_db_key,
+            raw_value=raw_name or str(target_zoho_id),
+            # 候補は無い（曖昧なのではなく、相手がまだNotionに存在しない）。
+            candidate_notion_page_ids=[],
+            candidate_raw_names=[],
+        )
+    except Exception:
+        logger.warning(
+            "resolve_zoho_relation_by_lookup_id: レビューキューへの記録に失敗しました",
+            exc_info=True,
+        )
+    return None

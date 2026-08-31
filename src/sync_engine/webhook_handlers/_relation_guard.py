@@ -36,9 +36,20 @@ CLIENT_MASTER_RELATION_PROPERTY = "👨‍👩‍👧‍👦 取引先マスタ�
 CLIENT_MASTER_RELATION_PROPERTY_PLAIN = "取引先マスター"
 
 #: 上書き防止ガードの対象になりうるプロパティ名。
+#:
+#: 2026-08-31に、Zohoのルックアップ項目（相手のZohoレコードidを持つ）からIDマッピング経由で
+#: 解決するリレーションを6本追加した（`zoho_field_transforms._relation_from_zoho_lookup`）。
+#: **自動解決するものは全部ここに入れる。** 入れ忘れると、Notion上で人が手で直した紐付けを
+#: ソース側が再編集されるたびに黙って上書きしてしまう（この機能が防ごうとしている
+#: 「静かな誤紐付け」そのもの）。名前は同じ意味でもDBごとに違うので、実際の
+#: `PropertyDefinition.name`をそのまま並べる。
 CLIENT_MASTER_RELATION_PROPERTIES: tuple[str, ...] = (
     CLIENT_MASTER_RELATION_PROPERTY,
     CLIENT_MASTER_RELATION_PROPERTY_PLAIN,
+    "連絡先",  # 案件管理 → 連絡先 / チェーン → 連絡先
+    "サービス・商品",  # 案件管理 → サービス・商品
+    "案件管理",  # サービス・商品 → 案件管理
+    "👯\u200d♀️ チェーンリスト",  # アクション履歴 → チェーン
 )
 
 

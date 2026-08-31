@@ -44,7 +44,12 @@ logger = logging.getLogger(__name__)
 
 
 def build_notion_properties_for_new_record(
-    *, source_tool: Tool, db_key: str, external_id: str, raw_record: Mapping[str, Any]
+    *,
+    source_tool: Tool,
+    db_key: str,
+    external_id: str,
+    raw_record: Mapping[str, Any],
+    id_mapping_store: Any = None,
 ) -> dict[str, Any]:
     """kintone/Zohoから取得したレコード全体データ（`raw_record`）を、Notion新規ページ作成用の
     プロパティdict（プロパティ名→値、`build_notion_properties`が受け付ける内部形式）へ変換する。
@@ -63,7 +68,12 @@ def build_notion_properties_for_new_record(
     if source_tool is Tool.KINTONE:
         return _build_from_kintone_record(db_key=db_key, external_id=external_id, raw_record=raw_record)
     if source_tool is Tool.ZOHO:
-        return _build_from_zoho_record(db_key=db_key, external_id=external_id, raw_record=raw_record)
+        return _build_from_zoho_record(
+            db_key=db_key,
+            external_id=external_id,
+            raw_record=raw_record,
+            id_mapping_store=id_mapping_store,
+        )
     raise ValueError(f"unsupported source_tool for new record creation: {source_tool!r}")
 
 
@@ -195,7 +205,11 @@ def _build_from_kintone_record(
 
 
 def _build_from_zoho_record(
-    *, db_key: str, external_id: str, raw_record: Mapping[str, Any]
+    *,
+    db_key: str,
+    external_id: str,
+    raw_record: Mapping[str, Any],
+    id_mapping_store: Any = None,
 ) -> dict[str, Any]:
     schema = get_schema(db_key)
     field_mapping = ZOHO_LABEL_FIELD_MAPPINGS.get(db_key, {})
@@ -204,7 +218,7 @@ def _build_from_zoho_record(
     # 必要な当該レコードの現在値・レコードID を伝播させる（Webhookハンドラと同じ仕組み）。
     # ここでは既に`raw_record`がレコード全体（field22/field6を含む）であるため、追加の
     # Zoho API呼び出し（zoho_client）は不要（zoho_client=None）。
-    with zoho_action_relation_context(external_id, raw_record, None):
+    with zoho_action_relation_context(external_id, raw_record, None, id_mapping_store):
         for api_name, value in raw_record.items():
             label = resolve_zoho_field_label(schema.zoho_api_module, api_name)
             if label is None:
