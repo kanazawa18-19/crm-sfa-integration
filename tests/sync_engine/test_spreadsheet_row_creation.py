@@ -349,6 +349,53 @@ def test_フラグはtrue以外を有効と解釈しない(
     assert (result is None) is (値.strip().lower() != "true")
 
 
+# --- 並行実行の排他 -------------------------------------------------------------------------
+
+
+def test_別のワーカーが作成中なら追記を見送る(
+    dispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ロックが取れないのは、別のワーカーがまさに同じレコードの行を作っている最中。
+    そこで追記すると重複するので見送る。次の同期イベントで同期キーから引ける。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 取れないロック(db_key: str, notion_key: str):
+        yield False
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.acquire_row_creation_lock", 取れないロック)
+
+    result = dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+
+    assert シート.append_calls == 0
+    assert result.properties[0].skipped_tools == frozenset({Tool.SPREADSHEET})
+
+
+def test_ロック取得後にもう一度探してから追記する(
+    dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート,
+    行がまだ無いmapping: IdMapping, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ロックを待っている間に相手が作り終えていることがある。
+    取得後にもう一度探さないと、結局2行になる。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 待っている間に相手が作る(db_key: str, notion_key: str):
+        シート.rows[9] = {"取引先名": "相手が作った", SYNC_KEY_COLUMN: notion_key}
+        yield True
+
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.acquire_row_creation_lock", 待っている間に相手が作る
+    )
+
+    dispatcher.dispatch(_イベント(取引先名="こちらの値"))
+
+    assert シート.append_calls == 0, "相手が作った行を見落として追記している"
+    assert シート.rows[9]["取引先名"] == "こちらの値"
+    assert store.get("CLI-001").spreadsheet_row == 9
+
+
 def test_同期キー無しの追記は拒否する(monkeypatch: pytest.MonkeyPatch, シート: _シート) -> None:
     """キー無しで追記すると、その行は次回また「行が無い」と判断されて重複する。"""
     target = _MultiDbSpreadsheetSyncTarget({"client_master": シート})

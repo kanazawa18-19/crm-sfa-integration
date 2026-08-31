@@ -42,6 +42,7 @@ from src.sync_engine.conflict_resolver import (
 from src.sync_engine.id_mapping import DuplicateExternalIdError, IdMapping, IdMappingStore
 from src.sync_engine.new_record_builder import build_notion_properties_for_new_record
 from src.sync_engine.slack_notifier import SlackNotifier
+from src.sync_engine.spreadsheet_row_lock import acquire_row_creation_lock
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import is_own_system_event
 from src.sync_engine.sync_targets.base import SyncTarget
@@ -1025,7 +1026,27 @@ class Dispatcher:
             return True, mapping
 
         # 3. どこにも無ければ新規に追記する（同期キーを必ず一緒に書く）。
-        created = target.append_with_sync_key({property_name: value}, sync_key, db_key=db_key)
+        #    **ここだけレコード単位で排他する。**「探す→無い→追記する」の間に別のワーカーが
+        #    同じレコードの行を作ると2行できるため。行がある場合（＝更新）はロックを取らない。
+        #    1レコードにつき生涯1回しか通らない経路なので、常時の負荷にはならない。
+        with acquire_row_creation_lock(db_key, sync_key) as acquired:
+            if not acquired:
+                # 別のワーカーが作成中。ここで追記すると重複するので見送る。
+                # 次の同期イベントで同期キーから引けるため、データは失われない。
+                return False, mapping
+
+            # ロックを取ってから、もう一度だけ探す。待っている間に相手が作り終えている。
+            row = target.find_row_by_sync_key(sync_key, db_key=db_key)
+            if row is not None:
+                result = target.update_with_sync_key(
+                    str(row), {property_name: value}, sync_key, db_key=db_key
+                )
+                if result is None:
+                    return False, mapping
+                return True, self._register_spreadsheet_row(mapping, str(row))
+
+            created = target.append_with_sync_key({property_name: value}, sync_key, db_key=db_key)
+
         if created is None:
             return False, mapping
         return True, self._register_spreadsheet_row(mapping, created)
