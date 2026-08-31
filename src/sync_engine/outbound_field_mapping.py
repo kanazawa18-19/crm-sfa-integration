@@ -220,5 +220,23 @@ def translate_properties(
         if external is None:
             unmapped.append(property_name)
             continue
+        if _is_empty(value):
+            # **空値は送らない**（ChatGPTクロスレビューBLOCKER対応、2026-08-31）。
+            # 項目名の対応が正しくても、Notion側が空のまま送れば外部の既存値が消える。
+            # 「値の変更」と「値の削除」は別物として扱い、削除は今は伝播させない。
+            # 消したいときにどう伝えるかが決まるまで、消さない側へ倒す。
+            unmapped.append(property_name)
+            continue
         translated[external] = _normalize_outbound_value(db_key, property_name, value)
     return translated, unmapped
+
+
+def _is_empty(value: Any) -> bool:
+    """外部の既存値を消しにいく値かどうか。0やFalseは「値がある」として扱う。"""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict, set)):
+        return not value
+    return False

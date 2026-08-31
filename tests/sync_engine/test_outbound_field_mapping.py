@@ -117,3 +117,26 @@ def test_labels_shared_by_multiple_zoho_fields_are_treated_as_ambiguous() -> Non
     from src.sync_engine.outbound_field_mapping import _zoho_api_names_by_label
 
     assert sorted(_zoho_api_names_by_label()["Deals"]["作成日時"]) == ["Created_Time", "field42"]
+
+
+def test_empty_values_are_never_sent_outbound() -> None:
+    """空値を送ると、項目名が正しくても外部の既存値が消える。
+
+    「値の変更」と「値の削除」は別物として扱い、削除はいま伝播させない
+    （消したいときにどう伝えるかが決まるまで、消さない側へ倒す）。
+    """
+    for empty in (None, "", "   ", [], {}):
+        translated, unmapped = translate_properties(
+            zoho_outbound_field_names(), "project", {"案件名": empty}
+        )
+        assert translated == {}, empty
+        assert unmapped == ["案件名"], empty
+
+
+def test_zero_and_false_are_treated_as_real_values() -> None:
+    """0やFalseは「空」ではない。ここを取り違えると金額0が送れなくなる。"""
+    translated, _unmapped = translate_properties(
+        zoho_outbound_field_names(), "project", {"初期費用": 0}
+    )
+
+    assert translated == {"field": 0}

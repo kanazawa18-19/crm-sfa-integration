@@ -39,7 +39,7 @@ docs/notion_webhook_proxy_note.md も参照）。実運用のエントリポイ�
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Collection, Mapping, Protocol
 
 from src.db_schema.base import PropertyType, Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
@@ -226,7 +226,11 @@ class NotionPageClient(Protocol):
     def get_raw_page(self, page_id: str) -> Mapping[str, Any]: ...
 
 
-def fetch_and_normalize_notion_page(page_id: str, notion_client: NotionPageClient) -> dict[str, Any]:
+def fetch_and_normalize_notion_page(
+    page_id: str,
+    notion_client: NotionPageClient,
+    updated_property_ids: Collection[str] | None = None,
+) -> dict[str, Any]:
     """Notion APIからページ全体を再取得し、本モジュールが期待するペイロード形式
     （{"page_id", "database_id", "last_edited_time", "properties"}）へ整形する。
 
@@ -234,14 +238,48 @@ def fetch_and_normalize_notion_page(page_id: str, notion_client: NotionPageClien
     Webhook受信〜handler()呼び出しの間のプロキシ層（`handler_with_proxy()`）がこの関数を
     利用する。notion_client.get_raw_page()の返り値はNotion API `GET /v1/pages/{id}`の
     レスポンス形式（id / parent.database_id / last_edited_time / properties を含む）を想定する。
+
+    ■ `updated_property_ids`（2026-08-31、ChatGPTクロスレビューBLOCKER対応）
+
+    **Webhookが「変更されたプロパティのID」を教えてくれるので、そこへ絞る。**
+    ページ全体を渡すと、実際には触られていない項目まで外部ツールへ伝播対象になる。
+
+        14:00     Zohoで電話番号を変更
+        14:00:01  Notionで案件名だけを変更
+        14:00:02  Notionページ全体をZohoへ → **Notionに残っていた古い電話番号で上書き**
+
+    これは「テストは通るが本番データだけ壊れる」形の事故。名前ではなくNotionの
+    プロパティIDで突き合わせる（プロパティ名の変更は表示上の操作でも、同期にとっては
+    別物になるため）。
+
+    Noneのとき（ページ作成イベント・IDが取れなかった場合）は全項目を返す。
+    絞った結果1件も残らない場合も全項目を返す（IDの形式が想定と違うときに、
+    何も同期されない状態へ静かに倒れるのを避ける）。
     """
     page = notion_client.get_raw_page(page_id)
     parent = page.get("parent") or {}
+    properties = dict(page.get("properties") or {})
+    if updated_property_ids:
+        wanted = set(updated_property_ids)
+        changed = {
+            name: value
+            for name, value in properties.items()
+            if isinstance(value, Mapping) and value.get("id") in wanted
+        }
+        if changed:
+            properties = changed
+        else:
+            logger.warning(
+                "notion webhook: updated_properties=%r に一致するプロパティがページ側に"
+                "見つからなかったため、全項目を対象にします (page_id=%s)",
+                sorted(wanted),
+                page_id,
+            )
     return {
         "page_id": page["id"],
         "database_id": parent.get("database_id"),
         "last_edited_time": page["last_edited_time"],
-        "properties": dict(page.get("properties") or {}),
+        "properties": properties,
     }
 
 
@@ -348,13 +386,17 @@ def handler_with_proxy(
         body = event.get("body")
         raw_payload = json.loads(body) if isinstance(body, str) else (body or {})
         page_id = raw_payload["entity"]["id"]
+        # 変更されたプロパティIDだけへ絞る（上記docstring参照）。
+        updated_property_ids = (raw_payload.get("data") or {}).get("updated_properties") or None
     except json.JSONDecodeError as exc:
         return bad_request_response(f"invalid JSON payload: {exc}")
     except (KeyError, TypeError) as exc:
         return bad_request_response(f"missing required field: {exc}")
 
     try:
-        payload = fetch_and_normalize_notion_page(page_id, notion_client)
+        payload = fetch_and_normalize_notion_page(
+            page_id, notion_client, updated_property_ids
+        )
     except ApiError as exc:
         if exc.status_code == 404:
             logger.info(
