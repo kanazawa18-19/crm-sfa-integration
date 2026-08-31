@@ -111,3 +111,43 @@ def test_rejected_write_is_reported_as_skipped() -> None:
 
     assert result.has_partial_skips
     assert Tool.KINTONE in result.properties[0].skipped_tools
+
+
+def test_version_is_only_attached_to_the_first_write_per_tool() -> None:
+    """**同じイベントで同じツールへ2回書くとき、2回目に古い版を送ってはいけない。**
+
+    版はこちらが書くたびに相手側で進む。同じ版を使い回すと、2回目以降が
+    「読んだ後に誰かが更新した」と誤判定されて拒否され、その値は再送されないため
+    恒久的に反映されないまま残る（shirokuma-secレビューBLOCKER、2026-08-31）。
+    「案件名と電話番号を同時に変更」のような日常的な操作で起きる。
+    """
+    client = _KintoneClient(revision="7")
+    store = SQLiteIdMappingStore()
+    store.upsert(
+        IdMapping(
+            notion_key="page-1",
+            db_key="client_master",
+            kintone_id="1001",
+            last_synced_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        ),
+        expected_last_synced_at=None,
+    )
+    dispatcher = Dispatcher(
+        store, {Tool.KINTONE: KintoneSyncTarget(client, "取引先マスタ")}, sync_system_id="test"
+    )
+
+    dispatcher.dispatch(
+        SyncEvent(
+            source_tool=Tool.NOTION,
+            db_key="client_master",
+            external_id="page-1",
+            properties={"取引先名": "新名称", "TEL": "03-1111-2222"},
+            occurred_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        )
+    )
+
+    versions = [version for _id, _record, version in client.updates]
+    assert len(versions) == 2
+    assert versions[0] == "7"
+    # 2回目は版なし。古い版を送って偽の競合を起こすより、保護を諦める方がまし。
+    assert versions[1] is None

@@ -89,6 +89,19 @@ def _partial_skip_summary(dispatcher: Any) -> list[dict[str, Any]] | None:
     ]
 
 
+def _record_authenticated_receipt(source: str, result: dict[str, Any]) -> None:
+    """認証を通ったWebhookだけを「受信した」として記録する。
+
+    購読が生きているかを後から判別するための記録（`src/sync_engine/webhook_receipts.py`）。
+    **認証前に記録すると、外から適当なPOSTを1回投げるだけで「届いている」ように見えてしまい、
+    購読が切れていても気づけないという、この機能が防ごうとしていた状態に戻る**
+    （shirokuma-secレビューWARN、2026-08-31）。
+    """
+    if result.get("statusCode") == 401:
+        return
+    webhook_receipts.record_webhook_receipt(source)
+
+
 def _lambda_result_to_response(result: dict[str, Any], *, dispatcher: Any = None) -> Response:
     """Webhookハンドラが返す`{"statusCode":..., "body":...}`をFastAPIの`Response`へ変換する。
 
@@ -136,8 +149,6 @@ async def webhook_notion(
     実際のNotion API Webhooksのペイロードはページ全体を含まないため、
     `handler_with_proxy()`（ページ全体をNotion APIから再取得するプロキシ層）を使う。
     """
-    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
-    webhook_receipts.record_webhook_receipt(webhook_receipts.NOTION)
     event = await _lambda_event_from_request(request)
     if wiring.any_db_page_client is None:
         logger.error(
@@ -159,6 +170,7 @@ async def webhook_notion(
         project_mirror_sync=wiring.project_mirror_sync_callable,
         client_name_index_sync=wiring.client_name_index_sync_callable,
     )
+    _record_authenticated_receipt(webhook_receipts.NOTION, result)
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
 
@@ -166,8 +178,6 @@ async def webhook_notion(
 async def webhook_kintone(
     request: Request, wiring: ProductionSyncWiring = Depends(wiring_dependency)
 ) -> Response:
-    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
-    webhook_receipts.record_webhook_receipt(webhook_receipts.KINTONE)
     event = await _lambda_event_from_request(request)
     # id_mapping_store/notion_client: 取引先マスターリレーションの「後勝ち」上書き防止ガード用
     # （2026-08-25、GPT-5.6クロスレビュー指摘対応。kintone_webhook.pyのモジュールdocstring
@@ -180,6 +190,7 @@ async def webhook_kintone(
         id_mapping_store=wiring.id_mapping_store,
         notion_client=wiring.any_db_page_client,
     )
+    _record_authenticated_receipt(webhook_receipts.KINTONE, result)
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
 
@@ -187,8 +198,6 @@ async def webhook_kintone(
 async def webhook_zoho(
     request: Request, wiring: ProductionSyncWiring = Depends(wiring_dependency)
 ) -> Response:
-    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
-    webhook_receipts.record_webhook_receipt(webhook_receipts.ZOHO)
     event = await _lambda_event_from_request(request)
     # id_mapping_store/notion_client/zoho_client: ⑥アクション履歴DBの取引先マスターリレーション
     # 自動解決・「後勝ち」上書き防止ガード用（2026-08-25、Round2。kintone側と同じ設計、
@@ -203,6 +212,7 @@ async def webhook_zoho(
         notion_client=wiring.any_db_page_client,
         zoho_client=wiring.zoho_action_client,
     )
+    _record_authenticated_receipt(webhook_receipts.ZOHO, result)
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
 
@@ -210,10 +220,9 @@ async def webhook_zoho(
 async def webhook_spreadsheet(
     request: Request, wiring: ProductionSyncWiring = Depends(wiring_dependency)
 ) -> Response:
-    # 購読が生きているかを後から判別できるようにする（最善努力・失敗しても処理は続ける）。
-    webhook_receipts.record_webhook_receipt(webhook_receipts.SPREADSHEET)
     event = await _lambda_event_from_request(request)
     result = spreadsheet_webhook_handler(event, context=None, dispatcher=wiring.dispatcher)
+    _record_authenticated_receipt(webhook_receipts.SPREADSHEET, result)
     return _lambda_result_to_response(result, dispatcher=wiring.dispatcher)
 
 

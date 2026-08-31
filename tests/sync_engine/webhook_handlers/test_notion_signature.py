@@ -81,9 +81,12 @@ def test_verification_token_is_extracted() -> None:
     assert extract_notion_verification_token({}) is None
 
 
-def test_verification_request_is_accepted_without_a_signature() -> None:
+def test_verification_request_is_accepted_while_the_secret_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """購読作成時の検証リクエストには署名が無い（鍵をまだこちらが知らないため）。"""
-    body = json.dumps({"verification_token": "tok_abc"})
+    monkeypatch.delenv("NOTION_WEBHOOK_SECRET", raising=False)
+    body = json.dumps({"verification_token": "tok_abcdefghijklmnop"})
 
     result = handler_with_proxy(
         {"headers": {}, "body": body}, None, notion_client=_FakeClient(), dispatcher=None
@@ -91,6 +94,40 @@ def test_verification_request_is_accepted_without_a_signature() -> None:
 
     assert result["statusCode"] == 200
     assert json.loads(result["body"]) == {"received": "verification_token"}
+
+
+def test_verification_token_is_not_written_to_the_log_in_full(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """トークンはそのまま HMAC鍵 になる値。ログ全文に残さない。"""
+    monkeypatch.delenv("NOTION_WEBHOOK_SECRET", raising=False)
+    token = "tok_abcdefghijklmnopqrstuvwxyz"
+
+    with caplog.at_level("WARNING"):
+        handler_with_proxy(
+            {"headers": {}, "body": json.dumps({"verification_token": token})},
+            None,
+            notion_client=_FakeClient(),
+            dispatcher=None,
+        )
+
+    assert all(token not in record.getMessage() for record in caplog.records)
+
+
+def test_verification_request_is_rejected_once_the_secret_is_set() -> None:
+    """鍵が設定済みなら検証リクエストはもう来ないはず。
+
+    ここを恒久的に開けておくと、誰でも認証なしでPOSTできる口が残る
+    （そこへ送った文字列がログに出る経路にもなっていた）。
+    """
+    result = handler_with_proxy(
+        {"headers": {}, "body": json.dumps({"verification_token": "tok_abc"})},
+        None,
+        notion_client=_FakeClient(),
+        dispatcher=None,
+    )
+
+    assert result["statusCode"] == 401
 
 
 def test_signed_event_is_accepted() -> None:

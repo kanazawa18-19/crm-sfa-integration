@@ -25,6 +25,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Any, Mapping, MutableMapping
 
 import requests
 
@@ -941,7 +942,7 @@ class Dispatcher:
         mapping: IdMapping,
         property_name: str,
         value: object,
-        records_by_tool: Mapping[Tool, Mapping[str, Any]] | None = None,
+        records_by_tool: MutableMapping[Tool, Mapping[str, Any]] | None = None,
     ) -> tuple[frozenset[Tool], frozenset[Tool], IdMapping]:
         """`tools`（書き込み対象として意図した全ツール）へ書き込みを試み、実際に書き込めた
         ツール・書き込めなかった（スキップされた）ツール・**更新後のmapping**を返す
@@ -958,13 +959,41 @@ class Dispatcher:
                 mapping,
                 property_name,
                 value,
-                self._expected_version(tool, (records_by_tool or {}).get(tool)),
+                self._take_expected_version(tool, records_by_tool),
             )
             if ok:
                 written.add(tool)
             else:
                 skipped.add(tool)
         return frozenset(written), frozenset(skipped), mapping
+
+    def _take_expected_version(
+        self, tool: Tool, records_by_tool: MutableMapping[Tool, Mapping[str, Any]] | None
+    ) -> str | None:
+        """このイベントで、そのツールへ**最初に書くときだけ**版を添える（2026-08-31）。
+
+        ■ なぜ「最初だけ」なのか（shirokuma-secレビューBLOCKER対応）
+
+        現在値はイベントの先頭で1回だけ読む。ところが版（kintoneの`$revision`・Zohoの
+        `Modified_Time`）は**こちらが書くたびに相手側で進む**。同じイベントで同じツールへ
+        2つ以上のプロパティを書くと、2つ目以降は古い版を送ることになり、相手からは
+        「読んだ後に誰かが更新した」ように見えて409/412で拒否される。
+        しかも拒否された値は再送されないため、**恒久的に反映されないまま残る**。
+        「案件名と電話番号を同時に変更」のような日常的な操作で起きる。
+
+        本来は「1イベント・1ツールにつき1回の書き込みにまとめる」のが正しい
+        （プロパティごとにAPIを叩いている今の作りは、そもそも回数も無駄）。
+        そこまでの作り替えは影響が大きいので、まずは**偽の競合による値の消失**だけを
+        確実に止める。2つ目以降は版なしで書く（保護されるのは1つ目だけになるが、
+        窓は「自分がこのイベントを処理している間」に縮まる。何も書けないよりよい）。
+        """
+        if records_by_tool is None:
+            return None
+        version = self._expected_version(tool, records_by_tool.get(tool))
+        if version is not None:
+            # 使ったら落とす。同じイベントの2回目以降は版なしになる。
+            records_by_tool.pop(tool, None)
+        return version
 
     def _fetch_versions(
         self, tools: frozenset[Tool], mapping: IdMapping

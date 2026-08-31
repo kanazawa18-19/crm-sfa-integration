@@ -452,10 +452,21 @@ def handler_with_proxy(
     # 購読作成時の検証リクエスト。まだ鍵を知らないので署名が付いていない。
     verification_token = extract_notion_verification_token(raw_payload)
     if verification_token is not None:
+        if os.environ.get("NOTION_WEBHOOK_SECRET"):
+            # **既に鍵が設定済みなら、検証リクエストはもう来ないはず。**
+            # ここを恒久的に開けておくと、誰でも認証なしでPOSTでき、送った文字列が
+            # そのままログに出てしまう（shirokuma-secレビューWARN、2026-08-31）。
+            # 再検証が必要になったら、先にNOTION_WEBHOOK_SECRETを外すこと。
+            logger.warning(
+                "notion webhook: 鍵が設定済みなのに検証リクエストが来ました。受け付けません"
+            )
+            return unauthorized_response()
         logger.warning(
-            "notion webhook: 購読の検証リクエストを受け取りました。この値を "
-            "NOTION_WEBHOOK_SECRET に設定してください（設定後はログから消えます）: %s",
-            verification_token,
+            "notion webhook: 購読の検証リクエストを受け取りました。"
+            "`vercel logs` ではなく **Vercelの環境変数** に設定してください。"
+            "値の先頭と末尾だけ出します（全体はログに残しません）: %s…%s",
+            verification_token[:10],
+            verification_token[-4:],
         )
         return {
             "statusCode": 200,
