@@ -76,7 +76,12 @@ class FakeSyncTarget(SyncTarget):
         return self._records.get(external_id)
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         self.upsert_calls.append((external_id, dict(properties)))
         if self._upsert_raises is not None:

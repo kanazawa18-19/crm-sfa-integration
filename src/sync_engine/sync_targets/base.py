@@ -32,7 +32,12 @@ class SyncTarget(ABC):
 
     @abstractmethod
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         """レコードを作成または更新し、外部IDを返す。
 

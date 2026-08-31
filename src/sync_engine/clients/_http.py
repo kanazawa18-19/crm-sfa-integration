@@ -77,6 +77,16 @@ class ApiError(Exception):
         super().__init__(f"HTTP {status_code}: {message}")
 
 
+class ConcurrentModificationError(ApiError):
+    """こちらが現在値を読んでから書くまでの間に、相手側で更新されていた（2026-08-31）。
+
+    Webhookは発生順に届かず再送もあるため、素朴に書くと**古い値で新しい編集を潰す**。
+    kintoneは`revision`、Zohoは`If-Unmodified-Since`で相手側に検出させ、
+    弾かれたらこの例外にして「書けなかった」として扱う（推測で上書きしない）。
+    """
+
+
+
 def request_with_retry(
     method: str,
     url: str,

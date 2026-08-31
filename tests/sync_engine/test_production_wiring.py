@@ -676,7 +676,12 @@ class _FakeKintoneSyncTarget:
         return {"db_key": self.db_key}
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         self.upsert_calls.append((external_id, dict(properties)))
         return external_id
@@ -755,6 +760,7 @@ def test_multi_db_kintone_sync_target_get_record_returns_none_when_no_target() -
 class _RecordingKintoneClient:
     def __init__(self) -> None:
         self.updates: list[tuple[str, str, dict[str, Any]]] = []
+        self.expected_versions: list[str | None] = []
 
     def get_record(self, app: str, record_id: str) -> dict[str, Any] | None:
         return None
@@ -762,13 +768,22 @@ class _RecordingKintoneClient:
     def add_record(self, app: str, record: dict[str, Any]) -> str:
         raise AssertionError("この結合テストでは新規作成しない")
 
-    def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
+    def update_record(
+        self,
+        app: str,
+        record_id: str,
+        record: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> None:
         self.updates.append((app, record_id, dict(record)))
+        self.expected_versions.append(expected_version)
 
 
 class _RecordingZohoClient:
     def __init__(self) -> None:
         self.updates: list[tuple[str, str, dict[str, Any]]] = []
+        self.expected_versions: list[str | None] = []
 
     def get_record(self, module: str, record_id: str) -> dict[str, Any] | None:
         return None
@@ -776,8 +791,16 @@ class _RecordingZohoClient:
     def insert_record(self, module: str, record: dict[str, Any]) -> str:
         raise AssertionError("この結合テストでは新規作成しない")
 
-    def update_record(self, module: str, record_id: str, record: dict[str, Any]) -> None:
+    def update_record(
+        self,
+        module: str,
+        record_id: str,
+        record: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> None:
         self.updates.append((module, record_id, dict(record)))
+        self.expected_versions.append(expected_version)
 
 
 def test_multi_db_kintone_router_passes_db_key_so_field_codes_are_resolved() -> None:
@@ -1061,7 +1084,9 @@ def test_multi_db_kintone_sync_target_reports_skip_through_real_dispatcher(
         def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
             return None
 
-        def upsert_record(self, external_id, properties, *, db_key: str | None = None):
+        def upsert_record(
+            self, external_id, properties, *, db_key=None, expected_version=None
+        ):
             return external_id
 
         def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
@@ -1152,7 +1177,9 @@ def test_skip_tracking_dispatcher_logs_warning_on_partial_skip(
         def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
             return None
 
-        def upsert_record(self, external_id, properties, *, db_key: str | None = None):
+        def upsert_record(
+            self, external_id, properties, *, db_key=None, expected_version=None
+        ):
             return None  # 常にスキップ
 
         def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:

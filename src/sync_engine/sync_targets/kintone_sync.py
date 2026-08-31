@@ -30,7 +30,14 @@ class KintoneClient(Protocol):
         """レコードを新規登録し、採番されたレコード番号を返す。"""
         ...
 
-    def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None: ...
+    def update_record(
+        self,
+        app: str,
+        record_id: str,
+        record: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> None: ...
 
 
 class KintoneSyncTarget(SyncTarget):
@@ -63,7 +70,12 @@ class KintoneSyncTarget(SyncTarget):
             raise
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         payload = self._to_kintone_payload(properties, db_key)
         if payload is None:
@@ -73,7 +85,9 @@ class KintoneSyncTarget(SyncTarget):
             return None
         if external_id is None:
             return self._client.add_record(self._app, payload)
-        self._client.update_record(self._app, external_id, payload)
+        self._client.update_record(
+            self._app, external_id, payload, expected_version=expected_version
+        )
         return external_id
 
     def _to_kintone_payload(

@@ -46,7 +46,12 @@ class _ActorCapturingNotionTarget(SyncTarget):
         return None
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str:
         self.captured_actors.append(get_actor())
         return external_id or "new-page"

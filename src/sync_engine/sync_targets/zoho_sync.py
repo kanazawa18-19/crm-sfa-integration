@@ -36,7 +36,14 @@ class ZohoClient(Protocol):
         """レコードを新規登録し、採番されたIDを返す。"""
         ...
 
-    def update_record(self, module: str, record_id: str, record: dict[str, Any]) -> None: ...
+    def update_record(
+        self,
+        module: str,
+        record_id: str,
+        record: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> None: ...
 
 
 def is_zoho_enabled() -> bool:
@@ -82,7 +89,12 @@ class ZohoSyncTarget(SyncTarget):
             raise
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         if not self._enabled:
             # 「作成されていない」ことを型で表現する（""だと採番済みIDと誤認されうるため）。
@@ -95,7 +107,9 @@ class ZohoSyncTarget(SyncTarget):
             return None
         if external_id is None:
             return self._client.insert_record(self._module, payload)
-        self._client.update_record(self._module, external_id, payload)
+        self._client.update_record(
+            self._module, external_id, payload, expected_version=expected_version
+        )
         return external_id
 
     def _to_zoho_payload(

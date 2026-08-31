@@ -30,7 +30,7 @@ import requests
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
-from src.sync_engine.clients._http import ApiError
+from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.conflict_resolver import (
     ConflictResolution,
@@ -208,13 +208,20 @@ class Dispatcher:
             prepared.append((property_name, prop, new_value))
 
         if event.source_tool is Tool.NOTION:
-            # Notionは常にマスターであり、Notion発の変更に競合判定は不要。現在値の取得が
-            # 発生しないため、取得フェーズを挟まずそのまま書き込む。
+            # Notionは常にマスターであり、Notion発の変更に競合判定は不要。
+            #
+            # **ただし「マスターだから何を上書きしてもよい」ではない**（2026-08-31）。
+            # Webhookは発生順に届かず再送もあるため、こちらが処理を始めてから書き終わるまでの
+            # 間に相手側で編集されていると、**古い値で新しい編集を潰す**。そこで競合判定は
+            # 行わないまま、**版（kintoneのrevision / ZohoのModified_Time）だけ**を読んで
+            # 書き込みに添える。相手側で更新されていれば相手が弾いてくれる
+            # （`_write_value`の`ConcurrentModificationError`）。
+            versions_by_tool = self._fetch_versions(target_tools, mapping)
             for property_name, prop, new_value in prepared:
                 # 4. sync_scopeで同期対象と判定されたツールへのみ伝播する。
                 intended = frozenset(t for t in target_tools if prop.should_sync_to(t))
                 written, skipped, mapping = self._write_values(
-                    intended, mapping, property_name, new_value
+                    intended, mapping, property_name, new_value, versions_by_tool
                 )
                 results.append(
                     PropertyDispatchResult(
@@ -329,7 +336,7 @@ class Dispatcher:
                 # フォールバックしていたことが原因（conflict_resolver.pyの修正で対応済み）。
                 intended = frozenset({Tool.NOTION}) | other_tools
                 written, skipped, mapping = self._write_values(
-                    intended, mapping, property_name, new_value
+                    intended, mapping, property_name, new_value, records_by_tool
                 )
                 results.append(
                     PropertyDispatchResult(
@@ -386,7 +393,7 @@ class Dispatcher:
             # （比較には参加していないが、確定した値へ補完すべきsync_scope対象ツール）。
             intended = frozenset(resolution.target_tools | missing_tools)
             written, skipped, mapping = self._write_values(
-                intended, mapping, property_name, resolution.resolved_value
+                intended, mapping, property_name, resolution.resolved_value, records_by_tool
             )
 
             # BLOCKER2: 却下データの退避（データ退避）とSlackアラート通知（重要項目のみ）。
@@ -929,7 +936,12 @@ class Dispatcher:
             )
 
     def _write_values(
-        self, tools: frozenset[Tool], mapping: IdMapping, property_name: str, value: object
+        self,
+        tools: frozenset[Tool],
+        mapping: IdMapping,
+        property_name: str,
+        value: object,
+        records_by_tool: Mapping[Tool, Mapping[str, Any]] | None = None,
     ) -> tuple[frozenset[Tool], frozenset[Tool], IdMapping]:
         """`tools`（書き込み対象として意図した全ツール）へ書き込みを試み、実際に書き込めた
         ツール・書き込めなかった（スキップされた）ツール・**更新後のmapping**を返す
@@ -941,15 +953,70 @@ class Dispatcher:
         written: set[Tool] = set()
         skipped: set[Tool] = set()
         for tool in tools:
-            ok, mapping = self._write_value(tool, mapping, property_name, value)
+            ok, mapping = self._write_value(
+                tool,
+                mapping,
+                property_name,
+                value,
+                self._expected_version(tool, (records_by_tool or {}).get(tool)),
+            )
             if ok:
                 written.add(tool)
             else:
                 skipped.add(tool)
         return frozenset(written), frozenset(skipped), mapping
 
+    def _fetch_versions(
+        self, tools: frozenset[Tool], mapping: IdMapping
+    ) -> dict[Tool, Mapping[str, Any]]:
+        """書き込み先の現在値を、**版を取るためだけに**1レコードずつ読む。
+
+        取得に失敗したツールは版なしで書く（読めないことを理由に同期を止めない。
+        版が無ければ従来どおりの上書きになるだけで、これまでより悪くはならない）。
+        """
+        records: dict[Tool, Mapping[str, Any]] = {}
+        for tool in tools:
+            target = self._targets.get(tool)
+            external_id = _external_id_for(tool, mapping)
+            if target is None or external_id is None:
+                continue
+            try:
+                record = target.get_record(external_id, db_key=mapping.db_key)
+            except Exception:  # noqa: BLE001 (クライアント実装依存の例外を広く受ける)
+                logger.warning(
+                    "現在の版を取得できませんでした。版なしで書き込みます "
+                    "(tool=%s, db_key=%r, external_id=%r)",
+                    tool.value,
+                    mapping.db_key,
+                    external_id,
+                    exc_info=True,
+                )
+                continue
+            if record is not None:
+                records[tool] = record
+        return records
+
+    @staticmethod
+    def _expected_version(tool: Tool, record: Mapping[str, Any] | None) -> str | None:
+        """フェーズ2で読んだ現在値から「その時点の版」を取り出す（2026-08-31）。
+
+        これを書き込みへ持っていくと、読んでから書くまでの間に相手側で更新されていた場合に
+        相手が弾いてくれる（kintoneは`revision`で409、Zohoは`If-Unmodified-Since`で412）。
+        Webhookは発生順に届かず再送もあるため、素朴に書くと**古い値で新しい編集を潰す**。
+        """
+        if record is None:
+            return None
+        key = "$revision" if tool is Tool.KINTONE else "Modified_Time"
+        raw = record.get(key)
+        return str(raw) if raw not in (None, "") else None
+
     def _write_value(
-        self, tool: Tool, mapping: IdMapping, property_name: str, value: object
+        self,
+        tool: Tool,
+        mapping: IdMapping,
+        property_name: str,
+        value: object,
+        expected_version: str | None = None,
     ) -> tuple[bool, IdMapping]:
         """1ツールへの書き込みを試み、「実際に書き込めたか」と「更新後のmapping」を返す。
 
@@ -968,7 +1035,26 @@ class Dispatcher:
             return self._write_spreadsheet_value(target, mapping, property_name, value)
 
         external_id = _external_id_for(tool, mapping)
-        result = target.upsert_record(external_id, {property_name: value}, db_key=mapping.db_key)
+        try:
+            result = target.upsert_record(
+                external_id,
+                {property_name: value},
+                db_key=mapping.db_key,
+                expected_version=expected_version,
+            )
+        except ConcurrentModificationError:
+            # 読んでから書くまでの間に相手側で更新されていた。**推測で上書きしない。**
+            # 「書けなかった」として返し、部分スキップとして可視化する
+            # （既知のズレでなければSlackへも上がる）。
+            logger.warning(
+                "sync write rejected: %s 側でこちらが読んだ後に更新されていたため上書きしません"
+                " (db_key=%r, property=%r, external_id=%r)",
+                tool.value,
+                mapping.db_key,
+                property_name,
+                external_id,
+            )
+            return False, mapping
         return result is not None, mapping
 
     def _write_spreadsheet_value(

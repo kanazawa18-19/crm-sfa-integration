@@ -17,6 +17,7 @@ from typing import Any
 import requests
 
 from src.sync_engine.clients._http import (
+    ConcurrentModificationError,
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
     DEFAULT_MAX_RETRIES,
@@ -146,7 +147,26 @@ class HttpKintoneClient:
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise KintoneApiError(response.status_code, extract_error_message(response)) from exc
 
-    def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
-        body = {"app": app, "id": record_id, "record": wrap_kintone_record(record)}
+    def update_record(
+        self,
+        app: str,
+        record_id: str,
+        record: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> None:
+        """`expected_version`（kintoneの`$revision`）を渡すと楽観的排他になる。
+
+        現在のrevisionと違えばkintoneが409で拒否する。Webhookは発生順に届かず再送も
+        あるため、**こちらが現在値を読んでから書くまでの間に誰かが編集していたら
+        上書きしない**（2026-08-31、ChatGPTクロスレビュー指摘）。
+        """
+        body: dict[str, Any] = {"app": app, "id": record_id, "record": wrap_kintone_record(record)}
+        if expected_version is not None:
+            body["revision"] = expected_version
         response = self._request("PUT", json_body=body)
+        if response.status_code == 409:
+            raise ConcurrentModificationError(
+                response.status_code, extract_error_message(response)
+            )
         raise_for_error(response, KintoneApiError)

@@ -77,7 +77,12 @@ class _シート:
         return {**properties, SYNC_KEY_COLUMN: sync_key}
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         assert external_id is not None, "追記は append_row_with_sync_key を通ること"
         self.rows.setdefault(int(external_id), {}).update(properties)

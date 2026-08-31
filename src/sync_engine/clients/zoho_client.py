@@ -26,6 +26,7 @@ from typing import Any
 import requests
 
 from src.sync_engine.clients._http import (
+    ConcurrentModificationError,
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
     DEFAULT_MAX_RETRIES,
@@ -188,11 +189,12 @@ class HttpZohoClient:
         *,
         json_body: Any | None = None,
         idempotent: bool = True,
+        extra_headers: dict[str, str] | None = None,
     ) -> requests.Response:
         return request_with_retry(
             method,
             f"{self._api_base_url}{path}",
-            headers=self._headers(),
+            headers={**self._headers(), **(extra_headers or {})},
             json_body=json_body,
             timeout=self._timeout,
             max_retries=self._max_retries,
@@ -255,9 +257,30 @@ class HttpZohoClient:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
 
-    def update_record(self, module: str, record_id: str, record: dict[str, Any]) -> None:
+    def update_record(
+        self,
+        module: str,
+        record_id: str,
+        record: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> None:
+        """`expected_version`（Zohoの`Modified_Time`）を渡すと楽観的排他になる。
+
+        `If-Unmodified-Since`ヘッダーで、その時刻以降に更新されていれば412で拒否される。
+        理由はkintone側と同じ（`kintone_client.update_record`のdocstring参照）。
+        """
         body = {"data": [{**record, "id": record_id}]}
-        response = self._request("PUT", f"/{module}/{record_id}", json_body=body)
+        extra_headers = (
+            {"If-Unmodified-Since": expected_version} if expected_version is not None else None
+        )
+        response = self._request(
+            "PUT", f"/{module}/{record_id}", json_body=body, extra_headers=extra_headers
+        )
+        if response.status_code == 412:
+            raise ConcurrentModificationError(
+                response.status_code, extract_error_message(response)
+            )
         raise_for_error(response, ZohoApiError)
         try:
             result = response.json()["data"][0]

@@ -36,7 +36,12 @@ class NotionSyncTarget(SyncTarget):
         return self._client.get_page(external_id)
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str:
         if external_id is None:
             return self._client.create_page(properties)

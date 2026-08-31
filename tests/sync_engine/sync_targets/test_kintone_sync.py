@@ -21,7 +21,7 @@ class FakeKintoneClient:
         self.records.setdefault(app, {})[record_id] = dict(record)
         return record_id
 
-    def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
+    def update_record(self, app: str, record_id: str, record: dict[str, Any], *, expected_version: str | None = None) -> None:
         self.records.setdefault(app, {}).setdefault(record_id, {}).update(record)
 
 
@@ -91,7 +91,7 @@ def test_get_record_logs_identifiers_and_reraises_on_client_error(
         def add_record(self, app: str, record: dict[str, Any]) -> str:
             raise NotImplementedError
 
-        def update_record(self, app: str, record_id: str, record: dict[str, Any]) -> None:
+        def update_record(self, app: str, record_id: str, record: dict[str, Any], *, expected_version: str | None = None) -> None:
             raise NotImplementedError
 
     target = KintoneSyncTarget(RaisingKintoneClient(), "取引先マスタ")

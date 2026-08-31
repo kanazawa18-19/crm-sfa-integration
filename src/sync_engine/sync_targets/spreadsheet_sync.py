@@ -83,7 +83,12 @@ class SpreadsheetSyncTarget(SyncTarget):
         return self._client.get_row(self._sheet, int(external_id))
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str:
         values = drop_relation_properties(properties, db_key)
         if external_id is None:

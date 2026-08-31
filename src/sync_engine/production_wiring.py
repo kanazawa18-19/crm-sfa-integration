@@ -199,7 +199,12 @@ class _MultiDbKintoneSyncTarget(SyncTarget):
         return target.get_record(external_id) if target is not None else None
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         if external_id is None:
             logger.warning(
@@ -217,7 +222,9 @@ class _MultiDbKintoneSyncTarget(SyncTarget):
                 external_id,
             )
             return None
-        return target.upsert_record(external_id, properties, db_key=db_key)
+        return target.upsert_record(
+            external_id, properties, db_key=db_key, expected_version=expected_version
+        )
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)
@@ -246,7 +253,12 @@ class _MultiDbZohoSyncTarget(SyncTarget):
         return target.get_record(external_id) if target is not None else None
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
         if external_id is None:
             logger.warning(
@@ -264,7 +276,9 @@ class _MultiDbZohoSyncTarget(SyncTarget):
                 external_id,
             )
             return None
-        return target.upsert_record(external_id, properties, db_key=db_key)
+        return target.upsert_record(
+            external_id, properties, db_key=db_key, expected_version=expected_version
+        )
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)
