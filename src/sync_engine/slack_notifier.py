@@ -100,6 +100,11 @@ _ISSUE_REASON_ACTION_HINTS: dict[str, str] = {
 # ■ docs/relation_sync_activation_note.md との同期について: 本dictを変更した場合は、
 # `_ISSUE_REASON_ACTION_HINTS`と同様に同ドキュメントの対応する記載も合わせて更新すること。
 _UPDATE_SKIP_REASON_ACTION_HINTS: dict[str, str] = {
+    "property_write_skipped": (
+        "送り先は分かっているのに書き込めていません。"
+        "IDマッピングの状態と、そのツールの認証情報を確認してください。"
+        "相手側で同時に編集されていた場合は、もう一度その項目を編集し直すと反映されます"
+    ),
     "update_notion_value_fetch_failed": (
         "🚨 上記詳細の通り、このイベントに含まれる一部プロパティは既に他ツールへ書き込み"
         "済みの場合があります（詳細を必ず確認してください）。Notion APIの障害・レート制限、"

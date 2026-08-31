@@ -72,11 +72,15 @@ from src.sync_engine.clients.kintone_client import HttpKintoneClient
 from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
 from src.sync_engine.clients.zoho_client import HttpZohoClient
-from src.sync_engine.dispatcher import Dispatcher, DispatchResult
+from src.sync_engine.dispatcher import Dispatcher, DispatchResult, PropertyDispatchResult
 from src.sync_engine.id_mapping import IdMappingStore, SQLiteIdMappingStore
 from src.sync_engine.notion_id_mapping import NotionIdMappingStore
 from src.sync_engine.slack_notifier import SlackNotifier, WebhookSlackNotifier
 from src.sync_engine.known_sync_gaps import KNOWN_SYNC_GAPS
+from src.sync_engine.outbound_field_mapping import (
+    kintone_outbound_field_names,
+    zoho_outbound_field_names,
+)
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import get_sync_system_id
 from src.sync_engine.sync_targets.base import SyncTarget
@@ -837,20 +841,47 @@ class SkipTrackingDispatcher:
         self._slack_notifier = slack_notifier
         self.last_result: DispatchResult | None = None
 
+    #: 「そもそも書けないと分かっている」かを判定するための、外向き対応表の取得関数。
+    _OUTBOUND_TABLES = {
+        Tool.ZOHO: zoho_outbound_field_names,
+        Tool.KINTONE: kintone_outbound_field_names,
+    }
+
+    @classmethod
+    def _is_known_gap(cls, tool: Tool, db_key: str, property_name: str) -> bool:
+        """このスキップが「分かっていること」かどうか。
+
+        2種類ある。**両方を除かないと通知が洪水になる。**
+
+        1. **外部→Notion の変換表に無い**（`known_sync_gaps.py`の表）
+        2. **Notion→外部に構造的に書けない型**（選択肢・ステータス・複数選択・
+           チェックボックス・リレーション・担当者。`outbound_field_mapping.py`参照）
+
+        2つ目が抜けていた（2026-08-31、obasan-qualityレビューBLOCKER）。
+        `営業ステータス`はSTATUS型で外向きには絶対に書けないが、**外部→Notionの
+        変換表には載っている**ため1つ目の表には入らない。案件のステージが動くたびに
+        「想定外のスキップ」としてマネージャー全員へSlack DMが飛ぶところだった。
+        案件管理DBで最も頻繁に更新されるプロパティの一つで、本番稼働の初日から鳴り続ける。
+
+        ここを通り抜けて通知されるのは「送り先が決まっているのに書けなかった」場合だけ。
+        db_keyが解決できない・認証情報が無い・相手が編集していた、といった**本当に
+        対処が要るもの**に絞られる。
+        """
+        if (tool, db_key, property_name) in KNOWN_SYNC_GAPS:
+            return True
+        build_table = cls._OUTBOUND_TABLES.get(tool)
+        if build_table is None:
+            return False
+        return property_name not in build_table().get(db_key, {})
+
     def _unexpected_skips(
         self, event: SyncEvent, prop_result: PropertyDispatchResult
     ) -> list[Tool]:
-        """既知のズレ以外のスキップだけを返す。
-
-        **既知の89件まで通知すると洪水になり、本物の通知まで無視されるようになる**
-        （2026-08-31、Geminiクロスレビュー: 「89件あるから通知しない」は本末転倒。
-        既知は明示リストで切り離し、それ以外は即通知すべき）。
-        既知の一覧は`src/sync_engine/known_sync_gaps.py`にあり、解消したら消す運用。
-        """
+        """分かっているスキップ以外だけを返す（`_is_known_gap`参照）。"""
         return [
             tool
             for tool in prop_result.skipped_tools
-            if (tool, event.db_key, prop_result.property_name) not in KNOWN_SYNC_GAPS
+            if not self._is_known_gap(tool, event.db_key, prop_result.property_name)
         ]
 
     def dispatch(self, event: SyncEvent) -> DispatchResult:

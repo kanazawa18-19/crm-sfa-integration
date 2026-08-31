@@ -89,3 +89,33 @@ def test_no_notifier_configured_is_not_an_error() -> None:
     dispatcher = SkipTrackingDispatcher(_FakeDispatcher(_result("案件名", Tool.ZOHO)))
 
     assert dispatcher.dispatch(_event("project")).has_partial_skips
+
+
+def test_structurally_unwritable_properties_do_not_notify() -> None:
+    """**外向きに構造的に書けない型は通知しない。**
+
+    「営業ステータス」はSTATUS型でNotion→外部には絶対に書けないが、
+    外部→Notionの変換表には載っているので既知のズレの表には入らない。
+    案件のステージが動くたびにマネージャー全員へSlack DMが飛ぶところだった
+    （obasan-qualityレビューBLOCKER、2026-08-31）。
+    """
+    notifier = _FakeNotifier()
+    dispatcher = SkipTrackingDispatcher(
+        _FakeDispatcher(_result("営業ステータス", Tool.KINTONE)), slack_notifier=notifier
+    )
+
+    dispatcher.dispatch(_event("project"))
+
+    assert notifier.calls == []
+
+
+def test_writable_property_that_fails_still_notifies() -> None:
+    """送り先が決まっているのに書けなかった場合だけ通知する（本当に対処が要るもの）。"""
+    notifier = _FakeNotifier()
+    dispatcher = SkipTrackingDispatcher(
+        _FakeDispatcher(_result("案件名", Tool.ZOHO)), slack_notifier=notifier
+    )
+
+    dispatcher.dispatch(_event("project"))
+
+    assert len(notifier.calls) == 1
