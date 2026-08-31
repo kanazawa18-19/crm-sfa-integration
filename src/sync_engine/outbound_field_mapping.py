@@ -67,6 +67,16 @@ _PASSTHROUGH_TYPES = frozenset(
 
 _ISO_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T")
 
+#: 送り先の候補が複数あり、ラベルの完全一致では絞れないもののうち、
+#: **実データを見て決めた**もの。{(db_key, Notionプロパティ名): 外部のフィールド名}
+#:
+#: - ("action", "議事録・録画リンク") → Zohoの `Notta`
+#:   候補は `Notta` と `field21`（録画・音声ファイル）。CustomModule2の200件を実測したところ
+#:   `Notta` に1件、`field21` は0件だった（2026-08-31）。**使われている方へ書く。**
+_DECIDED_OUTBOUND_TARGETS: dict[tuple[str, str], str] = {
+    ("action", "議事録・録画リンク"): "Notta",
+}
+
 
 @lru_cache(maxsize=1)
 def _zoho_api_names_by_label() -> dict[str, dict[str, list[str]]]:
@@ -99,13 +109,16 @@ def _passthrough_properties() -> dict[str, dict[str, PropertyType]]:
 
 
 def _choose_unique_outbound_target(
-    property_name: str, candidates: list[tuple[str, str]]
+    property_name: str, candidates: list[tuple[str, str]], db_key: str | None = None
 ) -> str | None:
     """候補が複数あるとき、**ラベルがNotionのプロパティ名と完全一致するもの**を採る。
 
     一致するものが無ければ、どちらへ書くべきか機械的には決められないのでNoneを返す
     （誤った項目を上書きするより、書かずに残す方が安全）。
     """
+    decided = _DECIDED_OUTBOUND_TARGETS.get((db_key or "", property_name))
+    if decided is not None and any(external == decided for _label, external in candidates):
+        return decided
     if len(candidates) == 1:
         return candidates[0][1]
     exact = [external for label, external in candidates if label == property_name]
@@ -141,7 +154,7 @@ def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
                 candidates.setdefault(property_name, []).append((label, api_name))
         table = {}
         for property_name, found in candidates.items():
-            chosen = _choose_unique_outbound_target(property_name, found)
+            chosen = _choose_unique_outbound_target(property_name, found, schema.key)
             if chosen is not None:
                 table[property_name] = chosen
         result[schema.key] = table
@@ -162,7 +175,7 @@ def kintone_outbound_field_names() -> dict[str, dict[str, str]]:
             candidates.setdefault(property_name, []).append((field_code, field_code))
         table = {}
         for property_name, found in candidates.items():
-            chosen = _choose_unique_outbound_target(property_name, found)
+            chosen = _choose_unique_outbound_target(property_name, found, db_key)
             if chosen is not None:
                 table[property_name] = chosen
         result[db_key] = table

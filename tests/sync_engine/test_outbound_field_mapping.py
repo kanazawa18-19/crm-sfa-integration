@@ -55,8 +55,23 @@ def test_choice_properties_are_excluded_until_value_conversion_exists() -> None:
 
 
 def test_ambiguous_destination_is_excluded_rather_than_guessed() -> None:
-    """送り先の候補が複数あり、ラベル完全一致で絞れないものは対象外にする。"""
-    assert "議事録・録画リンク" not in zoho_outbound_field_names()["action"]
+    """送り先の候補が複数あり、決め手が無いものは対象外にする。"""
+    from src.sync_engine.outbound_field_mapping import _choose_unique_outbound_target
+
+    assert (
+        _choose_unique_outbound_target("なにか", [("ラベルA", "field1"), ("ラベルB", "field2")])
+        is None
+    )
+
+
+def test_destination_decided_from_real_data_is_used() -> None:
+    """候補が複数でも、実データを見て決めたものは登録する。
+
+    「議事録・録画リンク」の候補は Zoho の `Notta` と `field21`（録画・音声ファイル）。
+    CustomModule2の200件を実測したところ `Notta` に1件、`field21` は0件だったので
+    使われている方へ書く（2026-08-31）。
+    """
+    assert zoho_outbound_field_names()["action"]["議事録・録画リンク"] == "Notta"
 
 
 def test_exact_label_match_wins_when_multiple_candidates_exist() -> None:

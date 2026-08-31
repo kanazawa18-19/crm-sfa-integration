@@ -94,12 +94,9 @@ def test_outbound_coverage_matches_the_passthrough_type_rule() -> None:
     from src.sync_engine.outbound_field_mapping import _PASSTHROUGH_TYPES
 
     # 送り先の候補が複数あり、ラベル完全一致で絞れないもの。ここに挙げた分だけを許す。
-    known_ambiguous = {
-        (Tool.ZOHO, "action", "議事録・録画リンク"): (
-            "Zoho側に「Notta」と「録画・音声ファイル」の2項目があり、どちらへ書くべきか"
-            "決められない。業務でどちらを正とするか決まったら登録する"
-        ),
-    }
+    # 送り先の候補が複数あり、ラベル完全一致でも実データでも絞れないもの。
+    # 今はゼロ（「議事録・録画リンク」は実測でZohoの`Notta`に決着した、2026-08-31）。
+    known_ambiguous: dict[tuple[Tool, str, str], str] = {}
 
     unexpected: set[tuple[Tool, str, str]] = set()
     for tool, build_table in _OUTBOUND_TABLES.items():
