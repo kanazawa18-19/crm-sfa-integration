@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -136,6 +137,12 @@ _CREATE_PAGE_TIMEOUT_SECONDS = 25.0
 # 作成失敗後の回収で「直前に作られた」とみなす時間幅（分）。広げるほど、たまたま同名の
 # 既存ページを誤って掴むリスクが上がる。
 _CREATE_RECOVERY_WINDOW_MINUTES = 5
+# 回収照会の試行回数と間隔。Notionの検索インデックスは作成直後のページを即座には返さず、
+# 1回だけ引いて0件だと「作られていない」と誤判定する。2026-08-31に本番で発生
+# （Zoho 22334000002657016 のページは作られていたのに0件で回収できず、IdMappingが
+# 登録されないまま孤児になった）。0件のときだけ待って引き直す。
+_CREATE_RECOVERY_ATTEMPTS = 3
+_CREATE_RECOVERY_RETRY_DELAY_SECONDS = 2.0
 
 
 class HttpNotionClient:
@@ -357,34 +364,54 @@ class HttpNotionClient:
         created_on_or_after = (
             datetime.now(timezone.utc) - timedelta(minutes=_CREATE_RECOVERY_WINDOW_MINUTES)
         ).isoformat()
-        try:
-            pages = self.query_page(
-                page_size=2,  # 「ちょうど1件か」を判定できればよいので2件で足りる。
-                filter={
-                    "and": [
-                        {"property": title_property.name, "title": {"equals": title_value}},
-                        {
-                            "timestamp": "created_time",
-                            "created_time": {"on_or_after": created_on_or_after},
-                        },
-                    ]
+        query_filter = {
+            "and": [
+                {"property": title_property.name, "title": {"equals": title_value}},
+                {
+                    "timestamp": "created_time",
+                    "created_time": {"on_or_after": created_on_or_after},
                 },
-            )
-        except (NotionApiError, requests.exceptions.RequestException):
-            logger.warning(
-                "create_page: 作成失敗後の回収照会にも失敗したため、回収せずに元の例外を"
-                "伝播させます（作成されたかどうかは不明のままです）"
-            )
-            return None
-        if len(pages) != 1:
-            logger.warning(
-                "create_page: 作成失敗後の回収照会で該当ページが%d件だったため回収しません"
-                "（1件のときだけ回収します）",
-                len(pages),
-            )
-            return None
-        page_id = pages[0].get("id")
-        return page_id if isinstance(page_id, str) and page_id else None
+            ]
+        }
+        for attempt in range(1, _CREATE_RECOVERY_ATTEMPTS + 1):
+            try:
+                pages = self.query_page(
+                    page_size=2,  # 「ちょうど1件か」を判定できればよいので2件で足りる。
+                    filter=query_filter,
+                )
+            except (NotionApiError, requests.exceptions.RequestException):
+                logger.warning(
+                    "create_page: 作成失敗後の回収照会にも失敗したため、回収せずに元の例外を"
+                    "伝播させます（作成されたかどうかは不明のままです）"
+                )
+                return None
+            if len(pages) == 1:
+                page_id = pages[0].get("id")
+                return page_id if isinstance(page_id, str) and page_id else None
+            if len(pages) > 1:
+                # 同名の別ページがあり、どれが今作ったものか判別できない。待っても解決しない。
+                logger.warning(
+                    "create_page: 作成失敗後の回収照会で該当ページが%d件だったため回収しません"
+                    "（1件のときだけ回収します）",
+                    len(pages),
+                )
+                return None
+            # 0件。インデックス反映待ちの可能性があるので、間を置いて引き直す。
+            if attempt < _CREATE_RECOVERY_ATTEMPTS:
+                logger.info(
+                    "create_page: 作成失敗後の回収照会が0件でした（%d/%d回目）。Notionの検索"
+                    "インデックス反映待ちの可能性があるため%.1f秒後に引き直します",
+                    attempt,
+                    _CREATE_RECOVERY_ATTEMPTS,
+                    _CREATE_RECOVERY_RETRY_DELAY_SECONDS,
+                )
+                time.sleep(_CREATE_RECOVERY_RETRY_DELAY_SECONDS)
+        logger.warning(
+            "create_page: 作成失敗後の回収照会が%d回とも0件だったため回収しません"
+            "（ページが作られていないか、インデックス反映がさらに遅れている）",
+            _CREATE_RECOVERY_ATTEMPTS,
+        )
+        return None
 
     def create_page(self, properties: dict[str, Any]) -> str:
         """ページを1件作成し、作成されたページIDを返す。

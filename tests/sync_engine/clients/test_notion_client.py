@@ -528,18 +528,46 @@ def test_create_page_recovers_page_id_when_response_times_out(
 
 
 def test_create_page_raises_when_no_page_was_created(
-    requests_mock, client: HttpNotionClient
+    requests_mock, client: HttpNotionClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """回収照会が0件（＝そもそも作られていない）なら、元の例外をそのまま伝播させること。"""
+    """回収照会が最後まで0件（＝そもそも作られていない）なら、元の例外をそのまま伝播させること。"""
+    monkeypatch.setattr("src.sync_engine.clients.notion_client.time.sleep", lambda seconds: None)
     requests_mock.post(
         "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
     )
-    requests_mock.post(
+    query = requests_mock.post(
         f"https://api.notion.com/v1/databases/{DATABASE_ID}/query", json={"results": []}
     )
 
     with pytest.raises(requests.exceptions.ReadTimeout):
         client.create_page({"取引先名": "株式会社サンプル"})
+
+    # 0件は「まだインデックスに載っていない」可能性があるので引き直す。
+    assert query.call_count == 3
+
+
+def test_create_page_retries_recovery_query_until_the_index_catches_up(
+    requests_mock, client: HttpNotionClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0件で即あきらめない。
+
+    2026-08-31にZoho 22334000002657016で発生した実例への対応。ページは作られていたのに
+    回収照会が0件を返し、IdMappingが登録されないまま孤児になった。Notionの検索インデックスは
+    作成直後のページを即座には返さない。
+    """
+    monkeypatch.setattr("src.sync_engine.clients.notion_client.time.sleep", lambda seconds: None)
+    requests_mock.post(
+        "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
+    )
+    requests_mock.post(
+        f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+        [
+            {"json": {"results": []}},
+            {"json": {"results": [{"id": "recovered-page-id"}]}},
+        ],
+    )
+
+    assert client.create_page({"取引先名": "株式会社サンプル"}) == "recovered-page-id"
 
 
 def test_create_page_does_not_recover_when_multiple_pages_match(
@@ -554,13 +582,16 @@ def test_create_page_does_not_recover_when_multiple_pages_match(
     requests_mock.post(
         "https://api.notion.com/v1/pages", exc=requests.exceptions.ReadTimeout("read timed out")
     )
-    requests_mock.post(
+    query = requests_mock.post(
         f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
         json={"results": [{"id": "page-a"}, {"id": "page-b"}]},
     )
 
     with pytest.raises(requests.exceptions.ReadTimeout):
         client.create_page({"取引先名": "株式会社サンプル"})
+
+    # 複数件は待っても解決しない（同名の別ページがあるだけ）ので引き直さない。
+    assert query.call_count == 1
 
 
 def test_create_page_raises_original_error_when_recovery_query_also_fails(
