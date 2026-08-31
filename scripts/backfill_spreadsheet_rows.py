@@ -29,6 +29,7 @@ import time
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
+from src.sync_engine.sync_targets.spreadsheet_sync import SYNC_KEY_COLUMN
 from src.sync_engine.production_wiring import (
     build_id_mapping_store,
     build_notion_clients_by_db,
@@ -85,6 +86,18 @@ def main(argv: list[str] | None = None) -> int:
         len(sync_targets),
         "実行" if args.apply else "試算のみ（--applyで実行）",
     )
+
+    if mappings:
+        # 同期キー列を1回だけ読み込む。これをしないと1件ごとに列を全読みしてO(n²)になり、
+        # 実測で1件あたり5.6秒かかった（2026-08-31）。バックフィル中はこのシートへ
+        # 書くのが自分だけなので、以後キャッシュを正として扱ってよい。
+        try:
+            known = target._client.prime_sync_key_rows(
+                schema.spreadsheet_sheet_name, SYNC_KEY_COLUMN
+            )
+            logger.info("同期キーを先読みしました: 既存%d件", known)
+        except Exception:
+            logger.warning("同期キーの先読みに失敗しました。そのまま続行します", exc_info=True)
 
     if args.apply and mappings:
         # 既定のシートは1000行しかない。追記で自動的に伸びることを当てにせず、

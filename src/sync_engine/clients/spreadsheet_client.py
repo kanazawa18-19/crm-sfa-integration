@@ -114,6 +114,9 @@ class HttpSpreadsheetClient:
         # 長生きするが、`find_row_by_sync_key`はミス時に必ず読み直すので、
         # 古いキャッシュが「見つからない」を誤って返すことはない。
         self._sync_key_rows: dict[str, dict[str, int]] = {}
+        # `prime_sync_key_rows()`を通したシート。ここに入っているものは
+        # 「キャッシュに無い＝本当に無い」と扱う（バックフィル専用、同メソッド参照）。
+        self._trusted_sync_key_sheets: set[str] = set()
 
     def _headers(self) -> dict[str, str]:
         token = self._access_token if self._access_token is not None else get_google_access_token()
@@ -315,6 +318,7 @@ class HttpSpreadsheetClient:
         # ヘッダが変わったので、この後の`append_row`/`update_row`が読み直せるよう
         # キャッシュは持たない（`_get_header_row`は元々毎回取りに行く）。
         self._sync_key_rows.pop(sheet, None)
+        self._trusted_sync_key_sheets.discard(sheet)
         return column
 
     def read_sync_key(self, sheet: str, row: int, header: str) -> str | None:
@@ -342,8 +346,28 @@ class HttpSpreadsheetClient:
         cached = self._sync_key_rows.get(sheet)
         if cached is not None and key in cached:
             return cached[key]
+        if sheet in self._trusted_sync_key_sheets and cached is not None:
+            # `prime_sync_key_rows()`済み。読み直さない（下記docstring参照）。
+            return None
         rows = self._load_sync_key_rows(sheet, header)
         return rows.get(key)
+
+    def prime_sync_key_rows(self, sheet: str, header: str) -> int:
+        """同期キー列を**1回だけ**読み込み、以後キャッシュを正として扱う（2026-08-31）。
+
+        通常は「見つからない」で終わる前に必ず実データを読み直す。他のプロセスが
+        同時に行を足しているかもしれず、古いキャッシュを信じると重複行を作るため。
+        ところがバックフィルは**全件がキャッシュミス**なので、1件ごとに
+        「ヘッダ行の取得＋同期キー列の全読み」が走り、O(n²)になる。
+        実測で1件あたり5.6秒かかり、残り3万件では終わらない。
+
+        **このモードは、そのシートへ書くのが自分だけだと分かっているときにしか使わない。**
+        追記した行は`remember_sync_key_row()`でキャッシュへ入るので、
+        バックフィルの中では常に正しい答えが返る。
+        """
+        rows = self._load_sync_key_rows(sheet, header)
+        self._trusted_sync_key_sheets.add(sheet)
+        return len(rows)
 
     def remember_sync_key_row(self, sheet: str, key: str, row: int) -> None:
         """追記した直後の対応をキャッシュへ入れる（同じイベント内の再検索を省くため）。"""
