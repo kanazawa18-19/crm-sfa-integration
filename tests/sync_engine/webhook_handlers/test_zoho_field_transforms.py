@@ -100,3 +100,56 @@ def test_project_relation_fields_are_intentionally_excluded() -> None:
     # _ACTION_ZOHO_LABEL_TO_NOTION_FIELD直前のコメント参照）。
     assert "案件名" not in ZOHO_LABEL_FIELD_MAPPINGS["action"]
     assert "案件" not in ZOHO_LABEL_FIELD_MAPPINGS["action"]
+
+
+# --- アクション種別（2026-08-31、Zoho発の新規アクションが1件も作られていなかった原因） ------
+
+
+class Test_アクション種別のマッピング:
+    """`ZOHO_LABEL_FIELD_MAPPINGS["action"]` に「アクション種別」が無かったため、
+    Zoho側にもマッピングファイル(field7→アクション種別)にも値があるのに、
+    Notionプロパティへ対応付けられず必須プロパティ不足で新規作成が全件中止していた。
+
+    Zohoとアクション履歴DBで**選択肢が一致していない**ので、正規化が要る。
+        Zoho   : テレアポ / メルアポ / 訪問商談 / WEB商談 / 電話商談
+        Notion : テレアポ / 訪問商談 / オンライン商談 / メール / 問い合わせメール /
+                 飛び込み / 自動メール / その他
+    """
+
+    def _変換(self, value: object) -> object:
+        _, transform = ZOHO_LABEL_FIELD_MAPPINGS["action"]["アクション種別"]
+        return transform(value)
+
+    def test_対応表に登録されている(self) -> None:
+        assert "アクション種別" in ZOHO_LABEL_FIELD_MAPPINGS["action"]
+        notion_property, _ = ZOHO_LABEL_FIELD_MAPPINGS["action"]["アクション種別"]
+        assert notion_property == "アクション種別"
+
+    @pytest.mark.parametrize(
+        ("zoho値", "期待"),
+        [
+            ("テレアポ", "テレアポ"),
+            ("訪問商談", "訪問商談"),
+            # Notionに同名の選択肢が無いもの。移行時に確認済みの寄せ方に合わせる。
+            ("メルアポ", "メール"),
+            ("WEB商談", "オンライン商談"),
+            ("電話商談", "テレアポ"),
+        ],
+    )
+    def test_Zohoの選択肢5種がすべてNotionの選択肢へ落ちる(
+        self, zoho値: str, 期待: str
+    ) -> None:
+        assert self._変換(zoho値) == 期待
+
+    def test_変換結果はスキーマの選択肢に必ず含まれる(self) -> None:
+        """Notionのselectに無い値を書くとAPIが弾く。実データの選択肢を全部通す。"""
+        options = get_schema("action").get_property("アクション種別").options
+        for zoho値 in ("テレアポ", "メルアポ", "訪問商談", "WEB商談", "電話商談"):
+            assert self._変換(zoho値) in options
+
+    @pytest.mark.parametrize("未入力", ["", "   ", "-None-", None])
+    def test_未入力はNoneにして_その他_に丸めない(self, 未入力: object) -> None:
+        """アクション種別は必須プロパティ。丸めると入力漏れに気づけなくなる。
+        Noneのままなら missing_required_properties としてSlackへ通知され、
+        Zoho側の入力を促せる（それが通知文の意図）。"""
+        assert self._変換(未入力) is None

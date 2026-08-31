@@ -64,6 +64,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 from src.migration._utils import normalize_date, parse_multi_value
 from src.migration.kintone_client_master import normalize_customer_type
+from src.migration.zoho_action import classify_zoho_action_type
 from src.migration.zoho_chain import normalize_approach_status
 from src.migration.zoho_client_master import normalize_prefecture
 from src.migration.zoho_project import _parse_bool, _parse_first_touch
@@ -240,8 +241,37 @@ _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] =
 #   営業ステータス/作成日時/作成者）: 読み取り専用のため対象外。
 # - "連絡先"/"👯‍♀️ チェーンリスト": リレーションだがtransform_zoho_action()に対応する
 #   書き込みが無い。
+def _zoho_action_type(value: Any) -> str | None:
+    """Zohoの「アクション種別」(picklist)を、アクション履歴DBの選択肢へ正規化する。
+
+    **選択肢が両者で一致していない。**（2026-08-31、実データで確認）
+
+        Zoho   : テレアポ / メルアポ / 訪問商談 / WEB商談 / 電話商談
+        Notion : テレアポ / 訪問商談 / オンライン商談 / メール / 問い合わせメール /
+                 飛び込み / 自動メール / その他
+
+    そのまま渡すとNotionのselectに無い値になるため、移行時に実データ27,238件で
+    確認済みの`classify_zoho_action_type()`へ通す（メルアポ→メール、WEB商談→
+    オンライン商談、電話商談→テレアポ。いずれも移行時に確認済みの寄せ方）。
+
+    **未入力（空・`-None-`）は`None`を返して「その他」に丸めない。**
+    アクション種別は必須プロパティで、丸めてしまうと入力漏れに気づけなくなる。
+    Noneのままにしておけば、新規作成は`missing_required_properties`として
+    Slackへ通知され、Zoho側の入力を促せる（それが通知文の意図）。
+    """
+    text = str(value or "").strip()
+    if not text or text == "-None-":
+        return None
+    return classify_zoho_action_type(text)
+
+
 _ACTION_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
     "アクション名": ("商談回数・電話回数・メール回数（何回目）", lambda v: v or ""),
+    # 2026-08-31追加。**これが無かったため、Zoho発の新規アクションが1件も作られていなかった**
+    # （必須プロパティ「アクション種別」が常に欠けて missing_required_properties で中止）。
+    # Zoho側のデータもマッピングファイル（field7→アクション種別）も正しく、
+    # このラベル→Notionプロパティの対応表だけが抜けていた。
+    "アクション種別": ("アクション種別", _zoho_action_type),
     "アクション日": ("アクション日", normalize_date),
     "履歴メモ": ("履歴メモ", lambda v: v or None),
     "先方担当者": ("先方担当者", lambda v: v or None),

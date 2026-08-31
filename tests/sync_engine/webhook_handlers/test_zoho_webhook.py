@@ -487,29 +487,55 @@ def test_zoho_payload_to_sync_events_action_date_field_is_normalized() -> None:
     assert events[0].properties == {"アクション日": "2024-05-10"}
 
 
-def test_zoho_payload_to_sync_events_action_deliberately_excluded_field_is_skipped_with_warning(
+def test_zoho_payload_to_sync_events_action_type_is_normalized(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """「アクション種別」（field7）はACTION_SCHEMA上書き込み可能なSELECT型だが、
-    transform_zoho_action()ではこの列を直接読まず「アクション名」から間接的に算出しており、
-    1ラベル→1プロパティ固定の本テーブルでは同時に2プロパティへ書き込めないため対象外
-    （zoho_field_transforms.py参照）。"""
+    """「アクション種別」（field7）はNotionの「アクション種別」へ反映される（2026-08-31に修正）。
+
+    **以前はこのラベルを意図的に対象外にしていた。**移行スクリプト
+    `transform_zoho_action()`が「アクション名」から間接的に算出しており、
+    1ラベル→1プロパティ固定の対応表では「アクション名」から2プロパティへ同時に
+    書けなかったため。
+
+    しかしその結果、**Webhook経由では「アクション種別」が一度も埋まらなかった**。
+    Round2（新規レコードの自動作成）を有効にしたところ、アクション種別は必須
+    プロパティのため、Zoho発のアクションが `missing_required_properties` で
+    全件中止していた（2026-08-31、Slack通知で発覚。Zoho側のデータもマッピング
+    ファイルも正しく、この対応表だけが抜けていた）。
+
+    「アクション名」→「商談回数・電話回数・メール回数（何回目）」の対応はそのまま
+    残っているので、1ラベル→2プロパティの問題は起きない（別のラベルから引くため）。
+    """
     payload = _payload(
         module="CustomModule2",
         affected_values=[
-            {"record_id": DEFAULT_RECORD_ID, "values": {"field7": "テレアポ"}}
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field7": "WEB商談"}}
         ],
     )
 
-    with caplog.at_level("WARNING"):
-        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
 
-    assert events[0].properties == {}
-    assert any("field7" in record.getMessage() for record in caplog.records)
+    # Zohoの選択肢「WEB商談」はNotion側に無いため、「オンライン商談」へ正規化される。
+    assert events[0].properties == {"アクション種別": "オンライン商談"}
 
 
-# --- action.取引先/【Notion】取引先マスター（取引先マスターリレーション解決、2026-08-25、Round2） ---
+def test_zoho_payload_to_sync_events_action_type_unset_is_not_rounded_to_other() -> None:
+    """未入力（`-None-`）は「その他」に丸めず、プロパティ自体を落とす。
 
+    丸めてしまうと、必須プロパティが埋まったことになり入力漏れに気づけない。
+    落としておけば `missing_required_properties` としてSlackへ通知され、
+    Zoho側の入力を促せる。
+    """
+    payload = _payload(
+        module="CustomModule2",
+        affected_values=[
+            {"record_id": DEFAULT_RECORD_ID, "values": {"field7": "-None-"}}
+        ],
+    )
+
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=ACTION_MODULE_MAP)
+
+    assert events[0].properties == {"アクション種別": None}
 
 def test_zoho_payload_to_sync_events_action_resolves_client_master_relation(
     monkeypatch: pytest.MonkeyPatch,
