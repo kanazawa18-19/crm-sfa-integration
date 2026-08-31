@@ -684,19 +684,27 @@ def test_handler_with_proxy_returns_401_when_secret_mismatches(
     assert response["statusCode"] == 401
 
 
-def test_handler_with_proxy_succeeds_when_secret_matches(
+def test_handler_with_proxy_succeeds_when_the_signature_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Notionは署名でしか認証しない（2026-08-31に`X-Webhook-Secret`方式を廃止）。"""
+    import hashlib
+    import hmac as _hmac
+
+    from src.sync_engine.webhook_handlers._common import NOTION_SIGNATURE_HEADER
+
     monkeypatch.setenv("NOTION_WEBHOOK_SECRET", "correct-secret")
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
         lambda: DB_ID_MAP,
     )
     client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
-    event = {
-        "body": json.dumps(_lightweight_payload()),
-        "headers": {WEBHOOK_SECRET_HEADER: "correct-secret"},
-    }
+    body = json.dumps(_lightweight_payload())
+    signature = (
+        "sha256="
+        + _hmac.new(b"correct-secret", body.encode("utf-8"), hashlib.sha256).hexdigest()
+    )
+    event = {"body": body, "headers": {NOTION_SIGNATURE_HEADER: signature}}
 
     response = handler_with_proxy(event, context=None, notion_client=client)
 

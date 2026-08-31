@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from src.sync_engine.webhook_handlers._common import WEBHOOK_SECRET_HEADER
 from src.sync_engine.webhook_handlers.notion_webhook import (
     handler_with_proxy,
     is_own_notion_write,
@@ -43,7 +42,7 @@ class _FakeClient:
 
 def _event() -> dict[str, Any]:
     return {
-        "headers": {WEBHOOK_SECRET_HEADER: "shhh"},
+        "headers": {},
         "body": json.dumps(
             {"entity": {"id": "26d6f1e2-0000-0000-0000-000000000000", "type": "page"}}
         ),
@@ -52,7 +51,10 @@ def _event() -> dict[str, Any]:
 
 @pytest.fixture(autouse=True)
 def _secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NOTION_WEBHOOK_SECRET", "shhh")
+    # Notionは署名でしか認証しない。ここではループ抑止だけを見たいので、
+    # 鍵を未設定にしてローカル開発用の抜け道を使う。
+    monkeypatch.delenv("NOTION_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
 
 
 def test_detects_our_own_write(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,7 +134,7 @@ def test_pages_from_other_databases_are_skipped_without_fetching(
     monkeypatch.setenv("NOTION_SYNC_BOT_ID", _BOT_ID)
     client = _FakeClient(_page("human-user-id"))
     event = {
-        "headers": {WEBHOOK_SECRET_HEADER: "shhh"},
+        "headers": {},
         "body": json.dumps(
             {
                 "entity": {"id": "3bad8ea8-d4f3-8131-85c8-da41833aef2d", "type": "page"},
@@ -155,7 +157,7 @@ def test_pages_from_synced_databases_are_processed(monkeypatch: pytest.MonkeyPat
     database_id = next(s.notion_database_id for s in ALL_SCHEMAS if s.key == "action")
     client = _FakeClient(_page("human-user-id"))
     event = {
-        "headers": {WEBHOOK_SECRET_HEADER: "shhh"},
+        "headers": {},
         "body": json.dumps(
             {
                 "entity": {"id": "26d6f1e2-0000-0000-0000-000000000000", "type": "page"},
@@ -167,3 +169,45 @@ def test_pages_from_synced_databases_are_processed(monkeypatch: pytest.MonkeyPat
     handler_with_proxy(event, None, notion_client=client, dispatcher=None)
 
     assert client.fetches == 1
+
+
+def test_event_author_wins_over_the_page_editor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**人が編集した直後に同期エンジンが同じページへ書くと、取得時点の
+    最終更新者はbotになっている。** ページの最終更新者で判定すると、
+    その人の編集を丸ごと捨ててしまう（ChatGPTクロスレビューBLOCKER、2026-08-31）。
+
+    Webhookの`authors`は「そのイベントを起こした人」なので、こちらを優先する。
+    """
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", _BOT_ID)
+
+    # ページの最終更新者はbot（人の編集の後に同期エンジンが書いた）。
+    page = _page(_BOT_ID)
+
+    # イベントの作者は人。
+    assert is_own_notion_write(page, {"authors": [{"id": "human-user-id"}]}) is False
+    # イベントの作者がbotなら、これは自分の書き込み。
+    assert is_own_notion_write(page, {"authors": [{"id": _BOT_ID}]}) is True
+
+
+def test_mixed_authors_are_not_treated_as_our_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """イベントがまとめられて人とbotの両方が作者になることがある。
+
+    1人でも人が入っていれば、伝えるべき変更が含まれている可能性がある。捨てない。
+    """
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", _BOT_ID)
+
+    result = is_own_notion_write(
+        _page(_BOT_ID), {"authors": [{"id": _BOT_ID}, {"id": "human-user-id"}]}
+    )
+
+    assert result is False
+
+
+def test_falls_back_to_the_page_editor_when_authors_are_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`authors`が無い形式のペイロードでは、従来どおり最終更新者で判定する。"""
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", _BOT_ID)
+
+    assert is_own_notion_write(_page(_BOT_ID), {}) is True
+    assert is_own_notion_write(_page("human-user-id"), {}) is False

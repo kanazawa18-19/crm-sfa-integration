@@ -88,7 +88,9 @@ def verify_notion_webhook_signature(
     """
     secret = os.environ.get(env_var)
     if not secret:
-        return False
+        # 鍵が未設定のときだけ、ローカル開発用の明示的な抜け道を許す
+        # （`verify_webhook_secret`と同じ意味論。本番では鍵が設定されているので通らない）。
+        return os.environ.get("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() == "true"
     signature = get_header(headers, NOTION_SIGNATURE_HEADER)
     if not isinstance(signature, str) or not signature:
         return False

@@ -249,10 +249,36 @@ def _page_last_edited_by(page: Mapping[str, Any]) -> str:
     return str(editor.get("id") or "") if isinstance(editor, Mapping) else ""
 
 
-def is_own_notion_write(page: Mapping[str, Any]) -> bool | None:
+def event_authors(payload: Mapping[str, Any]) -> list[str]:
+    """**そのイベントを起こした人**のIDを返す（Notionの`authors`）。
+
+    `last_edited_by`（ページの現在の最終更新者）とは別物。詳細は
+    `is_own_notion_write()`のdocstring参照。
+    """
+    authors = payload.get("authors")
+    if not isinstance(authors, (list, tuple)):
+        return []
+    return [
+        str(author.get("id"))
+        for author in authors
+        if isinstance(author, Mapping) and author.get("id")
+    ]
+
+
+def is_own_notion_write(
+    page: Mapping[str, Any], payload: Mapping[str, Any] | None = None
+) -> bool | None:
     """このページ更新が「同期エンジン自身の書き込み」かどうか。判定できなければNone。
 
-    ■ なぜヘッダーではなくページの最終更新者で見るのか（2026-08-31）
+    ■ 何を見て判定するか（2026-08-31）
+
+    **Webhookペイロードの`authors`（そのイベントを起こした人）を見る。**
+    ページの`last_edited_by`は「今このページを最後に編集した人」であって、
+    このイベントを起こした人ではない。人が編集した直後に同期エンジンが同じページへ
+    書き込むと、こちらがページを取得した時点では最終更新者がbotになっていて、
+    **人の編集を丸ごと捨ててしまう**（ChatGPTクロスレビューBLOCKER）。
+
+    ■ なぜヘッダーで判定できないのか
 
     無限ループ防止は本来 `X-Sync-System-ID` ヘッダーで行っている
     （`dispatcher.dispatch()` の先頭）。ところが **Notion の Webhook は
@@ -272,6 +298,18 @@ def is_own_notion_write(page: Mapping[str, Any]) -> bool | None:
     bot_id = os.environ.get(NOTION_SYNC_BOT_ID_ENV_VAR, "").strip()
     if not bot_id:
         return None
+
+    # **まずイベントの作者で判定する。**
+    authors = event_authors(payload or {})
+    if authors:
+        return all(author == bot_id for author in authors)
+
+    # `authors`が無い古い形式のペイロード向けのフォールバック。
+    # **ページの最終更新者は「今このページを最後に編集した人」であって、
+    # このイベントを起こした人ではない。** 人が編集した直後に同期エンジンが同じページへ
+    # 書き込むと、こちらが取得した時点では最終更新者がbotになっていて、
+    # **人の編集を丸ごと捨ててしまう**（2026-08-31、ChatGPTクロスレビューBLOCKER）。
+    # 判定材料としては劣るので、authorsが取れるならそちらを必ず使う。
     return _page_last_edited_by(page) == bot_id
 
 
@@ -474,10 +512,13 @@ def handler_with_proxy(
         }
 
     # **Notionはカスタムヘッダーを送れない**ので署名で検証する。
-    # 手動リプレイ・内部ツール向けに、従来の共有シークレット方式も引き続き受け付ける。
-    if not verify_notion_webhook_signature(headers, body_text) and not verify_webhook_secret(
-        headers, "NOTION_WEBHOOK_SECRET"
-    ):
+    #
+    # **従来の`X-Webhook-Secret`方式は受け付けない**（2026-08-31、ChatGPTクロスレビュー）。
+    # 署名方式では鍵そのものはネットワークに流れないのに、同じ値をヘッダーで送れるように
+    # しておくと、鍵をBearerトークンとして扱うのと同じになる。プロキシ・APM・
+    # リクエストログ・curlの履歴のどこかから漏れれば、**以後その相手は正しい署名を
+    # いくらでも作れる**（公開エンドポイントなので、偽イベントを自由に投げられる）。
+    if not verify_notion_webhook_signature(headers, body_text):
         return unauthorized_response()
 
     try:
@@ -514,7 +555,7 @@ def handler_with_proxy(
         )
         return internal_error_response()
 
-    own_write = is_own_notion_write(raw_page)
+    own_write = is_own_notion_write(raw_page, raw_payload)
     if own_write:
         logger.info(
             "notion webhook: 同期エンジン自身の書き込みによる通知なのでスキップします "

@@ -153,8 +153,13 @@ def test_unsigned_event_is_rejected() -> None:
     assert result["statusCode"] == 401
 
 
-def test_legacy_shared_secret_still_works() -> None:
-    """手動リプレイ・内部ツール向けに、従来の共有シークレット方式も残している。"""
+def test_legacy_shared_secret_is_rejected() -> None:
+    """従来の`X-Webhook-Secret`方式は受け付けない（2026-08-31に廃止）。
+
+    署名方式では鍵そのものはネットワークに流れないのに、同じ値をヘッダーで送れるように
+    しておくと、鍵をBearerトークンとして扱うのと同じになる。どこかで漏れれば、
+    以後その相手は正しい署名をいくらでも作れる。
+    """
     body = json.dumps({"entity": {"id": "page-1", "type": "page"}})
 
     result = handler_with_proxy(
@@ -164,4 +169,4 @@ def test_legacy_shared_secret_still_works() -> None:
         dispatcher=None,
     )
 
-    assert result["statusCode"] == 200
+    assert result["statusCode"] == 401
