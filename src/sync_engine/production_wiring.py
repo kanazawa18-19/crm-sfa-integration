@@ -869,6 +869,13 @@ class SkipTrackingDispatcher:
         """
         if (tool, db_key, property_name) in KNOWN_SYNC_GAPS:
             return True
+        if tool is Tool.SPREADSHEET:
+            # **行がまだ無いレコードへは書けない。** 行の自動作成が無効なら、
+            # 何度編集しても書けるようにはならないので通知しても意味がない
+            # （2026-08-31、本番で誤報が出た。バックフィルが案件管理まで届く前に
+            # 案件のステータスを動かすと、1レコードにつき変更項目の数だけDMが飛んだ）。
+            # 有効なのに書けない場合は本当に異常なので、そのときは通知する。
+            return not spreadsheet_row_creation_enabled(db_key)
         build_table = cls._OUTBOUND_TABLES.get(tool)
         if build_table is None:
             return False

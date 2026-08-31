@@ -119,3 +119,38 @@ def test_writable_property_that_fails_still_notifies() -> None:
     dispatcher.dispatch(_event("project"))
 
     assert len(notifier.calls) == 1
+
+
+def test_spreadsheet_skips_are_quiet_while_row_creation_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """行がまだ無いレコードへは書けない。何度編集しても書けるようにはならない。
+
+    本番で誤報が出た（2026-08-31）。バックフィルが案件管理まで届く前に案件の
+    ステータスを動かすと、1レコードにつき変更項目の数だけマネージャーへDMが飛んだ。
+    """
+    monkeypatch.delenv("SPREADSHEET_ROW_CREATION_ENABLED", raising=False)
+    notifier = _FakeNotifier()
+    dispatcher = SkipTrackingDispatcher(
+        _FakeDispatcher(_result("失注日", Tool.SPREADSHEET)), slack_notifier=notifier
+    )
+
+    dispatcher.dispatch(_event("project"))
+
+    assert notifier.calls == []
+
+
+def test_spreadsheet_skips_notify_once_row_creation_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """行を作れる設定なのに書けないなら、それは本当に異常。"""
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "project")
+    notifier = _FakeNotifier()
+    dispatcher = SkipTrackingDispatcher(
+        _FakeDispatcher(_result("失注日", Tool.SPREADSHEET)), slack_notifier=notifier
+    )
+
+    dispatcher.dispatch(_event("project"))
+
+    assert len(notifier.calls) == 1
