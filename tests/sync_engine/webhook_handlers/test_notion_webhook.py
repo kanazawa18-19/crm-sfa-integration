@@ -383,6 +383,19 @@ def test_handler_succeeds_when_secret_matches(monkeypatch: pytest.MonkeyPatch) -
 # --- BLOCKER6: プロキシ層スタブ fetch_and_normalize_notion_page ------------------------
 
 
+#: 同期エンジン自身のbot ID（ループ抑止の判定に使う）。テストでは固定値を入れておく。
+_SYNC_BOT_ID = "test-sync-bot-id"
+
+
+@pytest.fixture(autouse=True)
+def _sync_bot_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未設定だとループ抑止が働かず、全イベントがスキップされる（それが正しい挙動）。
+
+    各テストは「人が編集した場合」を見たいので、bot IDを設定しておく。
+    """
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", _SYNC_BOT_ID)
+
+
 class _FakeNotionPageClient:
     def __init__(self, page: dict) -> None:
         self._page = page

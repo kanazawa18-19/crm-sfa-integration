@@ -39,6 +39,7 @@ docs/notion_webhook_proxy_note.md も参照）。実運用のエントリポイ�
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Callable, Collection, Mapping, Protocol
 
 from src.db_schema.base import PropertyType, Tool
@@ -226,6 +227,42 @@ class NotionPageClient(Protocol):
     def get_raw_page(self, page_id: str) -> Mapping[str, Any]: ...
 
 
+#: 同期エンジン自身のNotionインテグレーション（bot）のユーザーID。
+#: `GET /v1/users/me` の `id`（本番は "3b4d8ea8-d4f3-81ee-b550-0027586fe38e"）。
+NOTION_SYNC_BOT_ID_ENV_VAR = "NOTION_SYNC_BOT_ID"
+
+
+def _page_last_edited_by(page: Mapping[str, Any]) -> str:
+    editor = page.get("last_edited_by")
+    return str(editor.get("id") or "") if isinstance(editor, Mapping) else ""
+
+
+def is_own_notion_write(page: Mapping[str, Any]) -> bool | None:
+    """このページ更新が「同期エンジン自身の書き込み」かどうか。判定できなければNone。
+
+    ■ なぜヘッダーではなくページの最終更新者で見るのか（2026-08-31）
+
+    無限ループ防止は本来 `X-Sync-System-ID` ヘッダーで行っている
+    （`dispatcher.dispatch()` の先頭）。ところが **Notion の Webhook は
+    カスタムヘッダーを送れない**ので、Notion発のイベントにはこの仕組みが効かない。
+    そのため購読を作った瞬間、次の反射が生まれる。
+
+        Zoho変更 → Zoho Webhook → Notion更新 → Notion Webhook → Zoho更新 → …
+
+    値が同じなら競合解決が NO_OP に倒れて止まるが、**取り込み時に値が正規化される項目
+    （「株式会社ABC」→「ABC」等）では、元データを書き換えてしまう**
+    （2026-08-31、ChatGPT・Geminiが独立に指摘）。
+
+    外部発のイベントは1回のdispatchでNotion・kintone・スプレッドシートへ**まとめて**
+    書き込まれる（`Dispatcher._write_values`）。つまり自分の書き込みが返ってきた
+    Webhookには、他ツールへ伝えるべき新しい情報が何も無い。丸ごと捨ててよい。
+    """
+    bot_id = os.environ.get(NOTION_SYNC_BOT_ID_ENV_VAR, "").strip()
+    if not bot_id:
+        return None
+    return _page_last_edited_by(page) == bot_id
+
+
 def fetch_and_normalize_notion_page(
     page_id: str,
     notion_client: NotionPageClient,
@@ -256,7 +293,18 @@ def fetch_and_normalize_notion_page(
     絞った結果1件も残らない場合も全項目を返す（IDの形式が想定と違うときに、
     何も同期されない状態へ静かに倒れるのを避ける）。
     """
-    page = notion_client.get_raw_page(page_id)
+    return _normalize_fetched_page(notion_client.get_raw_page(page_id), updated_property_ids)
+
+
+def _normalize_fetched_page(
+    page: Mapping[str, Any], updated_property_ids: Collection[str] | None = None
+) -> dict[str, Any]:
+    """取得済みのページを整形する（`fetch_and_normalize_notion_page`の本体）。
+
+    `handler_with_proxy()`は「自分の書き込みか」を判定するために先にページを取得するので、
+    二度取りしないようここだけ分けている。
+    """
+    page_id = page.get("id")
     parent = page.get("parent") or {}
     properties = dict(page.get("properties") or {})
     if updated_property_ids:
@@ -394,9 +442,46 @@ def handler_with_proxy(
         return bad_request_response(f"missing required field: {exc}")
 
     try:
-        payload = fetch_and_normalize_notion_page(
-            page_id, notion_client, updated_property_ids
+        raw_page = notion_client.get_raw_page(page_id)
+    except ApiError as exc:
+        if exc.status_code == 404:
+            logger.info(
+                "notion page not found (likely deleted), skipping webhook: page_id=%s", page_id
+            )
+            return {"statusCode": 200, "body": json.dumps({"skipped": "page_not_found"})}
+        logger.exception(
+            "notion api error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
+        return internal_error_response()
+    except Exception:
+        logger.exception(
+            "unexpected error while fetching notion page for webhook proxy: page_id=%s", page_id
+        )
+        return internal_error_response()
+
+    own_write = is_own_notion_write(raw_page)
+    if own_write:
+        logger.info(
+            "notion webhook: 同期エンジン自身の書き込みによる通知なのでスキップします "
+            "(page_id=%s)",
+            page_id,
+        )
+        return {"statusCode": 200, "body": json.dumps({"skipped": "own_system_write"})}
+    if own_write is None:
+        # **判定材料が無いまま処理すると同期ループを起こす。** 書かない側へ倒す。
+        logger.error(
+            "notion webhook: %s が未設定のため、自分の書き込みかどうかを判定できません。"
+            "同期ループを避けるため、このイベントは処理しません (page_id=%s)",
+            NOTION_SYNC_BOT_ID_ENV_VAR,
+            page_id,
+        )
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"skipped": "sync_bot_id_not_configured"}),
+        }
+
+    try:
+        payload = _normalize_fetched_page(raw_page, updated_property_ids)
     except ApiError as exc:
         if exc.status_code == 404:
             logger.info(

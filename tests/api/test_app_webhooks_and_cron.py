@@ -97,6 +97,13 @@ def _override_wiring(fake: _FakeWiring) -> None:
 # --- /api/webhooks/kintone / zoho / spreadsheet -------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _notion_sync_bot_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Notion Webhookのループ抑止（`NOTION_SYNC_BOT_ID`）。未設定だと全イベントが
+    スキップされる（それが正しい挙動）ので、テストでは設定しておく。"""
+    monkeypatch.setenv("NOTION_SYNC_BOT_ID", "test-sync-bot-id")
+
+
 def test_webhook_kintone_dispatches_via_injected_wiring(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
