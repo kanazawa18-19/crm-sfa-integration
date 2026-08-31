@@ -48,6 +48,7 @@ from src.sync_engine.clients._http import ApiError
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import HEADER_NAME
+from src.sync_engine.webhook_events import claim_event, release_event
 from src.sync_engine.webhook_handlers._common import (
     extract_notion_verification_token,
     verify_notion_webhook_signature,
@@ -521,6 +522,18 @@ def handler_with_proxy(
     if not verify_notion_webhook_signature(headers, body_text):
         return unauthorized_response()
 
+    # **再送を弾く。** Notionは配信に失敗すると最大8回・およそ24時間かけて再送する
+    # （2026-09-01）。同じ書き込みを繰り返さないよう、イベントIDで重複を排除する。
+    # 判定できないとき（DB未設定等）は処理を続ける（弾けないことで同期を止めない）。
+    event_id = str(raw_payload.get("id") or "")
+    if not claim_event(event_id, "notion"):
+        logger.info(
+            "notion webhook: 同じイベントを既に処理しています。再送とみなしてスキップします "
+            "(event_id=%s)",
+            event_id,
+        )
+        return {"statusCode": 200, "body": json.dumps({"skipped": "duplicate_event"})}
+
     try:
         page_id = raw_payload["entity"]["id"]
         # 変更されたプロパティIDだけへ絞る（上記docstring参照）。
@@ -548,11 +561,15 @@ def handler_with_proxy(
         logger.exception(
             "notion api error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
+        # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
+        release_event(event_id)
         return internal_error_response()
     except Exception:
         logger.exception(
             "unexpected error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
+        # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
+        release_event(event_id)
         return internal_error_response()
 
     own_write = is_own_notion_write(raw_page, raw_payload)
@@ -587,11 +604,15 @@ def handler_with_proxy(
         logger.exception(
             "notion api error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
+        # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
+        release_event(event_id)
         return internal_error_response()
     except Exception:
         logger.exception(
             "unexpected error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
+        # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
+        release_event(event_id)
         return internal_error_response()
 
     try:
@@ -600,6 +621,8 @@ def handler_with_proxy(
         return bad_request_response(str(exc))
     except Exception:
         logger.exception("unexpected error while parsing notion webhook payload")
+        # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
+        release_event(event_id)
         return internal_error_response()
 
     try:
@@ -608,6 +631,8 @@ def handler_with_proxy(
         )
     except Exception:
         logger.exception("unexpected error while dispatching notion sync event")
+        # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
+        release_event(event_id)
         return internal_error_response()
 
     if calendar_sync is not None and sync_event.db_key == "project":

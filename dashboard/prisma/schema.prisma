@@ -436,3 +436,16 @@ model WebhookReceipt {
   lastReceivedAt DateTime
   receiptCount   BigInt   @default(0)
 }
+
+/// Webhookの再送を弾くためのイベントID記録（2026-09-01）。
+/// Notionは配信に失敗すると最大8回・およそ24時間かけて再送する。
+/// 書き込みはPython側（src/sync_engine/webhook_events.py）から行う。
+/// 溜め続けないよう、日次バッチが古い分を消す。
+model WebhookEvent {
+  /// Webhookイベントの一意なID（Notionの `id`）。
+  id         String   @id
+  source     String
+  receivedAt DateTime @default(now())
+
+  @@index([receivedAt])
+}

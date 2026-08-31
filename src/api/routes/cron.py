@@ -32,6 +32,7 @@ from src.incident_detection.notify import run_incident_digest
 from src.project_mirror.sync import refresh_all_projects
 from src.relation_sync.sync import refresh_all_client_names
 from src.reports.batch import run_report_batch
+from src.sync_engine.webhook_events import purge_old_events
 from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.zoho_client import ZohoApiError
 from src.sync_engine.production_wiring import ProductionSyncWiring
@@ -56,8 +57,17 @@ def run_daily_batch() -> dict[str, Any]:
     """Vercel Cronから1日1回呼ばれる、日報・週報配信バッチのエントリポイント。
 
     日報は毎日、週報は金曜日のみ配信する（`src.reports.batch.run_report_batch`参照）。
+
+    あわせて、Webhookの再送を弾くためのイベントID記録を掃除する
+    （`src/sync_engine/webhook_events.py`。溜め続けないため、2026-09-01）。
+    掃除に失敗しても日報の配信は止めない。
     """
-    return run_report_batch()
+    result = run_report_batch()
+    try:
+        result = {**result, "purged_webhook_events": purge_old_events()}
+    except Exception:  # noqa: BLE001 (掃除の失敗で日報を止めない)
+        logger.warning("Webhookイベント記録の掃除に失敗しました", exc_info=True)
+    return result
 
 
 @router.get("/api/cron/token-encryption-healthcheck", dependencies=[Depends(verify_cron_secret)])
