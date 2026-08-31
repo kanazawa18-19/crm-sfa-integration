@@ -32,6 +32,13 @@ model User {
   email        String   @unique
   // Null while an invited user hasn't set their password yet.
   passwordHash String?
+
+  // GoogleログインのOIDC subject(2026-08-31)。**emailは識別子にしない。**
+  // Workspaceでは退職者のアドレスを削除して同じアドレスで別アカウントを作り直せるため、
+  // emailだけで紐付けると別人が旧ユーザーとしてログインできてしまう(ChatGPTのレビュー指摘)。
+  // 初回のGoogleログイン時に束縛し(trust on first use)、以降はこちらを優先して照合する。
+  // 一度も使っていないユーザーはNullのまま。
+  googleSubject String? @unique
   role         UserRole @default(viewer)
   createdAt    DateTime @default(now())
 

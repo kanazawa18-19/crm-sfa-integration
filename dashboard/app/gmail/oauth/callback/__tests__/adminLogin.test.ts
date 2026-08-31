@@ -12,6 +12,7 @@ import { NextRequest } from "next/server";
 const getCurrentUserMock = vi.fn();
 const exchangeIdentityMock = vi.fn();
 const findUserMock = vi.fn();
+const updateUserMock = vi.fn();
 const establishSessionMock = vi.fn();
 
 vi.mock("@/lib/auth", () => ({
@@ -45,7 +46,10 @@ vi.mock("@/lib/loginSession", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   default: {
-    user: { findUnique: (...args: unknown[]) => findUserMock(...args) },
+    user: {
+      findUnique: (...args: unknown[]) => findUserMock(...args),
+      update: (...args: unknown[]) => updateUserMock(...args),
+    },
     repGmailConnection: { upsert: vi.fn() },
     repDriveConnection: { upsert: vi.fn() },
     $transaction: vi.fn(),
@@ -82,8 +86,19 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
 
     // ログイン前なのでセッションは無い。それが既定の状態。
     getCurrentUserMock.mockResolvedValue(null);
-    exchangeIdentityMock.mockResolvedValue({ email: "admin@example.com", verifiedEmail: true });
-    findUserMock.mockResolvedValue({ id: "user-1", email: "admin@example.com" });
+    exchangeIdentityMock.mockResolvedValue({
+      subject: "google-sub-1",
+      email: "admin@example.com",
+      verifiedEmail: true,
+    });
+    updateUserMock.mockReset();
+    updateUserMock.mockResolvedValue({});
+    // 既定は「subでは見つからず、emailで見つかり、まだ束縛されていない」初回ログイン。
+    findUserMock.mockImplementation((args: { where: Record<string, unknown> }) =>
+      "googleSubject" in args.where
+        ? null
+        : { id: "user-1", email: "admin@example.com", googleSubject: null }
+    );
     establishSessionMock.mockResolvedValue({ needsTwoFactor: false, redirectTo: "/" });
   });
 
@@ -113,7 +128,11 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
   });
 
   it("Google側でメールが未確認なら拒否する", async () => {
-    exchangeIdentityMock.mockResolvedValue({ email: "admin@example.com", verifiedEmail: false });
+    exchangeIdentityMock.mockResolvedValue({
+      subject: "google-sub-1",
+      email: "admin@example.com",
+      verifiedEmail: false,
+    });
 
     const response = await GET(makeRequest());
 
@@ -142,6 +161,42 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
     const response = await GET(makeRequest());
 
     expect(errorOf(response)).toBe("Googleログインに失敗しました");
+  });
+
+  it("初回ログインでGoogleのsubを束縛する（以降はemailではなくsubで照合する）", async () => {
+    // Workspaceでは退職者のアドレスを削除して同じアドレスで別アカウントを作り直せる。
+    // emailだけで照合すると別人が旧ユーザーとしてログインできてしまう。
+    await GET(makeRequest());
+
+    expect(updateUserMock).toHaveBeenCalledWith({
+      where: { id: "user-1" },
+      data: { googleSubject: "google-sub-1" },
+    });
+  });
+
+  it("2回目以降はsubで見つかるのでemailを引かない", async () => {
+    findUserMock.mockImplementation((args: { where: Record<string, unknown> }) =>
+      "googleSubject" in args.where ? { id: "user-1", googleSubject: "google-sub-1" } : null
+    );
+
+    const response = await GET(makeRequest());
+
+    expect(updateUserMock).not.toHaveBeenCalled();
+    expect(response.headers.get("location")).toBe("http://localhost/");
+  });
+
+  it("同じメールでも別のGoogleアカウントなら拒否する（アドレス再作成の乗っ取り防止）", async () => {
+    findUserMock.mockImplementation((args: { where: Record<string, unknown> }) =>
+      "googleSubject" in args.where
+        ? null
+        : { id: "user-1", email: "admin@example.com", googleSubject: "別のsub" }
+    );
+
+    const response = await GET(makeRequest());
+
+    expect(establishSessionMock).not.toHaveBeenCalled();
+    expect(updateUserMock).not.toHaveBeenCalled();
+    expect(errorOf(response)).toContain("紐づいていません");
   });
 
   it("失敗したときもnonceのcookieを消す（使い回しを防ぐ）", async () => {

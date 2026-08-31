@@ -60,6 +60,39 @@ function parseState(state: string): { nonce: string; purpose: string | null } {
 //   ONなら、Googleでログインしても2FAの画面へ送られる
 // - nonceは使い捨て。成否にかかわらずcookieを消す(残すと、後の試行で古いcookieが
 //   nonce検証を満たしてしまう)
+/**
+ * Googleアカウントに対応するUserを探す（2026-08-31）。
+ *
+ * **emailは識別子にしない。** Workspaceでは退職者のアドレスを削除して同じアドレスで
+ * 別アカウントを作り直せるため、emailだけで照合すると別人が旧ユーザーとしてログインできる
+ * （ChatGPTのレビュー指摘。Google自身もOIDCの識別子にはsubを使うよう案内している）。
+ *
+ * 手順は trust on first use。
+ * 1. `googleSubject` が一致するUserがいればそれ（以降はこちらが正）
+ * 2. いなければemailで探し、そのUserがまだ束縛されていなければ**このsubで束縛する**
+ * 3. 既に別のsubで束縛済みなら `"mismatch"` を返して拒否する
+ */
+async function findUserForGoogleIdentity(identity: {
+  subject: string;
+  email: string;
+}): Promise<{ id: string } | null | "mismatch"> {
+  const bySubject = await prisma.user.findUnique({
+    where: { googleSubject: identity.subject },
+  });
+  if (bySubject) return bySubject;
+
+  const byEmail = await prisma.user.findUnique({ where: { email: identity.email } });
+  if (!byEmail) return null;
+  if (byEmail.googleSubject && byEmail.googleSubject !== identity.subject) return "mismatch";
+
+  // 初回ログイン。以降このUserはこのGoogleアカウントに固定される。
+  await prisma.user.update({
+    where: { id: byEmail.id },
+    data: { googleSubject: identity.subject },
+  });
+  return byEmail;
+}
+
 async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
   const failLogin = (reason: string) => {
     const url = new URL("/login", request.url);
@@ -93,7 +126,15 @@ async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
     return failLogin("このGoogleアカウントはメールアドレスが確認済みではありません");
   }
 
-  const user = await prisma.user.findUnique({ where: { email: identity.email } });
+  const user = await findUserForGoogleIdentity(identity);
+  if (user === "mismatch") {
+    // このアドレスのCRMユーザーは、別のGoogleアカウントに束縛済み。
+    // Workspaceでアドレスを作り直した場合にここへ来る。管理者が意図的に付け替える
+    // 手段（googleSubjectのクリア）を用意するまでは、黙って通さない。
+    return failLogin(
+      "このGoogleアカウントは、同じメールアドレスの管理者アカウントに紐づいていません。管理者に連絡してください"
+    );
+  }
   if (!user) {
     // どのアドレスが登録済みかを推測させないため、理由は共通の文言にする。
     return failLogin("このGoogleアカウントに対応する管理者アカウントが見つかりません");

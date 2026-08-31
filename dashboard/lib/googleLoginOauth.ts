@@ -49,6 +49,12 @@ export function buildLoginAuthUrl(state: string): string {
 }
 
 export interface GoogleIdentity {
+  /**
+   * OIDCのsubject。**これがGoogleアカウントの恒久的な識別子。**
+   * emailはWorkspaceで削除→同じアドレスで作り直しができてしまうため、
+   * 単独では本人の識別に使えない（Google自身もsubを使うよう案内している）。
+   */
+  subject: string;
   email: string;
   /** Google側でメールアドレスの所有が確認済みか。falseなら本人確認の材料にならない。 */
   verifiedEmail: boolean;
@@ -93,10 +99,19 @@ export async function exchangeCodeForGoogleIdentity(code: string): Promise<Googl
     throw new Error(`Google userinfo request failed: ${userInfoResponse.status}`);
   }
 
-  const info = (await userInfoResponse.json()) as { email?: string; verified_email?: boolean };
+  const info = (await userInfoResponse.json()) as {
+    id?: string;
+    email?: string;
+    verified_email?: boolean;
+  };
+  // oauth2/v2/userinfo はsubjectを `id` という名前で返す（OIDCの `sub` と同じ値）。
+  const subject = (info.id ?? "").trim();
   const email = (info.email ?? "").trim().toLowerCase();
+  if (!subject) {
+    throw new Error("Googleアカウントの識別子を取得できませんでした");
+  }
   if (!email) {
     throw new Error("Googleアカウントのメールアドレスを取得できませんでした");
   }
-  return { email, verifiedEmail: info.verified_email === true };
+  return { subject, email, verifiedEmail: info.verified_email === true };
 }
