@@ -133,8 +133,11 @@ def query_keyset_slice(
         newest = current
 
         truncated = False
+        status_seen = False
         while round_count < round_limit:
             data = post_query(_build_body(base_filter, current, page_size, cursor))
+            if "request_status" in data:
+                status_seen = True
             if _is_truncated(data):
                 truncated = True
             results = data.get("results") or []
@@ -147,26 +150,58 @@ def query_keyset_slice(
                     newest = created
             round_count += len(results)
 
+            # **内側のループにも時間予算を効かせる**（2026-09-01、Gemini Proのレビュー指摘）。
+            # 予算の判定が周の区切りにしか無かったため、1周（既定2,000件＝20リクエスト）が
+            # レート制限やリトライで長引くと、予算を大きく超えてVercelの300秒に突っ込む。
+            # そうなるとしおりを保存できず、**翌晩も同じ区間をやり直して一巡が進まない。**
+            # 途中で止めても、`newest`（＝ここまでで一番新しい作成日時）から
+            # `on_or_after`で取り直せば安全（境界は重ねて取り、ページIDで重複を除くため）。
+            # ただし1件も進んでいないうちは、しおりを置く場所が無いので続ける。
+            if (
+                time_budget_seconds is not None
+                and newest != current
+                and time.monotonic() - started >= time_budget_seconds
+            ):
+                logger.info(
+                    "query_keyset_slice: 周の途中で時間予算に達したので中断します"
+                    "（label=%r, ここまで%d件, 次は %s 以降）",
+                    label,
+                    len(collected),
+                    newest,
+                )
+                return KeysetPage(list(collected.values()), newest, False)
+
             if not data.get("has_more"):
                 # **`has_more: false` を額面どおり受け取らない。**
                 # Notionが「打ち切った」と明示していれば、まだ先がある。
                 # これが今回の問題そのもの（`has_more`だけ見て9割欠けていた）。
                 if truncated:
                     break
-                # このクエリで取り切った。上限に届いていなければ本当に終わり。
+                # 打ち切りの申告が「無かった」と分かるなら、件数に関わらず取り切っている
+                # （2026-09-01、Gemini Proのレビュー指摘。件数の閾値を併用していたため、
+                # 9,000件以上を正常に取り切った回で無駄にもう1周まわして空振りしていた）。
+                if status_seen:
+                    return KeysetPage(list(collected.values()), newest, True)
+                # `request_status`が返らない応答（古いAPIバージョン等）でだけ、
+                # 従来の件数の閾値を予備の判定として使う。
                 if round_count < min(round_limit, _NEXT_ROUND_THRESHOLD):
                     return KeysetPage(list(collected.values()), newest, True)
                 break
             cursor = data.get("next_cursor")
             if not cursor:
                 # Notion APIの契約上は起きない応答。先頭ページの取り直しを繰り返す
-                # 無限ループを避けて打ち切る。
-                logger.warning(
+                # 無限ループは避けるが、**completed=True で返してはいけない**
+                # （2026-09-01、Gemini Proのレビュー指摘）。まだ取れていない行が
+                # 残っているのに「取り切った」と伝えると、呼び出し元が掃除に進んで
+                # **未取得の行を全部消す**。停滞と同じ扱いにして、人へ届ける。
+                logger.error(
                     "query_keyset_slice: has_more=True なのに next_cursor が空です"
-                    "（label=%r）。ここで打ち切ります",
+                    "（label=%r, 取得済み=%d件）。**取りこぼしています。**"
+                    "掃除には進ませません",
                     label,
+                    len(collected),
                 )
-                return KeysetPage(list(collected.values()), newest, True)
+                return KeysetPage(list(collected.values()), newest, False, stalled=True)
 
         if newest == current:
             # **ここで completed=True を返してはいけない**（2026-09-01、Geminiレビュー指摘）。

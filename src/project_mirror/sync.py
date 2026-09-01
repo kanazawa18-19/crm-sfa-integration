@@ -249,6 +249,36 @@ DEFAULT_TIME_BUDGET_SECONDS = 170.0
 _ROUND_LIMIT = 2_000
 
 
+def _round_limit() -> int:
+    """1周で取る件数。環境変数で上書きできる（2026-09-01、Gemini Proのレビュー指摘）。
+
+    同じ作成日時がこの件数ぶん並ぶと、キーセット方式は前へ進めなくなる（`stalled`）。
+    Notion APIにはタイブレーカー（ページIDでの並び替え）が無いので、これは仕様上の限界で、
+    **コード側では自力回復できない。** 一括移行でタイムスタンプが固まっているDBに当たると
+    一巡が止まるため、**コードを直してデプロイしなくても運用者が突破できる口**を用意する。
+
+    実測（2026-09-01）では、案件管理DB・取引先マスターとも一括移行の山でおよそ250件/分で、
+    上限の2,000件までは十分な余裕がある。
+    """
+    raw = os.environ.get("PROJECT_MIRROR_ROUND_LIMIT", "").strip()
+    if not raw:
+        return _ROUND_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "PROJECT_MIRROR_ROUND_LIMIT=%r は整数として読めません。既定の%d件を使います", raw, _ROUND_LIMIT
+        )
+        return _ROUND_LIMIT
+    if value <= 0:
+        logger.warning(
+            "PROJECT_MIRROR_ROUND_LIMIT=%d は正の数ではありません。既定の%d件を使います", value, _ROUND_LIMIT
+        )
+        return _ROUND_LIMIT
+    logger.info("PROJECT_MIRROR_ROUND_LIMIT=%d で1周の件数を上書きします（既定は%d件）", value, _ROUND_LIMIT)
+    return value
+
+
 def refresh_projects_incrementally(
     *,
     notion_client: ProjectMirrorNotionClient,
@@ -326,7 +356,7 @@ def refresh_projects_incrementally(
         slice_ = query_keyset_slice(
             _post,
             watermark=cursor.watermark,
-            round_limit=_ROUND_LIMIT,
+            round_limit=_round_limit(),
             time_budget_seconds=time_budget_seconds,
             label=CURSOR_NAME,
         )
@@ -343,10 +373,10 @@ def refresh_projects_incrementally(
             upsert_projects(rows, synced_at=cursor.pass_started_at)
             save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
             message = (
-                f"refresh_projects_incrementally: 同じ作成日時が1周の上限({_ROUND_LIMIT}件)ぶん並んでおり"
+                f"refresh_projects_incrementally: 同じ作成日時が1周の上限({_round_limit()}件)ぶん並んでおり"
                 f"これ以上進めません（created_time={slice_.watermark}）。**取りこぼしています。**"
                 "掃除は行っていません（既存データは消していません）。"
-                "_ROUND_LIMITを上げるか、作成日時の重なりを解消してください。"
+                "環境変数 PROJECT_MIRROR_ROUND_LIMIT を上げるか、作成日時の重なりを解消してください。"
                 "直るまで一巡は完了しません。"
             )
             logger.error(message)
@@ -406,16 +436,21 @@ def refresh_projects_incrementally(
             save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
             logger.info(
                 "refresh_projects_incrementally: 途中まで取り込みました"
-                "（今回%d件 / この一巡でここまで%d件。次回 %s 以降から続けます）",
+                "（今回%d件 / この一巡でまだ触れていない行が%d件。次回 %s 以降から続けます）",
                 len(rows),
-                get_project_count(synced_since=cursor.pass_started_at),
+                get_project_count(stale_before=cursor.pass_started_at),
                 slice_.watermark,
             )
             return {"synced_count": len(rows), "deleted_count": 0, "completed": False}
 
         # ここから先は一巡し終えたときだけ通る。掃除の前に急減を確かめる。
         total_count = get_project_count()
-        touched_count = get_project_count(synced_since=cursor.pass_started_at)
+        # **掃除が実際に消す行数を直接数える**（2026-09-01）。
+        # 「この一巡が触れた行数」の定義でChatGPTとGeminiの指摘が真っ二つに割れた
+        # （`>=`だとWebhook更新が混ざって検知が鈍る／等号だと生きている行を数え落として
+        # 誤検知する）。生存の数え方を議論せずに済むよう、破壊的操作が消す行数で判断する。
+        # Webhookが更新した行は`syncedAt`が基準時刻より未来なので、そもそも消えない。
+        stale_count = get_project_count(stale_before=cursor.pass_started_at)
         # **本当に大量削除されたときに、掃除が永久に発火しなくなるのを避ける**
         # （2026-09-01、Geminiレビュー指摘）。Notion側で正当に半分以上が消されると、
         # このチェックが毎回成立して掃除が飛ばされ、消えたはずの行が残るので
@@ -423,13 +458,17 @@ def refresh_projects_incrementally(
         # 部分取得と正当な大量削除は件数だけでは見分けられないので、
         # 運用者が1回だけ許可できる逃げ道を用意する（承認したら環境変数を戻すこと）。
         allow_shrink = os.environ.get("PROJECT_MIRROR_ALLOW_SHRINK", "").strip().lower() == "true"
+        # 件数が少ないときの誤検知を避けて閾値の判定は20件以上に限るが、
+        # **「1行も触れずに全部消える」だけは件数によらず必ず止める**
+        # （2026-08-25の全消失事故そのものの形なので、小さいテーブルでも通さない）。
+        would_delete_everything = total_count > 0 and stale_count == total_count
         if not allow_shrink and (
-            touched_count == 0
-            or (total_count >= 20 and touched_count < total_count * _MIN_SYNC_RATIO)
+            would_delete_everything
+            or (total_count >= 20 and stale_count > total_count * (1 - _MIN_SYNC_RATIO))
         ):
             message = (
-                f"refresh_projects_incrementally: 一巡で触れた件数({touched_count}件)が"
-                f"既存ミラー件数({total_count}件)より大幅に少ないため、部分取得の疑いがあり"
+                f"refresh_projects_incrementally: 掃除で消える件数({stale_count}件)が"
+                f"既存ミラー件数({total_count}件)の半分を超えるため、部分取得の疑いがあり"
                 "掃除を中止しました（既存データは変更していません。しおりを捨てたので"
                 "次回は先頭から取り直します）。**Notion側で正当に大量削除した結果であれば、"
                 f"環境変数 PROJECT_MIRROR_ALLOW_SHRINK=true を設定して1回だけ掃除を通し、"

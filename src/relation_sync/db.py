@@ -221,29 +221,34 @@ def find_by_normalized_name(normalized_name: str) -> list[dict[str, Any]]:
     ]
 
 
-def get_client_name_count(*, synced_since: datetime | None = None) -> int:
-    """`ClientNameIndex`の現在の行数。`refresh_all_client_names()`が新規取得件数と比較し、
-    異常な急減(部分取得によるsweep事故)を検知するために使う(project_mirror/sync.pyの
-    get_project_count()と同じ用途)。
+def get_client_name_count(*, stale_before: datetime | None = None) -> int:
+    """`ClientNameIndex`の現在の行数。`refresh_all_*()`が新規取得件数と比較し、
+    異常な急減(部分取得によるsweep事故)を検知するために使う(2026-08-18)。
 
-    `synced_since`を渡すと`syncedAt = synced_since`の行数だけを返す(2026-09-01)。
-    分割実行(`refresh_client_names_incrementally()`)では1回ぶんの取得件数と全体の件数を
-    比べても意味が無い(1回は2,000件、全体は102,799件)ため、掃除の直前に
-    「**この一巡で触れた行が何件あるか**」を数えて急減を検知するのに使う。
-    これは`sweep_client_names(before=...)`が消し**残す**行数そのもの。
+    `stale_before`を渡すと`syncedAt < stale_before`の行数だけを返す(2026-09-01)。
+    これは **`sweep_client_names(before=...)`が実際に消す行数そのもの。**
+
+    ■ なぜ「触れた行数」ではなく「消える行数」を数えるのか
+
+    分割実行の掃除の直前に「この一巡はちゃんと取れたか」を確かめたいのだが、
+    「触れた行数」の定義で他モデルのレビューが真っ二つに割れた。
+
+        ChatGPT  `syncedAt >= 基準時刻` だと、一巡の最中にWebhookが`now()`で更新した行まで
+                 混ざり、部分取得の検知が鈍る
+        Gemini   等号にすると、Webhookが更新した行（生きている行）を数え落とし、
+                 誤検知で掃除が止まる
+
+    **どちらも正しい。** 生存の数え方を議論する必要が無いように、
+    **破壊的操作が消す行数を直接数える。** Webhookが更新した行は`syncedAt`が
+    基準時刻より未来なので、そもそも消えない＝ここには含まれない。
+    一巡が触れた行も同じ理由で含まれない。曖昧さが無くなる。
     """
     with _connect() as conn, conn.cursor() as cur:
-        if synced_since is None:
+        if stale_before is None:
             cur.execute('SELECT count(*) AS n FROM "ClientNameIndex"')
         else:
-            # **等号で数える**（2026-09-01、ChatGPTのレビュー指摘）。
-            # `>=`にすると、一巡の最中にWebhookが`syncedAt = now()`で更新した行まで
-            # 「この一巡で触れた」と数えてしまい、**部分取得の検知が鈍る**
-            # （取れていないのに件数が足りているように見える）。
-            # 一巡の書き込みは必ず`pass_started_at`ちょうど（ミリ秒境界の不動点）なので、
-            # 等号なら「この一巡が実際に触れた行」だけを正確に数えられる。
             cur.execute(
-                'SELECT count(*) AS n FROM "ClientNameIndex" WHERE "syncedAt" = %s',
-                (synced_since,),
+                'SELECT count(*) AS n FROM "ClientNameIndex" WHERE "syncedAt" < %s',
+                (stale_before,),
             )
         return cur.fetchone()["n"]

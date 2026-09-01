@@ -181,17 +181,33 @@ def test_resuming_from_the_watermark_covers_everything() -> None:
     assert len(seen) == 5_000
 
 
-def test_budget_stops_between_rounds_not_mid_page() -> None:
-    """中断は必ず周の区切りで行うこと（ページの途中で止めるとcursorを保存できない）。"""
+def test_the_budget_also_applies_inside_a_round() -> None:
+    """**周の途中でも時間予算で止まること**（2026-09-01、Gemini Proのレビュー指摘）。
+
+    予算の判定が周の区切りにしか無かったため、1周が長引くと予算を大きく超えて
+    Vercelの300秒に突っ込む。そうなるとしおりを保存できず、
+    **翌晩も同じ区間をやり直して一巡が進まない。**
+    """
     notion = _FakeNotion(total=5_000, per_second=500)
 
     got = query_keyset_slice(
         notion, round_limit=1_000, time_budget_seconds=0, label="test"
     )
 
-    # 予算0でも1周は必ず取り切る（0件で返さない）。
-    assert len(got.pages) == 1_000
     assert got.completed is False
+    assert 0 < len(got.pages) < 1_000, "周を取り切るまで止まらない作りに戻っている"
+    assert got.watermark is not None, "しおりを置ける位置で止まること"
+
+
+def test_the_budget_never_returns_empty_handed() -> None:
+    """1件も進んでいないうちは止まらない（しおりを置く場所が無いので前進しない）。"""
+    notion = _FakeNotion(total=5_000, per_second=5_000)  # 全部同じ秒
+
+    got = query_keyset_slice(
+        notion, round_limit=1_000, time_budget_seconds=0, label="test"
+    )
+
+    assert len(got.pages) > 0
 
 
 # --- Notion が明示する「打ち切った」シグナル（2026-09-01、ChatGPTのレビュー指摘） -----------

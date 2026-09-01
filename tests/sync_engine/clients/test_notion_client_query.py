@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from src.sync_engine.clients._notion_paging import KeysetStalledError
+
 from src.sync_engine.clients.notion_client import HttpNotionClient, NotionApiError
 
 DB_KEY = "client_master"
@@ -67,8 +69,13 @@ def test_query_all_pages_follows_has_more_cursor(requests_mock, client: HttpNoti
 def test_query_all_pages_stops_when_has_more_true_but_next_cursor_missing(
     requests_mock, client: HttpNotionClient
 ) -> None:
-    """has_more=Trueかつnext_cursorが空という契約上起きないはずのレスポンスが返っても、
-    start_cursor=Noneに戻って最初からページングをやり直す無限ループにならないこと。"""
+    """has_more=Trueかつnext_cursorが空という契約上起きないはずのレスポンスが返ったとき。
+
+    無限ループにならないこと（start_cursor=Noneに戻って最初からやり直さない）に加え、
+    **部分的な結果を「全件」として返さない**こと（2026-09-01、Gemini Proのレビュー指摘）。
+    以前は取れた分だけを黙って返しており、呼び出し元が「取り切った」と誤認して
+    掃除（mark-and-sweep）に進むと、**未取得の行が全部消える**経路になっていた。
+    """
     requests_mock.post(
         f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
         json={
@@ -78,9 +85,9 @@ def test_query_all_pages_stops_when_has_more_true_but_next_cursor_missing(
         },
     )
 
-    pages = client.query_all_pages()
+    with pytest.raises(KeysetStalledError):
+        client.query_all_pages()
 
-    assert [p["id"] for p in pages] == ["page-1"]
     assert requests_mock.call_count == 1
 
 

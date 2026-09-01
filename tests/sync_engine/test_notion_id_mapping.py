@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from src.sync_engine.clients._notion_paging import KeysetStalledError
+
 from src.db_schema.base import Tool
 from src.sync_engine.id_mapping import ConflictError, DuplicateExternalIdError, IdMapping
 from src.sync_engine.notion_id_mapping import NotionIdMappingStore, NotionIdMappingStoreApiError
@@ -496,7 +498,11 @@ def test_list_by_db_logs_warning_when_has_more_true_but_next_cursor_missing(
 ) -> None:
     """has_more=Trueかつnext_cursorが空という契約上起きないはずのレスポンスが返っても
     無限ループにならず打ち切ること、かつHttpNotionClient.query_all_pages()と同様に
-    warningログでこの異常を可視化すること（shirokuma-secレビューWARN対応）。"""
+    ログでこの異常を可視化すること（shirokuma-secレビューWARN対応）。
+
+    2026-09-01に「取れた分を黙って返す」から「例外を送出する」へ変えた
+    （Gemini Proのレビュー指摘）。9割欠けたリストが「全件」として下流へ流れるのが、
+    そもそも今回直した問題そのもの。"""
     requests_mock.post(
         QUERY_URL,
         json={
@@ -506,10 +512,10 @@ def test_list_by_db_logs_warning_when_has_more_true_but_next_cursor_missing(
         },
     )
 
-    with caplog.at_level("WARNING"):
-        results = store.list_by_db("client_master")
+    with caplog.at_level("ERROR"):
+        with pytest.raises(KeysetStalledError):
+            store.list_by_db("client_master")
 
-    assert {r.notion_key for r in results} == {"CLI-001"}
     assert requests_mock.call_count == 1
     # メッセージは日本語の共通ページング処理（_notion_paging.py）が出す。
     assert any("next_cursor が空" in r.getMessage() for r in caplog.records)

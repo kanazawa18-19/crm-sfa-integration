@@ -84,9 +84,10 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "swept": None,
         "alerts": [],
         "dms": [],
-        # 一巡が終わったときの急減チェックが読む件数。既定は「触れた行＝全体」で健全。
+        # 一巡が終わったときの急減チェックが読む件数。
+        # `stale_count` は「掃除で消える行数」。既定は0＝全部が今回の一巡で触れられた健全な状態。
         "total_count": 0,
-        "touched_count": None,
+        "stale_count": None,
     }
 
     monkeypatch.setattr(sync_module, "try_acquire_refresh_lock", lambda: object())
@@ -106,12 +107,13 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         # テストが「既にN件入っている」と置いた値は保つ（`max`）。
         state["total_count"] = max(state["total_count"], len(state["upserted"]))
 
-    def _count(*, synced_since: datetime | None = None) -> int:
-        if synced_since is None:
+    def _count(*, stale_before: datetime | None = None) -> int:
+        if stale_before is None:
             return state["total_count"]
-        if state["touched_count"] is not None:
-            return state["touched_count"]
-        return len(state["upserted"])
+        if state["stale_count"] is not None:
+            return state["stale_count"]
+        # 既定は「今回の一巡が全部触れた」＝消える行は無い。
+        return max(0, state["total_count"] - len(state["upserted"]))
 
     monkeypatch.setattr(sync_module, "upsert_projects", _upsert)
     monkeypatch.setattr(
@@ -147,7 +149,9 @@ def test_one_run_stops_within_the_budget_and_leaves_a_bookmark(store) -> None:
 def test_repeated_runs_eventually_cover_everything(store) -> None:
     notion = _FakeNotion(total=25_000)
 
-    for _ in range(50):
+    # 時間予算を0にすると1回あたりの前進が細かくなる（周の途中でも中断するため）。
+    # 実運用の予算は170秒なので1回でずっと多く進む。ここは回数で殴って一巡させる。
+    for _ in range(400):
         result = _run(notion, time_budget_seconds=0)
         if result.get("completed"):
             break
@@ -178,7 +182,9 @@ def test_upsert_is_stamped_with_the_pass_start_not_now(store, monkeypatch) -> No
 
     monkeypatch.setattr(sync_module, "upsert_projects", _upsert)
 
-    for _ in range(50):
+    # 時間予算を0にすると1回あたりの前進が細かくなる（周の途中でも中断するため）。
+    # 実運用の予算は170秒なので1回でずっと多く進む。ここは回数で殴って一巡させる。
+    for _ in range(400):
         if _run(_FakeNotion(total=6_000), time_budget_seconds=0).get("completed"):
             break
 
@@ -265,11 +271,11 @@ def test_a_tiny_slice_with_one_blank_row_still_goes_through(store) -> None:
     assert len(store["upserted"]) == 5
 
 
-def test_sweep_is_aborted_when_the_pass_touched_far_too_few_rows(store) -> None:
-    """一巡で触れた行が既存の半分を切ったら掃除しない（部分取得の疑い）。"""
+def test_sweep_is_aborted_when_it_would_delete_more_than_half(store) -> None:
+    """掃除が既存の半分を超えて消すなら止める（部分取得の疑い）。"""
     notion = _FakeNotion(total=100)
     store["total_count"] = 26_000
-    store["touched_count"] = 100
+    store["stale_count"] = 26_000 - 100  # 100件だけ触れた＝残りは全部消える
 
     result = _run(notion)
 
@@ -279,11 +285,11 @@ def test_sweep_is_aborted_when_the_pass_touched_far_too_few_rows(store) -> None:
     assert store["alerts"]
 
 
-def test_sweep_is_aborted_when_the_pass_touched_nothing(store) -> None:
+def test_sweep_is_aborted_when_it_would_delete_everything(store) -> None:
     """1件も触れていない一巡で掃除すると、ミラーが全消失する（2026-08-25の事故）。"""
     notion = _FakeNotion(total=0)
     store["total_count"] = 10
-    store["touched_count"] = 0
+    store["stale_count"] = 10  # 1件も触れていない＝全部消える
 
     result = _run(notion)
 
@@ -322,14 +328,14 @@ def test_a_legitimate_bulk_delete_can_be_approved_once(
     """
     notion = _FakeNotion(total=100)
     store["total_count"] = 26_000
-    store["touched_count"] = 100
+    store["stale_count"] = 26_000 - 100  # 100件だけ触れた＝残りは全部消える
 
     assert _run(notion)["skipped"] == "suspected_partial_fetch"
     assert store["swept"] is None
 
     monkeypatch.setenv("PROJECT_MIRROR_ALLOW_SHRINK", "true")
     store["total_count"] = 26_000
-    store["touched_count"] = 100
+    store["stale_count"] = 26_000 - 100  # 100件だけ触れた＝残りは全部消える
 
     result = _run(notion)
 
@@ -337,23 +343,43 @@ def test_a_legitimate_bulk_delete_can_be_approved_once(
     assert store["swept"] == NOW
 
 
-def test_webhook_updates_do_not_count_as_touched_by_this_pass(store) -> None:
-    """**一巡が触れた行だけを数える**（2026-09-01、ChatGPTのレビュー指摘）。
+def test_the_guard_counts_what_the_sweep_would_delete(store) -> None:
+    """**生存の数え方ではなく、掃除が消す行数で判断する**（2026-09-01）。
 
-    一巡の最中にWebhookが `syncedAt = now()` で1件更新すると、`>=` で数えていた頃は
-    それも「この一巡で触れた」に混ざり、**部分取得の検知が鈍っていた**
-    （取れていないのに件数が足りているように見える）。
-    一巡の書き込みは必ず `pass_started_at` ちょうどなので、等号なら正確に分けられる。
-
-    ここではDB側の実装（`WHERE "syncedAt" = %s`）が等号であることを、
-    フィクスチャではなく本物のSQL文で確かめる。
+    「この一巡が触れた行数」の定義で他モデルのレビューが割れた。
+    ChatGPTは「`>=`だと一巡の最中のWebhook更新が混ざって検知が鈍る」と言い、
+    Geminiは「等号だと生きている行を数え落として誤検知する」と言った。**どちらも正しい。**
+    破壊的操作が消す行数（`syncedAt < 基準時刻`）を直接数えれば、この議論自体が要らなくなる。
+    Webhookが更新した行は`syncedAt`が基準時刻より未来なので、そもそも消えない。
     """
     import inspect
     from src.project_mirror import db as db_module
 
     src = inspect.getsource(db_module.get_project_count)
-    assert '"syncedAt" = %s' in src, (
-        "touched_count が等号で数えられていない。>= だとWebhookの更新が混ざって"
-        "部分取得を見逃す"
+    assert '"syncedAt" < %s' in src, (
+        "掃除が消す行数を数えていない。生存側を数えると、Webhook更新の扱いで"
+        "検知が鈍るか誤検知するかのどちらかになる"
     )
     assert '"syncedAt" >= %s' not in src
+    assert '"syncedAt" = %s' not in src
+
+
+def test_the_round_limit_can_be_raised_without_a_code_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """停滞したとき、運用者がコードを直さずに突破できること（2026-09-01、Gemini Pro指摘）。
+
+    同じ作成日時が1周の上限ぶん並ぶと前へ進めない。Notion APIにタイブレーカーが無いので
+    コード側では自力回復できず、**上限を上げるしか手が無い。**
+    そのたびにデプロイが要るのでは、深夜に止まったとき動けない。
+    """
+    assert sync_module._round_limit() == sync_module._ROUND_LIMIT
+
+    monkeypatch.setenv("PROJECT_MIRROR_ROUND_LIMIT", "5000")
+    assert sync_module._round_limit() == 5_000
+
+    # 壊れた値は既定へ落とす（設定ミスで同期が止まる方が困る）。
+    monkeypatch.setenv("PROJECT_MIRROR_ROUND_LIMIT", "たくさん")
+    assert sync_module._round_limit() == sync_module._ROUND_LIMIT
+    monkeypatch.setenv("PROJECT_MIRROR_ROUND_LIMIT", "0")
+    assert sync_module._round_limit() == sync_module._ROUND_LIMIT
