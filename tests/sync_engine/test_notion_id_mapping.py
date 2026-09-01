@@ -511,4 +511,5 @@ def test_list_by_db_logs_warning_when_has_more_true_but_next_cursor_missing(
 
     assert {r.notion_key for r in results} == {"CLI-001"}
     assert requests_mock.call_count == 1
-    assert any("next_cursor is missing" in r.getMessage() for r in caplog.records)
+    # メッセージは日本語の共通ページング処理（_notion_paging.py）が出す。
+    assert any("next_cursor が空" in r.getMessage() for r in caplog.records)

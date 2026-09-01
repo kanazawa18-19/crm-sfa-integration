@@ -37,6 +37,7 @@ from datetime import datetime
 from typing import Any
 
 from src.db_schema.base import Tool
+from src.sync_engine.clients._notion_paging import query_all_with_keyset
 from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
@@ -267,34 +268,25 @@ class NotionIdMappingStore(IdMappingStore):
         return results[0] if results else None
 
     def _query_all(self, filter_obj: dict[str, Any], *, page_size: int = 100) -> list[dict[str, Any]]:
-        """`HttpNotionClient.query_all_pages()`と同じ`has_more`/`next_cursor`方式でページングする。"""
-        pages: list[dict[str, Any]] = []
-        start_cursor: str | None = None
-        while True:
-            body: dict[str, Any] = {"filter": filter_obj, "page_size": page_size}
-            if start_cursor is not None:
-                body["start_cursor"] = start_cursor
+        """**1万件の壁を越えて**全件取る（2026-09-01）。
+
+        Notionの Database Query は1クエリ1万件までしか返さず、しかも
+        `has_more: false` を返すので「全部取れた」ように見える。
+        実測で `db_key=client_master` が10000で頭打ちになり、分割して数えると
+        10049件あった。作成日時で区切って取り直す
+        （`src/sync_engine/clients/_notion_paging.py`）。
+        """
+
+        def _post(body: dict[str, Any]) -> dict[str, Any]:
             response = self._request(
                 "POST", f"/databases/{self._database_id}/query", json_body=body
             )
             raise_for_error(response, NotionIdMappingStoreApiError)
-            data = response.json()
-            pages.extend(data.get("results") or [])
-            if not data.get("has_more"):
-                break
-            start_cursor = data.get("next_cursor")
-            if not start_cursor:
-                # has_more=Trueかつnext_cursorが空という、Notion API本来の契約上は
-                # 起きないはずのレスポンス。start_cursor=Noneのままループを続けると
-                # 先頭ページの再取得を繰り返す無限ループになるため、打ち切る
-                # （`HttpNotionClient.query_all_pages`と同じ対応）。
-                logger.warning(
-                    "_query_all: has_more=True but next_cursor is missing for "
-                    "database_id=%r; stopping pagination to avoid an infinite loop",
-                    self._database_id,
-                )
-                break
-        return pages
+            return response.json()
+
+        return query_all_with_keyset(
+            _post, base_filter=filter_obj, page_size=page_size, label="id_mapping"
+        )
 
     def get(self, notion_key: str) -> IdMapping | None:
         page = self._query_first(_title_equals_filter(notion_key))

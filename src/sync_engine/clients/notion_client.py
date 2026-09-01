@@ -25,6 +25,7 @@ from src.audit_log.actor_context import get_actor
 from src.audit_log.recorder import record_notion_write
 from src.db_schema.base import DatabaseSchema, PropertyType
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients._notion_paging import query_all_with_keyset
 from src.sync_engine.clients.notion_display_resolver import resolve_display_values
 from src.sync_engine.clients._http import (
     ApiError,
@@ -273,34 +274,20 @@ class HttpNotionClient:
         結果のみを取得できる（呼び出し元がDB全件をクライアント側でフィルタしている箇所を、
         件数が多いDBで軽量化する用途を想定）。省略時は従来通り当DB全件を返す。
         """
-        pages: list[dict[str, Any]] = []
-        start_cursor: str | None = None
-        while True:
-            body: dict[str, Any] = {"page_size": page_size}
-            if filter is not None:
-                body["filter"] = filter
-            if start_cursor is not None:
-                body["start_cursor"] = start_cursor
+        def _post(request_body: dict[str, Any]) -> dict[str, Any]:
             response = self._request(
-                "POST", f"/databases/{self._database_id}/query", json_body=body
+                "POST", f"/databases/{self._database_id}/query", json_body=request_body
             )
             raise_for_error(response, NotionApiError)
-            data = response.json()
-            pages.extend(data.get("results") or [])
-            if not data.get("has_more"):
-                break
-            start_cursor = data.get("next_cursor")
-            if not start_cursor:
-                # has_more=Trueかつnext_cursorが空という、Notion API本来の契約上は
-                # 起きないはずのレスポンス。start_cursor=Noneのままループを続けると
-                # 先頭ページの再取得を繰り返す無限ループになるため、打ち切る。
-                logger.warning(
-                    "query_all_pages: has_more=True but next_cursor is missing for "
-                    "database_id=%r; stopping pagination to avoid an infinite loop",
-                    self._database_id,
-                )
-                break
-        return pages
+            return response.json()
+
+        # **1万件の壁を越える**（2026-09-01）。Notionは1クエリ1万件までしか返さず、
+        # しかも has_more=false を返すので「全部取れた」ように見える。
+        # 案件管理のPostgresミラーも取引先名インデックスもここを通っており、
+        # 静かに欠けていた（`src/sync_engine/clients/_notion_paging.py`参照）。
+        return query_all_with_keyset(
+            _post, base_filter=filter, page_size=page_size, label=self._db_key or "notion"
+        )
 
     def query_page(
         self,
