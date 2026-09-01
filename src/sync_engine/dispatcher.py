@@ -47,7 +47,10 @@ from src.sync_engine.spreadsheet_row_lock import acquire_row_creation_lock
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import is_own_system_event
 from src.sync_engine.sync_targets.base import SyncTarget
-from src.sync_engine.sync_targets.spreadsheet_sync import SpreadsheetSyncTarget
+from src.sync_engine.sync_targets.spreadsheet_sync import (
+    SpreadsheetSyncTarget,
+    drop_relation_properties,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +296,21 @@ class Dispatcher:
         # （2026-08-28、通知文面で「既に適用済みのプロパティ」を伝える対症療法で凌いでいた）。
         # ここではイベント全体で必要な現在値を先に取り切り、1件も書き込まないうちに失敗を
         # 確定させる（取得フェーズで失敗したら書き込みはゼロ、が保証される）。
+        #
+        # **例外が1つだけある。取り繕わずに書いておく**（2026-09-02、ChatGPTの指摘で修正）。
+        # 書き込みの直前に`_spreadsheet_properties_for_new_row()`がNotionを読みに行くことが
+        # ある（シートに行がまだ無いレコードだけ）。**この取得に失敗した場合、シートへは
+        # 書かないが他ツールへは書く。** つまりここだけは「取得の失敗でも書き込みはゼロ」に
+        # なっていない。
+        #
+        #    なぜ全体を中止しないか
+        #    ├ Notionが読めないだけで kintone/Zoho への伝播まで止めると、**差分しか
+        #    │ 運ばれないWebhookでは、その変更が二度と届かない**（失われる）
+        #    └ 行が無いことは後から取り返せる。`verify_spreadsheet_backfill.py`の
+        #      「不足」に出るし、次のイベントでも作り直せる
+        #
+        # つまり**シートの行作成だけを best-effort に落としている**。黙って落とすのではなく、
+        # `skipped_tools`に載せて`SkipTrackingDispatcher`経由でSlackにも上げる。
         prepared: list[tuple[str, Any, Any]] = []
         for property_name, new_value in event.properties.items():
             try:
@@ -331,7 +349,15 @@ class Dispatcher:
             payload_by_tool = _group_by_tool(
                 {name: value for name, _prop, value in prepared}, intended_by_property
             )
-            written_by_tool, mapping = self._write_values(payload_by_tool, mapping, versions)
+            # 行がまだ無いレコードには、変更された項目だけの行を作らない（2026-09-02）。
+            # Notion発の経路はここまで現在値を読んでいないため、必要なときだけ取りに行く。
+            # **全項目は追記のときにしか使わない**（更新に使うと無関係な列を巻き戻す）。
+            payload_by_tool, new_row_properties = self._spreadsheet_properties_for_new_row(
+                payload_by_tool, mapping, notion_record=None, notion_record_fetched=False
+            )
+            written_by_tool, mapping = self._write_values(
+                payload_by_tool, mapping, versions, new_row_properties=new_row_properties
+            )
             results = [
                 _property_result(property_name, None, intended_by_property, written_by_tool)
                 for property_name, _prop, _value in prepared
@@ -519,7 +545,15 @@ class Dispatcher:
         payload_by_tool = _group_by_tool(
             {d.property_name: d.value for d in decided}, intended_by_property
         )
-        written_by_tool, mapping = self._write_values(payload_by_tool, mapping, versions)
+        # 行がまだ無いレコードには、変更された項目だけの行を作らない（2026-09-02）。
+        # こちらはフェーズ2で読んだNotionのスナップショットをそのまま使う（取り直さない）。
+        # **全項目は追記のときにしか使わない**（更新に使うと無関係な列を巻き戻す）。
+        payload_by_tool, new_row_properties = self._spreadsheet_properties_for_new_row(
+            payload_by_tool, mapping, notion_record=notion_record, notion_record_fetched=True
+        )
+        written_by_tool, mapping = self._write_values(
+            payload_by_tool, mapping, versions, new_row_properties=new_row_properties
+        )
         written_results = {
             item.property_name: _property_result(
                 item.property_name, item.resolution, intended_by_property, written_by_tool
@@ -1066,11 +1100,167 @@ class Dispatcher:
                 notion_page_id=notion_page_id,
             )
 
+    def _spreadsheet_properties_for_new_row(
+        self,
+        payload_by_tool: dict[Tool, dict[str, Any]],
+        mapping: IdMapping,
+        *,
+        notion_record: Mapping[str, Any] | None,
+        notion_record_fetched: bool,
+    ) -> tuple[dict[Tool, dict[str, Any]], dict[str, Any] | None]:
+        """**行がまだ無いレコードに、変更された項目だけの行を作らない**（2026-09-02）。
+
+        Webhookは差分しか運ばない。行がまだ無いレコードでNotion側の1項目を編集すると、
+        `append_with_sync_key()`は**その1列と同期キーだけの行**を追記していた
+        （取引先名もkintone IDも空の行）。kintone/Zoho発でも同じことが起きる。
+        kintone Webhookはレコード全項目を運ぶが、**Notionと値が一致する項目は競合判定で
+        NO_OPになって落ちる**ため、書き込み対象に残るのは結局「変わった項目」だけになる。
+
+        そこでマスターであるNotionから全項目を取り直したものを返す。
+
+        ■ **返した全項目は「追記」にしか使わない**（2026-09-02、シロクマ・クマが独立に指摘）
+
+        当初は`payload_by_tool`の中身をそのまま差し替えていた。**これは事故になる。**
+        書き込み経路は追記だけではなく、`_write_spreadsheet_value()`は同期キーで行が
+        見つかれば更新に化ける。すると**今回のイベントで触っていない列まで、
+        取得時点のNotionスナップショットで上書き**される。
+
+        ```
+           行番号が未登録なのに、シートには既に行がある
+             （行番号の保存に失敗した後・--skip-id-mapping でバックフィルした後）
+           別のワーカーが待っている間に行を作り終えた（ロック取得後の再探索で見つかる）
+                ▼
+           どちらも「追記のつもりが更新」になる経路。ここへ全項目を持ち込むと、
+           相手が書いた新しい値を、こちらが読んだ古い値で巻き戻す
+        ```
+
+        そのため戻り値は`payload_by_tool`とは**別の口**にし、`_write_spreadsheet_value()`の
+        追記の一手にだけ渡す。更新は今までどおり差分だけを書く。
+
+        ■ 戻り値
+
+        ```
+           (payload_by_tool, None)        追記のときも差分をそのまま使う（従来どおり）
+           (payload_by_tool, 全項目)      追記のときだけ全項目で書く
+           (シートを外したpayload, None)  Notionが読めなかった。**シートには書かない**
+        ```
+
+        欠けた行を作るくらいなら、行が無いまま残すほうがよい。
+        `verify_spreadsheet_backfill.py`の「不足」に出るし、次のイベントでも作り直せる。
+        なおこの見送りは`SkipTrackingDispatcher._unexpected_skips()`が拾い、
+        行作成が有効なdb_keyなら**Slackへも上がる**（`production_wiring.py`）。
+
+        ■ 取り直す頻度
+
+        `IdMapping.spreadsheet_row`が未登録の間だけ。**行を1つ作れば登録される**ので、
+        通常は1レコードにつき生涯1回。行番号の保存に失敗し続ける間は毎回取りに行くが、
+        更新経路が行を引き直した時点で登録し直される（`_register_spreadsheet_row()`）ため、
+        その状態も次のイベントで解消する。
+        """
+        properties = payload_by_tool.get(Tool.SPREADSHEET)
+        if not properties:
+            return payload_by_tool, None
+        if mapping.spreadsheet_row is not None:
+            # 行番号が登録済み＝既に行がある。差分だけ書けばよい。
+            return payload_by_tool, None
+
+        target = self._targets.get(Tool.SPREADSHEET)
+        if target is None or not _supports_sync_key(target):
+            # 同期キーで追記できないターゲットは、そもそも行を作れない（行番号が無いため）。
+            return payload_by_tool, None
+        if not _row_creation_allowed(target, mapping.db_key):
+            # そもそも行を作らない設定なら、取り直すだけ無駄（書き込みもスキップされる）。
+            return payload_by_tool, None
+
+        notion_target = self._targets.get(Tool.NOTION)
+        if notion_target is None:
+            # **Notionが未接続の構成では取り直す先が無い。**
+            # マスターが居ないので、このイベントの値が唯一の情報源になる。従来どおり
+            # 手元の値だけで追記する（＝1列だけの行になりうるが、他に採りようがない）。
+            # 本番は必ずNotionを接続しているため、ここへ来るのはテストと部分構成だけ。
+            return payload_by_tool, None
+
+        record = notion_record
+        if not notion_record_fetched:
+            try:
+                record = notion_target.get_record(mapping.notion_key)
+            except (ApiError, requests.exceptions.RequestException):
+                logger.warning(
+                    "spreadsheet: 行がまだ無いレコードの全項目をNotionから取得できませんでした。"
+                    "**欠けた行を作らないため、今回はシートへ書きません** "
+                    "(notion_key=%r, db_key=%r)",
+                    mapping.notion_key,
+                    mapping.db_key,
+                    exc_info=True,
+                )
+                return _without_spreadsheet(payload_by_tool), None
+
+        if record is None:
+            logger.warning(
+                "spreadsheet: 行がまだ無いレコードのNotionページが読めませんでした。"
+                "**欠けた行を作らないため、今回はシートへ書きません** "
+                "(notion_key=%r, db_key=%r)",
+                mapping.notion_key,
+                mapping.db_key,
+            )
+            return _without_spreadsheet(payload_by_tool), None
+
+        try:
+            schema = get_schema(mapping.db_key)
+        except (KeyError, ValueError):
+            # **スキーマが引けないときは書かない**（2026-09-02、ChatGPTのクロスレビュー指摘）。
+            # 当初は「従来どおり書く」に倒していたが、それは今直したばかりの不具合
+            # （1列だけの行）を、設定漏れ・デプロイ不整合のときだけ静かに再発させる。
+            # どの項目がシート行きかを判断できない以上、行は作らない方が安全。
+            logger.error(
+                "spreadsheet: db_key=%r のスキーマが引けません。"
+                "**欠けた行を作らないため、今回はシートへ書きません** (notion_key=%r)",
+                mapping.db_key,
+                mapping.notion_key,
+                exc_info=True,
+            )
+            return _without_spreadsheet(payload_by_tool), None
+
+        # シートへ流す項目だけを埋める。Notionにしか無いメタ情報
+        # （`NOTION_LAST_EDITED_TIME_KEY`等）やスキーマ外のプロパティは持ち込まない。
+        # `record`に無いキーは飛ばす。落ちるのはロールアップ・unique_idのような
+        # **読み取り専用型だけ**で、それらは`SyncScope.INTERNAL`固定のため
+        # `properties_synced_to(SPREADSHEET)`に最初から入らない（`db_schema/base.py`）。
+        # **リレーションは`drop_relation_properties()`で必ず落とす。**
+        # 落とされるものを数に入れると、実際には1列だけの行なのに「補えた」と誤認する
+        # （2026-09-02、クマ指摘）。落とす基準は書き込み側と同じ関数に一本化する。
+        filled = drop_relation_properties(
+            {
+                prop.name: record[prop.name]
+                for prop in schema.properties_synced_to(Tool.SPREADSHEET)
+                if prop.name not in properties and prop.name in record
+            },
+            mapping.db_key,
+        )
+        if not filled:
+            # **「Notionが空だった」とは限らない。** 正確には「追加できる非リレーション項目が
+            # 1つも無かった」（Notion側も空／全部リレーション／既にイベントに入っていた）。
+            # いずれにせよ足せるものが無いので、イベントの値だけで追記する。
+            # 実際、本番の取引先マスターには「取引先名しか入っていない」レコードが3,406件ある
+            # （2026-09-02 実測）。**それは欠けた行ではなく、そういうレコード。**
+            return payload_by_tool, None
+
+        logger.info(
+            "spreadsheet: 行がまだ無いので、追記のときだけNotionの現在値で%d項目を補います "
+            "(notion_key=%r, db_key=%r)",
+            len(filled),
+            mapping.notion_key,
+            mapping.db_key,
+        )
+        return payload_by_tool, {**filled, **properties}
+
     def _write_values(
         self,
         payload_by_tool: Mapping[Tool, dict[str, Any]],
         mapping: IdMapping,
         versions: "_VersionTracker | None" = None,
+        *,
+        new_row_properties: dict[str, Any] | None = None,
     ) -> tuple[dict[Tool, frozenset[str]], IdMapping]:
         """**1イベント・1ツールにつき1回だけ書き込む**（2026-09-01）。
 
@@ -1092,6 +1282,11 @@ class Dispatcher:
         気づけないわけではない。まとめ書き込みで新たに生じた話ではなく、
         判定と書き込みを分けたことで見えやすくなっただけ。
 
+        `new_row_properties`は**シートに行を追記するときだけ**使う、そのまま書ける
+        **完成形**（不足分だけではない。`_spreadsheet_properties_for_new_row()`が
+        差分を上書きした状態で返す）。更新には使わない。Noneなら従来どおり
+        `payload_by_tool`の差分をそのまま追記する。
+
         戻り値は {ツール: 実際に書けたプロパティ名の集合} と、更新後のmapping。
         """
         written_by_tool: dict[Tool, frozenset[str]] = {}
@@ -1104,9 +1299,18 @@ class Dispatcher:
                 written_by_tool[tool] = frozenset()
                 continue
 
+            # 追記に使う全項目も同じ物差しで測る（差分の上位集合なので、まとめて聞く）。
+            new_row_values = (
+                {**new_row_properties, **properties}
+                if tool is Tool.SPREADSHEET and new_row_properties is not None
+                else None
+            )
             try:
                 unsupported = frozenset(
-                    target.unsupported_properties(properties, db_key=mapping.db_key)
+                    target.unsupported_properties(
+                        new_row_values if new_row_values is not None else properties,
+                        db_key=mapping.db_key,
+                    )
                 )
             except Exception:  # noqa: BLE001 (ツール実装依存)
                 # 聞けなかったからといって同期を止めない。そのまま送って相手の判断に任せる。
@@ -1123,13 +1327,26 @@ class Dispatcher:
                 written_by_tool[tool] = frozenset()
                 continue
 
+            sent: dict[str, Any] | None = (
+                {name: value for name, value in new_row_values.items() if name not in unsupported}
+                if new_row_values is not None
+                else None
+            )
             ok, mapping = self._write_value(
                 tool,
                 mapping,
                 sendable,
                 versions.take(tool) if versions is not None else None,
+                new_row_properties=sent,
             )
-            written_by_tool[tool] = frozenset(sendable) if ok else frozenset()
+            # **報告は「実際に送った項目」に合わせる**（2026-09-02、Gemini・ChatGPTが独立に
+            # 指摘）。行を新規作成したときは補完した項目も書いているので、差分だけを
+            # 書いたことにすると`written_tools`（APIの応答・ログ）が実態とズレる。
+            # なおこの集合は**報告用**で、同期の進み具合を持つ値ではない
+            # （それは`IdMapping.last_synced_at`）。ここを広げても書き込み判断は変わらない。
+            written_by_tool[tool] = (
+                frozenset(sent if sent is not None else sendable) if ok else frozenset()
+            )
         return written_by_tool, mapping
 
     def _version_tracker(
@@ -1213,6 +1430,8 @@ class Dispatcher:
         mapping: IdMapping,
         properties: dict[str, Any],
         expected_version: str | None = None,
+        *,
+        new_row_properties: dict[str, Any] | None = None,
     ) -> tuple[bool, IdMapping]:
         """1ツールへの書き込みを試み、「実際に書き込めたか」と「更新後のmapping」を返す。
 
@@ -1228,7 +1447,9 @@ class Dispatcher:
         if target is None:
             return False, mapping
         if tool is Tool.SPREADSHEET and _supports_sync_key(target):
-            return self._write_spreadsheet_value(target, mapping, properties)
+            return self._write_spreadsheet_value(
+                target, mapping, properties, new_row_properties=new_row_properties
+            )
 
         external_id = _external_id_for(tool, mapping)
         try:
@@ -1254,7 +1475,12 @@ class Dispatcher:
         return result is not None, mapping
 
     def _write_spreadsheet_value(
-        self, target: Any, mapping: IdMapping, properties: dict[str, Any]
+        self,
+        target: Any,
+        mapping: IdMapping,
+        properties: dict[str, Any],
+        *,
+        new_row_properties: dict[str, Any] | None = None,
     ) -> tuple[bool, IdMapping]:
         """スプレッドシートへの書き込み。**行番号ではなく同期キーで行を確定させる。**
 
@@ -1327,7 +1553,15 @@ class Dispatcher:
                     return False, mapping
                 return True, self._register_spreadsheet_row(mapping, str(row))
 
-            created = target.append_with_sync_key(properties, sync_key, db_key=db_key)
+            # **ここだけが「行を作る」一手。全項目を使ってよいのはここだけ。**
+            # 上の更新経路（同期キーで引けた・ロック中に相手が作り終えた）へ全項目を
+            # 持ち込むと、今回触っていない列を古いスナップショットで巻き戻す
+            # （2026-09-02、シロクマ・クマが独立に指摘）。
+            created = target.append_with_sync_key(
+                new_row_properties if new_row_properties is not None else properties,
+                sync_key,
+                db_key=db_key,
+            )
 
         if created is None:
             return False, mapping
@@ -1418,6 +1652,37 @@ def _build_update_skip_detail(
             "この同期イベントは一切適用されていません（書き込みは行われていません）。"
         )
     return f"{status} error={exc!r}"
+
+
+def _without_spreadsheet(
+    payload_by_tool: dict[Tool, dict[str, Any]],
+) -> dict[Tool, dict[str, Any]]:
+    """シートへの書き込みだけを外したペイロードを返す（他ツールへの同期は続ける）。"""
+    return {
+        tool: values for tool, values in payload_by_tool.items() if tool is not Tool.SPREADSHEET
+    }
+
+
+def _row_creation_allowed(target: object, db_key: str) -> bool:
+    """このdb_keyでシートの行を新規作成してよいかを、ターゲット自身に聞く。
+
+    「全項目を取り直すかどうか」の判断にしか使わない。答えられないターゲット
+    （テストの単純なFake）は許可扱いにしてよい。**許可の実体は
+    `append_with_sync_key()`側が最終的に握る**ので、ここで甘く見ても行は増えない。
+    """
+    ask = getattr(target, "row_creation_enabled", None)
+    if not callable(ask):
+        return True
+    try:
+        return bool(ask(db_key))
+    except Exception:  # noqa: BLE001 (ツール実装依存)
+        logger.warning(
+            "spreadsheet: 行作成の可否を問い合わせられませんでした。許可扱いで続けます "
+            "(db_key=%r)",
+            db_key,
+            exc_info=True,
+        )
+        return True
 
 
 def _supports_sync_key(target: object) -> bool:

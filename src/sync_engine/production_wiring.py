@@ -468,6 +468,15 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
         # タブが解決できないならそもそも書き込まないので、照合は「一致しない」で返す。
         return target.row_matches_sync_key(row, sync_key) if target is not None else False
 
+    def row_creation_enabled(self, db_key: str | None = None) -> bool:
+        """このdb_keyで行の新規作成が許可されているか（Dispatcherが**書く前に**聞く）。
+
+        Dispatcherは「行がまだ無いなら、Notionから全項目を取り直してから追記する」
+        （2026-09-02）。**行を作らない設定なら取り直すだけ無駄**なので、
+        判断材料としてここを見る。許可の実体は`append_with_sync_key()`が握る。
+        """
+        return spreadsheet_row_creation_enabled(db_key)
+
     def append_with_sync_key(
         self, properties: dict[str, Any], sync_key: str, *, db_key: str | None = None
     ) -> str | None:

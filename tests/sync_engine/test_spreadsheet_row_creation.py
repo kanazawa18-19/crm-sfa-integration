@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+import requests
 
 from src.db_schema.base import (
     DatabaseSchema,
@@ -31,6 +32,7 @@ from src.db_schema.base import (
     SyncScope,
     Tool,
 )
+from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
 from src.sync_engine.dispatcher import Dispatcher
 from src.sync_engine.id_mapping import IdMapping, SQLiteIdMappingStore
 from src.sync_engine.production_wiring import (
@@ -429,3 +431,494 @@ def test_既にある行への更新も複数プロパティを1回でまとめ�
     assert シート.rows[行]["取引先名"] == "更新後"
     assert シート.rows[行]["備考"] == "メモ"
     assert シート.append_calls == 1, "更新なのに行が増えている"
+
+
+# --- 行を作るときは全項目を埋める（2026-09-02） -----------------------------------------------
+#
+# **背景。** Webhookは差分しか運ばない。行がまだ無いレコードでNotion側の1項目だけを編集すると、
+# その1列と同期キーだけの行が追記されていた（取引先名もkintone IDも空の行）。
+# kintone発でも同じで、Webhookは全項目を運ぶものの、Notionと値が一致する項目は競合判定で
+# NO_OPになって落ちるため、結局「変わった項目」だけの行になる。
+# 行を作るときに限りNotionから全項目を取り直す。
+
+
+class _Notion:
+    """Notionページを模したFake。取得回数を数えて「取り直したか」を検証できるようにする。"""
+
+    def __init__(self, record: dict[str, Any] | None) -> None:
+        self._record = record
+        self.get_calls = 0
+        self.raises: Exception | None = None
+        self.upserts: list[tuple[str | None, dict[str, Any]]] = []
+
+    def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        self.get_calls += 1
+        if self.raises is not None:
+            raise self.raises
+        return dict(self._record) if self._record is not None else None
+
+    def upsert_record(
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
+    ) -> str | None:
+        self.upserts.append((external_id, properties))
+        return external_id
+
+
+def _Notionの現在値(**properties: Any) -> dict[str, Any]:
+    """Notionページの現在値。最終更新はイベントより前にしておく
+    （そうしないと競合判定でNotion側が勝ち、書き込み先が変わってしまう）。"""
+    return {**properties, NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=1)}
+
+
+@pytest.fixture
+def notion() -> _Notion:
+    return _Notion(_Notionの現在値(取引先名="サンライズホテルズ", 備考="既存のメモ"))
+
+
+@pytest.fixture
+def notion付きdispatcher(
+    store: SQLiteIdMappingStore, シート: _シート, notion: _Notion
+) -> Dispatcher:
+    return Dispatcher(
+        store,
+        {
+            Tool.NOTION: notion,
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+    )
+
+
+def test_行を作るときはNotionから全項目を取り直して埋める(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """1項目だけのイベントでも、できる行は全項目そろっている。"""
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["備考"] == "更新後のメモ", "イベント側の値が優先されていない"
+    assert values["取引先名"] == "サンライズホテルズ", "★ここが本題。1列だけの行になっている"
+    assert values[SYNC_KEY_COLUMN] == "CLI-001"
+
+
+def test_行があるときは取り直さない(
+    notion付きdispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート, notion: _Notion
+) -> None:
+    """更新は従来どおり差分だけ。毎回Notionを読みに行くと無駄なAPI呼び出しが増える。"""
+    store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", spreadsheet_row=2))
+    シート.rows[2] = {"取引先名": "既存", SYNC_KEY_COLUMN: "CLI-001"}
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert notion.get_calls == 0, "行があるのにNotionを読み直している"
+    assert シート.rows[2]["取引先名"] == "既存", "差分更新なのに他の列が書き換わっている"
+    assert シート.rows[2]["備考"] == "更新後のメモ"
+
+
+def test_Notionが読めないときは欠けた行を作らない(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """欠けた行を作るより、行が無いまま残すほうがよい。
+    `verify_spreadsheet_backfill.py`の「不足」に出るし、次のイベントでも作り直せる。"""
+    notion._record = None
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 0
+    assert シート.rows == {}
+
+
+def test_Notionの取得が失敗したときも欠けた行を作らない(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    notion.raises = requests.exceptions.ConnectionError("接続できません")
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 0
+    assert シート.rows == {}
+
+
+def test_次のイベントで作り直せる(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """1回落ちても取り返しがつくこと（行が無いままなので、次も追記経路を通る）。"""
+    notion.raises = requests.exceptions.ConnectionError("接続できません")
+    notion付きdispatcher.dispatch(_イベント(備考="1回目"))
+    assert シート.append_calls == 0
+
+    notion.raises = None
+    notion付きdispatcher.dispatch(_イベント(経過分=1, 備考="2回目"))
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["備考"] == "2回目"
+    assert values["取引先名"] == "サンライズホテルズ"
+
+
+def test_行を作らない設定ならNotionを読みに行かない(
+    monkeypatch: pytest.MonkeyPatch,
+    notion付きdispatcher: Dispatcher,
+    シート: _シート,
+    notion: _Notion,
+    行がまだ無いmapping: IdMapping,
+) -> None:
+    """どうせ書けないのだから取り直すだけ無駄。"""
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "product")
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert notion.get_calls == 0
+    assert シート.append_calls == 0
+
+
+def test_kintone発でも一致した項目が落ちて1列だけにならない(
+    notion付きdispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    """kintone Webhookは全項目を運ぶが、**Notionと値が一致する項目は競合判定でNO_OPになり
+    書き込み対象から落ちる**。そのままでは変わった項目だけの行ができる。"""
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"取引先名": "サンライズホテルズ", "備考": "kintoneで書き換えた"},
+    )
+
+    notion付きdispatcher.dispatch(event)
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["備考"] == "kintoneで書き換えた"
+    assert values["取引先名"] == "サンライズホテルズ", "NO_OPで落ちた項目が空欄のままになっている"
+
+
+# --- 全項目を使ってよいのは「追記」だけ（2026-09-02、シロクマ・クマが独立に指摘） -------------
+#
+# 補完した全項目を書き込みペイロードごと差し替えると、**追記のつもりが更新に化ける経路**へ
+# 流れ込む。今回のイベントで触っていない列を、取得時点のNotionの値で巻き戻してしまう。
+
+
+def test_行番号が未登録でも既に行があるなら他の列を巻き戻さない(
+    notion付きdispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート
+) -> None:
+    """行番号の保存に失敗した後・`--skip-id-mapping`でバックフィルした後に起きる状態。
+    `spreadsheet_row`はNoneだが、シートには同期キー付きの行が既にある。"""
+    store.upsert(
+        IdMapping(
+            notion_key="CLI-001",
+            db_key="client_master",
+            spreadsheet_row=None,
+            last_synced_at=NOW - timedelta(days=1),
+        )
+    )
+    シート.rows[5] = {
+        "取引先名": "シート側で直された新しい社名",
+        SYNC_KEY_COLUMN: "CLI-001",
+    }
+
+    notion付きdispatcher.dispatch(_イベント(備考="今回の編集"))
+
+    assert シート.append_calls == 0
+    assert シート.rows[5]["備考"] == "今回の編集"
+    assert (
+        シート.rows[5]["取引先名"] == "シート側で直された新しい社名"
+    ), "触っていない列が古いNotionの値で巻き戻っている"
+
+
+def test_ロック待ちの間に相手が作った行を巻き戻さない(
+    notion付きdispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """こちらがNotionを読んだ後に、別のワーカーが先に行を作り終えることがある。
+    そこへ「こちらが読んだ時点の全項目」を書くと、相手の新しい値を消す。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 待っている間に相手が作る(db_key: str, notion_key: str):
+        シート.rows[9] = {"取引先名": "相手が書いた新社名", SYNC_KEY_COLUMN: notion_key}
+        yield True
+
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.acquire_row_creation_lock", 待っている間に相手が作る
+    )
+
+    notion付きdispatcher.dispatch(_イベント(備考="こちらの備考"))
+
+    assert シート.append_calls == 0, "相手が作った行を見落として追記している"
+    assert シート.rows[9]["備考"] == "こちらの備考"
+    assert (
+        シート.rows[9]["取引先名"] == "相手が書いた新社名"
+    ), "相手の値を古いNotionのスナップショットで上書きしている"
+
+
+# --- 補完の中身 ---------------------------------------------------------------------------
+
+
+def test_リレーションだけしか補えないなら数に入れない(
+    store: SQLiteIdMappingStore,
+    シート: _シート,
+    行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """リレーションは`drop_relation_properties()`で必ず落とされる。
+    落とされるものを「補えた」と数えると、実際は1列だけの行なのに直ったつもりになる。"""
+    schema = DatabaseSchema(
+        key="client_master",
+        display_name="取引先マスタ（テスト用）",
+        id_prefix="CLI",
+        kintone_key="取引先マスタ",
+        zoho_key="取引先",
+        zoho_api_module="Accounts",
+        spreadsheet_sheet_name="取引先マスタ",
+        properties=(
+            PropertyDefinition(
+                name="取引先名",
+                property_type=PropertyType.TITLE,
+                requirement=RequirementLevel.REQUIRED,
+                sync_scope=SyncScope.SPREADSHEET_ONLY,
+            ),
+            PropertyDefinition(
+                name="チェーン",
+                property_type=PropertyType.RELATION,
+                requirement=RequirementLevel.OPTIONAL,
+                sync_scope=SyncScope.SPREADSHEET_ONLY,
+                relation_target="chain",
+            ),
+        ),
+    )
+    # `drop_relation_properties()`は書き込み側のモジュールで`get_schema`を引くので、
+    # そちらも差し替えないと本物のスキーマを見に行ってしまう。
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: schema)
+    monkeypatch.setattr(
+        "src.sync_engine.sync_targets.spreadsheet_sync.get_schema", lambda key: schema
+    )
+    notion = _Notion(_Notionの現在値(取引先名="サンライズホテルズ", チェーン=["ページID"]))
+    dispatcher = Dispatcher(
+        store,
+        {
+            Tool.NOTION: notion,
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+    )
+
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert "チェーン" not in values, "シートに書けないリレーションを書こうとしている"
+
+
+def test_Notion側が空欄の項目は空欄のまま書く(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """Notionで未入力なら、シートも空欄でよい。**推測で埋めない。**"""
+    notion._record = _Notionの現在値(取引先名=None, 備考="既存のメモ")
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["取引先名"] is None
+
+
+# --- 送信元ごとの経路 ----------------------------------------------------------------------
+
+
+def test_Zoho発でも補う(
+    notion付きdispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート, notion: _Notion
+) -> None:
+    """kintoneと同じコードを通るが、経路として1本は固定しておく。"""
+    store.upsert(
+        IdMapping(
+            notion_key="CLI-001",
+            db_key="client_master",
+            zoho_id="Z-1",
+            last_synced_at=NOW - timedelta(days=1),
+        )
+    )
+    event = SyncEvent(
+        source_tool=Tool.ZOHO,
+        db_key="client_master",
+        external_id="Z-1",
+        occurred_at=NOW,
+        properties={"備考": "Zohoで書き換えた"},
+    )
+
+    notion付きdispatcher.dispatch(event)
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["備考"] == "Zohoで書き換えた"
+    assert values["取引先名"] == "サンライズホテルズ"
+
+
+def test_kintone発では取得済みのスナップショットを使い回す(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """非Notion発の経路はフェーズ2で既にNotionを読んでいる。二度読みしない。"""
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"備考": "kintoneで書き換えた"},
+    )
+
+    notion付きdispatcher.dispatch(event)
+
+    assert notion.get_calls == 1, "同じイベントでNotionを2回読んでいる"
+
+
+def test_kintone発でNotionページが読めなければ行を作らない(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """非Notion発の経路（フェーズ2の取得結果がNone）でも、欠けた行は作らない。"""
+    notion._record = None
+    event = SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="1001",
+        occurred_at=NOW,
+        properties={"備考": "kintoneで書き換えた"},
+    )
+
+    notion付きdispatcher.dispatch(event)
+
+    assert シート.append_calls == 0
+    assert シート.rows == {}
+
+
+def test_スプレッドシート発では補わない(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion, 行がまだ無いmapping: IdMapping
+) -> None:
+    """送信元は自己除外されるので、そもそもシートへは書かない（無駄な取得もしない）。"""
+    event = SyncEvent(
+        source_tool=Tool.SPREADSHEET,
+        db_key="client_master",
+        external_id="5",
+        occurred_at=NOW,
+        properties={"備考": "シートで書き換えた"},
+    )
+
+    notion付きdispatcher.dispatch(event)
+
+    assert シート.append_calls == 0
+
+
+def test_スキーマが引けなければ行を作らない(
+    store: SQLiteIdMappingStore,
+    シート: _シート,
+    行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """設定漏れ・デプロイ不整合でスキーマが引けないとき「従来どおり書く」に倒すと、
+    今直した不具合（1列だけの行）をそこだけ静かに再発させる（ChatGPTのクロスレビュー指摘）。
+
+    dispatch()の冒頭でも同じ`get_schema`を引くので、**補完のときだけ**引けなくなる状況を作る。
+    """
+    呼ばれた回数 = {"n": 0}
+
+    def たまに引けない(key: str):
+        呼ばれた回数["n"] += 1
+        if 呼ばれた回数["n"] >= 2:
+            raise KeyError(key)
+        return _2プロパティのスキーマ()
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", たまに引けない)
+    notion = _Notion(_Notionの現在値(取引先名="サンライズホテルズ"))
+    dispatcher = Dispatcher(
+        store,
+        {
+            Tool.NOTION: notion,
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+    )
+
+    dispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 0
+    assert シート.rows == {}
+
+
+class _kintoneのFake:
+    """kintone側は書けたことだけ分かればよい。"""
+
+    def __init__(self) -> None:
+        self.writes: list[dict[str, Any]] = []
+
+    def get_record(self, external_id: str, *, db_key: str | None = None):
+        return None
+
+    def upsert_record(self, external_id, properties, *, db_key=None, expected_version=None):
+        self.writes.append(properties)
+        return external_id or "1001"
+
+
+def test_補えなかったときはシートだけ見送り他ツールへは書く(
+    store: SQLiteIdMappingStore, シート: _シート, notion: _Notion,
+    行がまだ無いmapping: IdMapping, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**シートの行作成だけを best-effort に落としている。**
+    Notionが読めないからといってkintoneへの伝播まで止めると、差分しか運ばれない
+    Webhookではその変更が二度と届かない。見送りは`skipped_tools`に出す。"""
+    schema = DatabaseSchema(
+        key="client_master",
+        display_name="取引先マスタ（テスト用）",
+        id_prefix="CLI",
+        kintone_key="取引先マスタ",
+        zoho_key="取引先",
+        zoho_api_module="Accounts",
+        spreadsheet_sheet_name="取引先マスタ",
+        properties=(
+            PropertyDefinition(
+                name="取引先名",
+                property_type=PropertyType.TITLE,
+                requirement=RequirementLevel.REQUIRED,
+                sync_scope=SyncScope.ALL_TOOLS,
+            ),
+            PropertyDefinition(
+                name="備考",
+                property_type=PropertyType.TEXT,
+                requirement=RequirementLevel.OPTIONAL,
+                sync_scope=SyncScope.ALL_TOOLS,
+            ),
+        ),
+    )
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", lambda key: schema)
+    kintone = _kintoneのFake()
+    notion._record = None
+    dispatcher = Dispatcher(
+        store,
+        {
+            Tool.NOTION: notion,
+            Tool.KINTONE: kintone,
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+    )
+
+    result = dispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 0, "欠けた行を作っている"
+    assert kintone.writes == [{"備考": "更新後のメモ"}], "他ツールへの伝播まで止めている"
+    # Zohoはこのテストで接続していないので、そちらも「書けなかった」に入る。見るのはシート。
+    assert (
+        Tool.SPREADSHEET in result.properties[0].skipped_tools
+    ), "見送りが報告に出ていない（Slack通知にも乗らない）"
+    assert Tool.KINTONE in result.properties[0].written_tools
+
+
+def test_行を作ったときは補完した項目も書いたと報告する(
+    notion付きdispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping
+) -> None:
+    """`written_tools`はAPIの応答とログに出る。実際に書いた項目とズレていると、
+    障害調査のときに「書いていないはずの列が入っている」と読み違える。"""
+    result = notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert result.properties[0].written_tools == frozenset({Tool.SPREADSHEET})
+    assert シート.rows[2]["取引先名"] == "サンライズホテルズ"
