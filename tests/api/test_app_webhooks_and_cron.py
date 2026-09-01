@@ -1022,7 +1022,7 @@ def test_cron_project_mirror_reconcile_skips_when_sync_not_enabled_by_default(
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.api.routes.cron.refresh_all_projects", lambda **kwargs: calls.append(kwargs)
+        "src.api.routes.cron.refresh_projects_incrementally", lambda **kwargs: calls.append(kwargs)
     )
 
     response = client.get(
@@ -1041,13 +1041,13 @@ def test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches(
     `wiring.any_db_page_client`（辞書の先頭にたまたま入っていた、どのDBかは不定のクライアント。
     実際に取引先マスターDBのクライアントが入り、`ProjectMirror`10000件全件で主要プロパティが
     欠落する事故につながった）ではなく、`wiring.project_mirror_notion_client`（案件管理DB専用
-    クライアント）を`refresh_all_projects()`へ渡すことを確認する。`any_db_page_client`には
+    クライアント）を`refresh_projects_incrementally()`へ渡すことを確認する。`any_db_page_client`には
     あえて別物のフェイクを設定し、渡されたのが`project_mirror_notion_client`の方であることを
     オブジェクトのアイデンティティで検証する。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setenv("PROJECT_MIRROR_SYNC_ENABLED", "true")
     # run_project_mirror_reconcile()はNotionUserDirectory()を構築するためNOTION_API_KEYが
-    # 必要(実際のAPI呼び出しは発生しない。refresh_all_projects自体を下でモック化するため)。
+    # 必要(実際のAPI呼び出しは発生しない。refresh_projects_incrementally自体を下でモック化するため)。
     monkeypatch.setenv("NOTION_API_KEY", "test-notion-api-key")
     wrong_client = _FakeNotionPageClient({"wrong": "db"})
     project_mirror_client = _FakeNotionPageClient({"案件名": "テスト案件"})
@@ -1060,11 +1060,11 @@ def test_cron_project_mirror_reconcile_runs_refresh_when_secret_matches(
 
     calls: list[dict[str, Any]] = []
 
-    def _fake_refresh_all_projects(*, notion_client: Any, user_directory: Any) -> dict[str, Any]:
+    def _fake_refresh(*, notion_client: Any, user_directory: Any) -> dict[str, Any]:
         calls.append({"notion_client": notion_client, "user_directory": user_directory})
         return {"synced_count": 42}
 
-    monkeypatch.setattr("src.api.routes.cron.refresh_all_projects", _fake_refresh_all_projects)
+    monkeypatch.setattr("src.api.routes.cron.refresh_projects_incrementally", _fake_refresh)
 
     response = client.get(
         "/api/cron/project-mirror-reconcile", headers={"Authorization": "Bearer correct-secret"}

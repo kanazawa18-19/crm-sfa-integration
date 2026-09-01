@@ -112,6 +112,41 @@ def upsert_project(record: dict[str, Any]) -> None:
         conn.commit()
 
 
+def upsert_projects(records: list[dict[str, Any]], *, synced_at: datetime) -> None:
+    """掃除せずにUPSERTだけ行う（分割実行の途中で呼ぶ、2026-09-01）。
+
+    案件管理DBは26,017件あり、1回の実行（Vercelの上限300秒）では取り切れないため、
+    何回かに分けて取り込む。**途中で掃除してはいけない**（まだ見ていないだけの行を
+    消してしまう。ProjectMirrorを全消失させた事故と同じ形）。掃除は一巡し終えたときに
+    `sweep_projects()`で行う。`src/relation_sync/db.py`の`upsert_client_names()`と同じ形。
+
+    `synced_at`には**一巡を始めた時刻**（`SyncCursor.pass_started_at`）を渡すこと。
+    末尾の`sweep_projects(before=...)`が同じ時刻を基準に「今回の一巡で触れなかった行」を
+    消すため、両者がズレると取り込み済みの行まで消える。
+    """
+    if not records:
+        return
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for batch in _chunked(records, _UPSERT_BATCH_SIZE):
+                _upsert_batch(cur, batch, synced_at=synced_at)
+        conn.commit()
+
+
+def sweep_projects(*, before: datetime) -> int:
+    """一巡で触れられなかった行を消す。削除件数を返す（2026-09-01）。
+
+    **一巡し終えたときにだけ呼ぶこと。** 途中で呼ぶと、まだ取り込んでいないだけの行を
+    消してしまう（2026-08-25にProjectMirrorを全消失させた事故と同じ形）。
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute('DELETE FROM "ProjectMirror" WHERE "syncedAt" < %s', (before,))
+            deleted = cur.rowcount
+        conn.commit()
+    return deleted
+
+
 def upsert_projects_and_sweep(records: list[dict[str, Any]]) -> int:
     """案件管理DB全件をミラーへ反映する(バックフィル・夜間reconciliation共通)。
 
@@ -184,11 +219,24 @@ def _upsert_batch(
     )
 
 
-def get_project_count() -> int:
+def get_project_count(*, synced_since: datetime | None = None) -> int:
     """`ProjectMirror`の現在の行数。`refresh_all_projects()`が新規取得件数と比較し、
-    異常な急減(部分取得によるsweep事故)を検知するために使う(2026-08-18)。"""
+    異常な急減(部分取得によるsweep事故)を検知するために使う(2026-08-18)。
+
+    `synced_since`を渡すと`syncedAt >= synced_since`の行数だけを返す(2026-09-01)。
+    分割実行(`refresh_projects_incrementally()`)では1回ぶんの取得件数と全体の件数を
+    比べても意味が無い(1回は2,000件、全体は26,017件)ため、掃除の直前に
+    「**この一巡で触れた行が何件あるか**」を数えて急減を検知するのに使う。
+    これは`sweep_projects(before=...)`が消し**残す**行数そのもの。
+    """
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute('SELECT count(*) AS n FROM "ProjectMirror"')
+        if synced_since is None:
+            cur.execute('SELECT count(*) AS n FROM "ProjectMirror"')
+        else:
+            cur.execute(
+                'SELECT count(*) AS n FROM "ProjectMirror" WHERE "syncedAt" >= %s',
+                (synced_since,),
+            )
         return cur.fetchone()["n"]
 
 

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from typing import Any, Mapping, Protocol
@@ -22,10 +23,14 @@ from src.db_schema.project import PROJECT_SCHEMA
 from src.project_mirror.db import (
     get_project_count,
     release_refresh_lock,
+    sweep_projects,
     try_acquire_refresh_lock,
     upsert_project,
+    upsert_projects,
     upsert_projects_and_sweep,
 )
+from src.sync_engine.clients._notion_paging import query_keyset_slice
+from src.sync_engine.sync_cursor import SyncCursor, clear_cursor, load_cursor, save_cursor
 from src.sync_engine.webhook_handlers._common import parse_iso_datetime
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,10 @@ class ProjectMirrorNotionClient(Protocol):
     def get_raw_page(self, page_id: str) -> Mapping[str, Any]: ...
 
     def query_all_pages(self) -> list[dict[str, Any]]: ...
+
+    #: 分割実行（`refresh_projects_incrementally`）が使う。Database Queryを1回だけ叩き、
+    #: ページングは`src/sync_engine/clients/_notion_paging.py`側が行う。
+    def query_raw(self, body: dict[str, Any]) -> Mapping[str, Any]: ...
 
 
 def _page_to_mirror_row(page: Mapping[str, Any], *, user_directory: Any) -> dict[str, Any]:
@@ -204,6 +213,152 @@ def refresh_all_projects(
 
         deleted_count = upsert_projects_and_sweep(rows)
         return {"synced_count": len(rows), "deleted_count": deleted_count}
+    finally:
+        release_refresh_lock(lock_conn)
+
+
+#: このしおりの名前（`SyncCursor`テーブルのキー）。進み具合はこの行を見れば分かる。
+CURSOR_NAME = "project_mirror"
+
+#: 1回の実行に使ってよい秒数。Vercelの実行上限は300秒なので余裕を持たせる。
+DEFAULT_TIME_BUDGET_SECONDS = 200.0
+
+#: 1周で取る件数。中断の粒度になる（小さいほど時間予算を守りやすい）。
+_ROUND_LIMIT = 2_000
+
+
+def refresh_projects_incrementally(
+    *,
+    notion_client: ProjectMirrorNotionClient,
+    user_directory: Any,
+    time_budget_seconds: float = DEFAULT_TIME_BUDGET_SECONDS,
+) -> dict[str, Any]:
+    """案件管理DBを**何回かに分けて**ミラーへ反映する（2026-09-01）。
+
+    ■ なぜ分けるのか
+
+    `refresh_all_projects()`は全件を取り切ってから書き込む作りで、案件管理DBが
+    **26,017件**（1万件の壁を越えて数え直した実数）ある今は1回の実行では終わらない。
+    Vercelの実行上限は300秒。**「1万件で静かに切れる」を直した結果、今度は
+    「時間切れで何もしない」に化ける。** 取引先名インデックス
+    （`src/relation_sync/sync.py`の`refresh_client_names_incrementally()`）で先に
+    採った形を、こちらにも同じように入れる。
+
+    時間予算で区切って中断し、しおり（`SyncCursor`、キーは`CURSOR_NAME`）に
+    「どこまで取ったか」を残す。次の夜の実行が続きから再開し、何晩かで一巡する。
+    ローカルから本番DBへは書けない（`DATABASE_URL`がVercel側でSensitive）ため、
+    **毎晩のcronが自力で追いつく形にするのが唯一の道**。
+
+    ■ 掃除は一巡し終えたときだけ
+
+    掃除は「今回見なかった行を消す」やり方。途中で呼ぶと**まだ見ていないだけの行を
+    消してしまう**（2026-08-25にProjectMirrorを全消失させた事故と同じ形）。
+    一巡を始めた時刻（`SyncCursor.pass_started_at`）を覚えておき、一巡し終えたときだけ
+    それより古い行を消す。
+
+    ■ `refresh_all_projects()`の2つのガードをどう引き継いだか
+
+    - **中身の完全性**（必須プロパティの充足率、2026-08-26の「行数は正常だが中身が
+      丸ごと欠落」事故への対策）は**1回ぶんの取得ごとに**見る。下回ったら
+      **書き込まず、しおりも進めない**（次回また同じところを取り直す）。
+      安全側に倒す判断で、壊れたデータを書くくらいなら止まって毎晩鳴らす。
+    - **件数の急減**（部分取得の疑い）は、1回ぶん（2,000件）と全体（26,017件）を
+      比べても意味が無いので、**掃除の直前に一巡ぶんの実績で見る。**
+      「この一巡で触れた行数」＝掃除が消し残す行数を数え、全体の半分を下回るなら
+      掃除を中止する。中止したときは**しおりを捨てて、次の夜に先頭からやり直す**
+      （同じ古い基準時刻で判定し続けても状況は変わらないため）。
+    """
+    lock_conn = try_acquire_refresh_lock()
+    if lock_conn is None:
+        logger.warning(
+            "refresh_projects_incrementally: 既に別プロセスが実行中と判断したためスキップします"
+            "（pg_try_advisory_lockの取得に失敗）"
+        )
+        return {"synced_count": 0, "deleted_count": 0, "skipped": "already_running"}
+    try:
+        cursor = load_cursor(CURSOR_NAME)
+
+        def _post(body: dict[str, Any]) -> Mapping[str, Any]:
+            return notion_client.query_raw(body)
+
+        slice_ = query_keyset_slice(
+            _post,
+            watermark=cursor.watermark,
+            round_limit=_ROUND_LIMIT,
+            time_budget_seconds=time_budget_seconds,
+            label=CURSOR_NAME,
+        )
+        rows = [_page_to_mirror_row(page, user_directory=user_directory) for page in slice_.pages]
+
+        # 「行数は正常だが中身(必須プロパティ)が壊れている」事故の検知(2026-08-26)。
+        # 分割実行では1回ぶんの取得に対して掛ける。下回ったら書かず、しおりも進めない。
+        if len(rows) >= _MIN_ROWS_FOR_COMPLETENESS_CHECK:
+            fill_ratios = _required_property_fill_ratios(rows)
+            insufficient = {
+                name: ratio
+                for name, ratio in fill_ratios.items()
+                if ratio < _MIN_REQUIRED_PROPERTY_RATIO
+            }
+            if insufficient:
+                message = (
+                    f"refresh_projects_incrementally: 今回取得した{len(rows)}件のうち必須"
+                    f"プロパティの充足率が閾値({_MIN_REQUIRED_PROPERTY_RATIO:.0%})を"
+                    f"下回るものがあり（{insufficient}）、中身が壊れている疑いがあるため"
+                    "書き込みを中止しました（既存データは変更しておらず、しおりも進めて"
+                    "いないので次回また同じところから取り直します）。"
+                )
+                logger.error(message)
+                _notify_slack_alert(message)
+                _notify_managers_slack_dm(message)
+                return {
+                    "synced_count": 0,
+                    "deleted_count": 0,
+                    "skipped": "insufficient_required_properties",
+                    "required_property_fill_ratios": fill_ratios,
+                }
+
+        upsert_projects(rows, synced_at=cursor.pass_started_at)
+
+        if not slice_.completed:
+            save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
+            logger.info(
+                "refresh_projects_incrementally: 途中まで取り込みました"
+                "（今回%d件。次回このしおりから続けます）",
+                len(rows),
+            )
+            return {"synced_count": len(rows), "deleted_count": 0, "completed": False}
+
+        # ここから先は一巡し終えたときだけ通る。掃除の前に急減を確かめる。
+        total_count = get_project_count()
+        touched_count = get_project_count(synced_since=cursor.pass_started_at)
+        if touched_count == 0 or (
+            total_count >= 20 and touched_count < total_count * _MIN_SYNC_RATIO
+        ):
+            message = (
+                f"refresh_projects_incrementally: 一巡で触れた件数({touched_count}件)が"
+                f"既存ミラー件数({total_count}件)より大幅に少ないため、部分取得の疑いがあり"
+                "掃除を中止しました（既存データは変更していません。しおりを捨てたので"
+                "次回は先頭から取り直します）。"
+            )
+            logger.error(message)
+            _notify_slack_alert(message)
+            _notify_managers_slack_dm(message)
+            clear_cursor(CURSOR_NAME)
+            return {
+                "synced_count": len(rows),
+                "deleted_count": 0,
+                "skipped": "suspected_partial_fetch",
+                "completed": True,
+            }
+
+        deleted_count = sweep_projects(before=cursor.pass_started_at)
+        clear_cursor(CURSOR_NAME)
+        logger.info(
+            "refresh_projects_incrementally: 一巡し終えました（今回%d件 / 掃除%d件）",
+            len(rows),
+            deleted_count,
+        )
+        return {"synced_count": len(rows), "deleted_count": deleted_count, "completed": True}
     finally:
         release_refresh_lock(lock_conn)
 

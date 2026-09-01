@@ -29,7 +29,7 @@ from src.gmail_sync.watch_registration import (
     renew_all_watches,
 )
 from src.incident_detection.notify import run_incident_digest
-from src.project_mirror.sync import refresh_all_projects
+from src.project_mirror.sync import refresh_projects_incrementally
 from src.relation_sync.sync import refresh_client_names_incrementally
 from src.reports.batch import run_report_batch
 from src.sync_engine.webhook_events import purge_old_events
@@ -212,8 +212,8 @@ def run_project_mirror_reconcile(
     reconciliationエントリポイント（2026-08-17）。
 
     Webhook経由のリアルタイム同期（`project_mirror_sync`）だけでは、Webhook購読登録前の
-    既存データ・Webhook配信失敗・ページ削除等を取りこぼしうるため、`refresh_all_projects()`
-    （初回バックフィルと共通の全件反映処理）をフル実行して整合させる。
+    既存データ・Webhook配信失敗・ページ削除等を取りこぼしうるため、案件管理DB全件を
+    走査して整合させる。
 
     `PROJECT_MIRROR_SYNC_ENABLED`（既定false）が未設定の場合は書き込みをスキップする
     （shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-17）。cronの`vercel.json`登録
@@ -225,8 +225,8 @@ def run_project_mirror_reconcile(
     `notion_client`には必ず`wiring.project_mirror_notion_client`（案件管理DB専用クライアント）
     を渡すこと。`wiring.any_db_page_client`（Dispatcherが使うクライアント群のいずれか1つが
     入る、どのDBかは不定の変数）を渡してはならない
-    （`refresh_all_projects()`が内部で呼ぶ`query_all_pages()`はクライアントに固定された
-    database_idの全件を返すdb_key依存の操作であり、2026-08-26に実際に`any_db_page_client`
+    （全件走査が内部で呼ぶ`query_all_pages()`／`query_raw()`はクライアントに固定された
+    database_idに対する操作というdb_key依存の性質があり、2026-08-26に実際に`any_db_page_client`
     （当時の変数名は`notion_page_client`）を渡してしまっていたことで、取引先マスターDBの
     全件を`ProjectMirror`へ誤って書き込む事故が発生した。詳細は
     `docs/project_mirror_activation_note.md`参照）。
@@ -245,7 +245,14 @@ def run_project_mirror_reconcile(
     user_directory = NotionUserDirectory(
         max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
     )
-    return refresh_all_projects(
+    # **分割実行に切り替えた**（2026-09-01）。案件管理DBは26,017件あり、
+    # `refresh_all_projects()`のように全件取り切ってから書く作りでは300秒に収まらない。
+    # 「1万件で静かに切れる」を直した結果、今度は「時間切れで何もしない」になるため、
+    # 時間予算で区切って中断し、次の夜の実行が続きから再開する
+    # （`refresh_projects_incrementally`参照）。何晩かで一巡する。
+    # `refresh_all_projects()`はローカルからの初回バックフィル
+    # （`scripts/backfill_project_mirror.py`）用に残してある（実行時間の上限が無いため）。
+    return refresh_projects_incrementally(
         notion_client=wiring.project_mirror_notion_client, user_directory=user_directory
     )
 
