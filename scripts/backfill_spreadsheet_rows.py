@@ -25,6 +25,7 @@ import argparse
 import dataclasses
 import logging
 import sys
+import time
 
 from typing import Any
 
@@ -46,6 +47,14 @@ logger = logging.getLogger("backfill_spreadsheet_rows")
 #: まとめて追記する件数。Sheetsのappendは複数行を1リクエストで受け付ける。
 #: 大きくしすぎると失敗時のやり直しが重くなるので、ほどほどにする。
 _APPEND_BATCH_SIZE = 200
+
+#: Notionページの一括取得を諦めるまでの回数と、やり直しの前に置く間隔（秒）。
+#: **1回のタイムアウトで丸ごと諦めてはいけない**（2026-09-01に実測）。一括取得が落ちると
+#: 1件ずつ`get_page()`を呼ぶ経路へ落ち、Notionのレート（およそ3リクエスト/秒）に張り付いて
+#: 実測0.5件/秒まで落ちる。取引先マスター34,246件で17時間かかる計算だった。
+#: 一括なら100件/リクエストで済むので、間を置いて取り直したほうが圧倒的に速い。
+_BULK_FETCH_ATTEMPTS = 3
+_BULK_FETCH_RETRY_WAIT_SECONDS = 60
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -134,19 +143,42 @@ def main(argv: list[str] | None = None) -> int:
     # クエリで先に読んでおけば、3781件で38リクエストで済む。
     pages_by_id: dict[str, dict[str, Any]] = {}
     if mappings:
-        try:
-            for raw in notion.query_all_pages():
-                parsed = {}
-                for name, value in (raw.get("properties") or {}).items():
-                    if value.get("type") not in PARSEABLE_NOTION_PROPERTY_TYPES:
-                        continue
-                    parsed[name] = parse_notion_property_value(value)
-                pages_by_id[str(raw.get("id"))] = parsed
-            logger.info("Notionページを一括取得しました: %d件", len(pages_by_id))
-        except Exception:
-            logger.warning(
-                "Notionページの一括取得に失敗しました。1件ずつ取りに行きます", exc_info=True
-            )
+        for attempt in range(1, _BULK_FETCH_ATTEMPTS + 1):
+            # 取りかけを持ち越さない。途中で落ちた回の部分的な結果を使うと、
+            # 取れなかったページだけが1件ずつ取得へ落ちて遅くなる。
+            pages_by_id = {}
+            try:
+                for raw in notion.query_all_pages():
+                    parsed = {}
+                    for name, value in (raw.get("properties") or {}).items():
+                        if value.get("type") not in PARSEABLE_NOTION_PROPERTY_TYPES:
+                            continue
+                        parsed[name] = parse_notion_property_value(value)
+                    pages_by_id[str(raw.get("id"))] = parsed
+                logger.info(
+                    "Notionページを一括取得しました: %d件（%d回目）",
+                    len(pages_by_id),
+                    attempt,
+                )
+                break
+            except Exception:
+                pages_by_id = {}
+                if attempt >= _BULK_FETCH_ATTEMPTS:
+                    logger.warning(
+                        "Notionページの一括取得に%d回失敗しました。1件ずつ取りに行きます"
+                        "（このあと極端に遅くなる。ネットワークを確かめて流し直したほうがよい）",
+                        attempt,
+                        exc_info=True,
+                    )
+                    break
+                logger.warning(
+                    "Notionページの一括取得に失敗しました（%d/%d）。%d秒待って取り直します",
+                    attempt,
+                    _BULK_FETCH_ATTEMPTS,
+                    _BULK_FETCH_RETRY_WAIT_SECONDS,
+                    exc_info=True,
+                )
+                time.sleep(_BULK_FETCH_RETRY_WAIT_SECONDS)
 
     created = existing = skipped = failed = 0
     pending: list[tuple[Any, dict[str, Any]]] = []
