@@ -91,6 +91,16 @@ def main(argv: list[str] | None = None) -> int:
         len(sync_targets),
         "実行" if args.apply else "試算のみ（--applyで実行）",
     )
+    # **件数がキリのいい数字なら疑う**（2026-09-01の教訓）。Notionの Database Query は
+    # 1クエリ1万件で打ち切るのに `has_more: false` を返すため、取りこぼしが「全部取れた」に
+    # 見える。`_query_all()`はキーセット方式に直したが、ちょうど1万件で止まっていたら
+    # まだどこかで壁に当たっている。黙って9割欠けたまま流すより、ここで気づける形にする。
+    if args.limit is None and len(mappings) == 10_000:
+        logger.error(
+            "対象マッピングがちょうど10,000件です。Notionの「1クエリ1万件」の壁に"
+            "当たっている可能性が高い（`src/sync_engine/clients/_notion_paging.py`参照）。"
+            "**この件数で流すと9割が抜けたままになります。** 先に件数を数え直してください"
+        )
 
     if mappings:
         # 同期キー列を1回だけ読み込む。これをしないと1件ごとに列を全読みしてO(n²)になり、
