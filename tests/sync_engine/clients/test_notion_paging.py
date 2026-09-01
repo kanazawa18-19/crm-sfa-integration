@@ -109,3 +109,57 @@ def test_base_filter_is_preserved_across_rounds() -> None:
         return any(c.get("property") == "db_key" for c in conds)
 
     assert all(_has_db_key(f) for f in seen_filters)
+
+
+# --- 時間予算で中断して再開する（2026-09-01） ---------------------------------------------
+#
+# 全件取得は約18分かかる。Vercelの実行上限は300秒なので1回では終わらない。
+# **「1万件で静かに切れる」を直したら、今度は「時間切れで何もしない」になる。**
+
+from src.sync_engine.clients._notion_paging import query_keyset_slice  # noqa: E402
+
+
+def test_round_limit_alone_does_not_stop_the_fetch() -> None:
+    """`round_limit`は中断の指示ではなく、区切りの粒度。予算が無ければ最後まで取る。"""
+    notion = _FakeNotion(total=5_000, per_second=500)
+
+    got = query_keyset_slice(notion, round_limit=1_000, label="test")
+
+    assert got.completed is True
+    assert len(got.pages) == 5_000
+
+
+def test_resuming_from_the_watermark_covers_everything() -> None:
+    """中断と再開を繰り返して、最終的に全件そろうこと。"""
+    notion = _FakeNotion(total=5_000, per_second=500)
+    seen: dict[str, Any] = {}
+    watermark = None
+
+    for _ in range(20):
+        got = query_keyset_slice(
+            notion,
+            watermark=watermark,
+            round_limit=1_000,
+            time_budget_seconds=0,
+            label="test",
+        )
+        for p in got.pages:
+            seen[p["id"]] = p
+        watermark = got.watermark
+        if got.completed:
+            break
+
+    assert len(seen) == 5_000
+
+
+def test_budget_stops_between_rounds_not_mid_page() -> None:
+    """中断は必ず周の区切りで行うこと（ページの途中で止めるとcursorを保存できない）。"""
+    notion = _FakeNotion(total=5_000, per_second=500)
+
+    got = query_keyset_slice(
+        notion, round_limit=1_000, time_budget_seconds=0, label="test"
+    )
+
+    # 予算0でも1周は必ず取り切る（0件で返さない）。
+    assert len(got.pages) == 1_000
+    assert got.completed is False

@@ -30,7 +30,7 @@ from src.gmail_sync.watch_registration import (
 )
 from src.incident_detection.notify import run_incident_digest
 from src.project_mirror.sync import refresh_all_projects
-from src.relation_sync.sync import refresh_all_client_names
+from src.relation_sync.sync import refresh_client_names_incrementally
 from src.reports.batch import run_report_batch
 from src.sync_engine.webhook_events import purge_old_events
 from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
@@ -284,4 +284,10 @@ def run_relation_sync_reconcile(
             "run_relation_sync_reconcile: NOTION_API_KEY等が未設定のため実行できません"
         )
         raise HTTPException(status_code=500, detail="notion sync is not configured")
-    return refresh_all_client_names(notion_client=wiring.client_master_notion_client)
+    # **分割実行に切り替えた**（2026-09-01）。取引先マスターは102,799件あり、
+    # 全件取得だけで約18分かかる。Vercelの実行上限は300秒なので1回では終わらない。
+    # 時間予算で区切って中断し、次の実行が続きから再開する
+    # （`refresh_client_names_incrementally`参照）。何回かの夜で一巡する。
+    return refresh_client_names_incrementally(
+        notion_client=wiring.client_master_notion_client
+    )

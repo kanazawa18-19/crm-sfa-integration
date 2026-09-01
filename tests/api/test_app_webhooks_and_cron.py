@@ -1132,7 +1132,7 @@ def test_cron_relation_sync_reconcile_skips_when_sync_not_enabled_by_default(
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "src.api.routes.cron.refresh_all_client_names", lambda **kwargs: calls.append(kwargs)
+        "src.api.routes.cron.refresh_client_names_incrementally", lambda **kwargs: calls.append(kwargs)
     )
 
     response = client.get(
@@ -1150,7 +1150,7 @@ def test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches(
     """2026-08-26のインシデント再発防止の回帰テスト: `run_relation_sync_reconcile`が
     `wiring.any_db_page_client`（辞書の先頭にたまたま入っていた、どのDBかは不定のクライアント）
     ではなく、`wiring.client_master_notion_client`（取引先マスターDB専用クライアント）を
-    `refresh_all_client_names()`へ渡すことを確認する（`run_project_mirror_reconcile`と同じ
+    `refresh_client_names_incrementally()`へ渡すことを確認する（`run_project_mirror_reconcile`と同じ
     テスト設計）。"""
     monkeypatch.setenv("CRON_SECRET", "correct-secret")
     monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
@@ -1165,11 +1165,11 @@ def test_cron_relation_sync_reconcile_runs_refresh_when_secret_matches(
 
     calls: list[dict[str, Any]] = []
 
-    def _fake_refresh_all_client_names(*, notion_client: Any) -> dict[str, Any]:
+    def _fake_refresh_client_names(*, notion_client: Any) -> dict[str, Any]:
         calls.append({"notion_client": notion_client})
         return {"synced_count": 9914, "deleted_count": 0}
 
-    monkeypatch.setattr("src.api.routes.cron.refresh_all_client_names", _fake_refresh_all_client_names)
+    monkeypatch.setattr("src.api.routes.cron.refresh_client_names_incrementally", _fake_refresh_client_names)
 
     response = client.get(
         "/api/cron/relation-sync-reconcile", headers={"Authorization": "Bearer correct-secret"}

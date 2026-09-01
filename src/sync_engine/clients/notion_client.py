@@ -274,20 +274,24 @@ class HttpNotionClient:
         結果のみを取得できる（呼び出し元がDB全件をクライアント側でフィルタしている箇所を、
         件数が多いDBで軽量化する用途を想定）。省略時は従来通り当DB全件を返す。
         """
-        def _post(request_body: dict[str, Any]) -> dict[str, Any]:
-            response = self._request(
-                "POST", f"/databases/{self._database_id}/query", json_body=request_body
-            )
-            raise_for_error(response, NotionApiError)
-            return response.json()
-
         # **1万件の壁を越える**（2026-09-01）。Notionは1クエリ1万件までしか返さず、
         # しかも has_more=false を返すので「全部取れた」ように見える。
         # 案件管理のPostgresミラーも取引先名インデックスもここを通っており、
         # 静かに欠けていた（`src/sync_engine/clients/_notion_paging.py`参照）。
         return query_all_with_keyset(
-            _post, base_filter=filter, page_size=page_size, label=self._db_key or "notion"
+            self.query_raw, base_filter=filter, page_size=page_size,
+            label=self._db_key or "notion",
         )
+
+    def query_raw(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Database Query をそのまま1回だけ叩く（ページングは呼び出し元が行う）。
+
+        分割実行（`src/sync_engine/clients/_notion_paging.py`）から使う。
+        """
+        response = self._request("POST", f"/databases/{self._database_id}/query", json_body=body)
+        raise_for_error(response, NotionApiError)
+        result: dict[str, Any] = response.json()
+        return result
 
     def query_page(
         self,

@@ -21,11 +21,17 @@ from typing import Any, Mapping, Protocol
 import requests
 
 from src.migration.zoho_client_master import normalize_company_name_strong
+import dataclasses
+
+from src.sync_engine.clients._notion_paging import query_keyset_slice
+from src.sync_engine.sync_cursor import SyncCursor, clear_cursor, load_cursor, save_cursor
 from src.relation_sync.db import (
     get_client_name_count,
     release_refresh_lock,
     try_acquire_refresh_lock,
     upsert_client_name,
+    sweep_client_names,
+    upsert_client_names,
     upsert_client_names_and_sweep,
 )
 from src.sync_engine.clients.notion_client import parse_notion_property_value
@@ -47,6 +53,10 @@ class ClientMasterNotionClient(Protocol):
     def get_raw_page(self, page_id: str) -> Mapping[str, Any]: ...
 
     def query_all_pages(self) -> list[dict[str, Any]]: ...
+
+    def query_raw(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Database Query を1回だけ叩く（分割実行から使う、2026-09-01）。"""
+        ...
 
 
 def _page_to_index_row(page: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -134,6 +144,85 @@ def refresh_all_client_names(
 
         deleted_count = upsert_client_names_and_sweep(rows)
         return {"synced_count": len(rows), "deleted_count": deleted_count}
+    finally:
+        release_refresh_lock(lock_conn)
+
+
+#: このしおりの名前（`SyncCursor`テーブルのキー）。
+CURSOR_NAME = "client_name_index"
+
+#: 1回の実行に使ってよい秒数。Vercelの実行上限は300秒なので余裕を持たせる。
+DEFAULT_TIME_BUDGET_SECONDS = 200.0
+
+#: 1周で取る件数。中断の粒度になる（小さいほど時間予算を守りやすい）。
+_ROUND_LIMIT = 2_000
+
+
+def refresh_client_names_incrementally(
+    *,
+    notion_client: ClientMasterNotionClient,
+    time_budget_seconds: float = DEFAULT_TIME_BUDGET_SECONDS,
+) -> dict[str, Any]:
+    """取引先マスターを**何回かに分けて**インデックスへ反映する（2026-09-01）。
+
+    ■ なぜ分けるのか
+
+    取引先マスターDBは **102,799件** あり、全件取得だけで約18分かかる。
+    Vercelの実行上限は300秒なので、1回では終わらない。
+    **「1万件で静かに切れる」を直したら、今度は「時間切れで何もしない」になる。**
+
+    そこで時間予算で区切って中断し、しおり（`SyncCursor`）に「どこまで取ったか」を
+    残す。次の実行が続きから再開し、何回かで一巡する。
+
+    ■ 掃除は一巡し終えたときだけ
+
+    掃除は「今回見なかった行を消す」やり方。途中で掃除すると**まだ見ていないだけの行を
+    消してしまう**（ProjectMirrorを全消失させた事故と同じ形）。
+    一巡を始めた時刻を覚えておき、一巡し終えたときだけそれより古い行を消す。
+    """
+    lock_conn = try_acquire_refresh_lock()
+    if lock_conn is None:
+        logger.warning(
+            "refresh_client_names_incrementally: 既に別プロセスが実行中と判断したため"
+            "スキップします（pg_try_advisory_lockの取得に失敗）"
+        )
+        return {"synced_count": 0, "deleted_count": 0, "skipped": "already_running"}
+    try:
+        cursor = load_cursor(CURSOR_NAME)
+
+        def _post(body: dict[str, Any]) -> dict[str, Any]:
+            return notion_client.query_raw(body)
+
+        slice_ = query_keyset_slice(
+            _post,
+            watermark=cursor.watermark,
+            round_limit=_ROUND_LIMIT,
+            time_budget_seconds=time_budget_seconds,
+            label=CURSOR_NAME,
+        )
+        rows = [
+            row for row in (_page_to_index_row(page) for page in slice_.pages) if row is not None
+        ]
+        upsert_client_names(rows, synced_at=cursor.pass_started_at)
+
+        if not slice_.completed:
+            save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
+            logger.info(
+                "refresh_client_names_incrementally: 途中まで取り込みました"
+                "（今回%d件。次回このしおりから続けます）",
+                len(rows),
+            )
+            return {"synced_count": len(rows), "deleted_count": 0, "completed": False}
+
+        # 一巡し終えた。ここで初めて掃除する。
+        deleted_count = sweep_client_names(before=cursor.pass_started_at)
+        clear_cursor(CURSOR_NAME)
+        logger.info(
+            "refresh_client_names_incrementally: 一巡し終えました（今回%d件 / 掃除%d件）",
+            len(rows),
+            deleted_count,
+        )
+        return {"synced_count": len(rows), "deleted_count": deleted_count, "completed": True}
     finally:
         release_refresh_lock(lock_conn)
 

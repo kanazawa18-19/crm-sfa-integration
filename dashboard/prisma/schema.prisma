@@ -449,3 +449,18 @@ model WebhookEvent {
 
   @@index([receivedAt])
 }
+
+/// 長時間かかる全件同期の「どこまで進んだか」（2026-09-01）。
+/// Notionの取引先マスターは102,799件あり、全件取得だけで約18分かかる。
+/// Vercelの実行上限は300秒なので、1回では終わらない。時間予算で区切って中断し、
+/// 次の実行が続きから再開するためのしおり。
+/// 書き込みはPython側（src/sync_engine/sync_cursor.py）から行う。
+model SyncCursor {
+  /// 対象の識別子（例: "client_name_index" / "project_mirror"）。
+  name String @id
+  /// 最後に取り込んだページの created_time。ここから先を次回取り直す。
+  watermark String?
+  /// この「一巡」を始めた時刻。一巡し終えたときだけ、これより古い行を掃除する。
+  passStartedAt DateTime
+  updatedAt     DateTime @updatedAt
+}

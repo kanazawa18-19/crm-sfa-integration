@@ -107,6 +107,36 @@ def upsert_client_name(record: dict[str, Any]) -> None:
         conn.commit()
 
 
+def upsert_client_names(records: list[dict[str, Any]], *, synced_at: datetime) -> None:
+    """掃除せずにUPSERTだけ行う（分割実行の途中で呼ぶ、2026-09-01）。
+
+    全件が10万件あり1回の実行では終わらないため、何回かに分けて取り込む。
+    **途中で掃除してはいけない**（まだ見ていないだけの行を消してしまう）。
+    掃除は一巡し終えたときに`sweep_client_names()`で行う。
+    """
+    if not records:
+        return
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for batch in _chunked(records, _UPSERT_BATCH_SIZE):
+                _upsert_batch(cur, batch, synced_at=synced_at)
+        conn.commit()
+
+
+def sweep_client_names(*, before: datetime) -> int:
+    """一巡で触れられなかった行を消す。削除件数を返す（2026-09-01）。
+
+    **一巡し終えたときにだけ呼ぶこと。** 途中で呼ぶと、まだ取り込んでいないだけの行を
+    消してしまう（ProjectMirrorを全消失させた事故と同じ形）。
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute('DELETE FROM "ClientNameIndex" WHERE "syncedAt" < %s', (before,))
+            deleted = cur.rowcount
+        conn.commit()
+    return deleted
+
+
 def upsert_client_names_and_sweep(records: list[dict[str, Any]]) -> int:
     """取引先マスターDB全件をインデックスへ反映する(バックフィル・夜間reconciliation共通)。
 
