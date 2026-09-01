@@ -161,3 +161,199 @@ def test_シートは在るがデータが0件なら失敗として報告する(
     assert result.status == FAILED
     assert "データが1件も無いシート" in result.detail
     assert result.extra["row_counts"] == ヘッダのみ
+
+
+# --- 行の新規作成フラグの実効値 -------------------------------------------------------------
+#
+# Vercelでは`SPREADSHEET_ROW_CREATION_*`がSensitive扱いで**現在値を読み戻せない**。
+# 値が分からないまま上書きすると、旧値のdb_keyを黙って無効化しうる。
+# ここで固定したいのは3点。
+# 1. **実行中のプロセスがどう解釈しているか**を返すこと（本番の判定と同じ経路を通る）。
+# 2. **環境変数に書かれていた値そのものは、形に関わらず1つも返さないこと。**
+#    「db_keyらしい形なら安全」は成立しない（鍵はその条件を素通りする）。
+# 3. **綴り違いを「意図したOFF」と混ぜないこと。** 混ぜると設定ミスを正常として見送る。
+
+
+def test_フラグがOFFなら未設定として返す(monkeypatch: pytest.MonkeyPatch) -> None:
+    """既定OFFは意図した状態なので、異常（failed）にはしない。"""
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "false")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "client_master")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == NOT_CONFIGURED
+    assert result.extra["flag_enabled"] is False
+    assert result.extra["enabled_db_keys"] == []
+
+
+def test_フラグ未設定でも保存されているdb_keyは読める(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**上書き前に旧値を確かめる**のがこの診断の一番の用途。OFFの間も読めないと困る。"""
+    monkeypatch.delenv("SPREADSHEET_ROW_CREATION_ENABLED", raising=False)
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "client_master,product")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == NOT_CONFIGURED
+    assert result.extra["flag_state"] == "unset"
+    assert result.extra["configured_db_keys"] == ["client_master", "product"]
+    # 実際には1件も書けないので、有効なdb_keyは空のまま。
+    assert result.extra["enabled_db_keys"] == []
+
+
+def test_フラグの綴り違いは意図したOFFと分けて失敗にする(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`TURE`は「意図的に無効化」ではなく設定ミス。not_configuredに混ぜると見送ってしまう。"""
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "TURE")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "client_master")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == FAILED
+    assert result.extra["flag_state"] == "invalid"
+    # 本番の挙動は今までどおりOFF側に倒れる（安全側）。
+    assert result.extra["enabled_db_keys"] == []
+
+
+def test_大文字のTRUEや前後の空白は今までどおり有効(monkeypatch: pytest.MonkeyPatch) -> None:
+    """既存の本番挙動を変えていないことの確認。"""
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "  TRUE  ")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", " client_master , product ")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == OK
+    assert result.extra["enabled_db_keys"] == ["client_master", "product"]
+    assert result.extra["per_db"]["chain"] is False
+
+
+def test_フラグだけ立っていてdb_keyが空なら失敗として報告する(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1件も書けない状態は「有効にしたつもり」との食い違いなので通知したい。"""
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == FAILED
+    assert "SPREADSHEET_ROW_CREATION_DB_KEYS" in result.detail
+
+
+def test_ワイルドカードなら全db_keyが有効になる(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "*")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == OK
+    assert result.extra["wildcard"] is True
+    assert all(result.extra["per_db"].values())
+    # 「今後追加されるDBも自動で対象になる」ことは黙っていないで警告に出す。
+    assert any("追加されるDB" in w for w in result.extra["warnings"])
+
+
+@pytest.mark.parametrize(
+    "db_keys",
+    [
+        "client_master,prodcut",
+        "client_master,abcdef0123456789abcdef0123456789",
+        "client_master,secret-key-123456",
+        "*,abcdef0123456789abcdef0123456789",
+        "client_master;貼り間違えた 何かの値",
+    ],
+)
+def test_環境変数に書かれた未知の値は形に関わらず1つも返さない(
+    monkeypatch: pytest.MonkeyPatch, db_keys: str
+) -> None:
+    """**「db_keyらしい形なら安全」は成立しない。** 鍵はその条件を素通りする。
+
+    2026-09-02、ChatGPTがBLOCKERとして指摘し、Geminiも同じ箇所を独立に指摘した。
+    正規表現を厳しくするのではなく、**未知の値を返さないこと自体**を防御線にする。
+    """
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", db_keys)
+
+    result = integrations.probe_spreadsheet_row_creation()
+    見えている全文 = str(result.as_dict())
+
+    assert result.extra["unknown_db_keys_count"] >= 1
+    for 未知の値 in ("prodcut", "abcdef0123456789", "secret", "貼り間違えた"):
+        assert 未知の値 not in 見えている全文
+    # 既知のdb_keyは伏せない（伏せると上書き前の確認ができなくなる）。
+    assert "client_master" in 見えている全文 or result.extra["wildcard"]
+
+
+def test_未知の値があってもstatusは実効性だけで決める(monkeypatch: pytest.MonkeyPatch) -> None:
+    """statusに「設定の綺麗さ」を混ぜない。
+
+    `client_master`は現に書けるのに、綴り違いが1つ混じっただけで`failed`にすると、
+    ダッシュボードが「連携が落ちた」と鳴る。実害の無いものを異常と呼ぶと誤報になり、
+    誤報を鳴らし続けると本物の通知も無視されるようになる。
+    気付く手段は`warnings`に残すので失わない。
+    """
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "client_master,prodcut")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.status == OK
+    assert result.extra["enabled_db_keys"] == ["client_master"]
+    assert result.extra["unknown_db_keys_count"] == 1
+    assert any("当たらない指定" in w for w in result.extra["warnings"])
+    # 警告はdetailにも出す（statusとdetailだけ見る人が気付けるように）。
+    assert "当たらない指定" in result.detail
+
+
+def test_書けると言い切らない(monkeypatch: pytest.MonkeyPatch) -> None:
+    """この診断が見ているのは設定だけ。認証やシートの実在は`spreadsheet`側の仕事。"""
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "client_master")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert result.detail.startswith("設定上、")
+
+
+def test_extraのキーは状況によらず同じ顔ぶれになる(monkeypatch: pytest.MonkeyPatch) -> None:
+    """読む側が毎回キーの有無を確かめずに済むようにする。"""
+    期待 = {
+        "flag_state",
+        "flag_enabled",
+        "configured_db_keys",
+        "unknown_db_keys_count",
+        "wildcard",
+        "per_db",
+        "enabled_db_keys",
+        "warnings",
+    }
+    for 有効, キー一覧 in (("true", "client_master"), ("false", ""), ("TURE", "*,prodcut")):
+        monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", 有効)
+        monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", キー一覧)
+        assert set(integrations.probe_spreadsheet_row_creation().extra) == 期待
+
+
+def test_診断が見ているdb_keyは実際の同期対象と同じ集合(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**`ALL_SCHEMAS`に無いdb_keyが実行時に渡されない**ことを前提にしている。
+
+    その前提が崩れると、「診断では未知のキー、本番のガードでは許可」という
+    一番まずいズレが起きる（2026-09-02、ChatGPT指摘）。本番の配線が
+    `ALL_SCHEMAS`から組まれていることをここで固定する。
+    """
+    from src.db_schema.registry import ALL_SCHEMAS, SCHEMAS_BY_KEY
+
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_ENABLED", "true")
+    monkeypatch.setenv("SPREADSHEET_ROW_CREATION_DB_KEYS", "*")
+
+    result = integrations.probe_spreadsheet_row_creation()
+
+    assert set(result.extra["per_db"]) == set(SCHEMAS_BY_KEY)
+    assert set(result.extra["per_db"]) == {schema.key for schema in ALL_SCHEMAS}
+
+
+def test_本物のPROBESを差し替えずに実行できる() -> None:
+    """PROBESへの結線ミス（登録漏れ・タプルの書き方ミス・import時エラー）を拾う。"""
+    report = run_integration_diagnostics(only=("spreadsheet_row_creation",))
+
+    assert [r["name"] for r in report["results"]] == ["spreadsheet_row_creation"]
+    assert "spreadsheet_row_creation" in {name for name, _ in integrations.PROBES}

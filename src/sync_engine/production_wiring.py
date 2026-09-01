@@ -323,19 +323,63 @@ SPREADSHEET_ROW_CREATION_ENV_VAR = "SPREADSHEET_ROW_CREATION_ENABLED"
 SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR = "SPREADSHEET_ROW_CREATION_DB_KEYS"
 
 
+#: `SPREADSHEET_ROW_CREATION_ENABLED`の解釈結果。
+#: **`false`と「値を解釈できない」を分ける。** どちらも本番では等しくOFFに倒すが、
+#: `TURE`のような綴り違いは「意図してOFFにした」のではなく設定ミスなので、
+#: 診断側では異常として拾いたい（2026-09-02、ChatGPTクロスレビュー指摘）。
+FLAG_UNSET = "unset"
+FLAG_DISABLED = "disabled"
+FLAG_ENABLED = "enabled"
+FLAG_INVALID = "invalid"
+
+
+def spreadsheet_row_creation_flag_state() -> str:
+    """`SPREADSHEET_ROW_CREATION_ENABLED`をどう解釈したかを返す。
+
+    診断（`src.diagnostics.integrations`）からも呼ぶ。**環境変数の読み方を2箇所に
+    書かないため**に切り出している。片方だけ書式を変えると、実際の挙動と診断結果が
+    静かにズレる（2026-09-02、おばさん指摘）。
+    """
+    raw = os.environ.get(SPREADSHEET_ROW_CREATION_ENV_VAR)
+    if raw is None or not raw.strip():
+        return FLAG_UNSET
+    normalized = raw.strip().lower()
+    if normalized == "true":
+        return FLAG_ENABLED
+    if normalized == "false":
+        return FLAG_DISABLED
+    return FLAG_INVALID
+
+
+def spreadsheet_row_creation_flag_enabled() -> bool:
+    """`SPREADSHEET_ROW_CREATION_ENABLED`が立っているか（db_keyは見ない）。
+
+    **`true`以外は全てOFF**。解釈できない値をONに倒さないのは今までどおり。
+    """
+    return spreadsheet_row_creation_flag_state() == FLAG_ENABLED
+
+
+def configured_spreadsheet_row_creation_db_keys() -> set[str]:
+    """`SPREADSHEET_ROW_CREATION_DB_KEYS`に書かれているトークンの集合。
+
+    ワイルドカード`*`もそのまま含む。妥当性の判定はしない（呼び出し側の仕事）。
+    """
+    return {
+        key.strip()
+        for key in os.environ.get(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "").split(",")
+        if key.strip()
+    }
+
+
 def spreadsheet_row_creation_enabled(db_key: str | None = None) -> bool:
     """指定のdb_keyについて行の新規作成が許可されているか。
 
     **2つの環境変数の両方を満たしたときだけ有効。**
     フラグを立てるだけでは何も起きず、対象のdb_keyを明示して初めて書き込む。
     """
-    if os.environ.get(SPREADSHEET_ROW_CREATION_ENV_VAR, "").strip().lower() != "true":
+    if not spreadsheet_row_creation_flag_enabled():
         return False
-    allowed = {
-        key.strip()
-        for key in os.environ.get(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "").split(",")
-        if key.strip()
-    }
+    allowed = configured_spreadsheet_row_creation_db_keys()
     if not allowed:
         return False
     return "*" in allowed or (db_key is not None and db_key in allowed)

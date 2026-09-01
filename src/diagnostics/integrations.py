@@ -275,6 +275,116 @@ def probe_spreadsheet() -> ProbeResult:
     )
 
 
+def probe_spreadsheet_row_creation() -> ProbeResult:
+    """シートへの行の**新規作成**が、どのdb_keyで実際に有効になっているかを返す。
+
+    行作成は`SPREADSHEET_ROW_CREATION_ENABLED`と`SPREADSHEET_ROW_CREATION_DB_KEYS`の
+    **両方**を満たしたときだけ動く。ところがこの2つはVercel上でSensitive扱いのため、
+    画面でもCLIでも**現在値を読み戻せない**（2026-09-02、`vercel env ls`はHidden、
+    `vercel env pull`はプレースホルダ、ログは保持1時間で該当無し）。
+    値が分からないまま上書きすると、旧値に入っていたdb_keyを黙って無効化しかねない。
+
+    そこで**実行中のプロセスが実際にどう解釈しているか**を返す。判定は
+    `production_wiring`の関数を通すので、本番の挙動と枝分かれすることはない。
+
+    **★ 環境変数に書かれていた値そのものは、形に関わらず1つも返さない。**
+    「db_keyらしい形なら安全」は成立しない。`abcdef0123456789abcdef0123456789`のような
+    鍵はその条件を素通りする。返すのは`ALL_SCHEMAS`に実在するキーと、
+    それ以外の**件数だけ**にする（2026-09-02、ChatGPTがBLOCKER・Geminiも同じ箇所を
+    独立に指摘）。診断結果はブラウザ履歴・スクリーンショット・共有と二次露出が続くため、
+    トークン認証で守られていても生値は載せない。
+    """
+    from src.sync_engine.production_wiring import (
+        FLAG_ENABLED,
+        FLAG_INVALID,
+        SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR,
+        SPREADSHEET_ROW_CREATION_ENV_VAR,
+        configured_spreadsheet_row_creation_db_keys,
+        spreadsheet_row_creation_enabled,
+        spreadsheet_row_creation_flag_state,
+    )
+
+    flag_state = spreadsheet_row_creation_flag_state()
+    known_keys = tuple(schema.key for schema in ALL_SCHEMAS)
+    per_db = {key: spreadsheet_row_creation_enabled(key) for key in known_keys}
+    enabled = sorted(key for key, allowed in per_db.items() if allowed)
+
+    configured = configured_spreadsheet_row_creation_db_keys()
+    wildcard = "*" in configured
+    # **`ALL_SCHEMAS`に実在するキーだけを返す。** これならフラグがOFFの間でも
+    # 「DB_KEYSに何が保存されているか」が読める。上書き前に旧値を確かめたい、という
+    # この診断の一番の用途がフラグOFFでも成り立つ（2026-09-02、ChatGPT指摘）。
+    configured_known = sorted(configured & set(known_keys))
+    unknown_count = len(configured - set(known_keys) - {"*"})
+
+    warnings: list[str] = []
+    if unknown_count:
+        warnings.append(
+            f"{SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR}に、"
+            f"どのDBにも当たらない指定が{unknown_count}件ある（値は伏せた）"
+        )
+    if wildcard:
+        warnings.append("`*`指定のため、今後追加されるDBも自動で対象になる")
+
+    # **キーは常に同じ顔ぶれにする。**「該当があるときだけ生える」形だと、
+    # 読む側が毎回キーの有無を確かめることになる（2026-09-02、おばさん指摘）。
+    extra: dict[str, Any] = {
+        "flag_state": flag_state,
+        "flag_enabled": flag_state == FLAG_ENABLED,
+        "configured_db_keys": configured_known,
+        "unknown_db_keys_count": unknown_count,
+        "wildcard": wildcard,
+        "per_db": per_db,
+        "enabled_db_keys": enabled,
+        "warnings": warnings,
+    }
+
+    def _detail(*parts: str) -> str:
+        return " / ".join([p for p in parts if p] + warnings)
+
+    if flag_state == FLAG_INVALID:
+        # `TURE`のような綴り違い。**本番はOFFに倒れるが、意図したOFFではない。**
+        # 「意図的な無効化」と同じ`not_configured`に混ぜると、有効にしたつもりの
+        # 設定ミスを正常として見送ってしまう。
+        return ProbeResult(
+            "spreadsheet_row_creation",
+            FAILED,
+            detail=_detail(f"{SPREADSHEET_ROW_CREATION_ENV_VAR}の値を解釈できない（OFF扱い）"),
+            extra=extra,
+        )
+
+    if flag_state != FLAG_ENABLED:
+        # 既定OFF。意図的に無効化されている状態なので異常ではない。
+        return ProbeResult(
+            "spreadsheet_row_creation",
+            NOT_CONFIGURED,
+            detail=_detail(f"{SPREADSHEET_ROW_CREATION_ENV_VAR}がOFFのため行の新規作成は無効"),
+            extra=extra,
+        )
+
+    if not enabled:
+        return ProbeResult(
+            "spreadsheet_row_creation",
+            FAILED,
+            detail=_detail(
+                f"{SPREADSHEET_ROW_CREATION_ENV_VAR}は有効だが、"
+                f"{SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR}の指定が空か、全て無効な値"
+            ),
+            extra=extra,
+        )
+
+    # **「設定上、許可されている」までしか言わない。** 実際に書けるかは認証・シートの実在・
+    # 列の対応など別の条件も要る（それらは`spreadsheet`の診断が見る）。
+    # 「有効」と言い切ると、書けているところまで確かめたように読める
+    #（2026-09-02、ChatGPT指摘）。
+    return ProbeResult(
+        "spreadsheet_row_creation",
+        OK,
+        detail=_detail("設定上、行の新規作成を許可: " + ", ".join(enabled)),
+        extra=extra,
+    )
+
+
 def probe_slack() -> ProbeResult:
     """Slackの`auth.test`でBotトークンの有効性を確かめる（読み取りのみ）。"""
     token = os.environ.get("SLACK_BOT_TOKEN")
@@ -421,6 +531,7 @@ PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
     ("zoho", probe_zoho),
     ("google_auth", probe_google_credentials),
     ("spreadsheet", probe_spreadsheet),
+    ("spreadsheet_row_creation", probe_spreadsheet_row_creation),
     ("slack", probe_slack),
     ("web_engagement_tool", probe_web_engagement_tool),
     ("webhook_receipts", probe_webhook_receipts),
