@@ -87,6 +87,10 @@ def load_cursor(name: str) -> SyncCursor:
     started = row["passStartedAt"]
     if started.tzinfo is None:
         started = started.replace(tzinfo=timezone.utc)
+    # DBから読んだ値も念のためミリ秒境界へ揃える（2026-09-01、Geminiレビュー指摘）。
+    # `passStartedAt`は`TIMESTAMP(3)`なので現状は既に揃っているが、
+    # **列の精度が変わった瞬間に事故Bが静かに戻ってくる**ので、依存しない形にしておく。
+    started = started.replace(microsecond=(started.microsecond // 1000) * 1000)
     return SyncCursor(name=name, watermark=row["watermark"], pass_started_at=started)
 
 

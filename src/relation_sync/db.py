@@ -226,7 +226,7 @@ def get_client_name_count(*, synced_since: datetime | None = None) -> int:
     異常な急減(部分取得によるsweep事故)を検知するために使う(project_mirror/sync.pyの
     get_project_count()と同じ用途)。
 
-    `synced_since`を渡すと`syncedAt >= synced_since`の行数だけを返す(2026-09-01)。
+    `synced_since`を渡すと`syncedAt = synced_since`の行数だけを返す(2026-09-01)。
     分割実行(`refresh_client_names_incrementally()`)では1回ぶんの取得件数と全体の件数を
     比べても意味が無い(1回は2,000件、全体は102,799件)ため、掃除の直前に
     「**この一巡で触れた行が何件あるか**」を数えて急減を検知するのに使う。
@@ -236,8 +236,14 @@ def get_client_name_count(*, synced_since: datetime | None = None) -> int:
         if synced_since is None:
             cur.execute('SELECT count(*) AS n FROM "ClientNameIndex"')
         else:
+            # **等号で数える**（2026-09-01、ChatGPTのレビュー指摘）。
+            # `>=`にすると、一巡の最中にWebhookが`syncedAt = now()`で更新した行まで
+            # 「この一巡で触れた」と数えてしまい、**部分取得の検知が鈍る**
+            # （取れていないのに件数が足りているように見える）。
+            # 一巡の書き込みは必ず`pass_started_at`ちょうど（ミリ秒境界の不動点）なので、
+            # 等号なら「この一巡が実際に触れた行」だけを正確に数えられる。
             cur.execute(
-                'SELECT count(*) AS n FROM "ClientNameIndex" WHERE "syncedAt" >= %s',
+                'SELECT count(*) AS n FROM "ClientNameIndex" WHERE "syncedAt" = %s',
                 (synced_since,),
             )
         return cur.fetchone()["n"]

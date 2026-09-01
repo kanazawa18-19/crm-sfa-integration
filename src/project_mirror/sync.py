@@ -235,10 +235,15 @@ def refresh_all_projects(
 #: このしおりの名前（`SyncCursor`テーブルのキー）。進み具合はこの行を見れば分かる。
 CURSOR_NAME = "project_mirror"
 
-#: 1回の実行に使ってよい秒数。Vercelの実行上限は300秒なので余裕を持たせる。
+#: **取得に**使ってよい秒数。Vercelの実行上限は300秒。
+#: この予算は`query_keyset_slice()`の取得だけに掛かり、そのあとの行の変換・UPSERT・
+#: 件数の数え直し・しおりの保存は予算の外側で走る（2026-09-01、ChatGPTのレビュー指摘）。
+#: 300秒で強制終了されるとしおりを保存できず、**翌晩も同じ区間をやり直して一巡が進まない**
+#: （書き込み自体は冪等なのでデータは壊れないが、永久に終わらなくなる）。
+#: 残りを書き込み側の余裕として空けておく。
 #: **`src/relation_sync/sync.py`にも同名の定数がある。片方だけ変えないこと**
 #: （Vercelの上限が変わった／1周の粒度を見直す、はどちらも両方に効く話）。
-DEFAULT_TIME_BUDGET_SECONDS = 200.0
+DEFAULT_TIME_BUDGET_SECONDS = 170.0
 
 #: 1周で取る件数。中断の粒度になる（小さいほど時間予算を守りやすい）。
 _ROUND_LIMIT = 2_000
@@ -327,14 +332,54 @@ def refresh_projects_incrementally(
         )
         rows = [_page_to_mirror_row(page, user_directory=user_directory) for page in slice_.pages]
 
+        # **取りこぼしたまま掃除へ進ませない**（2026-09-01、Geminiレビュー指摘）。
+        # 同じ作成日時が1周の上限ぶん並ぶと、キーセット方式は前へ進めなくなる。
+        # 以前はそこで completed=True を返しており、呼び出し元は「取り切った」と誤認して
+        # 掃除に進み、**まだ見ていない後半の行が全部消える**経路になっていた。
+        # 取得済みが全体の半分を超えていれば件数の急減チェックもすり抜ける。
+        # 自力では回復しない（round_limitを上げるか、データ側の重なりを解消するしかない）ので、
+        # 取れた分だけ反映して、しおりはそのまま残し、人へ届ける。
+        if slice_.stalled:
+            upsert_projects(rows, synced_at=cursor.pass_started_at)
+            save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
+            message = (
+                f"refresh_projects_incrementally: 同じ作成日時が1周の上限({_ROUND_LIMIT}件)ぶん並んでおり"
+                f"これ以上進めません（created_time={slice_.watermark}）。**取りこぼしています。**"
+                "掃除は行っていません（既存データは消していません）。"
+                "_ROUND_LIMITを上げるか、作成日時の重なりを解消してください。"
+                "直るまで一巡は完了しません。"
+            )
+            logger.error(message)
+            _notify_slack_alert(message, source="refresh_projects_incrementally")
+            _notify_managers_slack_dm(message, source="refresh_projects_incrementally")
+            return {
+                "synced_count": len(rows),
+                "deleted_count": 0,
+                "completed": False,
+                "skipped": "keyset_stalled",
+            }
+
+
         # 「行数は正常だが中身(必須プロパティ)が壊れている」事故の検知(2026-08-26)。
         # 分割実行では1回ぶんの取得に対して掛ける。下回ったら書かず、しおりも進めない。
-        if len(rows) >= _MIN_ROWS_FOR_COMPLETENESS_CHECK:
+        # 「行数は正常だが中身(必須プロパティ)が壊れている」事故の検知(2026-08-26)。
+        # **小さいスライスも素通りさせない**（2026-09-01、Gemini・ChatGPTが独立に指摘）。
+        # 分割実行では一巡の最後に20件未満のスライスが正常に出るため、
+        # 件数の下限だけで判定すると、そこが検査なしの穴になる。
+        # ただし数件しかない標本に9割の閾値を掛けると、たまたま1件空欄なだけで
+        # 止まってしまう（しおりを進めないので一巡が永久に終わらない）。
+        # そこで**小さいスライスでは「全件が欠落」のときだけ**止める。
+        if rows:
             fill_ratios = _required_property_fill_ratios(rows)
+            threshold = (
+                _MIN_REQUIRED_PROPERTY_RATIO
+                if len(rows) >= _MIN_ROWS_FOR_COMPLETENESS_CHECK
+                else 0.0  # 0.0を下回る比率は無いので、実質「全件欠落」だけが該当する
+            )
             insufficient = {
                 name: ratio
                 for name, ratio in fill_ratios.items()
-                if ratio < _MIN_REQUIRED_PROPERTY_RATIO
+                if ratio < threshold or (threshold == 0.0 and ratio == 0.0)
             }
             if insufficient:
                 message = (
@@ -371,14 +416,24 @@ def refresh_projects_incrementally(
         # ここから先は一巡し終えたときだけ通る。掃除の前に急減を確かめる。
         total_count = get_project_count()
         touched_count = get_project_count(synced_since=cursor.pass_started_at)
-        if touched_count == 0 or (
-            total_count >= 20 and touched_count < total_count * _MIN_SYNC_RATIO
+        # **本当に大量削除されたときに、掃除が永久に発火しなくなるのを避ける**
+        # （2026-09-01、Geminiレビュー指摘）。Notion側で正当に半分以上が消されると、
+        # このチェックが毎回成立して掃除が飛ばされ、消えたはずの行が残るので
+        # `total_count`は大きいまま。翌晩も翌々晩も同じ判定になり、**二度と掃除されない。**
+        # 部分取得と正当な大量削除は件数だけでは見分けられないので、
+        # 運用者が1回だけ許可できる逃げ道を用意する（承認したら環境変数を戻すこと）。
+        allow_shrink = os.environ.get("PROJECT_MIRROR_ALLOW_SHRINK", "").strip().lower() == "true"
+        if not allow_shrink and (
+            touched_count == 0
+            or (total_count >= 20 and touched_count < total_count * _MIN_SYNC_RATIO)
         ):
             message = (
                 f"refresh_projects_incrementally: 一巡で触れた件数({touched_count}件)が"
                 f"既存ミラー件数({total_count}件)より大幅に少ないため、部分取得の疑いがあり"
                 "掃除を中止しました（既存データは変更していません。しおりを捨てたので"
-                "次回は先頭から取り直します）。"
+                "次回は先頭から取り直します）。**Notion側で正当に大量削除した結果であれば、"
+                f"環境変数 PROJECT_MIRROR_ALLOW_SHRINK=true を設定して1回だけ掃除を通し、"
+                "その後は必ず設定を戻してください。**"
             )
             logger.error(message)
             _notify_slack_alert(message, source="refresh_projects_incrementally")

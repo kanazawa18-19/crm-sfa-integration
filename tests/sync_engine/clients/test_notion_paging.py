@@ -12,7 +12,11 @@ from typing import Any
 
 import pytest
 
-from src.sync_engine.clients._notion_paging import query_all_with_keyset
+from src.sync_engine.clients._notion_paging import (
+    KeysetStalledError,
+    query_all_with_keyset,
+    query_keyset_slice,
+)
 
 
 def _page(index: int, created: str) -> dict[str, Any]:
@@ -81,14 +85,40 @@ def test_boundary_records_are_not_duplicated() -> None:
 
 
 def test_stops_loudly_when_it_cannot_advance(caplog: pytest.LogCaptureFixture) -> None:
-    """同じ作成日時が上限ぶん並ぶと前へ進めない。**黙って欠けさせない。**"""
+    """同じ作成日時が上限ぶん並ぶと前へ進めない。**黙って欠けさせない。**
+
+    2026-09-01に「ログを出すだけ」から「例外を送出する」へ変えた（Geminiレビュー指摘）。
+    部分的な結果を「全件」として返すと、呼び出し元がそのまま掃除（mark-and-sweep）に
+    進み、まだ見ていない行が全部消える。9割欠けたリストを「全件」として下流へ流すのは、
+    そもそも今回直した問題そのもの。
+    """
     notion = _FakeNotion(total=15_000, per_second=15_000)  # 全部同じ秒
 
     with caplog.at_level("ERROR"):
-        pages = query_all_with_keyset(notion, label="test")
+        with pytest.raises(KeysetStalledError):
+            query_all_with_keyset(notion, label="test")
 
-    assert len(pages) == 10_000
     assert any("取りこぼしています" in r.getMessage() for r in caplog.records)
+
+
+def test_a_stalled_slice_is_never_reported_as_completed() -> None:
+    """**停滞は completed=True にしない。** ここを間違えると掃除に進んで行が消える。"""
+    notion = _FakeNotion(total=15_000, per_second=15_000)
+
+    slice_ = query_keyset_slice(notion, round_limit=10_000, label="test")
+
+    assert slice_.stalled is True
+    assert slice_.completed is False, "取りこぼしているのに「取り切った」と伝えている"
+
+
+def test_a_normal_finish_is_not_marked_stalled() -> None:
+    notion = _FakeNotion(total=1_500)
+
+    slice_ = query_keyset_slice(notion, label="test")
+
+    assert slice_.completed is True
+    assert slice_.stalled is False
+    assert len(slice_.pages) == 1_500
 
 
 def test_base_filter_is_preserved_across_rounds() -> None:
@@ -116,7 +146,6 @@ def test_base_filter_is_preserved_across_rounds() -> None:
 # 全件取得は約18分かかる。Vercelの実行上限は300秒なので1回では終わらない。
 # **「1万件で静かに切れる」を直したら、今度は「時間切れで何もしない」になる。**
 
-from src.sync_engine.clients._notion_paging import query_keyset_slice  # noqa: E402
 
 
 def test_round_limit_alone_does_not_stop_the_fetch() -> None:
@@ -163,3 +192,59 @@ def test_budget_stops_between_rounds_not_mid_page() -> None:
     # 予算0でも1周は必ず取り切る（0件で返さない）。
     assert len(got.pages) == 1_000
     assert got.completed is False
+
+
+# --- Notion が明示する「打ち切った」シグナル（2026-09-01、ChatGPTのレビュー指摘） -----------
+
+
+def _resp(results, has_more, *, truncated=False):
+    body = {"results": results, "has_more": has_more, "next_cursor": None}
+    if truncated:
+        body["request_status"] = {
+            "type": "incomplete",
+            "incomplete_reason": "query_result_limit_reached",
+        }
+    return body
+
+
+def test_has_more_false_is_not_trusted_when_notion_says_incomplete() -> None:
+    """**has_more:false を額面どおり受け取らない。**
+
+    Notionは1万件で打ち切るとき `has_more: false` と一緒に
+    `request_status.type = "incomplete"` を返す。本番で実測済み（2026-09-01）。
+    has_more だけを見ていたせいで9割欠けていたのが、そもそもの発端。
+    """
+    calls: list[dict[str, Any]] = []
+    pages = [
+        {"id": f"p{i}", "created_time": f"2026-09-01T00:{i // 60:02d}:{i % 60:02d}.000Z"}
+        for i in range(120)
+    ]
+
+    def _post(body: dict[str, Any]) -> dict[str, Any]:
+        calls.append(body)
+        after = ((body.get("filter") or {}).get("created_time") or {}).get("on_or_after")
+        rest = [p for p in pages if not after or p["created_time"] >= after]
+        if len(calls) == 1:
+            # 60件返して「もう無い」と言いつつ、打ち切ったことも明示している。
+            return _resp(rest[:60], False, truncated=True)
+        return _resp(rest, False)
+
+    result = query_keyset_slice(_post, round_limit=60, label="test")
+
+    assert result.completed is True
+    assert len(calls) > 1, "打ち切りを申告されたのに続きを取りに行っていない"
+    assert len(result.pages) == 120, "後半を取りこぼしている"
+
+
+def test_a_genuinely_complete_response_stops_after_one_round() -> None:
+    """打ち切りの申告が無ければ、余計な追加クエリは投げない。"""
+    calls: list[dict[str, Any]] = []
+
+    def _post(body: dict[str, Any]) -> dict[str, Any]:
+        calls.append(body)
+        return _resp([{"id": "p1", "created_time": "2026-09-01T00:00:00.000Z"}], False)
+
+    result = query_keyset_slice(_post, label="test")
+
+    assert result.completed is True
+    assert len(calls) == 1

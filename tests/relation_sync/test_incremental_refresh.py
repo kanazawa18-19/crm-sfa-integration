@@ -22,7 +22,7 @@ class _FakeNotion:
 
     CAP = 10_000
 
-    def __init__(self, total: int) -> None:
+    def __init__(self, total: int, *, same_created_time: bool = False) -> None:
         self.pages = [
             {
                 "id": f"page-{i}",
@@ -33,6 +33,10 @@ class _FakeNotion:
             }
             for i in range(total)
         ]
+        if same_created_time:
+            # 一括移行でタイムスタンプが固まっている状態。キーセット方式が前へ進めない。
+            for p in self.pages:
+                p["created_time"] = "2026-09-01T00:00:00.000Z"
 
     def query_raw(self, body: dict[str, Any]) -> dict[str, Any]:
         rows = self.pages
@@ -211,3 +215,71 @@ def test_sweep_is_aborted_when_the_pass_touched_nothing(store) -> None:
 
     assert result["skipped"] == "suspected_partial_fetch"
     assert store["swept"] is None
+
+# --- 他モデルレビュー（Gemini）で出た経路 -------------------------------------------------
+
+
+def test_a_stalled_keyset_never_reaches_the_sweep(store) -> None:
+    """**取りこぼしたまま掃除に進ませない。**
+
+    同じ作成日時が1周の上限ぶん並ぶとキーセット方式は前へ進めない。以前はそこで
+    completed=True を返しており、呼び出し元が「取り切った」と誤認して掃除に進み、
+    **まだ見ていない後半の行が全部消える**経路になっていた（2026-09-01、Gemini指摘）。
+    """
+    notion = _FakeNotion(total=15_000, same_created_time=True)
+
+    result = sync_module.refresh_client_names_incrementally(notion_client=notion)
+
+    assert result["skipped"] == "keyset_stalled"
+    assert result["completed"] is False
+    assert store["swept"] is None, "取りこぼしているのに掃除している"
+    assert store["cursor"] is not None, "しおりを残して人が直せるようにすること"
+    assert store["dms"], "自力では回復しないので人へ届けること"
+    assert store["upserted"], "取れた分は反映してよい"
+
+
+def test_a_legitimate_bulk_delete_can_be_approved_once(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**正当な大量削除で掃除が永久に止まるのを、運用者が1回だけ解除できる。**
+
+    件数だけでは部分取得と正当な削除を見分けられない。解除しないと、消えたはずの行が
+    残り続けて総数が大きいままになり、**二度と掃除されない**（2026-09-01、Gemini指摘）。
+    """
+    notion = _FakeNotion(total=100)
+    store["total_count"] = 102_000
+    store["touched_count"] = 100
+
+    assert sync_module.refresh_client_names_incrementally(notion_client=notion)["skipped"] == "suspected_partial_fetch"
+    assert store["swept"] is None
+
+    monkeypatch.setenv("RELATION_SYNC_ALLOW_SHRINK", "true")
+    store["total_count"] = 102_000
+    store["touched_count"] = 100
+
+    result = sync_module.refresh_client_names_incrementally(notion_client=notion)
+
+    assert "skipped" not in result, "承認したのに掃除を止めている"
+    assert store["swept"] == NOW
+
+
+def test_webhook_updates_do_not_count_as_touched_by_this_pass(store) -> None:
+    """**一巡が触れた行だけを数える**（2026-09-01、ChatGPTのレビュー指摘）。
+
+    一巡の最中にWebhookが `syncedAt = now()` で1件更新すると、`>=` で数えていた頃は
+    それも「この一巡で触れた」に混ざり、**部分取得の検知が鈍っていた**
+    （取れていないのに件数が足りているように見える）。
+    一巡の書き込みは必ず `pass_started_at` ちょうどなので、等号なら正確に分けられる。
+
+    ここではDB側の実装（`WHERE "syncedAt" = %s`）が等号であることを、
+    フィクスチャではなく本物のSQL文で確かめる。
+    """
+    import inspect
+    from src.relation_sync import db as db_module
+
+    src = inspect.getsource(db_module.get_client_name_count)
+    assert '"syncedAt" = %s' in src, (
+        "touched_count が等号で数えられていない。>= だとWebhookの更新が混ざって"
+        "部分取得を見逃す"
+    )
+    assert '"syncedAt" >= %s' not in src
