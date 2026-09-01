@@ -131,10 +131,16 @@ def _wait_for_network() -> bool:
     return False
 
 
-def _run_one(db_key: str, *, apply: bool, env: dict[str, str]) -> tuple[int, int]:
+def _run_one(
+    db_key: str, *, apply: bool, env: dict[str, str], skip_id_mapping: bool = False
+) -> tuple[int, int]:
     """1DBを最大`_MAX_ATTEMPTS`回まで流す。`(最後のrc, 試行回数)`を返す。"""
     env = dict(env)
     env["SPREADSHEET_ROW_CREATION_DB_KEYS"] = db_key
+    # **サブプロセスの出力をためこませない**（2026-09-01）。親に`-u`を付けても子には効かない。
+    # ログがブロックバッファに溜まると、進捗が何分も出ずに「止まったのか進んでいるのか」が
+    # 判断できなくなる。実際、これで実行中の状態を読み違えかけた。
+    env["PYTHONUNBUFFERED"] = "1"
     command = [
         os.path.join(REPO, ".venv", "bin", "python"),
         os.path.join("scripts", "backfill_spreadsheet_rows.py"),
@@ -143,6 +149,8 @@ def _run_one(db_key: str, *, apply: bool, env: dict[str, str]) -> tuple[int, int
     ]
     if apply:
         command.append("--apply")
+    if skip_id_mapping:
+        command.append("--skip-id-mapping")
 
     rc = 1
     attempt = 0
@@ -182,6 +190,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="caffeinate を掛け直さない（既に掛かっている場合や、Mac以外で動かす場合）",
     )
+    parser.add_argument(
+        "--skip-id-mapping",
+        action="store_true",
+        help=(
+            "IdMappingへの行番号記録を省く（大量バックフィル向け。"
+            "backfill_spreadsheet_rows.py の docstring を読むこと）"
+        ),
+    )
     args = parser.parse_args(argv)
 
     unknown = [k for k in args.db_keys if k not in DEFAULT_DB_KEYS]
@@ -203,7 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     env = _load_env()
     results: list[tuple[str, int, int]] = []
     for db_key in args.db_keys:
-        rc, attempts = _run_one(db_key, apply=args.apply, env=env)
+        rc, attempts = _run_one(
+            db_key, apply=args.apply, env=env, skip_id_mapping=args.skip_id_mapping
+        )
         results.append((db_key, rc, attempts))
         if rc != 0:
             print(f"{db_key} は{attempts}回とも失敗が残った。次のDBへ進む", flush=True)

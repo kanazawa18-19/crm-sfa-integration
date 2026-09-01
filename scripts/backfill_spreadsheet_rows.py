@@ -11,6 +11,24 @@
 冪等。既にシートに同期キーがある行は作り直さず、行番号だけ`IdMapping`へ入れ直す。
 途中で止めても、もう一度流せば続きから埋まる。
 
+**`--skip-id-mapping` を付けると`IdMapping`への行番号記録を省く**（2026-09-01に追加）。
+`SYNC_ID_MAPPING_BACKEND=notion`のとき、`upsert()`は1件につき
+
+    ① 重複外部IDの事前チェック（find_by_external_id）   1〜3リクエスト
+    ② 既存ページの検索（_query_first）                  1リクエスト
+    ③ POST /pages か PATCH /pages/{id}                 1リクエスト
+
+と**3〜5往復**する。往復1秒として1件3.75秒（実測）。3万件で21.9時間になり、
+バックフィルの所要時間はここで決まっていた（取得側ではない）。
+
+**省いても本番同期は壊れない。** `dispatcher.py`の行解決は
+「1. まずシートに書かれた同期キーで引く。これが正」であり、行番号（`spreadsheet_row`）は
+**キーが空の古い行のためのフォールバック**にすぎない。このスクリプトは`with_sync_key()`で
+必ず同期キーを書き込むので、作った行は常に経路1で見つかる。再実行時の冪等性も
+シートの同期キー列（`prime_sync_key_rows`）から引くため、`IdMapping`には依存しない。
+
+大量バックフィル以外では付けないこと。Webhook経由の通常同期は行番号を記録した方がよい。
+
     # まず試算（書き込まない）
     python scripts/backfill_spreadsheet_rows.py --db-key product
     # 少数で実際に試す
@@ -63,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="処理する件数の上限")
     parser.add_argument(
         "--apply", action="store_true", help="実際に書き込む（付けなければ試算のみ）"
+    )
+    parser.add_argument(
+        "--skip-id-mapping",
+        action="store_true",
+        help="IdMappingへの行番号記録を省く（大量バックフィル向け。下の注記を読むこと）",
     )
     args = parser.parse_args(argv)
 
@@ -207,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
             target._client.remember_sync_key_row(
                 schema.spreadsheet_sheet_name, m.notion_key, row
             )
+            if args.skip_id_mapping:
+                created += 1
+                continue
             try:
                 store.upsert(dataclasses.replace(m, spreadsheet_row=row))
                 created += 1
@@ -219,7 +245,11 @@ def main(argv: list[str] | None = None) -> int:
             row = target.find_row_by_sync_key(mapping.notion_key)
             if row is not None:
                 existing += 1
-                if args.apply and mapping.spreadsheet_row != row:
+                if (
+                    args.apply
+                    and not args.skip_id_mapping
+                    and mapping.spreadsheet_row != row
+                ):
                     store.upsert(dataclasses.replace(mapping, spreadsheet_row=row))
                 continue
 
