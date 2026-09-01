@@ -184,3 +184,38 @@ def test_limit_caps_the_number_of_records(wired) -> None:
     script.main(["--db-key", "product", "--apply", "--limit", "2"])
 
     assert [row["同期キー"] for row in client.appended[0]] == ["page-0", "page-1"]
+
+
+def test_duplicate_mappings_do_not_create_duplicate_rows(monkeypatch) -> None:
+    """同じNotionページを指すマッピングが2つあっても、行は1つしか作らない。
+
+    **実際に取引先マスターで8組の重複行ができた**（2026-09-02に実測）。
+    `remember_sync_key_row()` は `_flush()` の中でしか呼ばれないので、
+    同一バッチ内の2件目は「まだシートに無い」と判定されて2行目を作ってしまう。
+    重複行が必ず隣り合っていた（24/25, 26/27, …）ことが裏づけになっている。
+    """
+    client = _FakeSheetsClient()
+    target = _FakeTarget(client)
+    notion = _FakeNotion({"page-0": {"名前": "商品0"}, "page-1": {"名前": "商品1"}})
+    # 同じ notion_key が2つ入っている状態（IdMapping側の重複）
+    store = _FakeStore([_mapping("page-0"), _mapping("page-0"), _mapping("page-1")])
+    monkeypatch.setattr(script, "build_spreadsheet_targets_by_db", lambda: {"product": target})
+    monkeypatch.setattr(script, "build_notion_clients_by_db", lambda: {"product": notion})
+    monkeypatch.setattr(script, "build_id_mapping_store", lambda: store)
+
+    assert script.main(["--db-key", "product", "--apply"]) == 0
+
+    assert [row["同期キー"] for row in client.appended[0]] == ["page-0", "page-1"]
+    assert client.remembered == [("page-0", 2), ("page-1", 3)]
+
+
+def test_dedupe_keeps_the_first_mapping_and_original_order() -> None:
+    """畳むときは**最初のものを残す**。順序も変えない（再実行で並びがぶれないため）。"""
+    first = dataclasses.replace(_mapping("page-0"), spreadsheet_row=5)
+    second = dataclasses.replace(_mapping("page-0"), spreadsheet_row=99)
+    third = _mapping("page-1")
+
+    result = script._dedupe_by_notion_key([first, second, third])
+
+    assert [m.notion_key for m in result] == ["page-0", "page-1"]
+    assert result[0].spreadsheet_row == 5

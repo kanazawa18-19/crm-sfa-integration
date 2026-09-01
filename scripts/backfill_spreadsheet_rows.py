@@ -75,6 +75,35 @@ _BULK_FETCH_ATTEMPTS = 3
 _BULK_FETCH_RETRY_WAIT_SECONDS = 60
 
 
+def _dedupe_by_notion_key(mappings: list[Any]) -> list[Any]:
+    """同じNotionページを指すマッピングを1つに畳む（2026-09-02に追加）。
+
+    **これが無いとシートに重複行ができる。** `remember_sync_key_row()` は
+    `_flush()` の中、つまり200件たまってから呼ばれる。同じ`notion_key`が
+    同じバッチの中に2つあると、2件目が `find_row_by_sync_key()` を引いた時点では
+    まだ1件目が追記されておらず、どちらも「無い」と判定されて2行できる。
+
+    実際に取引先マスターで8組の重複ができていた（2026-09-02に実測）。
+    重複した行は必ず**隣り合っていた**（24/25, 26/27, …, 34232/34233）ことが、
+    同一バッチ内で起きたことの裏づけになっている。
+
+    IdMapping側の重複そのものは別途調べる必要がある
+    （`scripts/verify_spreadsheet_backfill.py` が件数とキーを出す）。
+    ここではバックフィルが重複を**増やさない**ことだけを保証する。
+    """
+    seen: dict[str, Any] = {}
+    for mapping in mappings:
+        seen.setdefault(mapping.notion_key, mapping)
+    dropped = len(mappings) - len(seen)
+    if dropped:
+        logger.warning(
+            "同じNotionページを指すマッピングが%d件ありました。1つに畳んで進めます"
+            "（重複行を作らないため）",
+            dropped,
+        )
+    return list(seen.values())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db-key", required=True, help="対象のDB（例: product）")
@@ -109,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     store = build_id_mapping_store()
-    mappings = store.list_by_db(args.db_key)
+    mappings = _dedupe_by_notion_key(store.list_by_db(args.db_key))
     if args.limit is not None:
         mappings = mappings[: args.limit]
 
