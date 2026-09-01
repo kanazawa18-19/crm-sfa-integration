@@ -214,7 +214,32 @@ def refresh_client_names_incrementally(
             )
             return {"synced_count": len(rows), "deleted_count": 0, "completed": False}
 
-        # 一巡し終えた。ここで初めて掃除する。
+        # 一巡し終えた。ここで初めて掃除する。ただし掃除の前に急減を確かめる
+        # （2026-09-01追加。`refresh_all_client_names()`にはある部分取得ガードが
+        # 分割実行版に無く、案件ミラー側と非対称だった。1回ぶんの取得件数(2,000件)と
+        # 全体(102,799件)を比べても意味が無いので、「この一巡で触れた行数」＝掃除が
+        # 消し残す行数で見る）。中止したときはしおりを捨てて次回は先頭からやり直す。
+        total_count = get_client_name_count()
+        touched_count = get_client_name_count(synced_since=cursor.pass_started_at)
+        if touched_count == 0 or (
+            total_count >= 20 and touched_count < total_count * _MIN_SYNC_RATIO
+        ):
+            message = (
+                f"refresh_client_names_incrementally: 一巡で触れた件数({touched_count}件)が"
+                f"既存インデックス件数({total_count}件)より大幅に少ないため、部分取得の疑いが"
+                "あり掃除を中止しました（既存データは変更していません。しおりを捨てたので"
+                "次回は先頭から取り直します）。"
+            )
+            logger.error(message)
+            _notify_slack_alert(message)
+            clear_cursor(CURSOR_NAME)
+            return {
+                "synced_count": len(rows),
+                "deleted_count": 0,
+                "skipped": "suspected_partial_fetch",
+                "completed": True,
+            }
+
         deleted_count = sweep_client_names(before=cursor.pass_started_at)
         clear_cursor(CURSOR_NAME)
         logger.info(

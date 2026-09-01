@@ -221,10 +221,23 @@ def find_by_normalized_name(normalized_name: str) -> list[dict[str, Any]]:
     ]
 
 
-def get_client_name_count() -> int:
+def get_client_name_count(*, synced_since: datetime | None = None) -> int:
     """`ClientNameIndex`の現在の行数。`refresh_all_client_names()`が新規取得件数と比較し、
     異常な急減(部分取得によるsweep事故)を検知するために使う(project_mirror/sync.pyの
-    get_project_count()と同じ用途)。"""
+    get_project_count()と同じ用途)。
+
+    `synced_since`を渡すと`syncedAt >= synced_since`の行数だけを返す(2026-09-01)。
+    分割実行(`refresh_client_names_incrementally()`)では1回ぶんの取得件数と全体の件数を
+    比べても意味が無い(1回は2,000件、全体は102,799件)ため、掃除の直前に
+    「**この一巡で触れた行が何件あるか**」を数えて急減を検知するのに使う。
+    これは`sweep_client_names(before=...)`が消し**残す**行数そのもの。
+    """
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute('SELECT count(*) AS n FROM "ClientNameIndex"')
+        if synced_since is None:
+            cur.execute('SELECT count(*) AS n FROM "ClientNameIndex"')
+        else:
+            cur.execute(
+                'SELECT count(*) AS n FROM "ClientNameIndex" WHERE "syncedAt" >= %s',
+                (synced_since,),
+            )
         return cur.fetchone()["n"]
