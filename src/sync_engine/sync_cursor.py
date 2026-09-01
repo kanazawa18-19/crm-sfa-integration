@@ -28,6 +28,8 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from src.db_utils import db_truncated_utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +41,8 @@ class SyncCursor:
     #: 最後に取り込んだページの created_time。Noneなら一巡の先頭から。
     watermark: str | None
     #: この一巡を始めた時刻。掃除の基準になる。
+    #: **必ずミリ秒境界（マイクロ秒が1000の倍数）に乗っていること。** 理由は
+    #: `load_cursor()`のdocstring参照（`TIMESTAMP(3)`の丸めによる誤削除の防止）。
     pass_started_at: datetime
 
     @property
@@ -54,14 +58,32 @@ def _connect() -> psycopg.Connection[dict[str, Any]]:
 
 
 def load_cursor(name: str) -> SyncCursor:
-    """しおりを読む。無ければ新しい一巡を始める。"""
+    """しおりを読む。無ければ新しい一巡を始める。
+
+    ■ 新しい一巡の開始時刻は必ず`db_truncated_utcnow()`を通す（2026-09-01、レビュー指摘）
+
+    `pass_started_at`は、この一巡で取り込む行の`syncedAt`（`TIMESTAMP(3)`＝ミリ秒精度）
+    として**書き込みにも**、一巡し終えたあとの掃除の`WHERE "syncedAt" < 基準時刻`という
+    **比較にも**使う。素の`datetime.now(timezone.utc)`（マイクロ秒精度）をそのまま使うと、
+    書き込み時はPostgresが四捨五入でミリ秒へ丸める一方、比較には丸められていない元の値が
+    使われるため、丸め方向次第で`保存値 < 比較用の元の値`が真になり、
+    **今まさに書き込んだ行まで掃除で消える。**
+
+    これは2026-08-25に本番で実際に起きた事故そのもの（`db_truncated_utcnow()`の
+    docstring・`docs/project_mirror_activation_note.md`参照）。同じ形の
+    mark-and-sweep を新設したのに、基準時刻だけこの保護を通っていなかった。
+
+    一度DBへ保存して読み直した値は`TIMESTAMP(3)`列を経由するので結果的に丸まるが、
+    **一巡が1回の実行で完結する場合はDBを経由しない**ため、そこだけ穴になっていた。
+    ここで最初から不動点（1000の倍数）にしておけば、経路によらず常に一致する。
+    """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT name, watermark, "passStartedAt" FROM "SyncCursor" WHERE name = %s', (name,)
         )
         row = cur.fetchone()
     if row is None:
-        return SyncCursor(name=name, watermark=None, pass_started_at=datetime.now(timezone.utc))
+        return SyncCursor(name=name, watermark=None, pass_started_at=db_truncated_utcnow())
     started = row["passStartedAt"]
     if started.tzinfo is None:
         started = started.replace(tzinfo=timezone.utc)

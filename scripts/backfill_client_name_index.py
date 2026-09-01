@@ -2,8 +2,13 @@
 """取引先マスターDB(Notion)の正規化取引先名→Notion page IDインデックス(ClientNameIndex)を
 初回バックフィルするスクリプト(2026-08-25)。
 
-`src/relation_sync/sync.py`の`refresh_all_client_names()`（初回バックフィル・夜間
-reconciliation cron共通のフル同期処理）を呼ぶだけの薄いCLIラッパー
+`src/relation_sync/sync.py`の`refresh_all_client_names()`（**ローカル専用のフル同期処理**。
+夜間reconciliation cronは2026-09-01から分割実行の`refresh_client_names_incrementally()`に
+切り替わっており、この関数は使っていない）を呼ぶだけの薄いCLIラッパー
+
+**★ 分割実行の途中（`SyncCursor`に`client_name_index`の行が残っている状態）では流さないこと。**
+夜間cronが古い`watermark`・古い基準時刻から再開してしまい、削除検知が事実上効かない状態で
+しばらく回ることになる
 （`scripts/backfill_project_mirror.py`と同じパターン）。読み取り専用(Notion API)+
 自インデックスへのUPSERT/DELETEのみで、他システムへの書き込み・Notion本番データの破壊
 リスクが無いため、`scripts/backfill_project_assignees.py`のようなdry-run優先パターンは

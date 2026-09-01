@@ -1,11 +1,14 @@
 """取引先マスターDB（Notion）→ ClientNameIndex（Postgres）への同期処理本体（2026-08-25）。
 
 データの正本は引き続きNotionであり、本モジュールは`src/project_mirror/sync.py`と同じ
-2つのエントリポイントを提供する。
+3つのエントリポイントを提供する。
 
 - `sync_client_name_to_index()`: Notion Webhook経由の1件更新用。
-- `refresh_all_client_names()`: 初回バックフィル・夜間reconciliation cronの両方から使う、
-  取引先マスターDB全件のフル同期。
+- **`refresh_client_names_incrementally()`: 夜間reconciliation cronの現役の入口**
+  （2026-09-01〜）。時間予算で区切って中断し、しおり（`SyncCursor`）に続きを残す分割実行。
+  取引先マスターは102,799件あり、全件取得だけで約18分かかるため1回では終わらない。
+- `refresh_all_client_names()`: **ローカルからの初回バックフィル専用**
+  （`scripts/backfill_client_name_index.py`）。**夜間cronからはもう呼ばれていない。**
 
 いずれも`src/relation_sync/resolve.py`（kintone等からのリレーション解決）が参照する
 `ClientNameIndex`テーブルを最新化するためだけのものであり、双方向同期パイプライン
@@ -54,9 +57,11 @@ class ClientMasterNotionClient(Protocol):
 
     def query_all_pages(self) -> list[dict[str, Any]]: ...
 
-    def query_raw(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Database Query を1回だけ叩く（分割実行から使う、2026-09-01）。"""
-        ...
+    #: 分割実行（`refresh_client_names_incrementally`）が使う。Database Queryを1回だけ叩き、
+    #: ページングは`src/sync_engine/clients/_notion_paging.py`側が行う。
+    #: 戻り値は`Mapping`（`ProjectMirrorNotionClient`と型を揃える。実装は`dict`を返すが、
+    #: このプロトコルは読み取りしか要求しない）。
+    def query_raw(self, body: dict[str, Any]) -> Mapping[str, Any]: ...
 
 
 def _page_to_index_row(page: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -105,7 +110,11 @@ def sync_client_name_to_index(
 def refresh_all_client_names(
     *, notion_client: ClientMasterNotionClient
 ) -> dict[str, Any]:
-    """取引先マスターDB全件をインデックスへ反映する(初回バックフィル・夜間reconciliation共通)。
+    """取引先マスターDB全件をインデックスへ反映する（**ローカルからの初回バックフィル専用**）。
+
+    **夜間reconciliation cronはこの関数を使っていない**（2026-09-01〜。全件取得に約18分
+    かかりVercelの300秒に収まらないため`refresh_client_names_incrementally()`へ切り替えた）。
+    実行時間の上限が無い場所からのみ呼ぶこと。
 
     `notion_client.query_all_pages()`で全件取得してから変換し、
     `upsert_client_names_and_sweep()`を1回呼ぶ。全件取得が完了するまでDB書き込みを開始しない
@@ -135,7 +144,8 @@ def refresh_all_client_names(
                 "中止しました（既存データは変更していません）。"
             )
             logger.error(message)
-            _notify_slack_alert(message)
+            _notify_slack_alert(message, source="refresh_all_client_names")
+            _notify_managers_slack_dm(message, source="refresh_all_client_names")
             return {
                 "synced_count": len(rows),
                 "deleted_count": 0,
@@ -152,6 +162,7 @@ def refresh_all_client_names(
 CURSOR_NAME = "client_name_index"
 
 #: 1回の実行に使ってよい秒数。Vercelの実行上限は300秒なので余裕を持たせる。
+#: **`src/project_mirror/sync.py`にも同名の定数がある。片方だけ変えないこと。**
 DEFAULT_TIME_BUDGET_SECONDS = 200.0
 
 #: 1周で取る件数。中断の粒度になる（小さいほど時間予算を守りやすい）。
@@ -186,9 +197,27 @@ def refresh_client_names_incrementally(
             "refresh_client_names_incrementally: 既に別プロセスが実行中と判断したため"
             "スキップします（pg_try_advisory_lockの取得に失敗）"
         )
-        return {"synced_count": 0, "deleted_count": 0, "skipped": "already_running"}
+        return {
+            "synced_count": 0,
+            "deleted_count": 0,
+            "completed": False,
+            "skipped": "already_running",
+        }
     try:
         cursor = load_cursor(CURSOR_NAME)
+        # 運用者が朝ログで進み具合を判断できるようにする（`project_mirror/sync.py`と同じ）。
+        if cursor.is_new_pass:
+            logger.info(
+                "refresh_client_names_incrementally: 新しい一巡を始めます（基準時刻=%s）",
+                cursor.pass_started_at,
+            )
+        else:
+            logger.info(
+                "refresh_client_names_incrementally: 前回の続き（%s 以降）から再開します"
+                "（この一巡の基準時刻=%s）",
+                cursor.watermark,
+                cursor.pass_started_at,
+            )
 
         def _post(body: dict[str, Any]) -> dict[str, Any]:
             return notion_client.query_raw(body)
@@ -209,8 +238,10 @@ def refresh_client_names_incrementally(
             save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
             logger.info(
                 "refresh_client_names_incrementally: 途中まで取り込みました"
-                "（今回%d件。次回このしおりから続けます）",
+                "（今回%d件 / この一巡でここまで%d件。次回 %s 以降から続けます）",
                 len(rows),
+                get_client_name_count(synced_since=cursor.pass_started_at),
+                slice_.watermark,
             )
             return {"synced_count": len(rows), "deleted_count": 0, "completed": False}
 
@@ -231,7 +262,8 @@ def refresh_client_names_incrementally(
                 "次回は先頭から取り直します）。"
             )
             logger.error(message)
-            _notify_slack_alert(message)
+            _notify_slack_alert(message, source="refresh_client_names_incrementally")
+            _notify_managers_slack_dm(message, source="refresh_client_names_incrementally")
             clear_cursor(CURSOR_NAME)
             return {
                 "synced_count": len(rows),
@@ -252,13 +284,42 @@ def refresh_client_names_incrementally(
         release_refresh_lock(lock_conn)
 
 
-def _notify_slack_alert(message: str) -> None:
+def _notify_slack_alert(message: str, *, source: str = "relation_sync") -> None:
     """`src/project_mirror/sync.py`の`_notify_slack_alert()`と同じ`SLACK_WEBHOOK_URL_ALERT`
-    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。"""
+    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。
+
+    **`SLACK_WEBHOOK_URL_ALERT`は本番未設定であることが判明しており、この経路は実質no-op。**
+    実際に運用者へ届くのは`_notify_managers_slack_dm()`側なので、**必ず両方を呼ぶこと**
+    （2026-09-01、レビュー指摘。急減チェックを足したのに通知が誰にも届かない状態だった）。
+
+    `source`には呼び出し元の関数名を渡す。全件版と分割実行版のどちらで起きたのかが
+    ログから分からないと、運用者が原因を追えないため。
+    """
     url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
     if not url:
         return
     try:
         requests.post(url, json={"text": message}, timeout=10)
     except Exception:
-        logger.exception("refresh_all_client_names: failed to post alert to slack")
+        logger.exception("%s: failed to post alert to slack", source)
+
+
+def _notify_managers_slack_dm(message: str, *, source: str = "relation_sync") -> None:
+    """`User.isManager = true`の全ユーザーへSlack DMで通知する
+    （`src/notifications/manager_dm.py`）。
+
+    `src/project_mirror/sync.py`の同名関数と同じ理由でこちらが**主経路**。
+    `SLACK_WEBHOOK_URL_ALERT`が本番未設定と判明している中で、実際に人へ届くのはこの経路だけ
+    （2026-09-01追加。それまで取引先名インデックス側にはこれが無く、案件ミラー側とは
+    通知の生存性が非対称だった。判定ロジックだけ揃えても、鳴らない通知では意味がない）。
+
+    `manager_dm`はここで遅延importする（循環import回避。`project_mirror/sync.py`と同じ慣習）。
+    `notify_managers()`自体が例外を握りつぶす設計だが、念のためここでも捕捉し、
+    Slack通知の失敗で掃除中止の判断自体を失敗させない。
+    """
+    from src.notifications import manager_dm
+
+    try:
+        manager_dm.notify_managers(message, log_context=source)
+    except Exception:
+        logger.exception("%s: failed to notify managers via Slack DM", source)

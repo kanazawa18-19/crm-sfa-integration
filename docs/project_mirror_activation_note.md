@@ -247,10 +247,51 @@ DBでなければならない変数」を名前で区別すること、を徹底
 専用クライアントに別々のフェイクオブジェクトを設定し、実際に渡されたのが専用クライアントの
 方であることをオブジェクトのアイデンティティ（`is`）で検証している。
 
+
+## ★ 夜間cronは2026-09-01から「分割実行」になった（チェックの読み方が変わる）
+
+Notionの Database Query は**1クエリ1万件までしか返さず、しかも打ち切るときに
+`has_more: false` を返す**ため、全件取得が静かに9割欠損していた。キーセット方式
+（`src/sync_engine/clients/_notion_paging.py`）で越えたが、今度は全件取得が
+Vercelの実行上限300秒に収まらなくなった。
+
+そこで夜間cronは、時間予算（200秒）で区切って中断し、しおり（`SyncCursor`テーブル）に
+続きを残して**次の夜が続きから再開する**形に変えた。**一巡には何晩もかかる。**
+
+```
+   これまで  1晩で全件処理 → synced_count が総件数に近い
+   これから  1晩は一部だけ → synced_count は 2,000件前後で正常
+             completed: false が続き、一巡し終えた晩だけ completed: true
+```
+
+**★ 1晩の `synced_count` が総件数と違っても異常ではない。** 見るべきものが変わる。
+
+| 見るもの | 正常 |
+|---|---|
+| `completed` | 一巡の途中は `false`、一巡し終えた晩だけ `true` |
+| `SyncCursor` の該当行 | 一巡の途中は行があり `watermark` が毎晩進む。一巡し終えると行が消える |
+| `deleted_count` | 一巡の途中は必ず0（**途中で掃除してはいけない**） |
+| `skipped` | 出ていないこと。出ていたら下の表を見る |
+
+`skipped` の値ごとの意味:
+
+- `already_running` … 前の実行がまだ動いている。翌晩も続くなら要調査
+- `insufficient_required_properties` … 取得した中身が壊れている。書き込まず、しおりも進めていない
+- `suspected_partial_fetch` … 一巡で触れた行数が既存の半分未満。掃除を中止し、しおりを捨てた
+
+**★ `watermark` が何晩も進んでいないなら止まっている。** 件数ではなくここを見る。
+
+**★ ローカルのフル同期スクリプトを、分割実行の途中で流さないこと。**
+`SyncCursor` に行が残っている状態で流すと、夜間cronが古い `watermark`・古い基準時刻から
+再開してしまい、削除検知が事実上効かない状態でしばらく回る。流す前に `SyncCursor` を確認し、
+必要なら消してから実行する。
+
 ## 動作確認チェックリスト（各ステップ共通）
 
 1. Vercelのfunction logsで対象エンドポイント（Webhook/cron）の200レスポンスを確認する。
-2. `scripts/backfill_project_mirror.py`または夜間cronのレスポンス（`synced_count`/
-   `deleted_count`）が想定件数と大きく乖離していないか確認する。
+2. **夜間cronは1晩ぶんしか進まない**（上記「分割実行」参照）。`completed`と`SyncCursor`の
+   `watermark`を見る。`synced_count`が総件数と違っても異常ではない。
+   `scripts/backfill_project_mirror.py`（ローカルのフル同期）の場合のみ、`synced_count`/
+   `deleted_count`が想定件数と大きく乖離していないかを見る。
 3. Neon Postgres側で`SELECT count(*) FROM "ProjectMirror";`を実行し、Notion側の案件件数と
    概ね一致するか確認する。

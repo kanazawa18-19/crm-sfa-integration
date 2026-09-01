@@ -1,12 +1,22 @@
 """案件管理DB（Notion）→ ProjectMirror（Postgres）への同期処理本体（2026-08-17）。
 
-データの正本は引き続きNotionであり、本モジュールは以下2つのエントリポイントを提供する。
+データの正本は引き続きNotionであり、本モジュールは以下3つのエントリポイントを提供する。
 
 - `sync_project_to_mirror()`: Notion Webhook経由の1件更新用
   （`src/sync_engine/webhook_handlers/notion_webhook.py`の`calendar_sync`/`lead_sync`と同じ
   拡張点パターン）。
-- `refresh_all_projects()`: 初回バックフィル（`scripts/backfill_project_mirror.py`）・夜間
-  reconciliation cronの両方から使う、案件管理DB全件のフル同期。
+- **`refresh_projects_incrementally()`: 夜間reconciliation cronの現役の入口**（2026-09-01〜）。
+  時間予算で区切って中断し、しおり（`SyncCursor`）に続きを残す分割実行。
+- `refresh_all_projects()`: **ローカルからの初回バックフィル専用**
+  （`scripts/backfill_project_mirror.py`）。全件を取り切ってから書くため実行時間の上限が
+  無い場所でしか使えない。**夜間cronからはもう呼ばれていない。**
+
+■ なぜ全件版と分割実行版が並んでいるのか（2026-09-01）
+
+案件管理DBは26,017件あり、全件取得だけで数分〜十数分かかる。Vercelの実行上限は300秒
+なので、cronからは全件版を使えない。一方ローカル実行には上限が無く、一晩で一気に
+埋めたい初回バックフィルでは全件版の方が単純で速い。**用途が違うので両方残している。**
+片方だけ直して満足しないよう、安全装置を変えるときは必ず両方を見ること。
 """
 
 from __future__ import annotations
@@ -134,7 +144,11 @@ def sync_project_to_mirror(
 def refresh_all_projects(
     *, notion_client: ProjectMirrorNotionClient, user_directory: Any
 ) -> dict[str, Any]:
-    """案件管理DB全件をミラーへ反映する（初回バックフィル・夜間reconciliation共通）。
+    """案件管理DB全件をミラーへ反映する（**ローカルからの初回バックフィル専用**）。
+
+    **夜間reconciliation cronはこの関数を使っていない**（2026-09-01〜。300秒に収まらない
+    ため`refresh_projects_incrementally()`へ切り替えた）。全件を取り切ってから書く作りなので、
+    実行時間の上限が無い場所からのみ呼ぶこと。
 
     `notion_client.query_all_pages()`で全件取得してから変換し、`upsert_projects_and_sweep()`を
     1回呼ぶ。全件取得が完了するまでDB書き込みを開始しない（取得の途中で失敗した場合に、
@@ -174,7 +188,8 @@ def refresh_all_projects(
                 "中止しました（既存データは変更していません）。"
             )
             logger.error(message)
-            _notify_slack_alert(message)
+            _notify_slack_alert(message, source="refresh_all_projects")
+            _notify_managers_slack_dm(message, source="refresh_all_projects")
             return {
                 "synced_count": len(rows),
                 "deleted_count": 0,
@@ -202,8 +217,8 @@ def refresh_all_projects(
                     "（既存データは変更していません）。"
                 )
                 logger.error(message)
-                _notify_slack_alert(message)
-                _notify_managers_slack_dm(message)
+                _notify_slack_alert(message, source="refresh_all_projects")
+                _notify_managers_slack_dm(message, source="refresh_all_projects")
                 return {
                     "synced_count": len(rows),
                     "deleted_count": 0,
@@ -221,6 +236,8 @@ def refresh_all_projects(
 CURSOR_NAME = "project_mirror"
 
 #: 1回の実行に使ってよい秒数。Vercelの実行上限は300秒なので余裕を持たせる。
+#: **`src/relation_sync/sync.py`にも同名の定数がある。片方だけ変えないこと**
+#: （Vercelの上限が変わった／1周の粒度を見直す、はどちらも両方に効く話）。
 DEFAULT_TIME_BUDGET_SECONDS = 200.0
 
 #: 1周で取る件数。中断の粒度になる（小さいほど時間予算を守りやすい）。
@@ -274,9 +291,29 @@ def refresh_projects_incrementally(
             "refresh_projects_incrementally: 既に別プロセスが実行中と判断したためスキップします"
             "（pg_try_advisory_lockの取得に失敗）"
         )
-        return {"synced_count": 0, "deleted_count": 0, "skipped": "already_running"}
+        return {
+            "synced_count": 0,
+            "deleted_count": 0,
+            "completed": False,
+            "skipped": "already_running",
+        }
     try:
         cursor = load_cursor(CURSOR_NAME)
+        # **運用者が「進んでいるのか止まっているのか」を朝ログで判断できるようにする。**
+        # 一巡に何晩もかかる仕組みなので、「新しく始めた」のか「続きから再開した」のかが
+        # 分からないと、同じような行が毎晩流れるだけになる（2026-09-01、レビュー指摘）。
+        if cursor.is_new_pass:
+            logger.info(
+                "refresh_projects_incrementally: 新しい一巡を始めます（基準時刻=%s）",
+                cursor.pass_started_at,
+            )
+        else:
+            logger.info(
+                "refresh_projects_incrementally: 前回の続き（%s 以降）から再開します"
+                "（この一巡の基準時刻=%s）",
+                cursor.watermark,
+                cursor.pass_started_at,
+            )
 
         def _post(body: dict[str, Any]) -> Mapping[str, Any]:
             return notion_client.query_raw(body)
@@ -308,11 +345,12 @@ def refresh_projects_incrementally(
                     "いないので次回また同じところから取り直します）。"
                 )
                 logger.error(message)
-                _notify_slack_alert(message)
-                _notify_managers_slack_dm(message)
+                _notify_slack_alert(message, source="refresh_projects_incrementally")
+                _notify_managers_slack_dm(message, source="refresh_projects_incrementally")
                 return {
                     "synced_count": 0,
                     "deleted_count": 0,
+                    "completed": False,
                     "skipped": "insufficient_required_properties",
                     "required_property_fill_ratios": fill_ratios,
                 }
@@ -323,8 +361,10 @@ def refresh_projects_incrementally(
             save_cursor(dataclasses.replace(cursor, watermark=slice_.watermark))
             logger.info(
                 "refresh_projects_incrementally: 途中まで取り込みました"
-                "（今回%d件。次回このしおりから続けます）",
+                "（今回%d件 / この一巡でここまで%d件。次回 %s 以降から続けます）",
                 len(rows),
+                get_project_count(synced_since=cursor.pass_started_at),
+                slice_.watermark,
             )
             return {"synced_count": len(rows), "deleted_count": 0, "completed": False}
 
@@ -341,8 +381,8 @@ def refresh_projects_incrementally(
                 "次回は先頭から取り直します）。"
             )
             logger.error(message)
-            _notify_slack_alert(message)
-            _notify_managers_slack_dm(message)
+            _notify_slack_alert(message, source="refresh_projects_incrementally")
+            _notify_managers_slack_dm(message, source="refresh_projects_incrementally")
             clear_cursor(CURSOR_NAME)
             return {
                 "synced_count": len(rows),
@@ -363,7 +403,7 @@ def refresh_projects_incrementally(
         release_refresh_lock(lock_conn)
 
 
-def _notify_slack_alert(message: str) -> None:
+def _notify_slack_alert(message: str, *, source: str = "project_mirror") -> None:
     """`src/incident_detection/notify.py`の日次ダイジェストと同じ`SLACK_WEBHOOK_URL_ALERT`
     (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。
 
@@ -378,10 +418,10 @@ def _notify_slack_alert(message: str) -> None:
     try:
         requests.post(url, json={"text": message}, timeout=10)
     except Exception:
-        logger.exception("refresh_all_projects: failed to post alert to slack")
+        logger.exception("%s: failed to post alert to slack", source)
 
 
-def _notify_managers_slack_dm(message: str) -> None:
+def _notify_managers_slack_dm(message: str, *, source: str = "project_mirror") -> None:
     """`User.isManager = true`の全ユーザーへSlack DMで通知する
     (`src/notifications/manager_dm.py`、2026-08-25新設)。`SLACK_WEBHOOK_URL_ALERT`が本番
     未設定と判明している中で唯一本番で実際に届く通知経路であるため、`src/sync_engine/
@@ -394,6 +434,6 @@ def _notify_managers_slack_dm(message: str) -> None:
     from src.notifications import manager_dm
 
     try:
-        manager_dm.notify_managers(message, log_context="refresh_all_projects")
+        manager_dm.notify_managers(message, log_context=source)
     except Exception:
-        logger.exception("refresh_all_projects: failed to notify managers via Slack DM")
+        logger.exception("%s: failed to notify managers via Slack DM", source)

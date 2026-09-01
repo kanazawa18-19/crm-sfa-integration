@@ -27,6 +27,13 @@ def db_truncated_utcnow() -> datetime:
     `upsert_client_names_and_sweep()`はいずれもmark-and-sweep方式(1トランザクション内で
     全件UPSERT→今回触れられなかった行を`"syncedAt" < 基準時刻`でDELETE)を使っている。
 
+    **2026-09-01に分割実行を新設し、同じmark-and-sweepのペアが増えた**:
+    `upsert_projects()`/`sweep_projects()`・`upsert_client_names()`/`sweep_client_names()`。
+    こちらの基準時刻は`SyncCursor.pass_started_at`（`src/sync_engine/sync_cursor.py`の
+    `load_cursor()`）であり、**そこでもこの関数を通している。**
+    新しくmark-and-sweepを足すときは、基準時刻を必ずここへ通すこと
+    （最初この保護が漏れており、動物チーム3体が独立に同じ箇所を指摘した）。
+
     PostgreSQLの`TIMESTAMP(3)`は値を単純に切り捨てるのではなく四捨五入(round-half-up)で
     ミリ秒精度に丸める(例: `927999`マイクロ秒は切り捨てなら`927000`だが、実際は繰り上がって
     `928000`として保存される)。ここでPython側のマイクロ秒精度の値をそのまま基準時刻に

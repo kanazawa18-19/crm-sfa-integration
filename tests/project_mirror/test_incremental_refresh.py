@@ -77,6 +77,7 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "upserted": {},
         "swept": None,
         "alerts": [],
+        "dms": [],
         # 一巡が終わったときの急減チェックが読む件数。既定は「触れた行＝全体」で健全。
         "total_count": 0,
         "touched_count": None,
@@ -112,9 +113,11 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     )
     monkeypatch.setattr(sync_module, "get_project_count", _count)
     monkeypatch.setattr(
-        sync_module, "_notify_slack_alert", lambda m: state["alerts"].append(m)
+        sync_module, "_notify_slack_alert", lambda m, **kw: state["alerts"].append(m)
     )
-    monkeypatch.setattr(sync_module, "_notify_managers_slack_dm", lambda m: None)
+    monkeypatch.setattr(
+        sync_module, "_notify_managers_slack_dm", lambda m, **kw: state["dms"].append(m)
+    )
     return state
 
 
@@ -221,6 +224,10 @@ def test_broken_slice_is_not_written_and_does_not_advance_the_bookmark(store) ->
     assert store["cursor"] is None, "しおりを進めてはいけない（次回また取り直す）"
     assert store["swept"] is None
     assert store["alerts"], "通知まで上げること（ログ1行では気づけない）"
+    assert store["dms"], (
+        "**マネージャーDMまで送ること。** SLACK_WEBHOOK_URL_ALERT は本番未設定で、"
+        "webhook側だけでは誰にも届かない（2026-09-01のレビュー指摘）"
+    )
 
 
 def test_completeness_check_is_skipped_for_a_tiny_slice(store) -> None:

@@ -174,7 +174,10 @@ def test_refresh_all_client_names_skips_sweep_when_new_count_much_smaller_than_e
         sync, "upsert_client_names_and_sweep", lambda records: sweep_calls.append(records) or 0
     )
     slack_calls: list[str] = []
-    monkeypatch.setattr(sync, "_notify_slack_alert", lambda message: slack_calls.append(message))
+    monkeypatch.setattr(
+        sync, "_notify_slack_alert", lambda message, **kw: slack_calls.append(message)
+    )
+    monkeypatch.setattr(sync, "_notify_managers_slack_dm", lambda message, **kw: None)
     notion_client = _FakeNotionClient(
         pages=[
             _raw_client_master_page(page_id="client-1"),

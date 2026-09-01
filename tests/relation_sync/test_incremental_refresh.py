@@ -66,6 +66,7 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "upserted": {},
         "swept": None,
         "alerts": [],
+        "dms": [],
         # 一巡が終わったときの急減チェックが読む件数。既定は「触れた行＝全体」で健全。
         "total_count": 0,
         "touched_count": None,
@@ -100,7 +101,12 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         sync_module, "sweep_client_names", lambda *, before: state.update(swept=before) or 0
     )
     monkeypatch.setattr(sync_module, "get_client_name_count", _count)
-    monkeypatch.setattr(sync_module, "_notify_slack_alert", lambda m: state["alerts"].append(m))
+    monkeypatch.setattr(
+        sync_module, "_notify_slack_alert", lambda m, **kw: state["alerts"].append(m)
+    )
+    monkeypatch.setattr(
+        sync_module, "_notify_managers_slack_dm", lambda m, **kw: state["dms"].append(m)
+    )
     return state
 
 
@@ -141,6 +147,29 @@ def test_sweep_uses_the_time_the_pass_started(store) -> None:
     assert store["swept"] == NOW
 
 
+def test_releases_the_lock_even_when_notion_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """例外でもロックを解放すること（案件ミラー側と対称に、2026-09-01追加）。
+
+    握ったまま落ちると、翌晩以降ずっと`already_running`でスキップされ続け、
+    **一巡が永久に進まないのに正常終了に見える。**
+    """
+    released: list[Any] = []
+    monkeypatch.setattr(sync_module, "try_acquire_refresh_lock", lambda: "conn")
+    monkeypatch.setattr(sync_module, "release_refresh_lock", lambda c: released.append(c))
+    monkeypatch.setattr(
+        sync_module, "load_cursor", lambda name: sync_module.SyncCursor(name, None, NOW)
+    )
+
+    class _Broken(_FakeNotion):
+        def query_raw(self, body: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("Notionに届かない")
+
+    with pytest.raises(RuntimeError):
+        sync_module.refresh_client_names_incrementally(notion_client=_Broken(total=10))
+
+    assert released == ["conn"], "例外でもロックを解放すること"
+
+
 def test_skips_when_another_run_is_in_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sync_module, "try_acquire_refresh_lock", lambda: None)
 
@@ -166,6 +195,10 @@ def test_sweep_is_aborted_when_the_pass_touched_far_too_few_rows(store) -> None:
     assert store["swept"] is None, "既存データを消してはいけない"
     assert store["cursor"] is None, "しおりを捨てて次回は先頭からやり直す"
     assert store["alerts"], "通知まで上げること（ログ1行では気づけない）"
+    assert store["dms"], (
+        "**マネージャーDMまで送ること。** SLACK_WEBHOOK_URL_ALERT は本番未設定で、"
+        "webhook側だけでは誰にも届かない（2026-09-01のレビュー指摘）"
+    )
 
 
 def test_sweep_is_aborted_when_the_pass_touched_nothing(store) -> None:

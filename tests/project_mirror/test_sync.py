@@ -192,7 +192,10 @@ def test_refresh_all_projects_skips_sweep_when_new_count_much_smaller_than_exist
         sync, "upsert_projects_and_sweep", lambda records: sweep_calls.append(records) or 0
     )
     slack_calls: list[str] = []
-    monkeypatch.setattr(sync, "_notify_slack_alert", lambda message: slack_calls.append(message))
+    monkeypatch.setattr(
+        sync, "_notify_slack_alert", lambda message, **kw: slack_calls.append(message)
+    )
+    monkeypatch.setattr(sync, "_notify_managers_slack_dm", lambda message, **kw: None)
     notion_client = _FakeNotionClient(
         pages=[_raw_project_page(page_id="proj-1"), _raw_project_page(page_id="proj-2")]
     )
@@ -272,10 +275,13 @@ def test_refresh_all_projects_skips_sweep_when_required_properties_mostly_missin
         sync, "upsert_projects_and_sweep", lambda records: sweep_calls.append(records) or 0
     )
     slack_calls: list[str] = []
-    monkeypatch.setattr(sync, "_notify_slack_alert", lambda message: slack_calls.append(message))
+    monkeypatch.setattr(
+        sync, "_notify_slack_alert", lambda message, **kw: slack_calls.append(message)
+    )
+    monkeypatch.setattr(sync, "_notify_managers_slack_dm", lambda message, **kw: None)
     manager_dm_calls: list[str] = []
     monkeypatch.setattr(
-        sync, "_notify_managers_slack_dm", lambda message: manager_dm_calls.append(message)
+        sync, "_notify_managers_slack_dm", lambda message, **kw: manager_dm_calls.append(message)
     )
     # 25件中、営業ステータスが設定されているのは1件のみ(4%)で閾値90%を大きく下回る。
     pages = [_raw_project_page_with_status(page_id="proj-0", status="アポ")] + [

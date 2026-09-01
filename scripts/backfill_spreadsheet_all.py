@@ -57,6 +57,11 @@ _MAX_ATTEMPTS = 5
 #: 流し直しの前に置く間隔（秒）。
 _RETRY_WAIT_SECONDS = 60
 
+#: `backfill_spreadsheet_rows.py`が「流し直しても直らない」ときに返すrc。
+#: いまのところ「対象マッピングがちょうど10,000件＝Notionの1万件の壁の疑い」だけ。
+#: これは人が件数を数え直すまで何度流しても同じなので、リトライを回さない。
+_RC_DO_NOT_RETRY = 2
+
 #: 名前解決の復帰を待つ上限（秒）と、確認の間隔（秒）。
 _NETWORK_WAIT_LIMIT_SECONDS = 3600
 _NETWORK_POLL_SECONDS = 30
@@ -93,6 +98,10 @@ def _load_env() -> dict[str, str]:
     env["SYNC_ID_MAPPING_NOTION_API_KEY"] = env["NOTION_API_KEY"]
     # サブプロセスからも `src` を解決できるようにする（cwdだけでは足りない）。
     env["PYTHONPATH"] = REPO
+    # **これはサブプロセスに渡すローカル専用の値で、本番のVercel環境変数とは無関係。**
+    # 同名の環境変数を`src/sync_engine/production_wiring.py`が「本番のリアルタイム行作成」の
+    # フラグとして使っているが、ここで立てても本番には一切影響しない
+    # （このスクリプトを流すと本番の自動作成もONになる、と誤読されないよう明記しておく）。
     env["SPREADSHEET_ROW_CREATION_ENABLED"] = "true"
     return env
 
@@ -145,6 +154,11 @@ def _run_one(db_key: str, *, apply: bool, env: dict[str, str]) -> tuple[int, int
         elapsed = int(time.monotonic() - started)
         print(f"===== {db_key} 終了 rc={rc} 所要={elapsed}秒 =====", flush=True)
         if rc == 0:
+            break
+        if rc == _RC_DO_NOT_RETRY:
+            # 「対象がちょうど1万件」等、流し直しても状況が変わらない失敗。
+            # 人が件数を数え直す必要があるので、リトライで時間を潰さない。
+            print(f"{db_key} は流し直しても直らない失敗（rc={rc}）。次のDBへ進む", flush=True)
             break
         if attempt < _MAX_ATTEMPTS:
             print(f"{db_key} に失敗があった。{_RETRY_WAIT_SECONDS}秒待って流し直す", flush=True)

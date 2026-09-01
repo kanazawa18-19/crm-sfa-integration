@@ -2,8 +2,13 @@
 """案件管理DB(Notion)のPostgresミラー(ProjectMirror)を初回バックフィルするスクリプト
 (2026-08-17)。
 
-`src/project_mirror/sync.py`の`refresh_all_projects()`（初回バックフィル・夜間
-reconciliation cron共通のフル同期処理）を呼ぶだけの薄いCLIラッパー。読み取り専用
+`src/project_mirror/sync.py`の`refresh_all_projects()`（**ローカル専用のフル同期処理**。
+夜間reconciliation cronは2026-09-01から分割実行の`refresh_projects_incrementally()`に
+切り替わっており、この関数は使っていない）を呼ぶだけの薄いCLIラッパー。
+
+**★ 分割実行の途中（`SyncCursor`に`project_mirror`の行が残っている状態）では流さないこと。**
+夜間cronが古い`watermark`・古い基準時刻から再開してしまい、削除検知が事実上効かない状態で
+しばらく回ることになる。流す前に`SyncCursor`を確認し、必要なら消してから実行する。読み取り専用
 (Notion API)+自ミラーへのUPSERT/DELETEのみで、他システムへの書き込み・Notion本番データの
 破壊リスクが無いため、`scripts/backfill_project_assignees.py`のようなdry-run優先パターンは
 採用していない。
