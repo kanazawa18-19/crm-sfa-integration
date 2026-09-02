@@ -25,7 +25,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Container, Mapping, MutableMapping
 
 import requests
 
@@ -963,6 +963,26 @@ class Dispatcher:
         あちらは**まだ何も作っていない**段階なので500で気づけるが、ここは**もう作り終えた
         後**で、500にしても得られるのはリトライだけ。`SkipTrackingDispatcher`も
         `DispatchResult.properties`しか見ないため、この経路の失敗は拾えない。
+
+        ■ **この割り切りの限界**（2026-09-03、ChatGPTがBLOCKER・Geminiが独立にWARN）
+
+        「2xxを返すのに永続的なリトライを持っていない」ため、**Slackを見落とし、
+        そのレコードが二度と編集されなければ、シートには永久に現れない**。
+        今回直した不具合を、発生条件だけ変えて残していることになる。
+
+        いま拾える手段は3つで、いずれも自動ではない。
+
+        ```
+           verify_spreadsheet_backfill.py   「不足」として必ず出る（人が流す）
+           backfill_spreadsheet_rows.py     まとめて作り直す（人が流す）
+           そのレコードの次の更新イベント     行が無ければ作られる（いつ来るか不定）
+        ```
+
+        本筋の対処は**outbox（未完了の書き込みを永続化して再試行する仕組み）**で、
+        それが入れば「例外はACKせず500で返す」でも安全になる——mappingが既にある以上、
+        再送は`_try_create_new_record()`へ入らず通常の更新経路を通り、そこで行が作られるため。
+        規模がこのイシューの外なので、`~/notes/Dev/crm-sfa-integration.md`のTODOに送った。
+        **「直した」と書かないこと。ここは割り切っている。**
         """
         target = self._targets.get(Tool.SPREADSHEET)
         if target is None or not _supports_sync_key(target):
@@ -972,32 +992,44 @@ class Dispatcher:
             # 行を作らない設定のdb_key。書きにいっても`append_with_sync_key()`が弾く。
             return
 
+        # **ここから下は丸ごと1つのtryで囲む**（2026-09-03、ChatGPTのクロスレビュー指摘）。
+        # 当初は`_write_spreadsheet_value()`の呼び出しだけを囲み、`get_schema()`は
+        # `(KeyError, ValueError)`限定、`_spreadsheet_row_properties()`は素通しだった。
+        # すると「シート・DBの障害はACK、スキーマ側のコードの障害は500」という、
+        # docstringが宣言したポリシーと食い違う挙動になる。**作り終えた後は全部ACK**で揃える。
         try:
             schema = get_schema(mapping.db_key)
-        except (KeyError, ValueError):
-            # スキーマが引けないとどの項目がシート行きか判断できない。
+            row_properties = _spreadsheet_row_properties(properties, schema, mapping.db_key)
+        except Exception as exc:  # noqa: BLE001 (上記コメント参照)
+            # スキーマが引けない・項目を選べないと、どの列がシート行きか判断できない。
             # **欠けた行を作るくらいなら作らない**（2026-09-02と同じ判断）。
             # 更新経路の同じ見送りは`skipped_tools`経由でSlackへ上がるが、この経路は
             # `DispatchResult.properties`が空なので拾われない。ここで直接上げる
             # （2026-09-03、おばさん指摘）。
             logger.error(
-                "new record creation: db_key=%r のスキーマが引けません。"
-                "**欠けた行を作らないため、シートには書きません** (notion_key=%r)",
+                "new record creation: シートへ流す項目を決められません。"
+                "**欠けた行を作らないため、シートには書きません** (db_key=%r, notion_key=%r)",
                 mapping.db_key,
                 mapping.notion_key,
                 exc_info=True,
             )
             self._notify_new_record_row_not_created(
-                event, mapping, "db_keyのスキーマが引けませんでした（設定漏れ・デプロイ不整合）"
+                event,
+                mapping,
+                f"シートへ流す項目を決められませんでした（エラーの種類: {type(exc).__name__}。"
+                "スキーマの設定漏れ・デプロイ不整合が疑われます）",
             )
             return
 
-        row_properties = _spreadsheet_row_properties(properties, schema, mapping.db_key)
         if not row_properties:
             # シートへ流せる非リレーション項目が1つも無い。同期キーだけの行になるので作らない。
-            logger.info(
-                "new record creation: シートへ書ける項目が無いため行は作りません "
-                "(db_key=%r, notion_key=%r)",
+            # **これは静かな永久欠損になりうる**（2026-09-03、ChatGPT指摘）ので info ではなく
+            # warning で出す。Slackまでは上げない——`client_master`のように必ず名前が入るDBでは
+            # 起きず、起きるとすれば設定の問題で、`verify_spreadsheet_backfill.py`の
+            # 「不足」に必ず現れるため。
+            logger.warning(
+                "new record creation: シートへ書ける項目が無いため行は作りません。"
+                "**このレコードはシートに現れません** (db_key=%r, notion_key=%r)",
                 mapping.db_key,
                 mapping.notion_key,
             )
@@ -1024,7 +1056,13 @@ class Dispatcher:
                 mapping.notion_key,
                 exc_info=True,
             )
-            self._notify_new_record_row_not_created(event, mapping, f"error={exc!r}")
+            # **例外の中身をSlackへ生で流さない**（2026-09-03、GeminiのINFO指摘）。
+            # ここへ来る代表格は`psycopg`の接続エラーで、メッセージに接続先ホストや
+            # ユーザー名が載る。CLAUDE.md「認証情報をログ・エラーメッセージに出さない」に
+            # 従い、Slackには**種類だけ**を出す（全文はサーバー側のログにある）。
+            self._notify_new_record_row_not_created(
+                event, mapping, f"エラーの種類: {type(exc).__name__}（詳細は本番ログを参照）"
+            )
             return
 
         if not written:
@@ -1406,7 +1444,7 @@ class Dispatcher:
         # シートへ流す項目だけを埋める（選び方は`_spreadsheet_row_properties()`に一本化。
         # 新規レコード作成の経路と同じ規則を使う）。イベントで既に入っている項目は除く。
         filled = _spreadsheet_row_properties(
-            record, schema, mapping.db_key, exclude=properties
+            record, schema, mapping.db_key, exclude=properties.keys()
         )
         if not filled:
             # **「Notionが空だった」とは限らない。** 正確には「追加できる非リレーション項目が
@@ -1768,6 +1806,14 @@ class Dispatcher:
 
         **書かない。** 相手が書いた値が、こちらの古いスナップショットより新しいため。
         行番号だけ登録して、次回以降の読み直しを減らす。
+
+        ■ 「行番号の登録で相手のIdMappingを巻き戻すのでは」——**巻き戻らない**
+
+        Gemini がここをBLOCKERとして指摘したが（2026-09-03）、実コードで確かめて棄却した。
+        `_register_spreadsheet_row()`は**保存の直前にストアを読み直し**、そこへ行番号だけを
+        載せる（`latest = self._store.get(...)`）。呼び出し元が握っている古い`mapping`が
+        そのまま書かれることはない。この lost update は2026-08-31にChatGPTの指摘で
+        既に塞いである。**言われたまま直さない。**
         """
         logger.info(
             "spreadsheet: 行は既にあるので追記しません（別の経路が先に作りました）"
@@ -1872,7 +1918,7 @@ def _spreadsheet_row_properties(
     schema: Any,
     db_key: str,
     *,
-    exclude: Mapping[str, Any] | None = None,
+    exclude: Container[str] = (),
 ) -> dict[str, Any]:
     """`source`から**シートの1行に流してよい項目だけ**を取り出す（2026-09-03に一本化）。
 
@@ -1896,8 +1942,10 @@ def _spreadsheet_row_properties(
     2. **リレーション**（`drop_relation_properties`）。書き込み側と同じ関数を使う。
        落とされるものを数に入れると、実際には1列だけの行なのに「補えた」と誤認する
        （2026-09-02、クマ指摘）。
+
+    `exclude`は**プロパティ名の集合**（`Container[str]`）。辞書を渡してもキーで判定
+    されるが、型で意図を示しておく（2026-09-03、GeminiのINFO指摘）。
     """
-    exclude = exclude or {}
     return drop_relation_properties(
         {
             prop.name: source[prop.name]
