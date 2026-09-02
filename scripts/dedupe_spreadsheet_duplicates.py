@@ -20,6 +20,19 @@
     # 実際に消す
     python scripts/dedupe_spreadsheet_duplicates.py --db-key client_master --apply
 
+**★ シートに重複が無くても、IDマッピング側だけが重複していることがある**（2026-09-03）。
+行がまだ作られていないレコードがそうで、`verify_spreadsheet_backfill.py` は
+「IDマッピング側の重複」として報告するが、シートの同期キー列には1つも現れない。
+既定の走査はシートしか見ないため、この形は素通りしていた。**このまま
+バックフィルを流すと、同じキーが2回処理されて行が2つできる。**
+
+    # verify が報告したキーを名指しで掃除する（速い。数万件の一覧を引かない）
+    python scripts/dedupe_spreadsheet_duplicates.py --db-key client_master \
+        --keys 3cfd8ea8-…-8196 3cfd8ea8-…-81a2
+
+    # 自分で全件走査して探す（Notionから数万件を引くので数分〜20分かかる）
+    python scripts/dedupe_spreadsheet_duplicates.py --db-key client_master --scan-mapping
+
 **行番号のずれについて。** 行を消すと下の行番号が1つずつ繰り上がるので、
 シートの削除は必ず**降順（下から）**に行う。IdMapping が持つ `spreadsheet_row` も
 ずれるが、同期は「まずシートの同期キーで引く」（`dispatcher.py` の
@@ -40,8 +53,6 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.backfill_spreadsheet_all import _load_env  # noqa: E402
-
-os.environ.update(_load_env())
 
 from src.db_schema.registry import get_schema  # noqa: E402
 from src.sync_engine.clients.spreadsheet_client import (  # noqa: E402
@@ -126,12 +137,17 @@ def _mapping_pages(store, key: str) -> list[dict[str, Any]]:
     )
 
 
+def _page_text(page: dict[str, Any], name: str) -> str:
+    """IDマッピングのページからテキスト型プロパティを読む（空なら空文字）。"""
+    blocks = (((page.get("properties") or {}).get(name)) or {}).get("rich_text") or []
+    return "".join(b.get("plain_text", "") for b in blocks)
+
+
 def _page_summary(page: dict[str, Any]) -> str:
     props = page.get("properties") or {}
 
     def _text(name: str) -> str:
-        blocks = (props.get(name) or {}).get("rich_text") or []
-        return "".join(b.get("plain_text", "") for b in blocks) or "－"
+        return _page_text(page, name) or "－"
 
     row = (props.get("spreadsheet_row") or {}).get("number")
     synced = _page_last_synced(page)[:19] or "－"
@@ -149,11 +165,34 @@ def main(argv: list[str] | None = None) -> int:
         "--apply", action="store_true", help="実際に消す（既定は表示するだけ）"
     )
     parser.add_argument(
+        "--keys",
+        nargs="+",
+        default=[],
+        help=(
+            "シートの重複に加えて、この同期キー（NotionページID）も対象にする。"
+            "`verify_spreadsheet_backfill.py` の「IDマッピング側の重複」をそのまま渡す"
+        ),
+    )
+    parser.add_argument(
+        "--scan-mapping",
+        action="store_true",
+        help=(
+            "IDマッピングを全件走査して、同じ同期キーが2つ以上あるものを自分で探す。"
+            "Notionから数万件を引くので数分〜20分かかる（--keys が分かっているなら不要）"
+        ),
+    )
+    parser.add_argument(
         "--backup-dir",
         default=os.environ.get("DEDUPE_BACKUP_DIR", "."),
         help="--apply の前に、消す行とページの中身をJSONで書き出す先",
     )
     args = parser.parse_args(argv)
+
+    # **設定の読み込みはここ。import時にやらない**（2026-09-03）。
+    # import時に`config/.env`を要求すると、認証情報を持たないCIからこのモジュールを
+    # importできず、テストが1本も書けなくなる（クマ指摘: `--apply`でシート行の削除と
+    # Notionページのアーカイブを行う破壊的スクリプトが無テストのまま複雑化していた）。
+    os.environ.update(_load_env())
 
     db_key = args.db_key
     schema = get_schema(db_key)
@@ -172,11 +211,30 @@ def main(argv: list[str] | None = None) -> int:
 
     cells = _sync_key_cells(client, sheet)
     rows_by_key = _duplicate_rows(cells)
-    if not rows_by_key:
+
+    # **シートの重複と、IDマッピングの重複は別物**（2026-09-03）。行がまだ作られて
+    # いないレコードは、マッピングが2枚あってもシートの同期キー列には1つも現れない。
+    # シートだけ見て「重複なし」と返していたので、その形が素通りしていた。
+    mapping_only_keys: set[str] = {k for k in args.keys if k not in rows_by_key}
+    if args.scan_mapping:
+        counts = Counter(m.notion_key for m in store.list_by_db(db_key))
+        scanned = {k for k, n in counts.items() if n > 1 and k not in rows_by_key}
+        print(f"IDマッピングの全件走査: 重複 {len(scanned)}件")
+        mapping_only_keys |= scanned
+
+    if not rows_by_key and not mapping_only_keys:
         print(f"✅ {db_key}（シート「{sheet}」）に重複はありません")
+        print(
+            "   ※ 見たのはシートの同期キー列だけ。行がまだ無いレコードの重複は "
+            "--scan-mapping か --keys で指定すること"
+        )
         return 0
 
-    print(f"=== {db_key}（シート「{sheet}」）重複 {len(rows_by_key)}組 ===\n")
+    if rows_by_key:
+        print(f"=== {db_key}（シート「{sheet}」）重複 {len(rows_by_key)}組 ===\n")
+    if mapping_only_keys:
+        print(f"=== {db_key} IDマッピングだけの重複 {len(mapping_only_keys)}件 ===")
+        print("（シートに行がまだ無いもの。行は消さず、余分なページだけ畳む）\n")
 
     drop_rows: list[int] = []
     keep_by_key: dict[str, int] = {}
@@ -185,39 +243,60 @@ def main(argv: list[str] | None = None) -> int:
     keep_page_by_key: dict[str, dict[str, Any]] = {}
     unsafe = 0
 
-    for key, rows in sorted(rows_by_key.items(), key=lambda kv: kv[1][0]):
-        keep, *drop = rows
-        keep_by_key[key] = keep
-        drop_rows.extend(drop)
+    ordered = sorted(rows_by_key.items(), key=lambda kv: kv[1][0])
+    ordered += [(key, []) for key in sorted(mapping_only_keys)]
+    for key, rows in ordered:
         print(f"● {key}")
-        print(f"   シート: 残す={keep}行目 / 消す={', '.join(str(r) for r in drop)}行目")
+        if rows:
+            keep, *drop = rows
+            keep_by_key[key] = keep
+            drop_rows.extend(drop)
+            print(f"   シート: 残す={keep}行目 / 消す={', '.join(str(r) for r in drop)}行目")
 
-        # **中身が同じかを必ず見る。** 違うなら「重複」ではなく別レコードの可能性がある。
-        keep_row = client.get_row(sheet, keep)
-        for r in drop:
-            drop_row = client.get_row(sheet, r)
-            backup.append({"notion_key": key, "sheet_row": r, "values": drop_row})
-            diff = _row_diff(keep_row, drop_row)
-            if diff:
-                unsafe += 1
-                print(f"   ⚠️ {r}行目は残す行と中身が違う: {', '.join(diff[:8])}")
-            else:
-                print(f"   {r}行目は残す行と中身が完全に一致（消して安全）")
+            # **中身が同じかを必ず見る。** 違うなら「重複」ではなく別レコードの可能性がある。
+            keep_row = client.get_row(sheet, keep)
+            for r in drop:
+                drop_row = client.get_row(sheet, r)
+                backup.append({"notion_key": key, "sheet_row": r, "values": drop_row})
+                diff = _row_diff(keep_row, drop_row)
+                if diff:
+                    unsafe += 1
+                    print(f"   ⚠️ {r}行目は残す行と中身が違う: {', '.join(diff[:8])}")
+                else:
+                    print(f"   {r}行目は残す行と中身が完全に一致（消して安全）")
+        else:
+            print("   シート: 行はまだ無い（消す行なし）")
 
         pages = _mapping_pages(store, key)
         print(f"   IDマッピング: {len(pages)}ページ")
         for i, page in enumerate(pages):
             mark = "残す" if i == 0 else "消す"
             print(f"     [{mark}] {_page_summary(page)}")
+        if len(pages) < 2 and not rows:
+            # `--keys` に取り違えたキーを渡した場合。**黙って通さない。**
+            unsafe += 1
+            print("   ⚠️ 重複していない（IDマッピングが1ページ以下・シートにも重複無し）")
+        # **外部IDが食い違うなら、それは重複ではなく別レコード。**
+        external = {
+            (_page_text(p, "kintone_id"), _page_text(p, "zoho_id")) for p in pages
+        }
+        if len(external) > 1:
+            unsafe += 1
+            print(f"   ⚠️ ページごとに外部IDが違う（別レコードの可能性）: {sorted(external)}")
         if pages:
-            keep_page_by_key[key] = pages[0]
+            if rows:
+                # 行番号を入れ直すのは、シートの行を消したキーだけ。
+                keep_page_by_key[key] = pages[0]
             archive_pages.extend((key, p["id"]) for p in pages[1:])
             backup.append({"notion_key": key, "archived_pages": pages[1:]})
         print()
 
     drop_rows.sort(reverse=True)
     print("--- まとめ ---")
-    print(f"シートから消す行（降順）: {', '.join(str(r) for r in drop_rows)}")
+    print(
+        "シートから消す行（降順）: "
+        + (", ".join(str(r) for r in drop_rows) if drop_rows else "なし")
+    )
     print(f"IDマッピングでアーカイブするページ: {len(archive_pages)}件")
     if unsafe:
         print(f"\n🔴 中身が一致しない行が{unsafe}件ある。--apply の前に人が見ること")
@@ -238,7 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"✅ 消す前の中身を書き出した: {backup_path}")
 
     # 1. シートの行を降順で消す。**上から消すと下の行番号がずれる。**
-    sheet_id = client._grid_properties(sheet).get("sheetId")
+    #    IDマッピングだけの重複を掃除するときは、消す行が1つも無い（2026-09-03）。
+    if not drop_rows:
+        print("（シートから消す行は無い）")
+    sheet_id = client._grid_properties(sheet).get("sheetId") if drop_rows else None
     requests_body = [
         {
             "deleteDimension": {
@@ -252,11 +334,12 @@ def main(argv: list[str] | None = None) -> int:
         }
         for r in drop_rows
     ]
-    response = client._request(
-        "POST", ":batchUpdate", json_body={"requests": requests_body}, idempotent=False
-    )
-    raise_for_error(response, SpreadsheetApiError)
-    print(f"✅ シートから{len(drop_rows)}行を削除した")
+    if requests_body:
+        response = client._request(
+            "POST", ":batchUpdate", json_body={"requests": requests_body}, idempotent=False
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        print(f"✅ シートから{len(drop_rows)}行を削除した")
 
     # 2. IDマッピングの余分なページをアーカイブする。
     for key, page_id in archive_pages:
@@ -265,6 +348,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"✅ IDマッピングの{len(archive_pages)}ページをアーカイブした")
 
     # 3. 残したページの行番号を、削除後の**実測値**で入れ直す（計算で出さない）。
+    #    行を1つも消していないなら番号はずれていないので、読み直すだけ無駄。
+    if not drop_rows:
+        print("✅ 行を消していないので行番号の入れ直しは不要")
+        print("\n✅ IDマッピングの重複を畳んだ")
+        return 0
     client._sync_key_rows.pop(sheet, None)
     client._trusted_sync_key_sheets.discard(sheet)
     after = _sync_key_cells(client, sheet)

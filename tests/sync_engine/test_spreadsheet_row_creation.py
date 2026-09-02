@@ -922,3 +922,390 @@ def test_行を作ったときは補完した項目も書いたと報告する(
 
     assert result.properties[0].written_tools == frozenset({Tool.SPREADSHEET})
     assert シート.rows[2]["取引先名"] == "サンライズホテルズ"
+
+
+# --- kintone/Zoho発の新規レコードにも行を作る（2026-09-03） ---------------------------------
+#
+# **背景。** Round2（`AUTO_CREATE_NEW_RECORDS_ENABLED`）はNotionページを作って
+# `IdMapping`を登録したら、そこで打ち切って返っていた。他ツール（シート）へは一度も
+# 書かないため、kintone起点でできたレコードは**行が無いまま**残る。
+# Notion Webhookも来ない（`page.created`は購読しておらず、同期ボット自身の編集は
+# `NOTION_SYNC_BOT_ID`で捨てられる）ので、次に誰かが更新するまで永久に埋まらない。
+#
+# 上の「1列だけの行」は行を作る経路に入った後の話で、こちらは**入らない**という別の穴。
+# 2026-09-02の日中にkintone起点でできた24件が全て行なしだったのはこれが原因。
+
+
+class _新規レコードのkintone:
+    """Round2で読まれる元レコードを返すFake。"""
+
+    def __init__(self, records: dict[str, dict[str, Any]]) -> None:
+        self._records = records
+        self.get_calls: list[str] = []
+
+    def get_record(self, external_id: str, *, db_key: str | None = None):
+        self.get_calls.append(external_id)
+        return self._records.get(external_id)
+
+    def upsert_record(self, external_id, properties, *, db_key=None, expected_version=None):
+        return external_id
+
+
+class _新規ページを作るNotion(_Notion):
+    """新規作成では`upsert_record(None, ...)`が新しいページIDを返す。"""
+
+    def upsert_record(
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
+    ) -> str | None:
+        self.upserts.append((external_id, properties))
+        return external_id if external_id is not None else "CLI-NEW"
+
+
+class _通知の記録:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+        self.issues: list[dict[str, Any]] = []
+
+    def notify_new_record_created(self, **kwargs: Any) -> None:
+        self.created.append(kwargs)
+
+    def notify_new_record_issue(self, **kwargs: Any) -> None:
+        self.issues.append(kwargs)
+
+
+@pytest.fixture(name="新規作成を許可する", autouse=False)
+def _新規作成を許可する(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+
+
+def _新規作成のdispatcher(
+    store: SQLiteIdMappingStore,
+    シート: _シート,
+    *,
+    kintone: _新規レコードのkintone,
+    notifier: _通知の記録 | None = None,
+) -> Dispatcher:
+    return Dispatcher(
+        store,
+        {
+            Tool.NOTION: _新規ページを作るNotion(None),
+            Tool.KINTONE: kintone,
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+        slack_notifier=notifier,
+    )
+
+
+def _新規レコードのイベント() -> SyncEvent:
+    """IDマッピングにまだ載っていないkintoneレコードのWebhook。"""
+    return SyncEvent(
+        source_tool=Tool.KINTONE,
+        db_key="client_master",
+        external_id="62300",
+        occurred_at=NOW,
+        properties={},  # 新規作成では差分そのものは使わない（元レコードを取り直す）
+    )
+
+
+def test_kintone発の新規レコードでもシートの行ができる(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート
+) -> None:
+    """★ここが本題。Notionページだけ作って終わっていた。"""
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事", "TEL": "03-1234-5678"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert store.get("CLI-NEW") is not None, "IDマッピングが登録されていない"
+    assert シート.append_calls == 1, "★シートの行が作られていない"
+    (values,) = シート.rows.values()
+    assert values["取引先名"] == "新規商事"
+    assert values[SYNC_KEY_COLUMN] == "CLI-NEW", "同期キーが書かれていない（次回また重複する）"
+
+
+def test_新規レコードの行番号がIDマッピングに保存される(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート
+) -> None:
+    """保存しておかないと、次のイベントで毎回シートを読み直すことになる。"""
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+
+    dispatcher.dispatch(_新規レコードのイベント())
+
+    保存された行 = store.get("CLI-NEW").spreadsheet_row
+    assert 保存された行 is not None
+    assert シート.rows[保存された行]["取引先名"] == "新規商事"
+
+
+def test_新規レコードでも2回目のイベントで行は増えない(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート
+) -> None:
+    """新規作成で行を作った後、同じレコードの更新イベントが来ても追記に化けない。"""
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+    dispatcher.dispatch(_新規レコードのイベント())
+
+    dispatcher.dispatch(
+        SyncEvent(
+            source_tool=Tool.KINTONE,
+            db_key="client_master",
+            external_id="62300",
+            occurred_at=NOW + timedelta(minutes=1),
+            properties={"備考": "あとから追記"},
+        )
+    )
+
+    assert シート.append_calls == 1
+    (values,) = シート.rows.values()
+    assert values["備考"] == "あとから追記"
+    assert values["取引先名"] == "新規商事", "触っていない列が巻き戻っている"
+
+
+def test_行を作らない設定のdb_keyでは新規レコードでも行を作らない(
+    新規作成を許可する: None, monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteIdMappingStore, シート: _シート,
+) -> None:
+    """段階的な有効化は新規作成の経路にも効く。"""
+    monkeypatch.setenv(SPREADSHEET_ROW_CREATION_DB_KEYS_ENV_VAR, "project")
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped, "Notionページの作成まで止めている"
+    assert store.get("CLI-NEW") is not None
+    assert シート.append_calls == 0
+    assert シート.rows == {}
+
+
+def test_シートに書けなくても新規作成は成功として返しSlackへ上げる(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**Notionページと`IdMapping`は既にできている。**ここで失敗を返すと
+    kintoneがリトライし、重複ページを作りにいく経路を叩くことになる。
+    行が無いことは後から取り返せるので、成功として返したうえで人に知らせる。"""
+    def 追記に失敗する(*args: Any, **kwargs: Any) -> int:
+        raise requests.exceptions.ConnectionError("シートに繋がりません")
+
+    monkeypatch.setattr(シート, "append_row_with_sync_key", 追記に失敗する)
+    notifier = _通知の記録()
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=notifier)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert store.get("CLI-NEW") is not None, "Notionページだけできて迷子になっている"
+    assert len(notifier.issues) == 1, "行が作れなかったことが黙って落ちている"
+    assert notifier.issues[0]["reason"] == "spreadsheet_row_not_created"
+    # **`notion_page_id` は渡さない**（2026-09-03、クマ指摘）。渡すと通知に
+    # 「⚠️ 孤児ページの可能性あり」が無条件で付き、読んだ人が正規のページを
+    # アーカイブしかねない。ページIDは注意書き抜きで本文に載せる。
+    assert "notion_page_id" not in notifier.issues[0]
+    assert "CLI-NEW" in notifier.issues[0]["detail"]
+
+
+def test_シートへ書ける項目が無ければ同期キーだけの行は作らない(
+    新規作成を許可する: None, monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteIdMappingStore, シート: _シート,
+) -> None:
+    """変換の結果シート行きの項目が1つも残らないなら、空の行を作るより作らない方がよい。"""
+    # スキーマ側からシート同期の項目を無くす（＝流せる列が無い状態）。
+    シート行きが無いスキーマ = DatabaseSchema(
+        key="client_master",
+        display_name="取引先マスタ（テスト用）",
+        id_prefix="CLI",
+        kintone_key="取引先マスタ",
+        zoho_key="取引先",
+        zoho_api_module="Accounts",
+        spreadsheet_sheet_name="取引先マスタ",
+        properties=(
+            PropertyDefinition(
+                name="取引先名",
+                property_type=PropertyType.TITLE,
+                requirement=RequirementLevel.REQUIRED,
+                sync_scope=SyncScope.NOTION_ONLY,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.get_schema", lambda key: シート行きが無いスキーマ
+    )
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert シート.append_calls == 0
+    assert シート.rows == {}
+
+
+def test_Zoho発の新規レコードでもシートの行ができる(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート
+) -> None:
+    """kintoneと同じコードを通るが、経路として1本は固定しておく（おばさん指摘）。"""
+    zoho = _新規レコードのkintone({"Z-900": {"Account_Name": "新規商事"}})
+    dispatcher = Dispatcher(
+        store,
+        {
+            Tool.NOTION: _新規ページを作るNotion(None),
+            Tool.ZOHO: zoho,
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+    )
+
+    result = dispatcher.dispatch(
+        SyncEvent(
+            source_tool=Tool.ZOHO,
+            db_key="client_master",
+            external_id="Z-900",
+            occurred_at=NOW,
+            properties={},
+        )
+    )
+
+    assert not result.skipped
+    assert シート.append_calls == 1, "Zoho起点だと行が作られていない"
+    (values,) = シート.rows.values()
+    assert values["取引先名"] == "新規商事"
+
+
+def test_行が既にあるなら新規作成は何も書かない(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート
+) -> None:
+    """★シロクマのBLOCKER。**`IdMapping`を登録した瞬間から他のワーカーに見える。**
+
+    直後の更新Webhookが先に正しい行を作ったところへ、新規作成が持っている
+    作成時点のスナップショットを流すと、相手の新しい値を巻き戻す。
+    ここでは「別のワーカーが先に行を作り終えていた」状態を作って再現する。
+    """
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "仮"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+    # 別のワーカーが、新しい値で行を作り終えている。
+    シート.rows[2] = {"取引先名": "正式名称", "備考": "相手が書いたメモ", SYNC_KEY_COLUMN: "CLI-NEW"}
+    シート.append_calls = 0
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert シート.append_calls == 0, "行が2つできている"
+    assert シート.update_calls == 0, "★更新に化けて相手の値を上書きしている"
+    assert シート.rows[2]["取引先名"] == "正式名称", "★正式名称が「仮」へ巻き戻っている"
+    assert シート.rows[2]["備考"] == "相手が書いたメモ"
+    assert store.get("CLI-NEW").spreadsheet_row == 2, "行番号を拾い直していない"
+
+
+def test_行作成ロックが取れなければ行を作らずSlackへ上げる(
+    新規作成を許可する: None, monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteIdMappingStore, シート: _シート,
+) -> None:
+    """別のワーカーが作成中。ここで追記すると重複するので見送る。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 取れないロック(db_key: str, sync_key: str):
+        yield False
+
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.acquire_row_creation_lock", 取れないロック
+    )
+    notifier = _通知の記録()
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=notifier)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert シート.append_calls == 0
+    assert len(notifier.issues) == 1
+    assert notifier.issues[0]["reason"] == "spreadsheet_row_not_created"
+
+
+def test_ロックのDB接続が落ちても新規作成は成功として返す(
+    新規作成を許可する: None, monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteIdMappingStore, シート: _シート,
+) -> None:
+    """★シロクマとクマが独立に指摘した穴。
+
+    行作成ロックの先には`connect_for_advisory_lock()`＝Postgresへの生接続がある。
+    `psycopg`の例外は`ApiError`でも`RequestException`でもないため、当初の
+    絞った握り方では素通りしてWebhookが500になっていた。
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 壊れたロック(db_key: str, sync_key: str):
+        raise RuntimeError("psycopg.OperationalError 相当（DB接続そのものの失敗）")
+        yield True  # pragma: no cover
+
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.acquire_row_creation_lock", 壊れたロック
+    )
+    notifier = _通知の記録()
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=notifier)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped, "★Webhookが500になり、kintoneがリトライしてしまう"
+    assert store.get("CLI-NEW") is not None
+    assert len(notifier.issues) == 1, "★Slackにも上がらず、完全に無音で落ちている"
+
+
+def test_Slack通知が未設定でも行作成の失敗で落ちない(
+    新規作成を許可する: None, monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteIdMappingStore, シート: _シート,
+) -> None:
+    """`Dispatcher(slack_notifier=None)` の構成（ローカル・部分構成）。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 取れないロック(db_key: str, sync_key: str):
+        yield False
+
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.acquire_row_creation_lock", 取れないロック
+    )
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=None)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert シート.append_calls == 0
+
+
+def test_スキーマが引けなければ行を作らずSlackへ上げる(
+    新規作成を許可する: None, monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteIdMappingStore, シート: _シート,
+) -> None:
+    """更新経路の同じ見送りは`skipped_tools`経由でSlackへ上がるが、この経路は
+    `DispatchResult.properties`が空なので拾われない（おばさん指摘）。"""
+    呼ばれた回数 = {"n": 0}
+
+    def たまに引けない(key: str):
+        呼ばれた回数["n"] += 1
+        # 1回目は`_try_create_new_record()`の必須プロパティ判定で使うので通す。
+        if 呼ばれた回数["n"] >= 2:
+            raise KeyError(key)
+        return _2プロパティのスキーマ()
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", たまに引けない)
+    notifier = _通知の記録()
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=notifier)
+
+    result = dispatcher.dispatch(_新規レコードのイベント())
+
+    assert not result.skipped
+    assert シート.append_calls == 0, "どの列がシート行きか分からないまま行を作っている"
+    assert len(notifier.issues) == 1
+    assert notifier.issues[0]["reason"] == "spreadsheet_row_not_created"

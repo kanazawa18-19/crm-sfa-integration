@@ -873,15 +873,14 @@ class Dispatcher:
             )
             return DispatchResult(skipped=True, reason="new_record_creation_failed")
 
-        registration_error = self._register_new_record_mapping(
-            IdMapping(
-                notion_key=new_notion_key,
-                db_key=event.db_key,
-                kintone_id=event.external_id if event.source_tool is Tool.KINTONE else None,
-                zoho_id=event.external_id if event.source_tool is Tool.ZOHO else None,
-                last_synced_at=event.occurred_at,
-            )
+        new_mapping = IdMapping(
+            notion_key=new_notion_key,
+            db_key=event.db_key,
+            kintone_id=event.external_id if event.source_tool is Tool.KINTONE else None,
+            zoho_id=event.external_id if event.source_tool is Tool.ZOHO else None,
+            last_synced_at=event.occurred_at,
         )
+        registration_error = self._register_new_record_mapping(new_mapping)
         if registration_error is not None:
             self._handle_orphaned_notion_page(event, notion_target, new_notion_key, registration_error)
             return DispatchResult(skipped=True, reason="new_record_mapping_registration_failed")
@@ -901,7 +900,190 @@ class Dispatcher:
                 external_id=event.external_id,
                 notion_page_id=new_notion_key,
             )
+        # **ここでシートの行も作る**（2026-09-03）。理由は下のメソッドのdocstring参照。
+        self._append_spreadsheet_row_for_created_record(event, new_mapping, properties)
         return DispatchResult(skipped=False)
+
+    def _append_spreadsheet_row_for_created_record(
+        self, event: SyncEvent, mapping: IdMapping, properties: dict[str, Any]
+    ) -> None:
+        """kintone/Zoho発で新しく作ったレコードの行を、その場でシートにも**追記する**
+        （2026-09-03）。
+
+        **この経路が抜けていた。** `_try_create_new_record()`はNotionページを作って
+        `IdMapping`を登録したら、そこで`DispatchResult(skipped=False)`を返して終わっていた。
+        他ツール（シート）へは一度も書かない。
+
+        ```
+           kintone で新規レコード
+                ▼ Round2
+           Notion にページができる ＋ IDマッピングが登録される
+                ▼
+           ✖ シートの行は作られないまま返る      ← ここ
+                ▼
+           Notion Webhook も来ない（page.created は購読しておらず、
+           同期ボット自身の編集は NOTION_SYNC_BOT_ID で捨てられる）
+                ▼
+           そのレコードは**次に誰かが更新するまで永久に行が無い**
+        ```
+
+        2026-09-02に直した「1列だけの行ができる」（`_spreadsheet_properties_for_new_row()`）は
+        **行を作る経路に入った後**の話で、こちらは**その経路に入らない**という別の穴。
+        9/2の日中にkintone起点でできた24件が全て行なしだったのはこれが原因
+        （`verify_spreadsheet_backfill.py`で実測）。
+
+        ■ 使う値は「今Notionページを作るのに使ったもの」そのもの
+
+        新規作成では`build_notion_properties_for_new_record()`が元レコード全体から
+        変換した全項目を持っている。**Notionを読み直す必要はない**（ページはミリ秒前に
+        この値で作ったばかり）。シートへ流す項目の選び方は更新経路と同じ規則に従う
+        （`_spreadsheet_row_properties()`に一本化。リレーションは必ず落とす）。
+
+        ■ **追記しかしない**（`append_only=True`。2026-09-03、シロクマのBLOCKER対応）
+
+        当初は`_write_spreadsheet_value()`の`properties`にも全項目を渡していた。
+        **これは事故になる。**`IdMapping`を登録した瞬間から他のワーカーにも見えるため、
+        直後の更新Webhookが先に行を作りうる。そこへ古いスナップショットを流すと、
+        相手が書いた新しい値を巻き戻す（作成時「取引先名=仮」→直後に正式名称へ修正、
+        という日常的な入力で踏む）。行が既にあるなら**何も書かない**のが正しい。
+
+        ■ 失敗しても Round2 は成功として返す
+
+        Notionページと`IdMapping`は既にできている。ここで例外を投げると
+        Webhookが500になり、kintone/Zoho側のリトライで`_try_create_new_record()`へ
+        再突入する（`_resolve_mapping()`で止まるが、わざわざ危ない経路を叩く理由が無い）。
+        行が無いことは後から取り返せる——`verify_spreadsheet_backfill.py`の「不足」に出るし、
+        バックフィルでも次の更新イベントでも作り直せる。**黙って落とさず、Slackへ上げる。**
+
+        **例外は`Exception`で広く受ける**（2026-09-03、シロクマとクマが独立に指摘）。
+        当初は`ApiError`と`RequestException`だけに絞っていたが、この先には
+        `acquire_row_creation_lock()`→`connect_for_advisory_lock()`という**Postgresへの
+        生接続**があり、`psycopg`の例外はどちらにも当たらず素通りしていた。
+        「握りすぎるとバグを隠す」という`_try_create_new_record()`冒頭の判断とは前提が違う。
+        あちらは**まだ何も作っていない**段階なので500で気づけるが、ここは**もう作り終えた
+        後**で、500にしても得られるのはリトライだけ。`SkipTrackingDispatcher`も
+        `DispatchResult.properties`しか見ないため、この経路の失敗は拾えない。
+        """
+        target = self._targets.get(Tool.SPREADSHEET)
+        if target is None or not _supports_sync_key(target):
+            # 同期キーで追記できないターゲットは、そもそも行を作れない。
+            return
+        if not _row_creation_allowed(target, mapping.db_key):
+            # 行を作らない設定のdb_key。書きにいっても`append_with_sync_key()`が弾く。
+            return
+
+        try:
+            schema = get_schema(mapping.db_key)
+        except (KeyError, ValueError):
+            # スキーマが引けないとどの項目がシート行きか判断できない。
+            # **欠けた行を作るくらいなら作らない**（2026-09-02と同じ判断）。
+            # 更新経路の同じ見送りは`skipped_tools`経由でSlackへ上がるが、この経路は
+            # `DispatchResult.properties`が空なので拾われない。ここで直接上げる
+            # （2026-09-03、おばさん指摘）。
+            logger.error(
+                "new record creation: db_key=%r のスキーマが引けません。"
+                "**欠けた行を作らないため、シートには書きません** (notion_key=%r)",
+                mapping.db_key,
+                mapping.notion_key,
+                exc_info=True,
+            )
+            self._notify_new_record_row_not_created(
+                event, mapping, "db_keyのスキーマが引けませんでした（設定漏れ・デプロイ不整合）"
+            )
+            return
+
+        row_properties = _spreadsheet_row_properties(properties, schema, mapping.db_key)
+        if not row_properties:
+            # シートへ流せる非リレーション項目が1つも無い。同期キーだけの行になるので作らない。
+            logger.info(
+                "new record creation: シートへ書ける項目が無いため行は作りません "
+                "(db_key=%r, notion_key=%r)",
+                mapping.db_key,
+                mapping.notion_key,
+            )
+            return
+
+        try:
+            # 更新後の`mapping`（行番号入り）は捨ててよい。行番号の保存は
+            # `_register_spreadsheet_row()`がストアへ直接書くので、ここで受け取った
+            # オブジェクトを持ち回る先が無い（このメソッドで新規作成は終わる）。
+            written, _ = self._write_spreadsheet_value(
+                target,
+                mapping,
+                row_properties,
+                new_row_properties=row_properties,
+                append_only=True,
+            )
+        except Exception as exc:  # noqa: BLE001 (上のdocstring「例外は広く受ける」参照)
+            logger.warning(
+                "new record creation: シートへの行作成に失敗しました "
+                "(db_key=%r, source_tool=%s, external_id=%r, notion_key=%r)",
+                mapping.db_key,
+                event.source_tool.value,
+                event.external_id,
+                mapping.notion_key,
+                exc_info=True,
+            )
+            self._notify_new_record_row_not_created(event, mapping, f"error={exc!r}")
+            return
+
+        if not written:
+            # 行作成ロックが取れなかった（別ワーカーが作成中）・ターゲットが書き込みを
+            # 見送った等。次のイベントかバックフィルで回収できるが、黙らせない。
+            logger.warning(
+                "new record creation: シートへの行作成が見送られました "
+                "(db_key=%r, source_tool=%s, external_id=%r, notion_key=%r)",
+                mapping.db_key,
+                event.source_tool.value,
+                event.external_id,
+                mapping.notion_key,
+            )
+            self._notify_new_record_row_not_created(
+                event,
+                mapping,
+                "別のワーカーが同じレコードの行を作成中だったか、シート側が書き込みを"
+                "見送りました（行作成ロックを取れなかった等）",
+            )
+            return
+
+        logger.info(
+            "new record creation: シートの行も作りました "
+            "(db_key=%r, source_tool=%s, external_id=%r, notion_key=%r, 項目数=%d)",
+            mapping.db_key,
+            event.source_tool.value,
+            event.external_id,
+            mapping.notion_key,
+            len(row_properties),
+        )
+
+    def _notify_new_record_row_not_created(
+        self, event: SyncEvent, mapping: IdMapping, detail: str
+    ) -> None:
+        """新規レコードのシート行が作れなかったことをSlackへ上げる。
+
+        **`notion_page_id`は渡さない**（2026-09-03、クマ指摘）。`notify_new_record_issue()`は
+        それが渡ると「⚠️ 孤児ページの可能性あり」を無条件で付ける。ここでのページは
+        `IdMapping`まで登録済みの**正規のページ**で、孤児ではない。読んだ人が
+        `mapping_registration_failed`と同じ対応（アーカイブ）を取ると、そのレコードの
+        同期が本当に壊れる。ページIDは本文の中に、注意書き抜きで載せる。
+        """
+        if self._slack_notifier is None:
+            return
+        try:
+            self._slack_notifier.notify_new_record_issue(
+                db_key=mapping.db_key,
+                source_tool=event.source_tool,
+                external_id=event.external_id,
+                reason="spreadsheet_row_not_created",
+                detail=(
+                    "Notionページ（"
+                    f"{mapping.notion_key}"
+                    "）は正常に作成・登録できましたが、スプレッドシートの行を"
+                    f"作れませんでした。{detail}"
+                ),
+            )
+        except Exception:  # noqa: BLE001 (通知の失敗で新規作成を落とさない)
+            logger.warning("new record creation: 行未作成のSlack通知に失敗しました", exc_info=True)
 
     def _handle_uncertain_notion_page_creation(self, event: SyncEvent, error: Exception) -> None:
         """Notionページ作成API呼び出し（`notion_target.upsert_record()`）自体が例外を
@@ -1221,21 +1403,10 @@ class Dispatcher:
             )
             return _without_spreadsheet(payload_by_tool), None
 
-        # シートへ流す項目だけを埋める。Notionにしか無いメタ情報
-        # （`NOTION_LAST_EDITED_TIME_KEY`等）やスキーマ外のプロパティは持ち込まない。
-        # `record`に無いキーは飛ばす。落ちるのはロールアップ・unique_idのような
-        # **読み取り専用型だけ**で、それらは`SyncScope.INTERNAL`固定のため
-        # `properties_synced_to(SPREADSHEET)`に最初から入らない（`db_schema/base.py`）。
-        # **リレーションは`drop_relation_properties()`で必ず落とす。**
-        # 落とされるものを数に入れると、実際には1列だけの行なのに「補えた」と誤認する
-        # （2026-09-02、クマ指摘）。落とす基準は書き込み側と同じ関数に一本化する。
-        filled = drop_relation_properties(
-            {
-                prop.name: record[prop.name]
-                for prop in schema.properties_synced_to(Tool.SPREADSHEET)
-                if prop.name not in properties and prop.name in record
-            },
-            mapping.db_key,
+        # シートへ流す項目だけを埋める（選び方は`_spreadsheet_row_properties()`に一本化。
+        # 新規レコード作成の経路と同じ規則を使う）。イベントで既に入っている項目は除く。
+        filled = _spreadsheet_row_properties(
+            record, schema, mapping.db_key, exclude=properties
         )
         if not filled:
             # **「Notionが空だった」とは限らない。** 正確には「追加できる非リレーション項目が
@@ -1481,9 +1652,30 @@ class Dispatcher:
         properties: dict[str, Any],
         *,
         new_row_properties: dict[str, Any] | None = None,
+        append_only: bool = False,
     ) -> tuple[bool, IdMapping]:
         """スプレッドシートへの書き込み。**行番号ではなく同期キーで行を確定させる。**
 
+        ■ `append_only`（2026-09-03、シロクマのBLOCKER対応）
+
+        「行が無ければ作る。**あるなら何もしない**」に倒すための口。
+        新規レコード作成（`_append_spreadsheet_row_for_created_record()`）だけが使う。
+
+        通常の更新は「差分だけを書く」ので、行が見つかったら更新に化けてよい。
+        だが新規作成が持っているのは**作成時点のフルスナップショット**で、これを
+        更新に流すと事故になる。
+
+        ```
+           W1: 新規作成 …… kintoneから取得（取引先名=「仮」）→ Notionページ作成
+                            → IdMapping登録 ★ここから他ワーカーにも見える
+           W2: 直後の更新 …… 「取引先名=正式名称」に修正され、行を作る（正式名称）
+           W1: 続き …… 同期キーで引くと W2 の行が見つかる
+                        → 更新に化けて「仮」で上書き ＝ 正式名称が消える
+        ```
+
+        `append_only=True` なら、行が見つかった時点で書かずに成功として返す
+        （行はもう存在する＝目的は果たされている）。行番号だけ登録し直す。
+        
         行番号を恒久IDとして信用すると、次の2つで壊れる（2026-08-31、
         Gemini・ChatGPTのレビュー指摘）。
 
@@ -1525,6 +1717,8 @@ class Dispatcher:
                 )
 
         if row is not None:
+            if append_only:
+                return True, self._row_already_exists(mapping, row)
             result = target.update_with_sync_key(str(row), properties, sync_key, db_key=db_key)
             if result is None:
                 return False, mapping
@@ -1546,6 +1740,8 @@ class Dispatcher:
             # ロックを取ってから、もう一度だけ探す。待っている間に相手が作り終えている。
             row = target.find_row_by_sync_key(sync_key, db_key=db_key)
             if row is not None:
+                if append_only:
+                    return True, self._row_already_exists(mapping, row)
                 result = target.update_with_sync_key(
                     str(row), properties, sync_key, db_key=db_key
                 )
@@ -1566,6 +1762,23 @@ class Dispatcher:
         if created is None:
             return False, mapping
         return True, self._register_spreadsheet_row(mapping, created)
+
+    def _row_already_exists(self, mapping: IdMapping, row: int) -> IdMapping:
+        """`append_only` で行が既にあったときの後始末（2026-09-03）。
+
+        **書かない。** 相手が書いた値が、こちらの古いスナップショットより新しいため。
+        行番号だけ登録して、次回以降の読み直しを減らす。
+        """
+        logger.info(
+            "spreadsheet: 行は既にあるので追記しません（別の経路が先に作りました）"
+            " (notion_key=%r, db_key=%r, row=%d)",
+            mapping.notion_key,
+            mapping.db_key,
+            row,
+        )
+        if mapping.spreadsheet_row == row:
+            return mapping
+        return self._register_spreadsheet_row(mapping, str(row))
 
     def _register_spreadsheet_row(self, mapping: IdMapping, row: str) -> IdMapping:
         """追記されたスプレッドシートの行番号を`IdMapping`へ保存し、更新後のmappingを返す。
@@ -1652,6 +1865,47 @@ def _build_update_skip_detail(
             "この同期イベントは一切適用されていません（書き込みは行われていません）。"
         )
     return f"{status} error={exc!r}"
+
+
+def _spreadsheet_row_properties(
+    source: Mapping[str, Any],
+    schema: Any,
+    db_key: str,
+    *,
+    exclude: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`source`から**シートの1行に流してよい項目だけ**を取り出す（2026-09-03に一本化）。
+
+    「シートへ流してよい項目とは何か」は業務ルールで、2箇所に散らすと片方だけ直して
+    片方を忘れる（2026-09-03、おばさん指摘）。使うのは次の2つ。
+
+    ```
+       _spreadsheet_properties_for_new_row()          既にあるレコードの行を作るとき
+         source=Notionページの現在値 / exclude=イベントで既に入っている項目
+
+       _append_spreadsheet_row_for_created_record()   新規作成でその場の行を作るとき
+         source=Notionページを作るのに使った全項目 / exclude=なし
+    ```
+
+    落とすものは2種類。
+
+    1. **スキーマがシートへ同期しない項目**（`properties_synced_to`）。Notionにしか無い
+       メタ情報やスキーマ外のプロパティを持ち込まない。`source`に無いキーも飛ばす。
+       落ちるのはロールアップ・unique_idのような読み取り専用型だけで、それらは
+       `SyncScope.INTERNAL`固定のため最初からこの一覧に入らない（`db_schema/base.py`）。
+    2. **リレーション**（`drop_relation_properties`）。書き込み側と同じ関数を使う。
+       落とされるものを数に入れると、実際には1列だけの行なのに「補えた」と誤認する
+       （2026-09-02、クマ指摘）。
+    """
+    exclude = exclude or {}
+    return drop_relation_properties(
+        {
+            prop.name: source[prop.name]
+            for prop in schema.properties_synced_to(Tool.SPREADSHEET)
+            if prop.name not in exclude and prop.name in source
+        },
+        db_key,
+    )
 
 
 def _without_spreadsheet(
