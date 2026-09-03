@@ -157,6 +157,7 @@ def insert_email_log(
     sent_at: datetime,
     incident_score: int | None = None,
     incident_priority: str | None = None,
+    gmail_thread_id: str | None = None,
 ) -> None:
     """`gmailMessageId`の一意制約により、既に記録済みのメールを渡すと例外になる
     (呼び出し元がemail_log_exists()で事前に重複排除する設計、meeting_syncの
@@ -171,9 +172,9 @@ def insert_email_log(
             """
             INSERT INTO "EmailLog"
                 (id, "contactPageId", "contactEmail", "repEmail", "gmailMessageId",
-                 direction, subject, snippet, "sentAt", "createdAt",
+                 "gmailThreadId", direction, subject, snippet, "sentAt", "createdAt",
                  "incidentScore", "incidentPriority")
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s)
             """,
             (
                 uuid.uuid4().hex,
@@ -181,6 +182,7 @@ def insert_email_log(
                 contact_email,
                 rep_email,
                 gmail_message_id,
+                gmail_thread_id,
                 direction,
                 subject,
                 snippet,
@@ -216,6 +218,7 @@ class EmailLogRow:
     subject: str | None
     snippet: str | None
     sent_at: datetime
+    gmail_thread_id: str | None = None
 
 
 def insert_email_logs(rows: list[EmailLogRow]) -> int:
@@ -243,8 +246,8 @@ def insert_email_logs(rows: list[EmailLogRow]) -> int:
             """
             INSERT INTO "EmailLog"
                 (id, "contactPageId", "contactEmail", "repEmail", "gmailMessageId",
-                 direction, subject, snippet, "sentAt", "createdAt")
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                 "gmailThreadId", direction, subject, snippet, "sentAt", "createdAt")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT ("gmailMessageId") DO NOTHING
             """,
             [
@@ -254,6 +257,7 @@ def insert_email_logs(rows: list[EmailLogRow]) -> int:
                     r.contact_email,
                     r.rep_email,
                     r.gmail_message_id,
+                    r.gmail_thread_id,
                     r.direction,
                     r.subject,
                     r.snippet,
@@ -278,8 +282,21 @@ def fetch_email_events_by_contact_page_ids(page_ids: list[str]) -> list[dict[str
         return []
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT "contactPageId", "contactEmail", direction, "sentAt" '
+            'SELECT "contactPageId", "contactEmail", "gmailThreadId", direction, "sentAt" '
             'FROM "EmailLog" WHERE "contactPageId" = ANY(%s) ORDER BY "sentAt"',
             (page_ids,),
         )
         return cur.fetchall()
+
+
+def fetch_oldest_email_sent_at() -> datetime | None:
+    """`EmailLog`の最も古い`sentAt`を返す（1行も無ければNone、2026-09-03）。
+
+    過去分の取り込み（`scripts/backfill_gmail_history.py`）が「通常同期が面倒を見ている
+    期間」の始まりを知るために使う。ここより前だけを取り込めば、同じメールを取り合って
+    通常同期の副作用（インシデント判定・Notion更新・外部通知）を打ち消すことがない。
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT min("sentAt") AS oldest FROM "EmailLog"')
+        row = cur.fetchone()
+        return row["oldest"] if row else None

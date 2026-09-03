@@ -50,7 +50,11 @@ export function replyWindowCellText(
   const window = timing?.timing;
   if (!timing || !window || window.sample_size === 0) return null;
   return {
-    value: window.top_buckets.map((b) => b.label).join(" / ") || "-",
+    // 受信が散らばっているときは順位に意味が無いので「傾向なし」と書く。
+    // 同数の先頭を機械的にトップとして見せると、無い傾向をあると読ませてしまう。
+    value: window.is_flat
+      ? "傾向なし"
+      : window.top_buckets.map((b) => b.label).join(" / ") || "-",
     weekdays: window.top_weekdays.join("・"),
     sample: sampleCountLabel(window.sample_size, window.confidence, window.confidence_label),
     title:

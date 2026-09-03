@@ -18,8 +18,14 @@ from src.analytics.reply_timing import (
 UTC = timezone.utc
 
 
-def _event(direction: str, *, at: datetime, email: str = "a@example.com") -> EmailEvent:
-    return EmailEvent(contact_email=email, direction=direction, sent_at=at)
+def _event(
+    direction: str,
+    *,
+    at: datetime,
+    email: str = "a@example.com",
+    thread: str | None = None,
+) -> EmailEvent:
+    return EmailEvent(contact_email=email, direction=direction, sent_at=at, thread_id=thread)
 
 
 def _utc(month: int, day: int, hour: int, minute: int = 0) -> datetime:
@@ -371,3 +377,112 @@ def test_build_insights_groups_blank_emails_together_without_crashing() -> None:
         ]
     )
     assert insights[""].lag.sample_size == 1
+
+
+# --- スレッド単位の返信判定（ChatGPTレビュー指摘、2026-09-03） -------------------------------
+
+
+def test_pair_replies_does_not_pair_across_threads() -> None:
+    """月曜に送った見積書と、火曜に届いた別件のメールをペアにしない。
+
+    スレッドを見ないと、本当の返信（金曜・4日）が消えて1日として記録される。
+    """
+    pairs = pair_replies(
+        [
+            _event("outbound", at=_utc(9, 1, 9), thread="t-見積"),
+            _event("inbound", at=_utc(9, 2, 9), thread="t-請求"),  # 別件
+            _event("inbound", at=_utc(9, 5, 9), thread="t-見積"),  # 本当の返信
+        ]
+    )
+    assert [p.lag_seconds for p in pairs] == [4 * 24 * 3600]
+
+
+def test_pair_replies_tracks_each_thread_independently() -> None:
+    pairs = pair_replies(
+        [
+            _event("outbound", at=_utc(9, 1, 9), thread="t1"),
+            _event("outbound", at=_utc(9, 1, 10), thread="t2"),
+            _event("inbound", at=_utc(9, 1, 11), thread="t2"),  # 1時間
+            _event("inbound", at=_utc(9, 1, 12), thread="t1"),  # 3時間
+        ]
+    )
+    assert sorted(p.lag_seconds for p in pairs) == [3600, 3 * 3600]
+
+
+def test_pair_replies_falls_back_to_time_order_when_thread_is_unknown() -> None:
+    """2026-09-03より前に記録した行はスレッドidを持たない。捨てずに従来どおり数える。"""
+    pairs = pair_replies(
+        [
+            _event("outbound", at=_utc(9, 1, 9)),
+            _event("inbound", at=_utc(9, 1, 10)),
+        ]
+    )
+    assert [p.lag_seconds for p in pairs] == [3600]
+
+
+def test_pair_replies_keeps_unknown_thread_separate_from_known_threads() -> None:
+    """スレッドidの有無が混ざっても、互いのペアを奪い合わない。"""
+    pairs = pair_replies(
+        [
+            _event("outbound", at=_utc(9, 1, 9), thread="t1"),
+            _event("outbound", at=_utc(9, 1, 10)),  # スレッド不明
+            _event("inbound", at=_utc(9, 1, 11), thread="t1"),  # t1への返信（2時間）
+        ]
+    )
+    assert [p.lag_seconds for p in pairs] == [2 * 3600]
+
+
+def test_pair_replies_ignores_inbound_on_a_thread_we_never_sent_to() -> None:
+    pairs = pair_replies(
+        [
+            _event("outbound", at=_utc(9, 1, 9), thread="t1"),
+            _event("inbound", at=_utc(9, 1, 10), thread="t2"),
+        ]
+    )
+    assert pairs == []
+
+
+def test_reply_timing_profile_reports_no_trend_when_the_distribution_is_flat() -> None:
+    """24件が8つの時間帯に3件ずつ。件数は十分でも「傾向」は無い。"""
+    events = []
+    for bucket in range(8):
+        for _ in range(3):
+            # 各バケットの先頭時刻（JST）に3件ずつ置く
+            jst_hour = bucket * 3
+            utc_hour = (jst_hour - 9) % 24
+            day = 1 if jst_hour >= 9 else 2
+            events.append(_event("inbound", at=_utc(9, day, utc_hour)))
+
+    profile = reply_timing_profile(events)
+
+    assert profile.sample_size == 24
+    assert profile.confidence == "high"
+    assert profile.is_flat is True
+    assert profile.top_buckets == ()
+
+
+def test_reply_timing_profile_reports_a_trend_when_one_bucket_stands_out() -> None:
+    events = [_event("inbound", at=_utc(9, 1, 3)) for _ in range(5)]
+    events += [_event("inbound", at=_utc(9, 1, 0)) for _ in range(2)]
+
+    profile = reply_timing_profile(events)
+
+    assert profile.is_flat is False
+    assert [b.label for b in profile.top_buckets][0] == "12-15時"
+
+
+def test_reply_timing_profile_single_bucket_is_not_flat() -> None:
+    profile = reply_timing_profile([_event("inbound", at=_utc(9, 1, 3))])
+    assert profile.is_flat is False
+    assert len(profile.top_buckets) == 1
+
+
+def test_reply_timing_profile_ties_at_the_top_hide_the_weekday_ranking() -> None:
+    """曜日も同じ扱い。同数なら月曜が先、という並びを「傾向」として見せない。"""
+    profile = reply_timing_profile(
+        [
+            _event("inbound", at=_utc(9, 1, 3)),  # 火
+            _event("inbound", at=_utc(9, 2, 3)),  # 水
+        ]
+    )
+    assert profile.top_weekdays == ()

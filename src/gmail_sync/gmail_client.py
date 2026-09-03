@@ -138,6 +138,14 @@ class GmailMessage:
     subject: str | None
     date_header: str | None
     snippet: str | None
+    # 同じやり取りの束(2026-09-03、ChatGPTレビュー指摘)。返信ラグを「同じスレッド内の
+    # 送信→受信」に限るために使う。これが無いと、別件で届いたメールを直前の送信への
+    # 返信として数えてしまい、複数案件を並行している相手ほど中央値が短く出る。
+    thread_id: str | None = None
+    # Gmailが記録している受信/送信時刻(epochミリ秒、2026-09-03、ChatGPTレビュー指摘)。
+    # `Date:`ヘッダーは送信側が作る値で、PCの時計ずれ・遅延配送・壊れた書式でズレる。
+    # 「相手のメールが実際に届いた時間帯」を数えるならこちらが正しい。
+    internal_date_ms: str | None = None
 
 
 def _header_value(headers: list[dict[str, Any]], name: str) -> str | None:
@@ -244,4 +252,6 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
         subject=_header_value(headers, "Subject"),
         date_header=_header_value(headers, "Date"),
         snippet=data.get("snippet"),
+        thread_id=data.get("threadId"),
+        internal_date_ms=data.get("internalDate"),
     )

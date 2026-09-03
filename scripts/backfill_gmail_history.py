@@ -66,11 +66,14 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from datetime import date, datetime, timezone
+from typing import Iterable, Sequence, TypeVar
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -78,6 +81,10 @@ from src.db_schema.registry import get_schema
 from src.gmail_sync import db, gmail_client, sync
 from src.gmail_sync.token_crypto import decrypt_token
 from src.sync_engine.clients.notion_client import HttpNotionClient, parse_notion_property_value
+
+_T = TypeVar("_T")
+
+JST = ZoneInfo("Asia/Tokyo")
 
 logger = logging.getLogger("backfill_gmail_history")
 
@@ -88,14 +95,24 @@ _EMAIL_PROPERTY = "メールアドレス"
 # 15件で概ね1,000〜1,300文字になる。クエリが長すぎるとGmail側が400を返すので欲張らない。
 _ADDRESSES_PER_QUERY = 15
 
-# `messages.get`の並列数。Gmailのユーザー単位クォータは250units/秒、`messages.get`は
-# 5unitsなので理論上は50件/秒まで。429を出させても`request_with_retry`が待つだけ損なので
-# 控えめにする（xargs -Pではなく必ずThreadPoolExecutorで組む、は運用ルール）。
+# `messages.get`の並列数。
+#
+# **「250units/秒だから50件/秒まで出せる」という前提はもう成り立たない**
+# （ChatGPTレビュー指摘、2026-09-03）。Gmail APIのクォータ体系は2025〜2026年に
+# 変わっており、新体系では`messages.get`は概ね5件/秒が目安。2025年11月〜2026年4月に
+# 使っていた既存プロジェクトは旧クォータのまま、という猶予もあるため、
+# **このプロジェクトがどちらかは実際に確かめるまで分からない。**
+# 8は「429が出たら`request_with_retry`が待つ」前提の控えめな値。
+# 遅い・429が多いようなら下げる（xargs -Pではなく必ずThreadPoolExecutorで組む、は運用ルール）。
 _FETCH_WORKERS = 8
 
 # `messages.list`（検索）の並列数。1バッチ＝アドレス15件ぶんの検索で、3万件だと
 # 2,000バッチを超える。逐次だと検索だけで15分以上かかるので並列に投げる。
 _SEARCH_WORKERS = 8
+
+# 1回のINSERTに載せる行数。数万件を1トランザクションで投げるとメモリとDB側の
+# トランザクションが膨らむため割る（Geminiレビュー指摘、2026-09-03）。
+_INSERT_BATCH_SIZE = 500
 
 
 @dataclass
@@ -112,24 +129,53 @@ class RepResult:
     errors: int
 
 
+# 索引キャッシュの寿命。これを超えたら作り直す。
+#
+# **古いキャッシュは「取りこぼす」だけでなく「間違った連絡先に履歴を付ける」**
+# （ChatGPTレビュー指摘、2026-09-03）。キャッシュ作成後にNotion側でアドレスの
+# 持ち主が変わっていると、そのメールを**別人の履歴として恒久的に保存**してしまう。
+# 取り込みは1〜2時間で終わる想定なので、24時間を超えたキャッシュは使わない。
+_INDEX_CACHE_MAX_AGE_HOURS = 24
+
+
 def load_or_build_contact_index(cache_path: str | None) -> dict[str, str]:
-    """索引をキャッシュから読む。無ければ作って保存する。
+    """索引をキャッシュから読む。無い・古い場合は作って保存する。
 
     Notion連絡先DBは3万件超あり、全件取得に約6分かかる（2026-09-03実測）。
     途中で落ちたときの流し直しでここを毎回待つのは無駄なので、ファイルに残す。
-    **キャッシュは連絡先の追加・メールアドレス変更に追随しない。** 最新にしたいときは
-    ファイルを消してから流すこと。
     """
     if cache_path and os.path.exists(cache_path):
-        with open(cache_path, encoding="utf-8") as f:
-            index: dict[str, str] = json.load(f)
-        logger.info("索引をキャッシュから読み込んだ: %s（%d件）", cache_path, len(index))
-        return index
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                payload = json.load(f)
+            built_at = datetime.fromisoformat(payload["built_at"])
+            index: dict[str, str] = payload["index"]
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            logger.warning("索引キャッシュを読めなかったので作り直す: %s", cache_path)
+        else:
+            age_hours = (datetime.now(timezone.utc) - built_at).total_seconds() / 3600
+            if age_hours <= _INDEX_CACHE_MAX_AGE_HOURS:
+                logger.info(
+                    "索引をキャッシュから読み込んだ: %s（%d件・%.1f時間前）",
+                    cache_path,
+                    len(index),
+                    age_hours,
+                )
+                return index
+            logger.warning(
+                "索引キャッシュが古い（%.1f時間前 > %d時間）ので作り直す",
+                age_hours,
+                _INDEX_CACHE_MAX_AGE_HOURS,
+            )
 
     index = build_contact_index()
     if cache_path:
         with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False)
+            json.dump(
+                {"built_at": datetime.now(timezone.utc).isoformat(), "index": index},
+                f,
+                ensure_ascii=False,
+            )
         logger.info("索引を保存した: %s", cache_path)
     return index
 
@@ -160,19 +206,90 @@ def build_contact_index() -> dict[str, str]:
     return index
 
 
-def _chunks(items: Sequence[str], size: int) -> Iterable[Sequence[str]]:
+def _chunks(items: Sequence[_T], size: int) -> Iterable[Sequence[_T]]:
+    """メールアドレスの列にも、追記する行の列にも使う。"""
     for start in range(0, len(items), size):
         yield items[start : start + size]
 
 
-def _build_query(addresses: Sequence[str], *, days: int) -> str:
-    """`{from:a to:a cc:a …} newer_than:Nd -in:spam -in:trash`を組み立てる。
+def _build_query(addresses: Sequence[str], *, days: int, before: date) -> str:
+    """`{from:a to:a …} newer_than:Nd before:YYYY/MM/DD -in:spam -in:trash`を組み立てる。
 
-    Gmailの`{}`はORの意味。bccは検索対象にできないため、こちらがbccだけで送った
-    メールは拾えない（1:1の営業メールでは稀なので割り切る）。
+    ■ `before` は必須（★これが無いと本番の通知が黙って止まる）
+
+    `newer_than:365d`だけだと**今日のメールまで対象**になる。取り込みが先に
+    `EmailLog`へ入れてしまうと、直後に走る通常同期の`_process_message_ref()`が
+    冒頭の`email_log_exists()`でTrueを返して即座に抜ける。
+
+    ```
+       10:00     顧客から重大なクレームが届く
+       10:00:10  取り込みが先に見つけて EmailLog へ（インシデント判定はしない）
+       10:01     通常同期が同じメールを処理 → 既に在るので即 return
+                 → インシデント検知されない
+                 → Notionの「最終メール日時」も更新されない
+                 → web-engagement-tool へも通知されない
+    ```
+
+    「副作用を起こさない」つもりが、**正常な副作用を打ち消す**状態になる
+    （ChatGPTレビューのBLOCKER指摘、2026-09-03）。そのため通常同期が面倒を見ている
+    期間とは**絶対に重ならない**ところで打ち切る。
+
+    ■ `cc:` は入れない
+
+    突合側（`classify_message()`）はFrom/Toヘッダーしか見ていない。検索だけ`cc:`を
+    含めても、当たったメールは突合で必ず落ちる＝`messages.get`を無駄に呼ぶだけになる
+    （ChatGPTレビュー指摘）。**検索条件と突合条件を揃える。**
+    連絡先がCCにしか居ないメールを拾いたくなったら、突合側から直すこと。
+
+    bccも検索できないため、こちらがbccだけで送ったメールは拾えない。
     """
-    terms = " ".join(f"from:{a} to:{a} cc:{a}" for a in addresses)
-    return f"{{{terms}}} newer_than:{days}d -in:spam -in:trash"
+    terms = " ".join(f"from:{a} to:{a}" for a in addresses)
+    return (
+        f"{{{terms}}} newer_than:{days}d "
+        f"before:{before.year}/{before.month}/{before.day} -in:spam -in:trash"
+    )
+
+
+def live_sync_coverage_start() -> date | None:
+    """通常同期が面倒を見ている期間の始まり（＝`EmailLog`の最も古い日時、JST）。
+
+    ここより前だけを取り込めば、通常同期と同じメールを奪い合うことがない。
+    `EmailLog`が空なら`None`（呼び出し側が`--before`を要求する）。
+    """
+    oldest = db.fetch_oldest_email_sent_at()
+    if oldest is None:
+        return None
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    return oldest.astimezone(JST).date()
+
+
+class _AccessToken:
+    """アクセストークンを、期限が来たら黙って取り直すホルダー（2026-09-03）。
+
+    3万件のアドレスを検索し、当たったメールを全部取りに行くと**1担当で1時間を超えうる**。
+    最初に1回だけ`refresh_access_token()`する作りだと、途中でトークンが切れて
+    そこから先が全部401で落ちる（ChatGPTレビュー指摘）。
+
+    Googleのアクセストークンの寿命は1時間なので、余裕を見て45分で取り直す。
+    複数のワーカースレッドから呼ばれるためロックで囲う。
+    """
+
+    _TTL_SECONDS = 45 * 60
+
+    def __init__(self, refresh_token: str) -> None:
+        self._refresh_token = refresh_token
+        self._lock = threading.Lock()
+        self._token: str | None = None
+        self._issued_at = 0.0
+
+    def __call__(self) -> str:
+        with self._lock:
+            now = time.monotonic()
+            if self._token is None or now - self._issued_at > self._TTL_SECONDS:
+                self._token = gmail_client.refresh_access_token(self._refresh_token)
+                self._issued_at = now
+            return self._token
 
 
 def search_message_ids(access_token: str, query: str) -> list[str]:
@@ -194,6 +311,7 @@ def backfill_rep(
     contact_index: dict[str, str],
     existing_ids: set[str],
     days: int,
+    before: date,
     apply: bool,
 ) -> RepResult:
     """営業担当1名分を取り込む。
@@ -203,7 +321,7 @@ def backfill_rep(
     読み書きになって集計がわずかにズレる（挿入データ自体は壊れないが、
     ログの「エラーN件」を信用できなくなる）。
     """
-    access_token = gmail_client.refresh_access_token(refresh_token)
+    token = _AccessToken(refresh_token)
     internal_domains = sync.internal_domains_from_env()
     addresses = sorted(contact_index)
 
@@ -227,7 +345,8 @@ def backfill_rep(
     def _search(batch: Sequence[str]) -> tuple[list[str], bool]:
         """(見つかったメッセージID, 失敗したか)を返す。"""
         try:
-            return search_message_ids(access_token, _build_query(batch, days=days)), False
+            query = _build_query(batch, days=days, before=before)
+            return search_message_ids(token(), query), False
         except gmail_client.GmailApiError:
             logger.exception("検索に失敗（%s ほか%d件）", batch[0], len(batch) - 1)
             return [], True
@@ -268,7 +387,7 @@ def backfill_rep(
     def _fetch_and_classify(message_id: str) -> tuple[db.EmailLogRow | None, bool]:
         """(記録すべき行 または None, 失敗したか)を返す。"""
         try:
-            message = gmail_client.get_message(access_token, message_id)
+            message = gmail_client.get_message(token(), message_id)
         except gmail_client.GmailApiError as exc:
             if exc.status_code == 404:
                 # 完全削除済み等。日次同期側と同じ扱いで、エラーにはせず黙って飛ばす。
@@ -283,7 +402,10 @@ def backfill_rep(
             message,
             rep_email=rep_email,
             internal_domains=internal_domains,
-            resolve_contact=contact_index.get,
+            # `_extract_addresses()`が既に小文字化しているので現状は素の`.get`でも
+            # 一致するが、あちらの正規化に依存させない（Geminiレビュー指摘、2026-09-03）。
+            # 索引側は`build_contact_index()`で小文字化済み。
+            resolve_contact=lambda addr: contact_index.get(addr.lower()),
         )
         if classified is None:
             return None, False
@@ -297,6 +419,7 @@ def backfill_rep(
                 subject=message.subject,
                 snippet=message.snippet,
                 sent_at=classified.sent_at,
+                gmail_thread_id=classified.thread_id,
             ),
             False,
         )
@@ -317,10 +440,17 @@ def backfill_rep(
             if done % 500 == 0:
                 logger.info("  取得 %d/%d 件 … 連絡先と紐づいた%d件", done, len(to_fetch), result.matched)
 
-    # ③ まとめて追記する（--apply が無ければ1通も書き込まない）
+    # ③ 追記する（--apply が無ければ1通も書き込まない）
+    #
+    # **まとめて1回のINSERTにしない。** 対象が数万件になると、巨大なパラメータ列を
+    # 1トランザクションで投げることになり、メモリとDB側のトランザクションが膨らむ
+    # （Geminiレビュー指摘、2026-09-03）。500件ずつに割る。
+    # 途中で落ちてもそこまでの分は残り、流し直しは`ON CONFLICT DO NOTHING`で冪等。
     if apply and rows:
-        result.inserted = db.insert_email_logs(rows)
-        existing_ids.update(r.gmail_message_id for r in rows)
+        for batch in _chunks(rows, _INSERT_BATCH_SIZE):
+            result.inserted += db.insert_email_logs(list(batch))
+            existing_ids.update(r.gmail_message_id for r in batch)
+            logger.info("  追記 %d/%d 件", result.inserted, len(rows))
     return result
 
 
@@ -335,6 +465,15 @@ def main() -> int:
         "--index-cache",
         default=None,
         help="連絡先索引の保存先（次回以降このファイルを読む。作り直すときは消す）",
+    )
+    parser.add_argument(
+        "--before",
+        default=None,
+        help=(
+            "この日より前だけを取り込む（YYYY-MM-DD、日本時間）。"
+            "既定はEmailLogの最も古い日付＝通常同期が面倒を見ている期間の始まり。"
+            "**通常同期と重なる期間を指定しない**（重なると通常同期の通知が黙って止まる）"
+        ),
     )
     parser.add_argument(
         "--limit-addresses",
@@ -366,6 +505,22 @@ def main() -> int:
         contact_index = {k: contact_index[k] for k in kept}
         logger.info("★ --limit-addresses により先頭%d件だけを対象にする", len(contact_index))
 
+    # ★ 通常同期が面倒を見ている期間と重ならないところで打ち切る（_build_query参照）。
+    if args.before:
+        try:
+            before = date.fromisoformat(args.before)
+        except ValueError:
+            logger.error("--before は YYYY-MM-DD で指定する: %r", args.before)
+            return 1
+    else:
+        before = live_sync_coverage_start()
+        if before is None:
+            logger.error(
+                "EmailLogが空なので打ち切り日を決められない。--before YYYY-MM-DD を指定すること"
+            )
+            return 1
+        logger.info("打ち切り日（EmailLogの最も古い日付）: %s より前だけを取り込む", before)
+
     existing_ids = db.fetch_existing_message_ids()
     logger.info("記録済みメール %d件", len(existing_ids))
 
@@ -388,6 +543,7 @@ def main() -> int:
                     contact_index=contact_index,
                     existing_ids=existing_ids,
                     days=args.days,
+                    before=before,
                     apply=args.apply,
                 )
             )
@@ -419,6 +575,19 @@ def main() -> int:
     if args.apply:
         logger.info("")
         logger.info("★ scripts/verify_gmail_backfill.py で実件数を数えること")
+
+    # ★ 1件でも失敗していたら成功で終わらせない（ChatGPTレビュー指摘、2026-09-03）。
+    # rc=0 だけを見て「取り込めた」と判断すると、検索や取得が静かに欠けたまま
+    # 「完了」になる。担当ごとの失敗（例外で results に入らなかった分）も同じ扱い。
+    total_errors = sum(r.errors for r in results)
+    if total_errors or len(results) != len(connections):
+        logger.error(
+            "★ 失敗あり: エラー%d件 / 担当 %d名中 %d名しか完了していない",
+            total_errors,
+            len(connections),
+            len(results),
+        )
+        return 2
     return 0
 
 

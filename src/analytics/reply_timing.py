@@ -16,6 +16,10 @@
                                                返信を引き出したのは最後の1通）
 ```
 
+- **同じスレッドの中でしか返信ペアを作らない**（`thread_id`が両方に付いている場合）。
+  スレッドを見ないと、月曜に送った見積書と、火曜に届いた「別件の請求書について」を
+  ペアにしてしまう。金曜に届いた本当の返信（4日）は消え、1日として記録される。
+  **複数の案件を並行している相手ほど、ラグが系統的に短く出る**（ChatGPTレビュー指摘）。
 - **起点は直前のoutbound**。同じ相手へ連続して送っている場合は最後の1通を使う。
   最初の1通から数えると、追撃を繰り返すほどラグが実態より長く出てしまう。
 - **`_MAX_REPLY_LAG_DAYS`日を超えたinboundは返信とみなさない**。1か月後に届いた
@@ -83,6 +87,11 @@ class EmailEvent:
     contact_email: str
     direction: str  # "inbound" | "outbound"
     sent_at: datetime
+    # Gmailのスレッドid（2026-09-03追加）。**同じスレッドの中でしか返信ペアを作らない。**
+    # 無いと「別件で届いたメール」を直前の送信への返信として数えてしまい、複数の案件を
+    # 並行している相手ほどラグが実態より短く出る。2026-09-03より前に記録した行はNoneで、
+    # その場合は従来どおり時系列だけで判定する（過去の行を捨てないため）。
+    thread_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,13 @@ class ReplyTimingProfile:
     top_buckets: tuple[HourBucket, ...]
     top_weekdays: tuple[str, ...]
     confidence: Confidence
+    # **件数が多くても「傾向が無い」ことはある**（ChatGPTレビュー指摘、2026-09-03）。
+    # 24件が8つの時間帯に3件ずつ散っていたら、それは「00-03時によく返ってくる」のでは
+    # なく「時間帯の偏りが無い」。件数だけで信頼度を決めると、平らな分布に対して
+    # 「十分」と出したうえで、同数の先頭を機械的にトップとして見せてしまう。
+    # 偏りが見当たらないときは`top_buckets`を空にして、ここをTrueにする。
+    # **これは時間帯についての判定**。曜日は`top_weekdays`が空かどうかで同じことを表す。
+    is_flat: bool = False
 
 
 @dataclass(frozen=True)
@@ -189,20 +205,24 @@ def pair_replies(
             contact_events,
             key=lambda e: (_as_utc(e.sent_at), 0 if e.direction == "outbound" else 1),
         )
-        pending_outbound_at: datetime | None = None
+        # スレッドごとに「直前の送信」を持つ。スレッドidが無い行(2026-09-03より前に
+        # 記録した分)は`None`という1つの束にまとめ、従来どおり時系列だけで判定する。
+        pending: dict[str | None, datetime] = {}
         for event in ordered:
             at = _as_utc(event.sent_at)
+            thread = event.thread_id
             if event.direction == "outbound":
                 # 連続送信は上書きする＝常に「直前の送信」が起点になる。
-                pending_outbound_at = at
+                pending[thread] = at
                 continue
-            if pending_outbound_at is None:
+            outbound_at = pending.get(thread)
+            if outbound_at is None:
                 continue
-            if at - pending_outbound_at <= limit:
-                pairs.append(ReplyPair(outbound_at=pending_outbound_at, inbound_at=at))
+            if at - outbound_at <= limit:
+                pairs.append(ReplyPair(outbound_at=outbound_at, inbound_at=at))
             # 返信として採用したかどうかに関わらず起点は消費する。残したままにすると、
             # 1通の送信に対して後続の受信が何通も返信として二重計上されてしまう。
-            pending_outbound_at = None
+            del pending[thread]
     pairs.sort(key=lambda p: p.inbound_at)
     return pairs
 
@@ -265,13 +285,14 @@ def reply_timing_profile(
         for i, c in enumerate(counts)
     )
     # 件数の多い順。同数なら早い時間帯を先に（並びが実行ごとに揺れないようにする）。
-    top_buckets = tuple(
-        b for b in sorted(buckets, key=lambda b: (-b.count, b.start_hour))[:top_n] if b.count > 0
-    )
-    top_weekdays = tuple(
-        WEEKDAY_LABELS_JA[i]
-        for i in sorted(range(7), key=lambda i: (-weekday_counts[i], i))[:top_n]
-        if weekday_counts[i] > 0
+    ranked = [b for b in sorted(buckets, key=lambda b: (-b.count, b.start_hour)) if b.count > 0]
+    flat = _is_flat([b.count for b in ranked])
+    top_buckets = () if flat else tuple(ranked[:top_n])
+
+    ranked_weekdays = [i for i in sorted(range(7), key=lambda i: (-weekday_counts[i], i)) if weekday_counts[i] > 0]
+    weekday_flat = _is_flat([weekday_counts[i] for i in ranked_weekdays])
+    top_weekdays = (
+        () if weekday_flat else tuple(WEEKDAY_LABELS_JA[i] for i in ranked_weekdays[:top_n])
     )
     return ReplyTimingProfile(
         sample_size=total,
@@ -280,7 +301,25 @@ def reply_timing_profile(
         top_buckets=top_buckets,
         top_weekdays=top_weekdays,
         confidence=classify_confidence(total),
+        is_flat=flat,
     )
+
+
+def _is_flat(counts_desc: Sequence[int]) -> bool:
+    """偏りが見当たらないか（＝トップを名乗らせてよいか）を判定する。
+
+    ```
+       00-03  3   03-06  3   06-09  3   …   全部3件
+       ＝ 24件あっても「00-03時によく返ってくる」とは言えない
+    ```
+
+    「1位が2位と同じ」なら順位に意味が無い、という単純な規則にしている。
+    2件以上の非ゼロがあり、かつ1位と2位が同数なら平ら扱い。
+    非ゼロが1つしか無いときは（そこにしか来ていないので）偏りありとする。
+    """
+    if len(counts_desc) < 2:
+        return False
+    return counts_desc[0] == counts_desc[1]
 
 
 def build_contact_insight(key: str, events: Sequence[EmailEvent]) -> ContactReplyInsight:

@@ -50,15 +50,39 @@ def _extract_addresses(header_value: str) -> list[str]:
     return [addr.lower() for _, addr in getaddresses([header_value]) if addr]
 
 
-def _parse_sent_at(date_header: str | None) -> datetime:
-    if date_header:
+def _parse_sent_at(message: gmail_client.GmailMessage) -> datetime:
+    """メールの日時を決める。**Gmailの`internalDate`を最優先する**（2026-09-03変更）。
+
+    ```
+       internalDate   Gmailが受信/送信を記録した時刻。ズレない
+       Date: ヘッダー  送信側が作る値。PCの時計ずれ・遅延配送・壊れた書式でズレる
+       現在時刻       どちらも読めなかったときの最後の砦
+    ```
+
+    以前は`Date:`ヘッダーだけを見ていた。**「相手のメールが実際に届いた時間帯」を
+    数えるのに送信側申告の時刻を使うのは意味が合わない**（ChatGPTレビュー指摘）。
+    加えて過去分の取り込みでは、壊れたDateヘッダーの古いメールが「今」として
+    記録され、時間帯の集計を汚し、未返信リマインドまで誤爆しうる。
+    """
+    if message.internal_date_ms:
         try:
-            parsed = parsedate_to_datetime(date_header)
+            return datetime.fromtimestamp(int(message.internal_date_ms) / 1000, tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            logger.warning(
+                "gmail_sync: failed to parse internalDate %r, falling back to Date header",
+                message.internal_date_ms,
+            )
+    if message.date_header:
+        try:
+            parsed = parsedate_to_datetime(message.date_header)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             return parsed
         except (TypeError, ValueError, IndexError):
-            logger.warning("gmail_sync: failed to parse Date header %r, falling back to now", date_header)
+            logger.warning(
+                "gmail_sync: failed to parse Date header %r, falling back to now",
+                message.date_header,
+            )
     return datetime.now(timezone.utc)
 
 
@@ -79,6 +103,7 @@ class ClassifiedMessage:
     contact_email: str
     direction: str  # "inbound" | "outbound"
     sent_at: datetime
+    thread_id: str | None
 
 
 def classify_message(
@@ -118,7 +143,8 @@ def classify_message(
                 contact_page_id=contact_id,
                 contact_email=addr,
                 direction="inbound" if addr in from_addrs else "outbound",
-                sent_at=_parse_sent_at(message.date_header),
+                sent_at=_parse_sent_at(message),
+                thread_id=message.thread_id,
             )
     return None
 
@@ -182,6 +208,7 @@ def _process_message_ref(
         sent_at=sent_at,
         incident_score=incident_score,
         incident_priority=incident_priority,
+        gmail_thread_id=classified.thread_id,
     )
     # rep_email（同期対象の営業担当）をactorLabelとして記録する（obasan-qualityレビュー
     # WARN対応、2026-08-17。db.insert_email_log()に既に渡している値と同じ）。

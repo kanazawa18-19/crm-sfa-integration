@@ -300,6 +300,9 @@ export interface ReplyTiming {
     sample_size: number;
     confidence: ReplyTimingConfidence;
     confidence_label: string;
+    // 受信が時間帯に散らばっていて「よく返ってくる時間帯」が名乗れない状態。
+    // 件数が多くても起こる(24件が8コマに3件ずつ、など)。このときtop_bucketsは空。
+    is_flat: boolean;
     top_buckets: ReplyTimingWindow[];
     top_weekdays: string[];
     buckets: ReplyTimingWindow[];

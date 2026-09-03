@@ -50,6 +50,11 @@ def _note(insight: ContactReplyInsight) -> str:
         return "このアドレス宛の送受信ログがまだありません。"
     if lag_n == 0:
         return f"受信{timing_n}件のみ。こちらの送信への返信が記録されていないため、返信ラグは出せません。"
+    if insight.timing.is_flat:
+        return (
+            f"返信{lag_n}件・受信{timing_n}件から算出。"
+            "受信が時間帯に散らばっていて、返ってきやすい時間帯は見当たりません。"
+        )
     if lag_n < 5:
         return f"返信{lag_n}件・受信{timing_n}件から算出。件数が少ないため参考値です。"
     return f"返信{lag_n}件・受信{timing_n}件から算出。"
@@ -61,6 +66,7 @@ def _timing_dict(insight: ContactReplyInsight) -> dict[str, Any]:
         "sample_size": timing.sample_size,
         "confidence": timing.confidence,
         "confidence_label": _CONFIDENCE_LABELS[timing.confidence],
+        "is_flat": timing.is_flat,
         "top_buckets": [{"label": b.label, "count": b.count} for b in timing.top_buckets],
         "top_weekdays": list(timing.top_weekdays),
         "buckets": [{"label": b.label, "count": b.count} for b in timing.buckets],
@@ -115,6 +121,7 @@ def build_for_contact_page_ids(page_ids: Sequence[str]) -> dict[str, dict[str, A
                 contact_email=row["contactEmail"] or "",
                 direction=row["direction"],
                 sent_at=row["sentAt"],
+                thread_id=row.get("gmailThreadId"),
             )
         )
 

@@ -18,23 +18,54 @@ def test_extract_addresses_lowercases() -> None:
     assert sync._extract_addresses("Taro@Example.COM") == ["taro@example.com"]
 
 
+def _msg_for_sent_at(*, date_header=None, internal_date_ms=None) -> GmailMessage:
+    return GmailMessage(
+        id="m1",
+        from_header="a@example.com",
+        to_header="b@example.com",
+        subject=None,
+        date_header=date_header,
+        snippet=None,
+        internal_date_ms=internal_date_ms,
+    )
+
+
 def test_parse_sent_at_valid_header() -> None:
-    result = sync._parse_sent_at("Mon, 16 Aug 2026 09:00:00 +0900")
+    result = sync._parse_sent_at(_msg_for_sent_at(date_header="Mon, 16 Aug 2026 09:00:00 +0900"))
     assert result.year == 2026
     assert result.month == 8
     assert result.day == 16
 
 
+def test_parse_sent_at_prefers_internal_date_over_the_date_header() -> None:
+    """Gmailが記録した時刻を優先する(送信側申告のDate:は時計ずれで動く)。"""
+    # 2026-08-16 00:00:00 UTC
+    result = sync._parse_sent_at(
+        _msg_for_sent_at(
+            date_header="Mon, 16 Aug 2026 09:00:00 +0900",
+            internal_date_ms=str(int(datetime(2026, 8, 20, tzinfo=timezone.utc).timestamp() * 1000)),
+        )
+    )
+    assert result == datetime(2026, 8, 20, tzinfo=timezone.utc)
+
+
+def test_parse_sent_at_falls_back_to_the_date_header_when_internal_date_is_broken() -> None:
+    result = sync._parse_sent_at(
+        _msg_for_sent_at(date_header="Mon, 16 Aug 2026 09:00:00 +0900", internal_date_ms="abc")
+    )
+    assert result.day == 16
+
+
 def test_parse_sent_at_missing_header_falls_back_to_now() -> None:
     before = datetime.now(timezone.utc)
-    result = sync._parse_sent_at(None)
+    result = sync._parse_sent_at(_msg_for_sent_at())
     after = datetime.now(timezone.utc)
     assert before <= result <= after
 
 
 def test_parse_sent_at_malformed_header_falls_back_to_now() -> None:
     before = datetime.now(timezone.utc)
-    result = sync._parse_sent_at("not a date")
+    result = sync._parse_sent_at(_msg_for_sent_at(date_header="not a date"))
     after = datetime.now(timezone.utc)
     assert before <= result <= after
 

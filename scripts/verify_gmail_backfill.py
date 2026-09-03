@@ -30,7 +30,7 @@ def main() -> int:
         cur.execute('SELECT direction, count(*) c FROM "EmailLog" GROUP BY 1 ORDER BY 1')
         by_direction = cur.fetchall()
         cur.execute(
-            'SELECT "contactPageId", "contactEmail", direction, "sentAt" '
+            'SELECT "contactPageId", "contactEmail", "gmailThreadId", direction, "sentAt" '
             'FROM "EmailLog" ORDER BY "sentAt"'
         )
         rows = cur.fetchall()
@@ -47,7 +47,12 @@ def main() -> int:
     by_page: dict[str, list[EmailEvent]] = {}
     for row in rows:
         by_page.setdefault(row["contactPageId"], []).append(
-            EmailEvent(row["contactEmail"] or "", row["direction"], row["sentAt"])
+            EmailEvent(
+                row["contactEmail"] or "",
+                row["direction"],
+                row["sentAt"],
+                thread_id=row.get("gmailThreadId"),
+            )
         )
 
     from src.analytics.reply_timing import build_contact_insight

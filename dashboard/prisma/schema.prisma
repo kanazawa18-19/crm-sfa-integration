@@ -195,6 +195,13 @@ model EmailLog {
   contactEmail     String
   repEmail         String
   gmailMessageId   String    @unique
+  // Gmailのスレッドid(2026-09-03、ChatGPTレビュー指摘)。返信ラグを「同じスレッド内の
+  // 送信→受信」に限るために使う(src/analytics/reply_timing.py)。これが無いと、
+  // 別件で届いたメールを直前の送信への返信として数えてしまい、複数案件を並行して
+  // いる相手ほど返信ラグが実態より短く出る。
+  // 2026-09-03より前に記録した行はNULL。NULL同士は従来どおり「時系列で隣り合えば
+  // 返信」として扱う(過去の行を捨てないための後方互換)。
+  gmailThreadId    String?
   direction        String // "inbound" | "outbound"
   subject          String?
   snippet          String?

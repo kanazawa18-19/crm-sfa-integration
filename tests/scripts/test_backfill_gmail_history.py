@@ -27,16 +27,30 @@ def test_chunks_of_empty_sequence_yields_nothing() -> None:
     assert list(_chunks([], 15)) == []
 
 
-def test_build_query_ors_from_to_cc_for_each_address() -> None:
-    query = _build_query(["a@example.com", "b@example.com"], days=365)
+def test_build_query_ors_from_and_to_for_each_address() -> None:
+    query = _build_query(["a@example.com", "b@example.com"], days=365, before=date(2026, 8, 25))
 
     assert query.startswith("{")
-    assert "from:a@example.com to:a@example.com cc:a@example.com" in query
-    assert "from:b@example.com to:b@example.com cc:b@example.com" in query
+    assert "from:a@example.com to:a@example.com" in query
+    assert "from:b@example.com to:b@example.com" in query
+
+
+def test_build_query_does_not_search_cc() -> None:
+    """突合側(classify_message)はFrom/Toしか見ない。検索だけccを含めても取得が無駄になる。"""
+    query = _build_query(["a@example.com"], days=365, before=date(2026, 8, 25))
+
+    assert "cc:" not in query
+
+
+def test_build_query_stops_before_the_live_sync_window() -> None:
+    """★ 通常同期が面倒を見ている期間と重ならない。重なると通常同期の通知が黙って止まる。"""
+    query = _build_query(["a@example.com"], days=365, before=date(2026, 8, 25))
+
+    assert "before:2026/8/25" in query
 
 
 def test_build_query_limits_window_and_excludes_spam_and_trash() -> None:
-    query = _build_query(["a@example.com"], days=90)
+    query = _build_query(["a@example.com"], days=90, before=date(2026, 8, 25))
 
     assert "newer_than:90d" in query
     assert "-in:spam" in query
@@ -115,7 +129,7 @@ def test_load_or_build_contact_index_without_cache_path_always_rebuilds(monkeypa
 # 「--apply を付けない限り1通も書き込まない」をコードで担保しておく。
 
 from dataclasses import dataclass  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
+from datetime import date, datetime, timedelta, timezone  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -136,6 +150,8 @@ class _FakeMessage:
     subject: str | None = "件名"
     date_header: str | None = "Tue, 01 Sep 2026 10:00:00 +0900"
     snippet: str | None = "本文の先頭"
+    thread_id: str | None = "t1"
+    internal_date_ms: str | None = "1788310800000"  # 2026-09-01 10:00 JST
 
 
 class _FakeGmail:
@@ -202,6 +218,7 @@ def _run(fake_gmail: _FakeGmail, fake_db: _FakeDb, monkeypatch, **kwargs):
         "contact_index": {"lead@client.example.com": "cnt-1"},
         "existing_ids": set(),
         "days": 365,
+        "before": date(2026, 8, 25),
         "apply": False,
     }
     params.update(kwargs)
@@ -414,6 +431,10 @@ class _MainFakeDb(_FakeDb):
     def fetch_existing_message_ids(self) -> set[str]:
         return set()
 
+    def fetch_oldest_email_sent_at(self):
+        # 通常同期が面倒を見ている期間の始まり（＝ここより前だけを取り込む）
+        return datetime(2026, 8, 25, 5, 11, tzinfo=timezone.utc)
+
     def list_gmail_connections(self) -> list[_FakeConnection]:
         return list(self._connections)
 
@@ -522,5 +543,124 @@ def test_main_keeps_going_when_one_rep_fails(gmail_env, monkeypatch) -> None:
     monkeypatch.setattr(mod, "backfill_rep", fake_backfill_rep)
     monkeypatch.setattr("sys.argv", ["backfill_gmail_history.py"])
 
-    assert mod.main() == 0
+    # 1名が落ちているので成功では終わらせない（rc=0を信用しない、という運用ルール）。
+    assert mod.main() == 2
     assert processed == ["ng@cnctor.jp", "ok@cnctor.jp"]
+
+
+def test_backfill_rep_inserts_in_chunks(gmail_env, monkeypatch) -> None:
+    """数万件を1トランザクションで投げない（Geminiレビュー指摘、2026-09-03）。"""
+    ids = [f"m{i}" for i in range(1200)]
+    gmail = _FakeGmail(
+        search_results={"lead@client.example.com": ids},
+        messages={i: _inbound_message(i) for i in ids},
+    )
+
+    class _CountingDb(_FakeDb):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        def insert_email_logs(self, rows) -> int:
+            self.batch_sizes.append(len(rows))
+            return super().insert_email_logs(rows)
+
+    db = _CountingDb()
+
+    result = _run(gmail, db, monkeypatch, apply=True)
+
+    assert db.batch_sizes == [500, 500, 200]
+    assert result.inserted == 1200
+
+
+def test_backfill_rep_resolves_contacts_case_insensitively(gmail_env, monkeypatch) -> None:
+    """索引は小文字。宛先が大文字混じりでも引けること（Geminiレビュー指摘、2026-09-03）。"""
+    gmail = _FakeGmail(
+        search_results={"lead@client.example.com": ["m1"]},
+        messages={
+            "m1": _FakeMessage(
+                id="m1",
+                from_header="Lead <LEAD@Client.Example.com>",
+                to_header="Rep <rep@cnctor.jp>",
+            )
+        },
+    )
+    db = _FakeDb()
+
+    result = _run(gmail, db, monkeypatch, apply=True)
+
+    assert result.matched == 1
+    assert db.inserted[0].contact_page_id == "cnt-1"
+
+
+def test_main_returns_non_zero_when_any_message_failed(gmail_env, monkeypatch) -> None:
+    """★ 取りこぼしがあるのに rc=0 で終わらない（ChatGPTレビュー指摘、2026-09-03）。"""
+
+    def fake_backfill_rep(**kwargs):
+        return mod.RepResult(kwargs["rep_email"], 0, 0, 0, 0, 0, 0, 0, 0, errors=3)
+
+    _patch_main(
+        monkeypatch,
+        index={"a@x.com": "c1"},
+        connections=[_FakeConnection("rep@cnctor.jp")],
+    )
+    monkeypatch.setattr(mod, "backfill_rep", fake_backfill_rep)
+    monkeypatch.setattr("sys.argv", ["backfill_gmail_history.py"])
+
+    assert mod.main() == 2
+
+
+def test_main_rejects_a_malformed_before(monkeypatch) -> None:
+    _patch_main(
+        monkeypatch,
+        index={"a@x.com": "c1"},
+        connections=[_FakeConnection("rep@cnctor.jp")],
+    )
+    monkeypatch.setattr("sys.argv", ["backfill_gmail_history.py", "--before", "2026/08/25"])
+
+    assert mod.main() == 1
+
+
+def test_main_stops_when_email_log_is_empty_and_no_before_given(gmail_env, monkeypatch) -> None:
+    """打ち切り日を決められないまま流さない（通常同期と重なる危険があるため）。"""
+
+    class _EmptyDb(_MainFakeDb):
+        def fetch_oldest_email_sent_at(self):
+            return None
+
+    monkeypatch.setattr(mod, "load_or_build_contact_index", lambda cache: {"a@x.com": "c1"})
+    monkeypatch.setattr(mod, "db", _EmptyDb([_FakeConnection("rep@cnctor.jp")]))
+    monkeypatch.setattr(mod, "decrypt_token", lambda enc: "rt")
+    monkeypatch.setattr(mod, "gmail_client", _FakeGmail())
+    monkeypatch.setattr("sys.argv", ["backfill_gmail_history.py"])
+
+    assert mod.main() == 1
+
+
+def test_load_or_build_contact_index_rebuilds_a_stale_cache(tmp_path, monkeypatch) -> None:
+    """古いキャッシュは「取りこぼし」ではなく「別人の履歴として保存」を招く。"""
+    import json
+
+    cache = tmp_path / "index.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "built_at": (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(),
+                "index": {"old@example.com": "cnt-old"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "build_contact_index", lambda: {"new@example.com": "cnt-new"})
+
+    index = load_or_build_contact_index(str(cache))
+
+    assert index == {"new@example.com": "cnt-new"}
+
+
+def test_load_or_build_contact_index_rebuilds_an_unreadable_cache(tmp_path, monkeypatch) -> None:
+    cache = tmp_path / "index.json"
+    cache.write_text("{壊れている", encoding="utf-8")
+    monkeypatch.setattr(mod, "build_contact_index", lambda: {"a@example.com": "cnt-1"})
+
+    assert load_or_build_contact_index(str(cache)) == {"a@example.com": "cnt-1"}

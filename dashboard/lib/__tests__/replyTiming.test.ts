@@ -26,6 +26,7 @@ function timing(overrides: Partial<ReplyTiming> = {}): ReplyTiming {
       sample_size: 5,
       confidence: "medium",
       confidence_label: "やや不足",
+      is_flat: false,
       top_buckets: [
         { label: "09-12時", count: 3 },
         { label: "15-18時", count: 2 },
@@ -89,6 +90,17 @@ describe("replyWindowCellText", () => {
 
     expect(text?.title).toContain("受信の総数");
     expect(text?.title).toContain("返信ペア数");
+  });
+
+  it("受信が散らばっているときは「傾向なし」と書く（無い傾向をあると読ませない）", () => {
+    const t = timing();
+    const text = replyWindowCellText({
+      ...t,
+      timing: { ...t.timing, is_flat: true, top_buckets: [] },
+    });
+
+    expect(text?.value).toBe("傾向なし");
+    expect(text?.sample).toBe("5件・やや不足");
   });
 
   it("上位の時間帯が空でも落ちない", () => {
