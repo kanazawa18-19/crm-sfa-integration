@@ -1,4 +1,11 @@
-"""一斉配信のプレビュー組み立て（純粋関数、2026-09-03）。
+"""一斉配信で送る1通1通を組み立てる、唯一の入口（純粋関数、2026-09-03）。
+
+**プレビューも実送信も、必ずこの関数を通す。**
+ここを迂回して`audience`や`template`を直接呼ぶ送信コードを書くと、
+`blockers`（法定表示の不足・差し込み名の綴り間違い・件名の改行）の最終確認が
+丸ごと抜ける。画面で確認したものと違うメールが飛ぶ、という一番まずい壊れ方をする。
+元は`preview.py`という名前だったが、「プレビュー専用に見えて実送信では
+呼ばれない」危険を Gemini と ChatGPT が独立に指摘したため改名した（2026-09-03）。
 
 **この関数はDBもNotionもGmailも触らない。** 必要なものは全部引数で受け取る。
 一斉配信で一番壊してはいけない判断（誰に送るか・法定表示が揃っているか）を、
@@ -47,7 +54,7 @@ class RenderedMessage:
 
 
 @dataclass(frozen=True)
-class PreviewResult:
+class BuildResult:
     messages: tuple[RenderedMessage, ...] = ()
     skipped: tuple[SkippedContact, ...] = ()
     blockers: tuple[str, ...] = ()
@@ -95,7 +102,7 @@ def _check_inputs(subject: str, body: str, collector: _Collector) -> None:
         )
 
 
-def build_preview(
+def build_messages(
     *,
     subject: str,
     body: str,
@@ -107,8 +114,8 @@ def build_preview(
     opted_out_page_ids: Iterable[str] = (),
     opted_out_emails: Iterable[str] = (),
     truncated_client_names: Sequence[str] = (),
-) -> PreviewResult:
-    """プレビューを組み立てる。"""
+) -> BuildResult:
+    """宛先ごとの1通を組み立てる。`blockers`が空でない限り送ってはいけない。"""
     collector = _Collector()
     _check_inputs(subject, body, collector)
 
@@ -191,7 +198,7 @@ def build_preview(
         dict.fromkeys(template.find_placeholders(subject) + template.find_placeholders(body))
     )
 
-    return PreviewResult(
+    return BuildResult(
         messages=tuple(messages),
         skipped=tuple(skipped),
         blockers=tuple(collector.blockers),

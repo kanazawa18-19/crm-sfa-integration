@@ -91,3 +91,16 @@ def test_ページIDの前後空白で配信停止がすり抜けない() -> Non
     )
     assert recipients == []
     assert [s.reason for s in skipped] == [SKIP_UNSUBSCRIBED]
+
+
+def test_ページIDの表記ゆれで配信停止がすり抜けない() -> None:
+    """DB側は正規化済み（ハイフン無し）、Notion側はハイフン付きで来る。
+
+    突合を正規化した形で行っていないと、同じ人が別人として通ってしまう。
+    """
+    recipients, skipped = select_recipients(
+        [contact("3CED8EA8-1234", "a@example.com")],
+        opted_out_page_ids=["3ced8ea81234"],
+    )
+    assert recipients == []
+    assert [s.reason for s in skipped] == [SKIP_UNSUBSCRIBED]

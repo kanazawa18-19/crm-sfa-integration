@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
+from src.bulk_email.ids import normalize_page_id
+
 # 除外の理由（コード）と、画面に出す日本語。
 SKIP_UNSUBSCRIBED = "unsubscribed"
 SKIP_NO_EMAIL = "no_email"
@@ -85,7 +87,12 @@ def select_recipients(
     1人に同じ内容が2通届くのは、営業のメールとしては失礼にあたるだけでなく、
     受信側のスパム判定を悪化させる。
     """
-    opted_out_ids = {(page_id or "").strip() for page_id in opted_out_page_ids}
+    # 突合は必ず正規化した形で行う（`src/bulk_email/ids.py`）。
+    # 「db.pyが元の表記へ戻してくれるから、ここは生の値の比較でよい」にすると、
+    # 将来この関数を直接呼ぶ送信コードが書かれた瞬間に
+    # `abc-def…` != `abcdef…` で配信停止がすり抜ける（ChatGPTレビュー指摘、2026-09-03）。
+    opted_out_ids = {normalize_page_id(page_id) for page_id in opted_out_page_ids}
+    opted_out_ids.discard("")
     opted_out_addresses = {normalize_email(email) for email in opted_out_emails}
     opted_out_addresses.discard("")
 
@@ -96,9 +103,9 @@ def select_recipients(
 
     for contact in contacts:
         email = normalize_email(contact.email)
-        # 除外リスト側は前後の空白を落としてから集合にしているので、こちらも同じ形にする。
-        # 片側だけ揃えると、空白1つで「停止済みなのに送れる宛先」に化ける。
-        page_id = (contact.page_id or "").strip()
+        # 除外リストと同じ正規化を通してから比べる（表記ゆれ1つで
+        # 「停止済みなのに送れる宛先」に化けるため）。
+        page_id = normalize_page_id(contact.page_id)
 
         # 同じ連絡先が2回入ってきた場合（複数の取引先を選んで、同じ人がぶら下がっていた等）。
         if page_id in seen_page_ids:

@@ -25,7 +25,7 @@
    src/api/bulk_email_service.py  ユースケース。Notionから連絡先を取り、
             │                     配信停止をPostgresから引いて、preview へ渡す
             ▼
-   src/bulk_email/preview.py      ★ここから下は外部I/Oを一切しない純粋関数
+   src/bulk_email/builder.py      ★ここから下は外部I/Oを一切しない純粋関数
      ├── audience.py    誰に送れて、誰を外すか
      ├── template.py    差し込み
      ├── compliance.py  特定電子メール法の表示（会社名・住所・配信停止）
@@ -35,8 +35,9 @@
    src/bulk_email/db.py           Postgres（配信停止フラグの読み取り）
 ```
 
-`preview.build_preview()`はDBもNotionも起動せずにテストできる。ここが本体で、
-上下は薄いままにしておくこと。
+`builder.build_messages()`はDBもNotionも起動せずにテストできる。ここが本体で、
+上下は薄いままにしておくこと。**②で実送信を足すときも必ずこの関数を通す**
+（迂回すると法定表示・差し込みの最終確認が丸ごと抜ける）。
 
 ■ 状態（BulkCampaign等）のテーブルはまだ作っていない
 

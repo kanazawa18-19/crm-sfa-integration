@@ -109,15 +109,27 @@ def build_footer(identity: SenderIdentity, unsubscribe_url: str) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
+# 配信停止URLの見分け方（`unsubscribe.build_unsubscribe_url()`が作る形）。
+# ドメインは環境によって変わるのでパス以降だけを見る。
+_UNSUBSCRIBE_LINK_HINT = "/unsubscribe?c="
+
+
 def contains_footer(body: str) -> bool:
-    """テンプレート本文に法定表示が既に貼り付けられているか。
+    """テンプレート本文に、法定表示か**他人の配信停止リンク**が貼り付けられているか。
 
     **見つかったらプレビューはBLOCKERにする。** 過去に送ったメールをそのまま
     テンプレートへ貼り付けると、そこに埋まっている配信停止URLは「その時の別の宛先」
     のものになる。付いているから足さない、という扱いにすると、全員に他人のリンクが
     載ったメールが出ていく。
+
+    **目印の行だけを見ない。** 目印（`───── 送信者・配信停止 ─────`）は
+    見た目が飾りなので、貼り付けた人が「不要な区切り線」と思って消すことがある。
+    その1行を消しただけで、直上に残った他人の配信停止URLは検出をすり抜ける。
+    受信者がそのリンクを押すと、**まったく無関係の人の配信が停止される**
+    （Geminiレビュー指摘、2026-09-03）。目印とURLの両方を見る。
     """
-    return FOOTER_MARKER in (body or "")
+    text = body or ""
+    return FOOTER_MARKER in text or _UNSUBSCRIBE_LINK_HINT in text
 
 
 def append_footer(body: str, footer: str) -> str:

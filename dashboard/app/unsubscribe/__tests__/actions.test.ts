@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ここが黙って効かなくなると、止めてほしいと言ったお客様に営業メールが届き続ける。
 
 const upsert = vi.fn();
+const findUnique = vi.fn();
 const findFirst = vi.fn();
 const redirect = vi.fn((path: string) => {
   // 本物のredirect()は例外を投げて以降の処理を止める。同じ形にしないと、
@@ -15,7 +16,10 @@ const redirect = vi.fn((path: string) => {
 
 vi.mock("@/lib/prisma", () => ({
   default: {
-    contactMailPreference: { upsert: (...args: unknown[]) => upsert(...args) },
+    contactMailPreference: {
+      upsert: (...args: unknown[]) => upsert(...args),
+      findUnique: (...args: unknown[]) => findUnique(...args),
+    },
     emailLog: { findFirst: (...args: unknown[]) => findFirst(...args) },
   },
 }));
@@ -49,6 +53,7 @@ describe("unsubscribeAction", () => {
   beforeEach(() => {
     process.env.BULK_EMAIL_UNSUBSCRIBE_SECRET = SECRET;
     upsert.mockReset().mockResolvedValue({});
+    findUnique.mockReset().mockResolvedValue(null);
     findFirst.mockReset().mockResolvedValue({ contactEmail: "yamada@example.com" });
     redirect.mockClear();
   });
@@ -68,9 +73,25 @@ describe("unsubscribeAction", () => {
     expect(upsert.mock.calls[0][0].update).toMatchObject({ unsubscribed: true });
   });
 
-  it("停止日時は更新しない（最初の申し出の時期を残すため）", async () => {
+  it("停止中の相手が2回押しても停止日時は動かさない（最初の申し出の時期を残す）", async () => {
+    findUnique.mockResolvedValue({ unsubscribed: true });
     await run(formData());
     expect(upsert.mock.calls[0][0].update).not.toHaveProperty("unsubscribedAt");
+  });
+
+  it("一度解除された行を停止し直したときは停止日時を進める", async () => {
+    findUnique.mockResolvedValue({ unsubscribed: false });
+    await run(formData());
+    expect(upsert.mock.calls[0][0].update.unsubscribedAt).toBeInstanceOf(Date);
+  });
+
+  it("正規化済みのページIDの形でなければDBに触らない", async () => {
+    // DB側にも同じ形のCHECK制約がある。ここで止めないとお客様の画面がDBエラーになる。
+    const data = new FormData();
+    data.set("c", "みじかい");
+    data.set("t", buildUnsubscribeToken(SECRET, "みじかい"));
+    expect(await run(data)).toBe("/unsubscribe/done?status=invalid");
+    expect(upsert).not.toHaveBeenCalled();
   });
 
   it("EmailLogは正規化前後の両方のページIDで探す", async () => {

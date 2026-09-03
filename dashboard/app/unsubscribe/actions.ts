@@ -30,19 +30,36 @@ export async function unsubscribeAction(formData: FormData): Promise<void> {
     redirect("/unsubscribe/done?status=invalid");
   }
 
+  // 正規化済みのページIDの形（32桁hex）でなければ書きに行かない。
+  // DB側にも同じ形のCHECK制約があるので、ここで止めないとお客様の画面が
+  // 「配信を停止しました」ではなくDBエラーになる。
+  const dashed = toDashedContactPageId(contactPageId);
+  if (!dashed) {
+    redirect("/unsubscribe/done?status=invalid");
+  }
+
   // 停止時点のメールアドレス。連絡先レコードが作り直されてpage_idが変わっても
   // アドレス側で除外を続けられるようにするため保存する(ContactMailPreferenceの
   // スキーマコメント参照)。EmailLogにやり取りが1件も無い相手では空になるが、
   // その場合もpage_idでの除外は効く。
   // EmailLogのcontactPageIdはNotionから来たハイフン付きの形で入っているため、
   // URL側の正規化済みの形と両方で探す(toDashedContactPageIdの説明を参照)。
-  const dashed = toDashedContactPageId(contactPageId);
+  //
+  // **やり取りの記録が無い相手では空文字になる。** そのときアドレス側での除外は
+  // 効かず、ページIDでの除外だけが残る。連絡先をNotionで作り直してページIDが
+  // 変わると、その人はもう一度送信対象に戻る(ChatGPTレビュー指摘、2026-09-03)。
+  // ②で実送信を足すときは、送った宛先を記録してそこからアドレスを取ること。
   const latestLog = await prisma.emailLog.findFirst({
-    where: { contactPageId: { in: dashed ? [contactPageId, dashed] : [contactPageId] } },
+    where: { contactPageId: { in: [contactPageId, dashed] } },
     orderBy: { sentAt: "desc" },
     select: { contactEmail: true },
   });
   const contactEmail = (latestLog?.contactEmail ?? "").trim().toLowerCase();
+
+  const existing = await prisma.contactMailPreference.findUnique({
+    where: { contactPageId },
+    select: { unsubscribed: true },
+  });
 
   await prisma.contactMailPreference.upsert({
     where: { contactPageId },
@@ -54,9 +71,16 @@ export async function unsubscribeAction(formData: FormData): Promise<void> {
     // 「配信を停止しました」と表示する状態になる。**特定電子メール法で一番避けたい壊れ方**
     // なので、前提に頼らず書く(動物チーム3体が独立に同じ箇所を指摘、2026-09-03)。
     //
-    // unsubscribedAt は更新しない。いつ申し出があったかは記録として残す必要があり、
-    // 2回押されるたびに日時が進むと最初の申し出の時期が分からなくなる。
-    update: { unsubscribed: true, contactEmail: contactEmail || undefined },
+    // unsubscribedAt は、停止中の相手が2回押しただけなら動かさない
+    // (押すたびに日時が進むと、最初の申し出がいつだったか分からなくなる)。
+    // 逆に「一度解除された行を停止し直した」ときは今の日時に進める。
+    // 1月に停止 → 2月に再購読 → 3月に再度停止、で1月のままだと記録として誤り
+    // (ChatGPTレビュー指摘、2026-09-03)。
+    update: {
+      unsubscribed: true,
+      contactEmail: contactEmail || undefined,
+      ...(existing && !existing.unsubscribed ? { unsubscribedAt: new Date() } : {}),
+    },
     create: { contactPageId, contactEmail, unsubscribed: true, source: "self" },
   });
 

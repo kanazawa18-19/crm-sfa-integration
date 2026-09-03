@@ -1,6 +1,6 @@
 """一斉配信プレビューのユースケース（2026-09-03）。
 
-Notion（連絡先）とPostgres（配信停止）から材料を集めて、`src/bulk_email/preview.py`の
+Notion（連絡先）とPostgres（配信停止）から材料を集めて、`src/bulk_email/builder.py`の
 純粋関数へ渡すだけの層。**判断はここに書かない** — 誰に送れるか・法定表示が
 揃っているかの判断は全部`bulk_email/`側にあり、ここはI/Oと形式変換だけを持つ。
 
@@ -9,7 +9,7 @@ Notion（連絡先）とPostgres（配信停止）から材料を集めて、`sr
             ▼
    ここ                  ── Notion / Postgres / 環境変数を集める
             ▼
-   bulk_email/preview.py ── 判断（外部I/O無し・テストが速い）
+   bulk_email/builder.py ── 判断（外部I/O無し・テストが速い）
 ```
 """
 
@@ -22,7 +22,7 @@ from typing import Any, Sequence
 from src.api.client_360_service import Client360DataSource
 from src.bulk_email import compliance, db, unsubscribe
 from src.bulk_email.audience import Contact
-from src.bulk_email.preview import PreviewResult, RenderedMessage, build_preview
+from src.bulk_email.builder import BuildResult, RenderedMessage, build_messages
 from src.bulk_email.template import PLACEHOLDERS
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ def _message_dict(message: RenderedMessage) -> dict[str, Any]:
     }
 
 
-def to_dict(result: PreviewResult) -> dict[str, Any]:
+def to_dict(result: BuildResult) -> dict[str, Any]:
     return {
         "sendable": result.sendable,
         "blockers": list(result.blockers),
@@ -179,7 +179,7 @@ def build_bulk_email_preview(
         [contact.email or "" for contact in contacts],
     )
 
-    result = build_preview(
+    result = build_messages(
         subject=subject,
         body=body,
         contacts=contacts,

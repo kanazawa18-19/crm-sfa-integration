@@ -1,4 +1,4 @@
-"""プレビュー組み立ての検証（2026-09-03）。
+"""1通1通の組み立て（`build_messages`）の検証（2026-09-03）。
 
 この関数がこのプロジェクトで一番壊してはいけない判断（誰に送るか・法定表示が
 揃っているか）を持つ。DBもNotionも起動せずに検証できることが設計の要件そのもの
@@ -13,7 +13,7 @@ from src.bulk_email.audience import (
     Contact,
 )
 from src.bulk_email.compliance import SenderIdentity
-from src.bulk_email.preview import build_preview
+from src.bulk_email.builder import build_messages
 
 IDENTITY = SenderIdentity(
     company_name="テスト株式会社",
@@ -50,7 +50,7 @@ def build(**kwargs: object):
         "unsubscribe_base_url": BASE_URL,
     }
     params.update(kwargs)
-    return build_preview(**params)  # type: ignore[arg-type]
+    return build_messages(**params)  # type: ignore[arg-type]
 
 
 def test_差し込み後の件名と本文が返る() -> None:

@@ -90,3 +90,17 @@ def test_リポジトリの設定ファイルは実在してJSONとして読め�
     """初期状態では全項目が空。**推測で埋めない**（誤った住所を数千通に載せない）。"""
     path = Path(__file__).resolve().parents[2] / "config" / "bulk_email_sender.json"
     assert json.loads(path.read_text(encoding="utf-8"))["_comment"]
+
+
+def test_目印を消しても他人の配信停止リンクが残っていれば検出する() -> None:
+    """目印の行は「不要な区切り線」と思われて消されうる。
+
+    その1行を消しただけで検出をすり抜けると、受信者が押したときに
+    まったく無関係の人の配信が停止される。
+    """
+    body = "本文\n配信停止はこちら\nhttps://dash.example.com/unsubscribe?c=abc&t=xyz"
+    assert contains_footer(body)
+
+
+def test_普通の本文は検出しない() -> None:
+    assert not contains_footer("いつもお世話になっております。\nご案内です。")

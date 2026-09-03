@@ -495,6 +495,9 @@ model ContactMailPreference {
   // Notion連絡先DBのpage_id。**ハイフン無し・小文字に正規化した形**で保存する
   // （配信停止URLのcパラメータをそのまま入れるため。src/bulk_email/ids.pyと
   // dashboard/lib/bulkEmailUnsubscribe.tsが同じ正規化を実装している）。
+  // マイグレーションで CHECK ("contactPageId" ~ '^[0-9a-f]{32}$') を張ってあり、
+  // 正規化していない値はDBが受け付けない（Prismaのスキーマには表現できないため、
+  // ここのコメントとmigration.sqlが正本）。
   contactPageId  String    @unique
   // 申し出があった時点のメールアドレス（小文字）。連絡先レコードが後から作り直されて
   // page_idが変わっても、アドレスで除外し続けられるようにするため保存する。

@@ -21,3 +21,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS "ContactMailPreference_contactPageId_key"
 
 CREATE INDEX IF NOT EXISTS "ContactMailPreference_contactEmail_idx"
     ON "ContactMailPreference"("contactEmail");
+
+-- contactPageId は「正規化済み（ハイフン無し・小文字の32桁hex）」という約束だが、
+-- Prismaの型は TEXT でしかなく、約束はコメントにしか無い状態だった。
+-- 将来 source='manual'（社内で手入力）の書き込みが増えたときに
+-- `ABC-DEF…` と `abcdef…` が別レコードとして入り、片方だけ停止扱いになる余地がある。
+-- 形そのものをDBで固定しておく（ChatGPTレビュー指摘、2026-09-03）。
+ALTER TABLE "ContactMailPreference"
+    DROP CONSTRAINT IF EXISTS "ContactMailPreference_contactPageId_normalized";
+ALTER TABLE "ContactMailPreference"
+    ADD CONSTRAINT "ContactMailPreference_contactPageId_normalized"
+    CHECK ("contactPageId" ~ '^[0-9a-f]{32}$');
+
