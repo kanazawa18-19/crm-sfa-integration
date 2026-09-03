@@ -1,6 +1,6 @@
 """一斉配信のエンドポイント（2026-09-03）。
 
-**今あるのはプレビューだけで、送信のエンドポイントは無い。**
+**今あるのはプレビューと送信根拠の一覧だけで、送信のエンドポイントは無い。**
 送信経路（Gmail APIに`gmail.send`を足すか）が未決定のため意図的に用意していない。
 `docs/bulk_email_design_note.md`の「出す順番（段階リリース）」を参照。
 
@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from src.api.auth import verify_dashboard_api_token
-from src.api.bulk_email_service import build_bulk_email_preview
+from src.api.bulk_email_service import build_bulk_email_preview, build_consent_overview
 from src.sync_engine.clients.notion_client import NotionApiError
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,32 @@ def preview_bulk_email(request: BulkEmailPreviewRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except NotionApiError as exc:
         logger.exception("bulk_email preview: Notionの取得に失敗しました")
+        raise HTTPException(
+            status_code=502, detail=f"Notionからの取得に失敗しました: {exc}"
+        ) from exc
+
+
+class BulkEmailConsentOverviewRequest(BaseModel):
+    """送信根拠の登録画面が使う、連絡先一覧の取得。"""
+
+    client_page_ids: list[str] = Field(default_factory=list)
+
+
+@router.post(
+    "/api/bulk-email/consent-overview", dependencies=[Depends(verify_dashboard_api_token)]
+)
+def bulk_email_consent_overview(request: BulkEmailConsentOverviewRequest) -> dict:
+    """取引先の連絡先と、今の「送ってよい根拠」を返す。
+
+    **読み取りのみ。** 根拠の登録・取り消しはダッシュボード側のServer Actionが
+    Prismaで書く（配信停止と同じで、書き手を1つに絞るため）。
+    """
+    try:
+        return build_consent_overview(client_page_ids=request.client_page_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NotionApiError as exc:
+        logger.exception("bulk_email consent-overview: Notionの取得に失敗しました")
         raise HTTPException(
             status_code=502, detail=f"Notionからの取得に失敗しました: {exc}"
         ) from exc

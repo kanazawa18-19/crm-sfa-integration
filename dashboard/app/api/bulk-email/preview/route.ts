@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { BackendApiError, getErrorMessage, previewBulkEmail } from "@/lib/backend";
-import { getCurrentUser } from "@/lib/auth";
+import { requireBulkEmailEditor } from "@/lib/bulkEmailApiAuth";
 
 // 一斉配信プレビューのブラウザ側入口(2026-09-03)。
 //
@@ -9,13 +9,9 @@ import { getCurrentUser } from "@/lib/auth";
 // セッションチェックを必須にする。加えて閲覧者(viewer)は使えない — 送信そのものはまだ
 // 無いが、この画面は営業メールの下書きを作る場であり、閲覧専用の権限で入る場所ではない。
 export async function POST(request: NextRequest) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ detail: "ログインが必要です" }, { status: 401 });
-  }
-  if (user.role === "viewer") {
-    return NextResponse.json({ detail: "この操作には編集者以上の権限が必要です" }, { status: 403 });
-  }
+  const auth = await requireBulkEmailEditor();
+  if (auth.error) return auth.error;
+  const user = auth.user;
 
   const payload = await request.json().catch(() => null);
   if (!payload || typeof payload !== "object") {

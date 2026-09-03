@@ -8,13 +8,19 @@ Notionの表示用dictを宛先に変換できているか、配信停止の読�
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from typing import Any
 
 import pytest
 
 from src.api import bulk_email_service
-from src.api.bulk_email_service import build_bulk_email_preview, unsubscribe_base_url
+from src.api.bulk_email_service import (
+    build_bulk_email_preview,
+    build_consent_overview,
+    unsubscribe_base_url,
+)
 from src.api.client_360_service import Client360DataSource
+from src.bulk_email.consent import BASIS_NOTIFIED, REASON_MISSING, ConsentRecord
 from src.sync_engine.clients.notion_client import NotionApiError
 
 
@@ -47,17 +53,46 @@ class _FakeUserDirectory:
         return list(user_ids)
 
 
-class _FakeOptOutReader:
-    """`fetch_opt_outs`だけを持つスタブ。実際に渡された候補も記録する。"""
+class _FakePreferenceReader:
+    """配信停止と送信根拠のスタブ。実際に渡された候補も記録する。
 
-    def __init__(self, page_ids: set[str] | None = None, emails: set[str] | None = None) -> None:
+    `consents`の既定は`None`＝「テストの連絡先には全部根拠がある」。
+    根拠そのものを見るテストだけが明示的に渡す（このテストが見たいのは
+    I/Oと形式変換で、根拠の判定は`tests/bulk_email/`側の仕事）。
+    """
+
+    def __init__(
+        self,
+        page_ids: set[str] | None = None,
+        emails: set[str] | None = None,
+        consents: list[ConsentRecord] | None = None,
+    ) -> None:
         self.page_ids = page_ids or set()
         self.emails = emails or set()
+        self._consents = consents
         self.calls: list[tuple[list[str], list[str]]] = []
+        self.consent_calls: list[tuple[list[str], list[str]]] = []
 
     def fetch_opt_outs(self, page_ids, emails) -> tuple[set[str], set[str]]:
         self.calls.append((list(page_ids), list(emails)))
         return self.page_ids, self.emails
+
+    def fetch_consents(self, page_ids) -> list[ConsentRecord]:
+        self.consent_calls.append(list(page_ids))
+        if self._consents is not None:
+            return self._consents
+        # 根拠は「登録時のアドレス＝今の宛先」でしか効かないので、
+        # テストの連絡先が持つアドレスに合わせる。
+        return [
+            ConsentRecord(
+                contact_page_id=page_id,
+                contact_email="yamada@example.com",
+                basis=BASIS_NOTIFIED,
+                obtained_at=datetime.now(timezone.utc).date(),
+                evidence="テスト用の根拠",
+            )
+            for page_id in page_ids
+        ]
 
 
 def _client_page(page_id: str = "cli-1", name: str = "テスト商事") -> dict[str, Any]:
@@ -115,7 +150,7 @@ def _preview(**kwargs: Any) -> dict[str, Any]:
         "client_page_ids": ["cli-1"],
         "sender_name": "金沢",
         "data_source": _data_source(),
-        "opt_out_reader": _FakeOptOutReader(),
+        "preference_reader": _FakePreferenceReader(),
     }
     params.update(kwargs)
     return build_bulk_email_preview(**params)
@@ -132,13 +167,13 @@ def test_Notionの連絡先が宛先になる() -> None:
 
 
 def test_配信停止の照合には宛先の候補だけを渡す() -> None:
-    reader = _FakeOptOutReader()
-    _preview(opt_out_reader=reader)
+    reader = _FakePreferenceReader()
+    _preview(preference_reader=reader)
     assert reader.calls == [(["cnt-1"], ["yamada@example.com"])]
 
 
 def test_配信停止の申し出がある宛先は外れる() -> None:
-    result = _preview(opt_out_reader=_FakeOptOutReader(page_ids={"cnt-1"}))
+    result = _preview(preference_reader=_FakePreferenceReader(page_ids={"cnt-1"}))
     assert result["counts"] == {"sendable": 0, "skipped": 1}
     assert result["skipped"][0]["reason_label"] == "配信停止の申し出あり"
 
@@ -151,12 +186,12 @@ def test_配信停止が読めなかったら例外にする() -> None:
             raise RuntimeError("DBに繋がらない")
 
     with pytest.raises(RuntimeError):
-        _preview(opt_out_reader=_Broken())
+        _preview(preference_reader=_Broken())
 
 
 def test_同じ取引先を2回選んでも1回しか取りに行かない() -> None:
-    reader = _FakeOptOutReader()
-    result = _preview(client_page_ids=["cli-1", "cli-1"], opt_out_reader=reader)
+    reader = _FakePreferenceReader()
+    result = _preview(client_page_ids=["cli-1", "cli-1"], preference_reader=reader)
     assert result["counts"]["sendable"] == 1
 
 
@@ -204,3 +239,129 @@ def test_専用の環境変数が無ければCORS設定の先頭を使う(monkey
     monkeypatch.delenv("DASHBOARD_BASE_URL", raising=False)
     monkeypatch.setenv("DASHBOARD_FRONTEND_ORIGIN", " https://a.example.com , https://b.example.com")
     assert unsubscribe_base_url() == "https://a.example.com"
+
+
+# ── 送ってよい根拠（オプトイン）の配線 ─────────────────────────────────
+
+
+def test_根拠の照合にも宛先の候補だけを渡す() -> None:
+    reader = _FakePreferenceReader()
+    _preview(preference_reader=reader)
+    assert reader.consent_calls == [["cnt-1"]]
+
+
+def test_根拠が1件も無ければ宛先は0件になる() -> None:
+    result = _preview(preference_reader=_FakePreferenceReader(consents=[]))
+    assert result["counts"] == {"sendable": 0, "skipped": 1}
+    assert result["skipped"][0]["reason"] == REASON_MISSING
+
+
+def test_根拠が読めなかったら例外にする() -> None:
+    """0件として続けると、設定漏れとDB障害が画面から区別できなくなる。"""
+
+    class _Broken(_FakePreferenceReader):
+        def fetch_consents(self, page_ids):
+            raise RuntimeError("DBに繋がらない")
+
+    with pytest.raises(RuntimeError):
+        _preview(preference_reader=_Broken())
+
+
+def _overview(**kwargs: Any) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "client_page_ids": ["cli-1"],
+        "data_source": _data_source(),
+        "preference_reader": _FakePreferenceReader(consents=[]),
+    }
+    params.update(kwargs)
+    return build_consent_overview(**params)
+
+
+def test_根拠一覧は連絡先と今の状態を返す() -> None:
+    result = _overview()
+    assert result["counts"] == {"total": 1, "allowed": 0, "unsubscribed": 0}
+    row = result["contacts"][0]
+    assert row["contact_page_id"] == "cnt-1"
+    # 登録時にどの取引先の下で確かめるか。名前ではなくIDで持ち回る。
+    assert row["client_page_id"] == "cli-1"
+    assert row["email"] == "yamada@example.com"
+    assert row["consent"]["allowed"] is False
+    assert row["consent"]["reason"] == REASON_MISSING
+    # 画面が選択肢を組み立てられること。
+    assert {option["value"] for option in result["basis_options"]} == {
+        "opt_in",
+        "notified",
+        "transaction",
+        "published",
+    }
+
+
+def test_根拠一覧では登録済みの内容がそのまま見える() -> None:
+    consents = [
+        ConsentRecord(
+            contact_page_id="cnt-1",
+            contact_email="yamada@example.com",
+            basis=BASIS_NOTIFIED,
+            obtained_at=date(2026, 4, 8),
+            evidence="大阪ホテル展で名刺交換",
+            recorded_by="kanazawa@cnctor.jp",
+        )
+    ]
+    row = _overview(preference_reader=_FakePreferenceReader(consents=consents))["contacts"][0]
+    assert row["consent"]["allowed"] is True
+    assert row["consent"]["obtained_at"] == "2026-04-08"
+    assert row["consent"]["evidence"] == "大阪ホテル展で名刺交換"
+    assert row["consent"]["recorded_email"] == "yamada@example.com"
+
+
+def test_根拠一覧は配信停止の相手も隠さない() -> None:
+    """画面から消すと「なぜこの人だけ出てこないのか」が分からなくなる。"""
+    reader = _FakePreferenceReader(page_ids={"cnt-1"}, consents=[])
+    result = _overview(preference_reader=reader)
+    assert result["contacts"][0]["unsubscribed"] is True
+    assert result["counts"]["unsubscribed"] == 1
+
+
+def test_根拠一覧でも取引先を選びすぎたら入力エラーにする() -> None:
+    too_many = [f"cli-{i}" for i in range(bulk_email_service.MAX_CLIENTS_PER_PREVIEW + 1)]
+    with pytest.raises(ValueError, match="一度に選べる取引先"):
+        _overview(client_page_ids=too_many)
+
+
+def test_他の連絡先の根拠はアドレスが同じでも借りられない() -> None:
+    """代表アドレスの使い回しや、消えた連絡先の残骸で送れてしまうのを防ぐ。"""
+    consents = [
+        ConsentRecord(
+            contact_page_id="ffffffffffffffffffffffffffffffff",
+            contact_email="yamada@example.com",
+            basis=BASIS_NOTIFIED,
+            obtained_at=date(2026, 4, 8),
+            evidence="大阪ホテル展で名刺交換",
+        )
+    ]
+    row = _overview(preference_reader=_FakePreferenceReader(consents=consents))["contacts"][0]
+    assert row["consent"]["allowed"] is False
+    assert row["consent"]["reason"] == REASON_MISSING
+
+
+def test_登録時とアドレスが変わっていたら送れないと出す() -> None:
+    """名刺交換で得たのは「そのとき教えてもらったアドレス」。連絡先のアドレスが
+    書き換わったら根拠は付いてこない（登録し直してもらう）。"""
+    consents = [
+        ConsentRecord(
+            contact_page_id="cnt-1",
+            contact_email="old@example.com",
+            basis=BASIS_NOTIFIED,
+            obtained_at=date(2026, 4, 8),
+            evidence="大阪ホテル展で名刺交換",
+        )
+    ]
+    row = _overview(preference_reader=_FakePreferenceReader(consents=consents))["contacts"][0]
+    assert row["consent"]["allowed"] is False
+    assert row["consent"]["reason"] == "consent_email_mismatch"
+    assert row["consent"]["detail"] == "old@example.com"
+
+
+def test_古さの表示文言はバックエンドが作る() -> None:
+    row = _overview()["contacts"][0]
+    assert row["consent"]["stale_label"] == "3年以上前"

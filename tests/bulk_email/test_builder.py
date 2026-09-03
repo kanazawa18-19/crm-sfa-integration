@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from src.bulk_email.audience import (
     SKIP_MISSING_MERGE_VALUE,
     SKIP_UNSUBSCRIBED,
@@ -14,6 +16,14 @@ from src.bulk_email.audience import (
 )
 from src.bulk_email.compliance import SenderIdentity
 from src.bulk_email.builder import build_messages
+from src.bulk_email.consent import (
+    BASIS_NOTIFIED,
+    REASON_MISSING,
+    STALE_AFTER_DAYS,
+    ConsentRecord,
+)
+
+NOW = datetime(2026, 9, 3, 6, tzinfo=timezone.utc)  # JST 9/3 15:00
 
 IDENTITY = SenderIdentity(
     company_name="テスト株式会社",
@@ -39,6 +49,23 @@ def contact(page_id: str = "p1", **kwargs: object) -> Contact:
     return Contact(**values)  # type: ignore[arg-type]
 
 
+def allow(*page_ids: str, days_ago: int = 30, **kwargs: object) -> list[ConsentRecord]:
+    """根拠は「登録時のアドレス＝今の宛先」でしか効かないので、
+    `contact()`が作る`<page_id>@example.com`に合わせる。"""
+    values: dict = {
+        "basis": BASIS_NOTIFIED,
+        "obtained_at": NOW.date() - timedelta(days=days_ago),
+        "evidence": "2026-08 展示会で名刺交換",
+    }
+    values.update(kwargs)
+    return [
+        ConsentRecord(
+            contact_page_id=page_id, contact_email=f"{page_id}@example.com", **values
+        )
+        for page_id in page_ids
+    ]
+
+
 def build(**kwargs: object):
     params: dict = {
         "subject": "{{会社名}}様へのご案内",
@@ -48,8 +75,13 @@ def build(**kwargs: object):
         "identity": IDENTITY,
         "unsubscribe_secret": SECRET,
         "unsubscribe_base_url": BASE_URL,
+        "now": NOW,
     }
     params.update(kwargs)
+    # 既定では「渡した宛先には全員ぶんの根拠が登録済み」にする。
+    # 根拠そのものを見るテストだけが`consents`を明示的に渡す。
+    if "consents" not in params:
+        params["consents"] = allow(*[c.page_id for c in params["contacts"]])
     return build_messages(**params)  # type: ignore[arg-type]
 
 
@@ -156,3 +188,26 @@ def test_件名に改行があれば送れない() -> None:
     """件名はヘッダー1行。②で実送信するときのヘッダーインジェクション対策を入口で止める。"""
     result = build(subject="件名\nBcc: someone@example.com")
     assert any("件名に改行" in blocker for blocker in result.blockers)
+
+
+# ── 送ってよい根拠（オプトイン）との接続 ───────────────────────────────
+
+
+def test_根拠を渡さなければ1通も組み立てない() -> None:
+    """引数の渡し忘れは「うっかり全員に送る」ではなく「1通も送れない」側に倒す。"""
+    result = build(consents=[])
+    assert result.messages == ()
+    assert not result.sendable
+    assert [s.reason for s in result.skipped] == [REASON_MISSING]
+
+
+def test_根拠が無くて0件のときは直し方まで出す() -> None:
+    """「0件です」だけでは何をすればよいか分からない。"""
+    result = build(consents=[])
+    assert any("送ってよい根拠" in b and "送信根拠の管理" in b for b in result.blockers)
+
+
+def test_根拠が古い宛先は警告に出るが送れる() -> None:
+    result = build(consents=allow("p1", days_ago=STALE_AFTER_DAYS + 1))
+    assert result.sendable
+    assert any("3年以上たっている" in w for w in result.warnings)

@@ -12,7 +12,8 @@
 外部サービスを起動せずにテストできる状態に保つため。
 
 ```
-   入力  件名 / 本文テンプレート / 連絡先の一覧 / 配信停止の一覧 / 送信者情報 / 署名鍵
+   入力  件名 / 本文テンプレート / 連絡先の一覧 / 配信停止の一覧 /
+         ★送ってよい根拠の一覧 / 送信者情報 / 署名鍵
                                   │
                                   ▼
    出力  messages   宛先ごとの差し込み済みの件名・本文（そのまま送れる形）
@@ -24,21 +25,28 @@
 `blockers`があっても`messages`は組み立てて返す。**画面で本文を確認する用途は
 潰さない**（送信者情報が空でも、文面のレビューはできた方がよい）。
 送信側は`blockers`が空であることを必ず自分で確かめること。
+
+**`consents`を渡さないと宛先は全員外れる。** 「送ってよい根拠」が無い相手には
+送らないのが既定で、引数の渡し忘れは「うっかり全員に送る」ではなく
+「1通も送れない」側に倒してある（`src/bulk_email/consent.py`）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Iterable, Sequence
 
 from src.bulk_email import compliance, template, unsubscribe
 from src.bulk_email.audience import (
+    CONSENT_SKIP_REASONS,
     SKIP_MISSING_MERGE_VALUE,
     Contact,
     SkippedContact,
     normalize_email,
     select_recipients,
 )
+from src.bulk_email.consent import STALE_AFTER_YEARS, ConsentRecord
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,8 @@ def build_messages(
     unsubscribe_base_url: str = "",
     opted_out_page_ids: Iterable[str] = (),
     opted_out_emails: Iterable[str] = (),
+    consents: Iterable[ConsentRecord] = (),
+    now: datetime | None = None,
     truncated_client_names: Sequence[str] = (),
 ) -> BuildResult:
     """宛先ごとの1通を組み立てる。`blockers`が空でない限り送ってはいけない。"""
@@ -146,11 +156,23 @@ def build_messages(
             + "。全員に送るには絞り込むか、宛先の作り方を見直してください。"
         )
 
-    recipients, skipped = select_recipients(
+    recipients, skipped, stale_consent = select_recipients(
         contacts,
         opted_out_page_ids=opted_out_page_ids,
         opted_out_emails=opted_out_emails,
+        consents=consents,
+        now=now,
     )
+    if stale_consent:
+        collector.warnings.append(
+            f"送ってよい根拠の取得から{STALE_AFTER_YEARS}年以上たっている宛先が"
+            f"{len(stale_consent)}件あります"
+            "（例: "
+            + "・".join(
+                f"{c.client_name} {c.name}".strip() for c in stale_consent[:3]
+            )
+            + "）。取引が続いているか確かめてから送ってください。"
+        )
 
     messages: list[RenderedMessage] = []
     for contact in recipients:
@@ -192,7 +214,17 @@ def build_messages(
         )
 
     if not messages:
-        collector.blockers.append("送れる宛先が1件もありません。")
+        # 「0件です」だけだと何を直せばよいか分からない。根拠が未登録で全員外れているのは
+        # この機能を使い始めた直後に必ず通る道なので、そこだけ言葉を分ける。
+        consent_blocked = sum(1 for item in skipped if item.reason in CONSENT_SKIP_REASONS)
+        if consent_blocked:
+            collector.blockers.append(
+                f"送れる宛先が1件もありません。うち{consent_blocked}件は"
+                "「送ってよい根拠」が登録されていないために外れています。"
+                "一斉配信の「送信根拠の管理」から、連絡先ごとに根拠を登録してください。"
+            )
+        else:
+            collector.blockers.append("送れる宛先が1件もありません。")
 
     placeholders_used = tuple(
         dict.fromkeys(template.find_placeholders(subject) + template.find_placeholders(body))

@@ -59,6 +59,7 @@ _EXPECTED_ROUTES = {
     # 一斉配信のプレビュー（2026-09-03追加）。読み取りのみだが、本文テンプレート
     # （改行を含む長文）を送るためPOST。送信のエンドポイントはまだ無い。
     ("POST", "/api/bulk-email/preview"),
+    ("POST", "/api/bulk-email/consent-overview"),
     ("GET", "/api/reports/daily"),
     ("GET", "/api/members/performance"),
     ("GET", "/api/alerts/manager"),

@@ -113,4 +113,8 @@ def test_送信のエンドポイントは存在しない() -> None:
     bulk_paths = {path for path in _all_paths(app.routes) if path.startswith("/api/bulk-email")}
     # `<=`ではなく`==`。ルートの列挙方法が壊れて空集合になったときに、
     # 「送信エンドポイントは無い」と嘘をつかないようにする。
-    assert bulk_paths == {"/api/bulk-email/preview"}, bulk_paths
+    assert bulk_paths == {
+        "/api/bulk-email/preview",
+        # 送信根拠の一覧。読み取りのみで、登録はダッシュボード側のServer Actionが書く。
+        "/api/bulk-email/consent-overview",
+    }, bulk_paths

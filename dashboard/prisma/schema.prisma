@@ -511,3 +511,43 @@ model ContactMailPreference {
 
   @@index([contactEmail])
 }
+
+// 連絡先ごとの「送ってよい根拠」(2026-09-03、一斉配信)。
+//
+// ContactMailPreference が「送ってはいけない人の名簿」なのに対し、こちらは
+// 「送ってよい理由」を1件ずつ持つ。**行が無い連絡先には送らない**(既定で送信不可)。
+// 特定電子メール法は広告宣伝メールを原則として同意を得た相手に送ることを求めており、
+// 「配信停止の名簿に載っていない」ことは送ってよい理由にならないため。
+//
+// 書き込むのは社内の管理画面(dashboard/app/(dashboard)/bulk-email/consent/)だけ。
+// バックエンド(src/bulk_email/db.py)は読み取り専用。
+// 種類(basis)の定義と判定は src/bulk_email/consent.py が正本。
+model ContactMailConsent {
+  id String @id @default(cuid())
+  // Notion連絡先DBのpage_id。ContactMailPreference と同じく**ハイフン無し・小文字**で保存し、
+  // マイグレーションで CHECK ("contactPageId" ~ '^[0-9a-f]{32}$') を張ってある。
+  contactPageId String @unique
+  // 記録した時点のメールアドレス(小文字)。連絡先レコードが作り直されてpage_idが
+  // 変わっても、アドレス側で根拠を引き継げるようにするため保存する。
+  contactEmail  String
+  // "opt_in" | "notified" | "transaction" | "published"。
+  // src/bulk_email/consent.py の BASIS_LABELS が正本。ここに無い値は送信不可として扱う。
+  basis         String
+  // 根拠を得た日。**必須。** いつのものか言えない根拠は根拠として扱わない。
+  // **時刻ではなく暦の日**として持つ(@db.Date)。時刻を持たせると、日本時間の午前中に
+  // 当日を登録したものがUTC基準で「未来日」になり送信不可になる。
+  obtainedAt    DateTime  @db.Date
+  // 取得元・証跡の自由記述(名刺交換の場・フォームの送信日・契約の案件IDなど)。空は不可。
+  evidence      String
+  // 記録した社内ユーザーのメールアドレス。誰の判断だったかを後から追えるようにする。
+  recordedBy    String
+  // 誤登録の訂正・取引終了などで根拠を取り消した日時。入っていれば送信不可。
+  // 行を消さずに残すのは、「あった根拠を取り消した」ことも記録だから。
+  revokedAt     DateTime?
+  revokedBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([contactEmail])
+  @@index([basis])
+}

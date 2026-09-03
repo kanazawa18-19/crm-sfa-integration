@@ -27,13 +27,24 @@
             ▼
    src/bulk_email/builder.py      ★ここから下は外部I/Oを一切しない純粋関数
      ├── audience.py    誰に送れて、誰を外すか
+     ├── consent.py     ★送ってよい根拠があるか（無ければ送らない）
      ├── template.py    差し込み
      ├── compliance.py  特定電子メール法の表示（会社名・住所・配信停止）
      └── unsubscribe.py 配信停止リンクの署名
             ▲
             │
-   src/bulk_email/db.py           Postgres（配信停止フラグの読み取り）
+   src/bulk_email/db.py           Postgres（配信停止フラグと送信根拠の読み取り）
 ```
+
+■ 「送ってはいけない人」と「送ってよい人」は別の名簿
+
+```
+   ContactMailPreference   配信停止の申し出   お客様が停止リンクから登録
+   ContactMailConsent      送ってよい根拠     社内の担当者が登録（2026-09-03 追加）
+```
+
+**根拠が登録されていない連絡先には送らない**（既定で送信不可）。
+「停止の申し出が無いこと」は送ってよい理由にならない、というのが`consent.py`の役割。
 
 `builder.build_messages()`はDBもNotionも起動せずにテストできる。ここが本体で、
 上下は薄いままにしておくこと。**②で実送信を足すときも必ずこの関数を通す**
@@ -44,5 +55,6 @@
 設計メモには`BulkCampaign`/`BulkCampaignRecipient`を書いたが、**送信が無い今は
 書き込む中身が無い**ため意図的に作っていない。使われないテーブルを先に作ると、
 ②で実際に必要な形が分かったときに作り直すことになる。今あるのは配信停止
-（`ContactMailPreference`）だけで、これは送信の有無に関わらず今すぐ要る。
+（`ContactMailPreference`）と送信根拠（`ContactMailConsent`）だけで、
+どちらも送信の有無に関わらず今すぐ要る。
 """

@@ -12,14 +12,29 @@
 判定の順番には意味がある。**配信停止を最優先で見る。**
 アドレスの形が変でも、停止の申し出があった相手は「停止で外した」と記録したい
 （形式不正として扱うと、直したときにまた対象へ戻ってしまう）。
+
+■ 送ってよい根拠（オプトイン）が無い相手は、既定で外す
+
+```
+   ① 配信停止の申し出がある      ──▶ 外す（最優先）
+   ② アドレスが無い／形が不正     ──▶ 外す
+   ③ 同じアドレスが重複          ──▶ 外す
+   ④ 送ってよい根拠が無い        ──▶ 外す  ★ `src/bulk_email/consent.py`
+```
+
+④を最後に見るのは、①〜③の方が「何を直せばよいか」がはっきりしているため
+（根拠が無いことは、アドレスが壊れていることの言い訳にはならない）。
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable, Sequence
 
+from src.bulk_email import consent as consent_module
+from src.bulk_email.consent import ConsentIndex, ConsentRecord
 from src.bulk_email.ids import normalize_page_id
 
 # 除外の理由（コード）と、画面に出す日本語。
@@ -35,7 +50,12 @@ SKIP_REASON_LABELS: dict[str, str] = {
     SKIP_INVALID_EMAIL: "メールアドレスの形式が不正",
     SKIP_DUPLICATE: "同じアドレスが他の連絡先と重複",
     SKIP_MISSING_MERGE_VALUE: "差し込む値が空",
+    # 送ってよい根拠まわり（`src/bulk_email/consent.py`が理由コードの正本）。
+    **consent_module.REASON_LABELS,
 }
+
+# 「送ってよい根拠が無い／使えない」に当たる理由コード。画面での案内の出し分けに使う。
+CONSENT_SKIP_REASONS = frozenset(consent_module.REASON_LABELS)
 
 # 保守的に見る。1つのフィールドに複数アドレスが入っている（`a@x.jp, b@y.jp`）ケースは
 # CRMの実データでは珍しくないが、勝手に分割も採用もしない。人が直す対象として返す。
@@ -52,6 +72,10 @@ class Contact:
     department: str | None = None
     title: str | None = None
     client_name: str = ""
+    # どの取引先からぶら下がってきたか。送信の判断には使わないが、
+    # 根拠の登録画面が「この連絡先はどの取引先の下にいるか」を持ち回るために要る
+    # （名前で逆引きすると同名の取引先で取り違える。3体が独立に指摘、2026-09-03）。
+    client_page_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,12 +104,18 @@ def select_recipients(
     *,
     opted_out_page_ids: Iterable[str] = (),
     opted_out_emails: Iterable[str] = (),
-) -> tuple[list[Contact], list[SkippedContact]]:
-    """送れる宛先と、外した宛先（理由つき）に分ける。
+    consents: Iterable[ConsentRecord] = (),
+    now: datetime | None = None,
+) -> tuple[list[Contact], list[SkippedContact], list[Contact]]:
+    """送れる宛先と、外した宛先（理由つき）と、根拠が古い宛先に分ける。
 
     同じアドレスが複数の連絡先に登録されている場合は**先に出てきた1件だけ**を残す。
     1人に同じ内容が2通届くのは、営業のメールとしては失礼にあたるだけでなく、
     受信側のスパム判定を悪化させる。
+
+    `consents`を渡さないと**全員が「根拠が未登録」で外れる**。これは仕様。
+    引数を足し忘れた送信コードが、根拠を確かめずに送ってしまう方が危ないため、
+    「渡し忘れたら送れない」側に倒してある。
     """
     # 突合は必ず正規化した形で行う（`src/bulk_email/ids.py`）。
     # 「db.pyが元の表記へ戻してくれるから、ここは生の値の比較でよい」にすると、
@@ -96,8 +126,12 @@ def select_recipients(
     opted_out_addresses = {normalize_email(email) for email in opted_out_emails}
     opted_out_addresses.discard("")
 
+    consent_index = ConsentIndex(consents)
+
     recipients: list[Contact] = []
     skipped: list[SkippedContact] = []
+    # 送れるが根拠が古い宛先。送信は止めないが、件数を画面へ出すために分けて返す。
+    stale_consent: list[Contact] = []
     seen_emails: set[str] = set()
     seen_page_ids: set[str] = set()
 
@@ -130,7 +164,19 @@ def select_recipients(
             skipped.append(SkippedContact(contact, SKIP_DUPLICATE, email))
             continue
 
+        # 最後に「そもそも送ってよい相手か」を見る。
+        # 配信停止＝送ってはいけない人の名簿を通過しただけでは、送ってよい理由にならない。
+        decision = consent_index.decide(contact.page_id, email, now=now)
+        if not decision.allowed:
+            # **ここで seen_emails に入れない。** 同じアドレスの連絡先が2件あり、
+            # 根拠が付いているのが後ろの1件だけ、というときに前の1件が場所を取ると
+            # 後ろが「重複」で外れ、誰にも送られなくなる。
+            skipped.append(SkippedContact(contact, decision.reason, decision.detail))
+            continue
+        if decision.stale:
+            stale_consent.append(contact)
+
         seen_emails.add(email)
         recipients.append(contact)
 
-    return recipients, skipped
+    return recipients, skipped, stale_consent

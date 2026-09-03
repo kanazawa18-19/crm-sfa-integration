@@ -533,3 +533,65 @@ export function previewBulkEmail(payload: BulkEmailPreviewRequest): Promise<Bulk
   });
 }
 
+// ── 送ってよい根拠(オプトイン)の一覧 ─────────────────────────────────
+// 判定はバックエンド(src/bulk_email/consent.py)が行う。ここは受け取るだけ。
+
+export interface BulkEmailConsentState {
+  // "opt_in" | "notified" | "transaction" | "published"。未登録なら空文字。
+  basis: string;
+  basis_label: string;
+  // "YYYY-MM-DD"。未登録なら空文字。
+  obtained_at: string;
+  evidence: string;
+  recorded_by: string;
+  // 根拠を登録したときのメールアドレス。今の宛先と違えば送れない。
+  recorded_email: string;
+  // 取り消し済みならその日("YYYY-MM-DD")。
+  revoked_at: string;
+  // これがfalseの間、この連絡先には送れない。
+  allowed: boolean;
+  reason: string;
+  reason_label: string;
+  // 理由の具体(アドレスが違う場合は登録時のアドレス、取り消し済みならその日など)。
+  detail: string;
+  // 送れるが根拠が古い。何年以上かはバックエンドが決めるので、
+  // 画面には stale_label をそのまま出す(「3年」を画面に書かない)。
+  stale: boolean;
+  stale_label: string;
+}
+
+export interface BulkEmailConsentContact {
+  contact_page_id: string;
+  contact_name: string;
+  client_name: string;
+  // 登録時にどの取引先の下で確かめるか。取引先名で逆引きすると同名の取引先で取り違える。
+  client_page_id: string;
+  department: string;
+  title: string;
+  email: string;
+  // 配信停止の申し出がある相手。根拠を登録しても送られない(配信停止が優先)。
+  unsubscribed: boolean;
+  consent: BulkEmailConsentState;
+}
+
+export interface BulkEmailConsentOverview {
+  contacts: BulkEmailConsentContact[];
+  warnings: string[];
+  basis_options: Array<{
+    value: string;
+    label: string;
+    description: string;
+    evidence_hint: string;
+  }>;
+  counts: { total: number; allowed: number; unsubscribed: number };
+}
+
+export function bulkEmailConsentOverview(payload: {
+  client_page_ids: string[];
+}): Promise<BulkEmailConsentOverview> {
+  return fetchBackend<BulkEmailConsentOverview>("/api/bulk-email/consent-overview", {
+    method: "POST",
+    body: payload,
+  });
+}
+

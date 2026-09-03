@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ErrorMessage from "@/components/ErrorMessage";
 import {
@@ -150,6 +151,14 @@ export default function BulkEmailPageClient({ senderName }: { senderName: string
         （営業担当のGmailから送るかどうか）の決定が必要です。
       </div>
 
+      {/* 「宛先が0件」の理由の大半は根拠の未登録になる。押す前に行き先が見えているようにする。 */}
+      <p className="text-sm text-(--color-foreground)/60">
+        宛先になるのは、送ってよい根拠が登録されている連絡先だけです。
+        <Link href="/bulk-email/consent" className="ml-2 underline">
+          送信根拠の管理へ
+        </Link>
+      </p>
+
       <section className="surface-card border-(--border-subtle) p-5">
         <h2 className="text-base font-bold">1. 宛先を選ぶ</h2>
         <p className="mt-1 text-sm text-(--color-foreground)/60">
@@ -263,6 +272,11 @@ export default function BulkEmailPageClient({ senderName }: { senderName: string
           {preview.blockers.map((blocker) => (
             <p key={blocker} className="alert-error">
               {blocker}
+              {blocker.includes("送ってよい根拠") && (
+                <Link href="/bulk-email/consent" className="ml-2 underline">
+                  送信根拠の管理へ
+                </Link>
+              )}
             </p>
           ))}
           {preview.warnings.map((warning) => (
