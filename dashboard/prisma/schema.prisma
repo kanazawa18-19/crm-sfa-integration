@@ -216,6 +216,12 @@ model EmailLog {
   reminderLogs EmailReminderLog[]
 
   @@index([contactPageId])
+  // 未返信リマインド(src/email_reminders/db.pyのfind_latest_inbound_awaiting_reply())が
+  // 毎時`DISTINCT ON ("contactPageId") … ORDER BY "contactPageId", "sentAt" DESC`を流す
+  // (2026-09-03追加)。contactPageId単体のインデックスだと連絡先ごとのソートが残る。
+  // scripts/backfill_gmail_history.pyで過去分を取り込むとEmailLogが大きく増えるため、
+  // 行が少ないうちに張っておく。
+  @@index([contactPageId, sentAt])
   @@index([contactEmail])
   // メールログ画面(email-log/page.tsx)が常に`ORDER BY sentAt desc`を使い、かつ
   // after:/before:/older_than:/newer_than:のようなsentAtレンジフィルタでも使う

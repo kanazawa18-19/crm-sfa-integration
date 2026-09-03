@@ -60,7 +60,7 @@ def test_run_reminder_check_selects_the_largest_crossed_threshold(monkeypatch) -
 
     assert sent_calls[0]["rep_email"] == "rep@cnctor.jp"
     assert recorded == [("log1", 6)]
-    assert result == {"eligible": 1, "sent": 1, "failed": 0}
+    assert result == {"eligible": 1, "sent": 1, "failed": 0, "skipped_too_old": 0}
 
 
 def test_run_reminder_check_skips_when_no_threshold_crossed_yet(monkeypatch) -> None:
@@ -81,7 +81,7 @@ def test_run_reminder_check_skips_when_no_threshold_crossed_yet(monkeypatch) -> 
 
     result = reminder_check.run_reminder_check()
 
-    assert result == {"eligible": 1, "sent": 0, "failed": 0}
+    assert result == {"eligible": 1, "sent": 0, "failed": 0, "skipped_too_old": 0}
 
 
 def test_run_reminder_check_does_not_send_when_record_reminder_sent_reports_duplicate(
@@ -103,7 +103,7 @@ def test_run_reminder_check_does_not_send_when_record_reminder_sent_reports_dupl
 
     result = reminder_check.run_reminder_check()
 
-    assert result == {"eligible": 1, "sent": 0, "failed": 0}
+    assert result == {"eligible": 1, "sent": 0, "failed": 0, "skipped_too_old": 0}
 
 
 def test_run_reminder_check_records_before_sending(monkeypatch) -> None:
@@ -157,4 +157,78 @@ def test_run_reminder_check_continues_independently_after_one_send_failure(monke
     # 送信記録は先に(送信の成否によらず)両方とも試みられる — record_reminder_sent()の
     # 設計上のトレードオフ通り、送信失敗した対象(log1)は次回再送されない。
     assert recorded == [("log1", 6), ("log2", 6)]
-    assert result == {"eligible": 2, "sent": 1, "failed": 1}
+    assert result == {"eligible": 2, "sent": 1, "failed": 1, "skipped_too_old": 0}
+
+
+def test_run_reminder_check_skips_inbound_older_than_the_age_limit(monkeypatch) -> None:
+    """15日前の受信メールにはリマインドしない(2026-09-03)。
+
+    上限が無いと「72時間クロス」として今さらDMが飛ぶ。過去分の一括取り込み
+    (`scripts/backfill_gmail_history.py`)の直後に大量のDMが一斉に飛ぶのも防ぐ。
+    """
+    monkeypatch.setattr(reminder_check.db, "get_reminder_settings", lambda: (True, [3, 6, 24, 72]))
+    monkeypatch.setattr(
+        reminder_check.db,
+        "find_latest_inbound_awaiting_reply",
+        lambda: [_row(hours_ago=15 * 24)],
+    )
+
+    def fail_record(email_log_id, threshold):
+        raise AssertionError("古すぎる受信メールでは送信の権利を取りに行かないこと")
+
+    monkeypatch.setattr(reminder_check.db, "record_reminder_sent", fail_record)
+    monkeypatch.setattr(
+        reminder_check.slack_notify,
+        "send_reminder_dm",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("送信されてはいけない")),
+    )
+
+    result = reminder_check.run_reminder_check()
+
+    assert result == {"eligible": 1, "sent": 0, "failed": 0, "skipped_too_old": 1}
+
+
+def test_run_reminder_check_still_sends_just_inside_the_age_limit(monkeypatch) -> None:
+    """境界のすぐ内側(13日前)は従来通りリマインドする。"""
+    monkeypatch.setattr(reminder_check.db, "get_reminder_settings", lambda: (True, [3, 6, 24, 72]))
+    monkeypatch.setattr(
+        reminder_check.db,
+        "find_latest_inbound_awaiting_reply",
+        lambda: [_row(hours_ago=13 * 24)],
+    )
+    monkeypatch.setattr(reminder_check.db, "record_reminder_sent", lambda *a, **k: True)
+    sent_calls: list[dict] = []
+    monkeypatch.setattr(
+        reminder_check.slack_notify, "send_reminder_dm", lambda **kwargs: sent_calls.append(kwargs)
+    )
+
+    result = reminder_check.run_reminder_check()
+
+    assert len(sent_calls) == 1
+    assert result == {"eligible": 1, "sent": 1, "failed": 0, "skipped_too_old": 0}
+
+
+def test_run_reminder_check_sends_at_exactly_the_age_limit(monkeypatch) -> None:
+    """ちょうど14日（336時間）は「古すぎる」に入れない（判定は `>` であって `>=` ではない）。"""
+    monkeypatch.setattr(reminder_check.db, "get_reminder_settings", lambda: (True, [3, 6, 24, 72]))
+    monkeypatch.setattr(
+        reminder_check.db,
+        "find_latest_inbound_awaiting_reply",
+        # わずかに内側にしてテストの実行時間差で揺れないようにする
+        lambda: [_row(hours_ago=14 * 24 - 0.01)],
+    )
+    monkeypatch.setattr(reminder_check.db, "record_reminder_sent", lambda *a, **k: True)
+    sent_calls: list[dict] = []
+    monkeypatch.setattr(
+        reminder_check.slack_notify, "send_reminder_dm", lambda **kwargs: sent_calls.append(kwargs)
+    )
+
+    result = reminder_check.run_reminder_check()
+
+    assert len(sent_calls) == 1
+    assert result["skipped_too_old"] == 0
+
+
+def test_run_reminder_check_age_limit_is_336_hours() -> None:
+    """上限値そのものを固定する（縮めた/伸ばしたことに気づけるように）。"""
+    assert reminder_check._MAX_REMINDER_AGE_HOURS == 14 * 24

@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import getaddresses, parsedate_to_datetime
+from typing import Callable
 
 from src.audit_log.actor_context import set_actor
 from src.db_schema.registry import get_schema
@@ -36,7 +38,7 @@ _CONTACT_DB_KEY = "contact"
 _LAST_EMAIL_AT_PROPERTY = "最終メール日時"
 
 
-def _internal_domains() -> frozenset[str]:
+def internal_domains_from_env() -> frozenset[str]:
     """web_engagement_meeting_webhook.pyの`_internal_domains()`と同じ
     INTERNAL_EMAIL_DOMAINS環境変数(カンマ区切り)を使う。"""
     raw = os.environ.get("INTERNAL_EMAIL_DOMAINS", "")
@@ -60,6 +62,67 @@ def _parse_sent_at(date_header: str | None) -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class ClassifiedMessage:
+    """Gmailのメッセージ1件を連絡先DBと突き合わせた結果(2026-09-03に切り出し)。
+
+    「どの連絡先の・どちら向きの・いつのメールか」を決めるところまでが責務で、
+    `EmailLog`への記録・Notion更新・通知は含まない。日次同期(`_process_message_ref()`)と
+    過去分の一括取り込み(`scripts/backfill_gmail_history.py`)の両方がここを通る。
+
+    **突合とdirection判定を2箇所に書かないための分離。** 過去分の取り込みは副作用
+    (インシデント通知・Notion更新・web-engagement-toolへの通知)を一切起こしてはならず、
+    かといってロジックをコピーすると片方だけ直したときに静かにズレる。
+    """
+
+    contact_page_id: str
+    contact_email: str
+    direction: str  # "inbound" | "outbound"
+    sent_at: datetime
+
+
+def classify_message(
+    message: gmail_client.GmailMessage,
+    *,
+    rep_email: str,
+    internal_domains: frozenset[str],
+    resolve_contact: Callable[[str], str | None],
+) -> ClassifiedMessage | None:
+    """メッセージ1件を連絡先DBと突き合わせる。記録対象でなければNoneを返す。
+
+    `resolve_contact`はメールアドレス→連絡先ページIDの解決方法。日次同期はNotion APIへ
+    1件ずつ問い合わせる関数を渡すが、過去分の一括取り込みでは**メール1通ごとにNotionを
+    叩くとレート制限で現実的な時間に終わらない**ため、事前に作ったローカル辞書の
+    `.get`を渡す。
+    """
+    from_addrs = _extract_addresses(message.from_header)
+    to_addrs = _extract_addresses(message.to_header)
+
+    rep_email_lower = rep_email.lower()
+    # 社外(連絡先候補になりうる)アドレスのみに絞る。From/Toどちらに載っていたかは
+    # 後段のdirection判定で使うため、setに潰さずFrom側を優先する順序で連結する。
+    candidate_addrs = [
+        a for a in (from_addrs + to_addrs) if a != rep_email_lower and a.rsplit("@", 1)[-1] not in internal_domains
+    ]
+    if not candidate_addrs:
+        return None
+
+    # 複数の社外アドレスが同時に載っているケース(CC等)は、連絡先DBで最初に一致した
+    # 1件のみを対象とする — meeting_syncの「案件0件/複数件はスキップ」とは異なり、
+    # メール自体は常に1通実在する事実であり、宛先が複数だからといって記録を
+    # 見送るべき曖昧なケースではないため。
+    for addr in candidate_addrs:
+        contact_id = resolve_contact(addr)
+        if contact_id:
+            return ClassifiedMessage(
+                contact_page_id=contact_id,
+                contact_email=addr,
+                direction="inbound" if addr in from_addrs else "outbound",
+                sent_at=_parse_sent_at(message.date_header),
+            )
+    return None
+
+
 def _process_message_ref(
     message_id: str,
     access_token: str,
@@ -77,34 +140,19 @@ def _process_message_ref(
         return False
 
     message = gmail_client.get_message(access_token, message_id)
-    from_addrs = _extract_addresses(message.from_header)
-    to_addrs = _extract_addresses(message.to_header)
-
-    rep_email_lower = rep_email.lower()
-    # 社外(連絡先候補になりうる)アドレスのみに絞る。From/Toどちらに載っていたかは
-    # 後段のdirection判定で使うため、setに潰さずFrom側を優先する順序で連結する。
-    candidate_addrs = [
-        a for a in (from_addrs + to_addrs) if a != rep_email_lower and a.rsplit("@", 1)[-1] not in internal_domains
-    ]
-    if not candidate_addrs:
+    classified = classify_message(
+        message,
+        rep_email=rep_email,
+        internal_domains=internal_domains,
+        resolve_contact=lambda addr: find_contact_page_id(contact_client, addr),
+    )
+    if classified is None:
         return False
 
-    # 複数の社外アドレスが同時に載っているケース(CC等)は、連絡先DBで最初に一致した
-    # 1件のみを対象とする — meeting_syncの「案件0件/複数件はスキップ」とは異なり、
-    # メール自体は常に1通実在する事実であり、宛先が複数だからといって記録を
-    # 見送るべき曖昧なケースではないため。
-    matched_contact_id: str | None = None
-    matched_email: str | None = None
-    for addr in candidate_addrs:
-        contact_id = find_contact_page_id(contact_client, addr)
-        if contact_id:
-            matched_contact_id, matched_email = contact_id, addr
-            break
-    if not matched_contact_id or not matched_email:
-        return False
-
-    direction = "inbound" if matched_email in from_addrs else "outbound"
-    sent_at = _parse_sent_at(message.date_header)
+    matched_contact_id = classified.contact_page_id
+    matched_email = classified.contact_email
+    direction = classified.direction
+    sent_at = classified.sent_at
 
     # インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。顧客からの
     # 受信メールのみを対象とする(outboundは自社側の発信文面であり検知対象外)。
@@ -297,7 +345,7 @@ def sync_all(*, contact_client: HttpNotionClient | None = None) -> dict[str, int
     (syncAllGmail()のweb-engagement-tool側実装と同じ方針)。
     """
     client = contact_client or _default_contact_client()
-    internal_domains = _internal_domains()
+    internal_domains = internal_domains_from_env()
 
     results: dict[str, int] = {}
     for conn in db.list_gmail_connections():

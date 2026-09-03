@@ -107,12 +107,29 @@ def _action_page(page_id: str = "act-1", title: str = "【電話】1回目") -> 
     }
 
 
+class _FakeReplyTimingBuilder:
+    """返信傾向の取得(EmailLog/Postgres)を差し替えるスタブ。
+
+    差し替え口が無いと、テストではDB接続の例外が握り潰されて素通りしてしまい、
+    360ビューに返信傾向が載っているかを一切検証できない。
+    """
+
+    def __init__(self, result: dict[str, Any] | None = None) -> None:
+        self.result = result or {}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, page_ids: list[str]) -> dict[str, Any]:
+        self.calls.append(list(page_ids))
+        return self.result
+
+
 def _data_source(
     *,
     client_master_client: Any | None = None,
     contact_client: Any | None = None,
     project_client: Any | None = None,
     action_client: Any | None = None,
+    reply_timing_builder: Any | None = None,
 ) -> Client360DataSource:
     return Client360DataSource(
         client_master_client=client_master_client or _FakeClientMasterClient(),
@@ -120,6 +137,7 @@ def _data_source(
         project_client=project_client or _FakeQueryClient(),
         action_client=action_client or _FakeQueryClient(),
         user_directory=_FakeUserDirectory(),
+        reply_timing_builder=reply_timing_builder or _FakeReplyTimingBuilder(),
     )
 
 
@@ -282,3 +300,53 @@ def test_get_client_360_uses_emoji_property_name_for_action_relation_filter() ->
             },
         }
     ]
+
+
+# --- 返信傾向(2026-09-03) --------------------------------------------------------------------
+
+
+def test_get_client_360_includes_reply_timing_keyed_by_contact_page_id() -> None:
+    client_master_client = _FakeClientMasterClient(raw_pages={"cli-1": _client_master_page()})
+    contact_client = _FakeQueryClient(pages=[_contact_page()])
+    builder = _FakeReplyTimingBuilder({"cnt-1": {"median_lag_label": "57分", "sample_size": 3}})
+    data_source = _data_source(
+        client_master_client=client_master_client,
+        contact_client=contact_client,
+        reply_timing_builder=builder,
+    )
+
+    result = get_client_360("cli-1", data_source=data_source)
+
+    assert result is not None
+    # 連絡先のページIDだけを渡していること(取引先・案件・アクションのIDを混ぜない)。
+    assert builder.calls == [["cnt-1"]]
+    assert result["reply_timing"]["cnt-1"]["median_lag_label"] == "57分"
+
+
+def test_get_client_360_keeps_contacts_free_of_computed_values() -> None:
+    """`contacts`はNotionの写しのまま。算出値を混ぜるとどれがNotionの値か分からなくなる。"""
+    client_master_client = _FakeClientMasterClient(raw_pages={"cli-1": _client_master_page()})
+    contact_client = _FakeQueryClient(pages=[_contact_page()])
+    builder = _FakeReplyTimingBuilder({"cnt-1": {"median_lag_label": "57分"}})
+    data_source = _data_source(
+        client_master_client=client_master_client,
+        contact_client=contact_client,
+        reply_timing_builder=builder,
+    )
+
+    result = get_client_360("cli-1", data_source=data_source)
+
+    assert result is not None
+    assert "median_lag_label" not in result["contacts"][0]
+
+
+def test_get_client_360_returns_empty_reply_timing_when_no_contacts() -> None:
+    client_master_client = _FakeClientMasterClient(raw_pages={"cli-1": _client_master_page()})
+    builder = _FakeReplyTimingBuilder()
+    data_source = _data_source(client_master_client=client_master_client, reply_timing_builder=builder)
+
+    result = get_client_360("cli-1", data_source=data_source)
+
+    assert result is not None
+    assert result["reply_timing"] == {}
+    assert builder.calls == [[]]

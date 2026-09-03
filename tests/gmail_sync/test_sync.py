@@ -591,3 +591,96 @@ def test_sync_rep_continues_with_none_classification_when_score_email_raises(mon
     assert inserted[0]["incident_score"] is None
     assert inserted[0]["incident_priority"] is None
     assert notified == []
+
+
+# --- classify_message（過去分の取り込みが使う経路、2026-09-03） -------------------------------
+
+
+def _classify_target_message(*, msg_id: str = "m1", from_header: str, to_header: str) -> GmailMessage:
+    return GmailMessage(
+        id=msg_id,
+        from_header=from_header,
+        to_header=to_header,
+        subject="件名",
+        date_header="Tue, 01 Sep 2026 10:00:00 +0900",
+        snippet="本文の先頭",
+    )
+
+
+def _classify(message, index: dict[str, str], *, internal=("cnctor.jp",)):
+    """辞書の`.get`を`resolve_contact`に渡す経路（バックフィルと同じ使い方）。"""
+    return sync.classify_message(
+        message,
+        rep_email="rep@cnctor.jp",
+        internal_domains=frozenset(internal),
+        resolve_contact=index.get,
+    )
+
+
+def test_classify_message_marks_mail_from_the_contact_as_inbound() -> None:
+    result = _classify(
+        _classify_target_message(from_header="Lead <lead@client.example.com>", to_header="rep@cnctor.jp"),
+        {"lead@client.example.com": "cnt-1"},
+    )
+
+    assert result is not None
+    assert result.direction == "inbound"
+    assert result.contact_page_id == "cnt-1"
+    assert result.contact_email == "lead@client.example.com"
+
+
+def test_classify_message_marks_mail_to_the_contact_as_outbound() -> None:
+    result = _classify(
+        _classify_target_message(from_header="rep@cnctor.jp", to_header="Lead <lead@client.example.com>"),
+        {"lead@client.example.com": "cnt-1"},
+    )
+
+    assert result is not None
+    assert result.direction == "outbound"
+
+
+def test_classify_message_returns_none_for_unknown_addresses() -> None:
+    assert (
+        _classify(
+            _classify_target_message(from_header="stranger@example.org", to_header="rep@cnctor.jp"),
+            {"lead@client.example.com": "cnt-1"},
+        )
+        is None
+    )
+
+
+def test_classify_message_ignores_internal_domains() -> None:
+    assert (
+        _classify(
+            _classify_target_message(from_header="colleague@cnctor.jp", to_header="rep@cnctor.jp"),
+            {"colleague@cnctor.jp": "cnt-9"},
+        )
+        is None
+    )
+
+
+def test_classify_message_prefers_the_sender_when_both_sides_are_known_contacts() -> None:
+    """From側を先に見る（direction判定が安定するため）。"""
+    result = _classify(
+        _classify_target_message(
+            from_header="Lead A <a@client.example.com>",
+            to_header="rep@cnctor.jp, Lead B <b@client.example.com>",
+        ),
+        {"a@client.example.com": "cnt-a", "b@client.example.com": "cnt-b"},
+    )
+
+    assert result is not None
+    assert result.contact_page_id == "cnt-a"
+    assert result.direction == "inbound"
+
+
+def test_classify_message_parses_the_date_header_into_utc() -> None:
+    result = _classify(
+        _classify_target_message(from_header="lead@client.example.com", to_header="rep@cnctor.jp"),
+        {"lead@client.example.com": "cnt-1"},
+    )
+
+    assert result is not None
+    # JST 10:00 = UTC 01:00
+    assert result.sent_at.utcoffset().total_seconds() == 9 * 3600
+    assert result.sent_at.astimezone(timezone.utc).hour == 1

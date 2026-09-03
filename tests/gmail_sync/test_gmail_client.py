@@ -6,6 +6,7 @@ from src.gmail_sync.gmail_client import (
     GmailApiError,
     HistoryIdExpiredError,
     list_history,
+    list_messages_page,
     watch_mailbox,
 )
 
@@ -101,3 +102,56 @@ def test_list_history_raises_history_id_expired_on_404(requests_mock) -> None:
 
     with pytest.raises(HistoryIdExpiredError):
         list_history(_ACCESS_TOKEN, "too-old")
+
+
+# --- list_messages_page（過去分の取り込み用、2026-09-03） -------------------------------------
+
+
+def test_list_messages_page_returns_ids_and_next_page_token(requests_mock) -> None:
+    requests_mock.get(
+        f"{_BASE_URL}/messages",
+        json={"messages": [{"id": "m1"}, {"id": "m2"}], "nextPageToken": "tok-2"},
+    )
+
+    page = list_messages_page(_ACCESS_TOKEN, query="newer_than:365d")
+
+    assert [ref.id for ref in page.refs] == ["m1", "m2"]
+    assert page.next_page_token == "tok-2"
+    request = requests_mock.request_history[0]
+    assert request.qs["q"] == ["newer_than:365d"]
+    assert "pagetoken" not in request.qs
+
+
+def test_list_messages_page_sends_page_token_when_given(requests_mock) -> None:
+    requests_mock.get(f"{_BASE_URL}/messages", json={"messages": [], "nextPageToken": None})
+
+    page = list_messages_page(_ACCESS_TOKEN, query="q", page_token="tok-2")
+
+    assert page.refs == []
+    assert page.next_page_token is None
+    assert requests_mock.request_history[0].qs["pagetoken"] == ["tok-2"]
+
+
+def test_list_messages_page_returns_empty_on_no_results(requests_mock) -> None:
+    """Gmailはヒット0件のとき`messages`キー自体を返さない。"""
+    requests_mock.get(f"{_BASE_URL}/messages", json={})
+
+    page = list_messages_page(_ACCESS_TOKEN, query="q")
+
+    assert page.refs == []
+    assert page.next_page_token is None
+
+
+def test_list_messages_page_caps_max_results_at_the_api_limit(requests_mock) -> None:
+    requests_mock.get(f"{_BASE_URL}/messages", json={"messages": []})
+
+    list_messages_page(_ACCESS_TOKEN, query="q", max_results=100000)
+
+    assert requests_mock.request_history[0].qs["maxresults"] == ["500"]
+
+
+def test_list_messages_page_raises_on_error(requests_mock) -> None:
+    requests_mock.get(f"{_BASE_URL}/messages", status_code=403, json={"error": "forbidden"})
+
+    with pytest.raises(GmailApiError):
+        list_messages_page(_ACCESS_TOKEN, query="q")

@@ -271,11 +271,51 @@ export interface Client360Action {
   [key: string]: unknown;
 }
 
+// 連絡先ごとの返信傾向(2026-09-03、src/api/reply_timing_service.py)。
+// 「返信ラグ」と「返ってきやすい時間帯」はサンプル数が別物(前者は送信→受信の
+// ペア数、後者は受信の総数)のため、confidence/sample_sizeをそれぞれが持つ。
+export interface ReplyTimingWindow {
+  label: string;
+  count: number;
+}
+
+export type ReplyTimingConfidence = "high" | "medium" | "low" | "none";
+
+export interface ReplyTiming {
+  // 返信ラグ側のサンプル数(送信→受信のペア数)。
+  sample_size: number;
+  confidence: ReplyTimingConfidence;
+  confidence_label: string;
+  median_lag_seconds: number | null;
+  median_lag_label: string;
+  mean_lag_seconds: number | null;
+  mean_lag_label: string;
+  fastest_lag_label: string;
+  slowest_lag_label: string;
+  inbound_count: number;
+  outbound_count: number;
+  last_inbound_at: string | null;
+  last_outbound_at: string | null;
+  timing: {
+    sample_size: number;
+    confidence: ReplyTimingConfidence;
+    confidence_label: string;
+    top_buckets: ReplyTimingWindow[];
+    top_weekdays: string[];
+    buckets: ReplyTimingWindow[];
+    weekday_counts: number[];
+  };
+  note: string;
+}
+
 export interface Client360 {
   client: Client360Client;
   projects: Client360Project[];
   contacts: Client360Contact[];
   actions: Client360Action[];
+  // 連絡先のNotionページIDをキーにした返信傾向。ログが1件も無い連絡先はキー自体が
+  // 存在しない(バックエンド側が0件のダミーを返さない設計)。
+  reply_timing: Record<string, ReplyTiming>;
 }
 
 export function getClient360(clientId: string): Promise<Client360> {

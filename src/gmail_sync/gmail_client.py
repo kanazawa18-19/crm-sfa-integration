@@ -88,6 +88,49 @@ def list_recent_messages(access_token: str) -> list[GmailMessageRef]:
 
 
 @dataclass(frozen=True)
+class GmailMessagePage:
+    """`list_messages_page()`の1ページ分。`next_page_token`がNoneなら最終ページ。"""
+
+    refs: list[GmailMessageRef]
+    next_page_token: str | None
+
+
+# Gmail APIが`messages.list`で1回に返せる上限。
+_MAX_MESSAGES_PER_PAGE = 500
+
+
+def list_messages_page(
+    access_token: str,
+    *,
+    query: str,
+    page_token: str | None = None,
+    max_results: int = _MAX_MESSAGES_PER_PAGE,
+) -> GmailMessagePage:
+    """任意の検索クエリで`messages.list`を1ページ分だけ叩く(2026-09-03、過去分の
+    取り込み用に追加)。
+
+    `list_recent_messages()`は「直近2日・最大100件・1ページのみ」という日次同期専用の
+    決め打ちで、過去数か月分を辿るのに使えないため分離した。日次同期の挙動を変えると
+    本番のリアルタイム同期に影響するため、既存関数はそのまま残している。
+    """
+    params: dict[str, Any] = {"q": query, "maxResults": min(max_results, _MAX_MESSAGES_PER_PAGE)}
+    if page_token:
+        params["pageToken"] = page_token
+    response = request_with_retry(
+        "GET",
+        f"{_GMAIL_API_BASE}/messages",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params=params,
+    )
+    raise_for_error(response, GmailApiError)
+    body = response.json()
+    return GmailMessagePage(
+        refs=[GmailMessageRef(id=m["id"]) for m in body.get("messages", [])],
+        next_page_token=body.get("nextPageToken"),
+    )
+
+
+@dataclass(frozen=True)
 class GmailMessage:
     id: str
     from_header: str

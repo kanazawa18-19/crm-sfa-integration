@@ -31,6 +31,16 @@ from src.email_reminders import db, slack_notify
 logger = logging.getLogger(__name__)
 
 
+# これより古い受信メールにはリマインドしない(2026-09-03)。
+#
+# 閾値の上限が72時間である以上、3か月前の受信メールに対しても「72時間クロス」として
+# リマインドが飛ぶ。**今さらDMされても行動には繋がらず、ノイズにしかならない。**
+# 加えて`scripts/backfill_gmail_history.py`で過去数か月分を取り込むと、それまで
+# `EmailLog`に1行も無かった連絡先の「最新行」が一気に古い受信メールになりうるため、
+# この上限が無いと取り込み直後に大量のリマインドDMが一斉に飛ぶ。
+_MAX_REMINDER_AGE_HOURS = 14 * 24
+
+
 def _elapsed_hours(sent_at: datetime, *, now: datetime) -> float:
     """`sent_at`(psycopg経由、`TIMESTAMP(3)`列 — タイムゾーン情報を持たないUTC値として
     保存されている)からの経過時間を時間単位で返す。"""
@@ -58,9 +68,14 @@ def run_reminder_check() -> dict[str, int]:
 
     sent = 0
     failed = 0
+    skipped_too_old = 0
     for row in candidates:
         try:
             elapsed_hours = _elapsed_hours(row["sentAt"], now=now)
+            if elapsed_hours > _MAX_REMINDER_AGE_HOURS:
+                # 古すぎる受信メール(上記`_MAX_REMINDER_AGE_HOURS`参照)。
+                skipped_too_old += 1
+                continue
             threshold = _threshold_to_notify(elapsed_hours, thresholds)
             if threshold is None:
                 continue
@@ -87,4 +102,9 @@ def run_reminder_check() -> dict[str, int]:
             )
             failed += 1
 
-    return {"eligible": len(candidates), "sent": sent, "failed": failed}
+    return {
+        "eligible": len(candidates),
+        "sent": sent,
+        "failed": failed,
+        "skipped_too_old": skipped_too_old,
+    }

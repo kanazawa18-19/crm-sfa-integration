@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from src.api.notion_display import (
     page_to_display_dict,
@@ -25,6 +25,7 @@ from src.api.notion_display import (
 )
 from src.db_schema.action import ACTION_SCHEMA
 from src.db_schema.client_master import CLIENT_MASTER_SCHEMA
+from src.api.reply_timing_service import build_for_contact_page_ids as build_reply_timing
 from src.db_schema.contact import CONTACT_SCHEMA
 from src.db_schema.project import PROJECT_SCHEMA
 from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
@@ -65,7 +66,12 @@ class Client360DataSource:
         project_client: Any | None = None,
         action_client: Any | None = None,
         user_directory: Any | None = None,
+        reply_timing_builder: Callable[[list[str]], dict[str, Any]] | None = None,
     ) -> None:
+        # 連絡先ごとの返信傾向（2026-09-03）。Notionではなく自前のPostgres(EmailLog)を
+        # 読むため、他のNotionクライアントと同じくここで差し替え可能にする
+        # （差し替え口が無いと、テストでは例外が握り潰されて素通りしてしまう）。
+        self._build_reply_timing = reply_timing_builder or build_reply_timing
         self._client_master_client = client_master_client or HttpNotionClient(
             CLIENT_MASTER_SCHEMA.key,
             CLIENT_MASTER_SCHEMA.notion_database_id,
@@ -184,11 +190,20 @@ class Client360DataSource:
         contacts = self._fetch_contacts(client_id)
         actions = self._fetch_actions(client_id)
 
+        # 連絡先ごとの返信傾向（返信ラグ・返ってきやすい時間帯、2026-09-03）。
+        # `contacts`の各要素に混ぜず別キーで返す — `contacts`はNotionのプロパティを
+        # そのまま写したものであり、Notionに無い算出値を紛れ込ませると、画面側から
+        # 「どれがNotionの値でどれが計算結果か」が見分けられなくなるため。
+        reply_timing = self._build_reply_timing(
+            [c["notion_page_id"] for c in contacts if c.get("notion_page_id")]
+        )
+
         return {
             "client": client,
             "projects": projects,
             "contacts": contacts,
             "actions": actions,
+            "reply_timing": reply_timing,
         }
 
     def _fetch_projects(self, client_id: str) -> list[dict[str, Any]]:

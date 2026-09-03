@@ -1,7 +1,12 @@
 import { notFound } from "next/navigation";
 import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
-import { BackendApiError, Client360, getClient360 } from "@/lib/backend";
+import { BackendApiError, Client360, ReplyTiming, getClient360 } from "@/lib/backend";
+import {
+  NO_EMAIL_LOG_TITLE,
+  replyLagCellText,
+  replyWindowCellText,
+} from "@/lib/replyTiming";
 import { formatYen } from "@/lib/format";
 import { formatDateTime, formatChangedFields } from "@/lib/auditLogFormat";
 import type { EmailLog, AuditLog } from "@/generated/prisma/client";
@@ -41,6 +46,45 @@ function SectionNotice({ capReached, loadFailed }: { capReached?: boolean; loadF
   return null;
 }
 
+// 連絡先ごとの返信傾向のセル(2026-09-03)。表示文字列の組み立ては lib/replyTiming.ts に
+// 出してテストしている。ここは並べるだけ。
+function MutedDash({ title }: { title: string }) {
+  return (
+    <span className="text-(--color-foreground)/40" title={title}>
+      -
+    </span>
+  );
+}
+
+function SampleCount({ text }: { text: string }) {
+  return <span className="ml-1 text-xs text-(--color-foreground)/50">{text}</span>;
+}
+
+function ReplyLagCell({ timing }: { timing?: ReplyTiming }) {
+  const text = replyLagCellText(timing);
+  if (!text) return <MutedDash title={timing?.note ?? NO_EMAIL_LOG_TITLE} />;
+  return (
+    <span title={text.title}>
+      {text.value}
+      <SampleCount text={text.sample} />
+    </span>
+  );
+}
+
+function ReplyWindowCell({ timing }: { timing?: ReplyTiming }) {
+  const text = replyWindowCellText(timing);
+  if (!text) return <MutedDash title={timing?.note ?? NO_EMAIL_LOG_TITLE} />;
+  return (
+    <span title={text.title}>
+      {text.value}
+      {text.weekdays && (
+        <span className="ml-1 text-xs text-(--color-foreground)/50">{text.weekdays}</span>
+      )}
+      <SampleCount text={text.sample} />
+    </span>
+  );
+}
+
 export default async function Client360Page({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireRole("viewer");
   const { id } = await params;
@@ -55,7 +99,7 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
     throw error;
   }
 
-  const { client, projects, contacts, actions } = client360;
+  const { client, projects, contacts, actions, reply_timing: replyTiming } = client360;
 
   const contactIds = contacts.map((c) => c.notion_page_id);
   const allRelatedIds = [
@@ -199,6 +243,15 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
           連絡先 ({contacts.length}件)
         </h2>
         <SectionNotice capReached={contacts.length === RELATED_PAGE_SIZE} />
+        <p className="mb-2 text-sm text-(--color-foreground)/60">
+          「返信までの時間」はこちらの送信から相手の返信までの時間の中央値、「返ってきやすい時間帯」は
+          相手からの受信が実際に多い時間帯（日本時間）です。どちらもGmail連携以降のメールログから
+          算出しています。
+          <br />
+          <strong>2つの列に出る「N件」は数えているものが違います。</strong>
+          返信までの時間は「送信に対して返信が来た回数」、返ってきやすい時間帯は「受信した通数」です。
+          同じ連絡先でも数字が一致しないのは正常です。件数が少ないうちは参考値としてお読みください。
+        </p>
         <div className="surface-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="data-table">
@@ -210,12 +263,14 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
                   <th>メールアドレス</th>
                   <th>携帯番号</th>
                   <th>直通TEL</th>
+                  <th>返信までの時間</th>
+                  <th>返ってきやすい時間帯</th>
                 </tr>
               </thead>
               <tbody>
                 {contacts.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={8}>
                       連絡先がありません
                     </td>
                   </tr>
@@ -237,6 +292,12 @@ export default async function Client360Page({ params }: { params: Promise<{ id: 
                       </td>
                       <td className="whitespace-nowrap">
                         {c.直通TEL ?? "-"}
+                      </td>
+                      <td className="whitespace-nowrap">
+                        <ReplyLagCell timing={replyTiming?.[c.notion_page_id]} />
+                      </td>
+                      <td className="whitespace-nowrap">
+                        <ReplyWindowCell timing={replyTiming?.[c.notion_page_id]} />
                       </td>
                     </tr>
                   ))

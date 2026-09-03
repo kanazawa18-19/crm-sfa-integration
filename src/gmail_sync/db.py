@@ -190,3 +190,96 @@ def insert_email_log(
             ),
         )
         conn.commit()
+
+
+def fetch_existing_message_ids() -> set[str]:
+    """記録済みの`gmailMessageId`を全件返す(2026-09-03、過去分の一括取り込み用)。
+
+    `email_log_exists()`はメール1通ごとに接続を張るため、数千通を辿る取り込みでは
+    接続コストだけで現実的な時間に収まらない。取り込み開始時に1回だけ全件読み、
+    以降はメモリ上の集合で重複排除する。
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT "gmailMessageId" FROM "EmailLog"')
+        return {row["gmailMessageId"] for row in cur.fetchall()}
+
+
+@dataclass(frozen=True)
+class EmailLogRow:
+    """`insert_email_logs()`へ渡す1行分。"""
+
+    contact_page_id: str
+    contact_email: str
+    rep_email: str
+    gmail_message_id: str
+    direction: str
+    subject: str | None
+    snippet: str | None
+    sent_at: datetime
+
+
+def insert_email_logs(rows: list[EmailLogRow]) -> int:
+    """`EmailLog`へまとめて追記する(2026-09-03、過去分の一括取り込み用)。実際に
+    挿入できた件数を返す。
+
+    `insert_email_log()`との違いは3点。
+
+    ```
+       接続        1行1接続            →  まとめて1接続1トランザクション
+       重複        例外になる           →  ON CONFLICT DO NOTHINGで黙って飛ばす
+       インシデント 呼び出し元が渡す      →  常にNULL（過去分にスコアを付けない）
+    ```
+
+    **インシデントスコアを常にNULLにするのは意図的。** `incidentPriority='medium'`かつ
+    `digestedAt IS NULL`の行は日次ダイジェストに載るが、この抽出には日付の絞り込みが
+    無い(`src/incident_detection/db.py`)。過去数か月分にスコアを付けると、取り込んだ
+    直後のダイジェストに過去のインシデントが一斉に載る。過去分に対して「今起きたこと」
+    として反応させないための封じ込め。
+    """
+    if not rows:
+        return 0
+    with _connect() as conn, conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO "EmailLog"
+                (id, "contactPageId", "contactEmail", "repEmail", "gmailMessageId",
+                 direction, subject, snippet, "sentAt", "createdAt")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT ("gmailMessageId") DO NOTHING
+            """,
+            [
+                (
+                    uuid.uuid4().hex,
+                    r.contact_page_id,
+                    r.contact_email,
+                    r.rep_email,
+                    r.gmail_message_id,
+                    r.direction,
+                    r.subject,
+                    r.snippet,
+                    r.sent_at,
+                )
+                for r in rows
+            ],
+        )
+        inserted = cur.rowcount
+        conn.commit()
+    return inserted
+
+
+def fetch_email_events_by_contact_page_ids(page_ids: list[str]) -> list[dict[str, Any]]:
+    """指定した連絡先の送受信ログを、返信傾向の分析(`src/analytics/reply_timing.py`)向けに
+    必要最小限の列だけ読む(2026-09-03)。
+
+    件名・スニペット(メール内容そのもの)は読まない。時間帯とラグを数えるのに要らず、
+    ログ・キャッシュへ漏れる面を狭くしておくため。
+    """
+    if not page_ids:
+        return []
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "contactPageId", "contactEmail", direction, "sentAt" '
+            'FROM "EmailLog" WHERE "contactPageId" = ANY(%s) ORDER BY "sentAt"',
+            (page_ids,),
+        )
+        return cur.fetchall()
