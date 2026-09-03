@@ -9,6 +9,7 @@ import {
   type BulkEmailConsentOverview,
   type ClientSearchResult,
 } from "@/lib/backend";
+import { businessToday } from "@/lib/bulkEmailConsent";
 import { isSessionExpiredResponse, SESSION_EXPIRED_MESSAGE } from "@/lib/sessionCheck";
 
 // 取引先検索のデバウンス・AbortController・レース対策は BulkEmailPageClient.tsx と同じパターン。
@@ -22,10 +23,6 @@ type FormState = {
   obtainedAt: string;
   evidence: string;
 };
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 /** 今の状態を1行で表す。色は「送れるか」だけで決める(理由の細かさで色を増やさない)。 */
 function ConsentBadge({ contact }: { contact: BulkEmailConsentContact }) {
@@ -185,7 +182,7 @@ export default function ConsentPageClient() {
         contact.consent.basis ||
         lastEntry?.basis ||
         (overview?.basis_options[0]?.value ?? ""),
-      obtainedAt: contact.consent.obtained_at || lastEntry?.obtainedAt || todayIso(),
+      obtainedAt: contact.consent.obtained_at || lastEntry?.obtainedAt || businessToday(),
       evidence: contact.consent.evidence || lastEntry?.evidence || "",
     });
   }
@@ -485,7 +482,10 @@ export default function ConsentPageClient() {
                     id="consent-date"
                     type="date"
                     className="input mt-1"
-                    max={todayIso()}
+                    // 「今日まで」はJSTの暦日で決める(businessToday)。UTCで出すと、
+                    // 日本時間の0時〜9時のあいだ max が前日になり、**その時間帯は
+                    // 今日を選べない**。既定値も同じ理由で1日ずれる(2026-09-04に本番で確認)。
+                    max={businessToday()}
                     value={form.obtainedAt}
                     onChange={(event) => setForm({ ...form, obtainedAt: event.target.value })}
                   />
