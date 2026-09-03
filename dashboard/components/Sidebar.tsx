@@ -7,7 +7,7 @@ import { logout } from "@/app/actions";
 import BrandLogo from "@/components/BrandLogo";
 import ThemeToggle from "@/components/ThemeToggle";
 import SubmitButton from "@/components/SubmitButton";
-import { ROLE_LABELS } from "@/lib/roleLabels";
+import { ROLE_LABELS, ROLE_ORDER } from "@/lib/roleLabels";
 
 // web-engagement-tool(MA)のAdminNav.tsxのサイドバーUXを移植(2026-08-15)。ただし
 // ダッシュボード側はナビ項目が少ないため、見出しによるグルーピングは行うが
@@ -22,7 +22,14 @@ import { ROLE_LABELS } from "@/lib/roleLabels";
 // NavGroup.id はサイドバー内部の安定した識別子(表示ラベル変更の影響を受けない)。
 // master限定リンクの注入判定にはこの id を用いる。
 
-type NavLink = { href: string; label: string; exact?: boolean };
+// minRole: このロール未満には**リンクを出さない**(遮断はページ側のrequireRoleが行う。
+// lib/roleLabels.tsのROLE_ORDERのコメント参照)。未指定なら全員に出す。
+type NavLink = {
+  href: string;
+  label: string;
+  exact?: boolean;
+  minRole?: "editor" | "master";
+};
 type NavGroup = { id: string; label: string; links: NavLink[]; mobileOnly?: boolean };
 
 // Pinned outside any group — always one click away.
@@ -39,6 +46,9 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/tasks", label: "タスク" },
       { href: "/documents", label: "書類作成" },
       { href: "/clients", label: "取引先(360度ビュー)" },
+      // 一斉配信(2026-09-03)。今はプレビューのみで1通も送らないが、閲覧者(viewer)は
+      // 画面自体に入れない(page.tsxのrequireRole("editor"))ため、リンクも出さない。
+      { href: "/bulk-email", label: "一斉配信", minRole: "editor" },
     ],
   },
   {
@@ -124,12 +134,16 @@ export default function Sidebar({ role, email }: { role: "master" | "editor" | "
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
+  const visibleGroups = NAV_GROUPS.map((g) => ({
+    ...g,
+    links: g.links.filter((link) => !link.minRole || ROLE_ORDER[role] >= ROLE_ORDER[link.minRole]),
+  }));
   const groups =
     role === "master"
-      ? NAV_GROUPS.map((g) =>
+      ? visibleGroups.map((g) =>
           g.id === "org-settings" ? { ...g, links: [...g.links, ...MASTER_ONLY_NAV_LINKS] } : g
         )
-      : NAV_GROUPS;
+      : visibleGroups;
   // Closing the drawer on link click (rather than reacting to pathname changes
   // in an effect) avoids the cascading-render anti-pattern flagged by
   // react-hooks/set-state-in-effect. Harmless to pass on the desktop sidebar

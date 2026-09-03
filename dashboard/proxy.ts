@@ -9,7 +9,16 @@ import prisma from "@/lib/prisma";
 // web-engagement-toolのsrc/proxy.tsと同じ構成に移植(2026-08-15、ユーザー管理・IP制限・
 // 2FA導入に伴う置き換え)。
 
+// お客様(社外)が開くページ。**ログインもIP制限も掛けてはいけない。**
+//
+// 一斉配信の配信停止リンク(2026-09-03)。IP制限だけ外し忘れると、社外から開けない
+// 配信停止リンクを載せたメールを撒くことになり、特定電子メール法の
+// 「配信停止の方法を明示し、実際に停止できること」を満たさなくなる。
+// そのためIP制限のブロックより**前**で通す(下のproxy()を参照)。
+const CUSTOMER_FACING_PATHS = ["/unsubscribe", "/unsubscribe/done"];
+
 const PUBLIC_PATHS = [
+  ...CUSTOMER_FACING_PATHS,
   "/login",
   // Googleログイン(2026-08-31)。ログイン前に叩かれるので認証を要求できない。
   "/login/google/start",
@@ -34,6 +43,10 @@ function isAdminLoginCallback(request: NextRequest): boolean {
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // 社外向けページはIP制限より前に通す(CUSTOMER_FACING_PATHSのコメント参照)。
+  // この1行を下へ動かすと、IP制限がONの間だけ配信停止ができなくなる。
+  if (CUSTOMER_FACING_PATHS.includes(pathname)) return NextResponse.next();
 
   const settings = await prisma.appSettings.findUnique({ where: { id: 1 } });
 

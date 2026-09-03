@@ -56,6 +56,9 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/dashboard/summary"),
     # 外部連携の疎通診断（2026-08-31追加、読み取りのみ）。
     ("GET", "/api/diagnostics/integrations"),
+    # 一斉配信のプレビュー（2026-09-03追加）。読み取りのみだが、本文テンプレート
+    # （改行を含む長文）を送るためPOST。送信のエンドポイントはまだ無い。
+    ("POST", "/api/bulk-email/preview"),
     ("GET", "/api/reports/daily"),
     ("GET", "/api/members/performance"),
     ("GET", "/api/alerts/manager"),

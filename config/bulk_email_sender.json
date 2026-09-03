@@ -1,0 +1,8 @@
+{
+  "_comment": "特定電子メール法が本文への表示を義務づけている送信者情報（2026-09-03）。ここが1つでも空だと一斉配信のプレビューはBLOCKERを出し、送れる状態にならない。空欄を推測で埋めないこと（誤った住所を数千通に載せる方が、送れないことより悪い）。値は環境変数 BULK_EMAIL_SENDER_COMPANY_NAME / _POSTAL_CODE / _ADDRESS / _CONTACT_EMAIL / _CONTACT_URL でも上書きできる（本番だけ差し替えたい場合用）。",
+  "company_name": "",
+  "postal_code": "",
+  "address": "",
+  "contact_email": "",
+  "contact_url": ""
+}

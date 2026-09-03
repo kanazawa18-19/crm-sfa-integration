@@ -350,3 +350,57 @@ def test_get_client_360_returns_empty_reply_timing_when_no_contacts() -> None:
     assert result is not None
     assert result["reply_timing"] == {}
     assert builder.calls == [[]]
+
+
+# --- 一斉配信向けの連絡先取得（2026-09-03） -------------------------------------------
+
+
+def test_fetch_client_contacts_は取引先名と連絡先だけを返す() -> None:
+    source = _data_source(
+        client_master_client=_FakeClientMasterClient(raw_pages={"cli-1": _client_master_page()}),
+        contact_client=_FakeQueryClient([_contact_page()]),
+    )
+
+    result = source.fetch_client_contacts("cli-1")
+
+    assert result is not None
+    assert result["client_name"] == "サンプルホテル"
+    assert [c["notion_page_id"] for c in result["contacts"]] == ["cnt-1"]
+    assert result["truncated"] is False
+
+
+def test_fetch_client_contacts_は案件とアクションを取りに行かない() -> None:
+    """宛先を作るのに要らないものまでNotionへ取りに行かないこと（取引先10社で呼び出しが4倍になる）。"""
+    project_client = _FakeQueryClient([_project_page()])
+    action_client = _FakeQueryClient([_action_page()])
+    source = _data_source(
+        client_master_client=_FakeClientMasterClient(raw_pages={"cli-1": _client_master_page()}),
+        contact_client=_FakeQueryClient([_contact_page()]),
+        project_client=project_client,
+        action_client=action_client,
+    )
+
+    source.fetch_client_contacts("cli-1")
+
+    assert project_client.calls == []
+    assert action_client.calls == []
+
+
+def test_fetch_client_contacts_は連絡先が上限まで返ったら打ち切りを申告する() -> None:
+    """一斉配信では打ち切りが「送ったつもりで送っていない相手がいる」形で表に出る。"""
+    many = [_contact_page(f"cnt-{i}") for i in range(100)]
+    source = _data_source(
+        client_master_client=_FakeClientMasterClient(raw_pages={"cli-1": _client_master_page()}),
+        contact_client=_FakeQueryClient(many),
+    )
+
+    result = source.fetch_client_contacts("cli-1")
+
+    assert result is not None
+    assert result["truncated"] is True
+
+
+def test_fetch_client_contacts_は存在しない取引先でNoneを返す() -> None:
+    source = _data_source(client_master_client=_FakeClientMasterClient(raw_pages={}))
+    assert source.fetch_client_contacts("ない") is None
+

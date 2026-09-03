@@ -477,3 +477,34 @@ model SyncCursor {
   passStartedAt DateTime
   updatedAt     DateTime @updatedAt
 }
+
+// 連絡先ごとの「もう営業メールを送らないでほしい」という申し出（2026-09-03、一斉配信）。
+//
+// 特定電子メール法は、配信停止の申し出を受けたら以後送らないことを求めている。
+// **このテーブルに行があること自体が「送ってはいけない」の記録**であり、
+// 一斉配信の宛先抽出（src/bulk_email/audience.py）は必ずここを引いてから送る。
+//
+// 書き込むのはお客様自身（dashboard/app/unsubscribe/、ログイン不要の公開ページ）だけ。
+// バックエンド（src/bulk_email/db.py）は読むだけで書かない。
+//
+// 連絡先ページIDと**メールアドレスの両方**で除外できるようにしているのは、同じ人が
+// 複数の連絡先レコードに登録されている場合に、片方だけ止まって片方から送られる事故を
+// 防ぐため（実データでは同一アドレスの重複登録が起こりうる）。
+model ContactMailPreference {
+  id String @id @default(cuid())
+  // Notion連絡先DBのpage_id。**ハイフン無し・小文字に正規化した形**で保存する
+  // （配信停止URLのcパラメータをそのまま入れるため。src/bulk_email/ids.pyと
+  // dashboard/lib/bulkEmailUnsubscribe.tsが同じ正規化を実装している）。
+  contactPageId  String    @unique
+  // 申し出があった時点のメールアドレス（小文字）。連絡先レコードが後から作り直されて
+  // page_idが変わっても、アドレスで除外し続けられるようにするため保存する。
+  contactEmail   String
+  unsubscribed   Boolean   @default(true)
+  unsubscribedAt DateTime  @default(now())
+  // "self"（本人がリンクから停止）| "manual"（社内で手入力）。今は"self"のみ。
+  source         String    @default("self")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([contactEmail])
+}

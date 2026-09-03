@@ -1,6 +1,61 @@
-# 一斉配信機能 — 設計メモ（未実装）
+# 一斉配信機能 — 設計メモ／実装状況
 
-作成: 2026-09-03（主機CC）。**この時点では調査と設計のみ。コードは1行も書いていない。**
+作成: 2026-09-03（主機CC）。設計のみだった当初のメモに、同日の実装状況を追記した。
+
+## 今どこまで出来ているか（2026-09-03）
+
+```
+   ① プレビューのみ    宛先一覧と差し込み後の本文を画面に出す   ✅ 実装済み
+   ② 自分宛だけ        本人のアドレスにだけ実送信              🔴 未着手（送信経路が未決定）
+   ③ 少数（5件以内）   実際の顧客へ                           🔴 未着手
+   ④ 本番             件数制限を外す                          🔴 未着手
+```
+
+**1通も送らない。送信のAPIもコードも存在しない**（`tests/api/test_bulk_email_route.py`の
+`test_送信のエンドポイントは存在しない`が、うっかり生えないよう見張っている）。
+
+| 出来ていること | 場所 |
+|---|---|
+| 宛先の抽出と除外（配信停止・アドレス無し・形式不正・重複） | `src/bulk_email/audience.py` |
+| 差し込み（`{{会社名}}`等）と、値が空の宛先の自動除外 | `src/bulk_email/template.py` |
+| 特定電子メール法の表示（会社名・住所・配信停止URL）の自動付与 | `src/bulk_email/compliance.py` |
+| 配信停止リンクの署名（HMAC・DBにトークンを貯めない） | `src/bulk_email/unsubscribe.py` |
+| プレビューの組み立て（外部I/O無しの純粋関数） | `src/bulk_email/preview.py` |
+| Notion/Postgresから材料を集める層 | `src/api/bulk_email_service.py` |
+| `POST /api/bulk-email/preview` | `src/api/routes/bulk_email.py` |
+| 一斉配信の画面（編集者以上） | `dashboard/app/(dashboard)/bulk-email/` |
+| 配信停止の公開ページ（ログイン不要・IP制限の対象外） | `dashboard/app/unsubscribe/` |
+| 配信停止の記録 | `ContactMailPreference`（Prisma） |
+
+**`BulkCampaign`/`BulkCampaignRecipient`は意図的に作っていない。**
+送信が無い今は書き込む中身が無く、②で実際に必要な形が分かったときに作り直すことに
+なるため。プレビューは状態を持たない（入力して、見るだけ）。
+
+### 動かす前に要る設定
+
+| | 何 | どこ |
+|---|---|---|
+| 1 | 送信者情報（会社名・郵便番号・住所・問い合わせ先） | `config/bulk_email_sender.json`（**初期状態は全部空**） |
+| 2 | `BULK_EMAIL_UNSUBSCRIBE_SECRET` | バックエンド（Python）とダッシュボード（Next.js）の**両方**のVercelプロジェクト |
+| 3 | `DASHBOARD_BASE_URL` | バックエンド側（配信停止URLの組み立てに使う） |
+| 4 | `prisma migrate deploy` | ダッシュボード側（`ContactMailPreference`の作成） |
+
+1〜3のどれかが欠けていると、プレビューはBLOCKERを出して「送れない」と表示する
+（そのまま送れてしまうより、送れないと言う方が安全側）。
+
+**2の鍵は、一度決めたら変えない前提で扱う。** 変えると、過去に送ったメールの配信停止
+リンクが全部無効になり、「停止できないメールを撒いた状態」になる。
+
+### ②（実送信）に進むときの申し送り
+
+2026-09-03のレビュー（動物チーム3体）で出た、**今は実害が無いが送信を足すと効いてくる**もの。
+
+| | 内容 | 場所 |
+|---|---|---|
+| 1 | 取引先を20社選ぶとNotionへの問い合わせが最大40回・直列になる。送信フローで同じ形を再利用すると待ち時間が実害になる | `src/api/bulk_email_service.py` の `_collect_contacts()` |
+| 2 | 件名の改行は入口でBLOCKERにしてあるが、**本文をヘッダーへ渡す箇所を作るときは改めて見ること**（ヘッダーインジェクション） | `src/bulk_email/preview.py` |
+| 3 | Notionのプロパティ名の定数（`名前`・`部署`等）が3ファイルに重複している。Notion側で名前が変わると直し漏れる | `bulk_email_service.py` / `client_360_service.py` / `task_service.py` |
+| 4 | 配信停止リンクの署名は Python が発行し TypeScript が検証する。**両側のテストに同じ既知の値を置いてある**ので、アルゴリズムを変えたら必ず両方を直す | `tests/bulk_email/test_unsubscribe.py` / `dashboard/lib/__tests__/bulkEmailUnsubscribe.test.ts` |
 
 ## 現状：このシステムには「営業メールを送る手段」が無い
 

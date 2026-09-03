@@ -58,6 +58,7 @@ from src.reports.revenue_target_sheet import (
 from src.sync_engine.clients._http import ApiError
 from src.sync_engine.clients.notion_client import NotionApiError
 from src.api.dependencies import wiring_dependency
+from src.api.routes.bulk_email import router as bulk_email_router
 from src.api.routes.cron import router as cron_router
 from src.api.routes.diagnostics import router as diagnostics_router
 from src.api.routes.webhooks import router as webhooks_router
@@ -146,6 +147,10 @@ app.include_router(cron_router)
 
 # 外部連携の疎通診断（読み取りのみ）。ダッシュボードAPIトークンで保護する。
 app.include_router(diagnostics_router)
+
+# 一斉配信（2026-09-03）。今はプレビューのみで、送信のエンドポイントは無い
+# （src/api/routes/bulk_email.pyのdocstring参照）。
+app.include_router(bulk_email_router)
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])

@@ -472,3 +472,64 @@ export function saveRevenueTargetSheetSettings(
     body: payload,
   });
 }
+
+// 一斉配信のプレビュー(2026-09-03、src/api/routes/bulk_email.py)。
+//
+// **送信のAPIはまだ無い。** 送信経路(Gmail APIにgmail.sendを足すか)が未決定のため、
+// 今あるのは「宛先一覧と差し込み後の本文を見るだけ」の①プレビューのみ。
+// 段階リリースの考え方はdocs/bulk_email_design_note.md参照。
+
+// 1回のプレビューで選べる取引先の上限。**src/api/bulk_email_service.pyの
+// MAX_CLIENTS_PER_PREVIEWと同じ値でなければならない。** 画面側は「押す前に止める」
+// ためだけに持っており、実際に弾くのはバックエンド(422を返す)。
+// 片方だけ変えると、画面では選べるのにプレビューがエラーになる(またはその逆)。
+export const MAX_CLIENTS_PER_BULK_EMAIL_PREVIEW = 20;
+
+export interface BulkEmailPreviewRequest {
+  subject: string;
+  body: string;
+  sender_name: string;
+  client_page_ids: string[];
+}
+
+export interface BulkEmailMessage {
+  contact_page_id: string;
+  contact_name: string;
+  client_name: string;
+  to_email: string;
+  subject: string;
+  // 特定電子メール法の表示(送信者・配信停止URL)が末尾に付いた状態の本文。
+  body: string;
+}
+
+export interface BulkEmailSkipped {
+  contact_page_id: string;
+  contact_name: string;
+  client_name: string;
+  email: string;
+  reason: string;
+  reason_label: string;
+  detail: string;
+}
+
+export interface BulkEmailPreview {
+  // blockersが空、かつ宛先が1件以上あるときだけtrue。
+  sendable: boolean;
+  // これが1つでもある間は送ってはいけない(法定表示の不足・差し込み名の綴り間違い等)。
+  blockers: string[];
+  // 送れるが知っておくべきこと(連絡先の読み込みが上限で打ち切られた等)。
+  warnings: string[];
+  placeholders_used: string[];
+  placeholders_available: Array<{ name: string; description: string }>;
+  messages: BulkEmailMessage[];
+  skipped: BulkEmailSkipped[];
+  counts: { sendable: number; skipped: number };
+}
+
+export function previewBulkEmail(payload: BulkEmailPreviewRequest): Promise<BulkEmailPreview> {
+  return fetchBackend<BulkEmailPreview>("/api/bulk-email/preview", {
+    method: "POST",
+    body: payload,
+  });
+}
+

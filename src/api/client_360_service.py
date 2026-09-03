@@ -206,6 +206,34 @@ class Client360DataSource:
             "reply_timing": reply_timing,
         }
 
+    def fetch_client_contacts(self, client_id: str) -> dict[str, Any] | None:
+        """取引先1社の「取引先名」と連絡先だけを取る（一斉配信の宛先組み立て用、2026-09-03）。
+
+        `get_client_360()`と違い、案件・アクション履歴・返信傾向は取らない。宛先を作るのに
+        要らないものまでNotionに取りに行くと、取引先を10社選んだだけでAPI呼び出しが
+        4倍になるため。
+
+        戻り値の`truncated`は「連絡先が`_RELATED_PAGE_SIZE`件で打ち切られたかもしれない」の意味。
+        **これを黙って捨てないこと。** 一斉配信では、打ち切りは「送ったつもりで送っていない
+        相手がいる」という形で表に出る（画面まで警告を上げる）。
+
+        取引先が存在しない（404）場合はNone。
+        """
+        try:
+            raw_page = self._client_master_client.get_raw_page(client_id)
+        except NotionApiError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        client, _ = page_to_display_dict(raw_page, CLIENT_MASTER_SCHEMA)
+
+        contacts = self._fetch_contacts(client_id)
+        return {
+            "client_name": client.get(PROP_取引先名) or "",
+            "contacts": contacts,
+            "truncated": len(contacts) >= _RELATED_PAGE_SIZE,
+        }
+
     def _fetch_projects(self, client_id: str) -> list[dict[str, Any]]:
         pages = self._project_client.query_page(
             filter={"property": PROP_取引先マスター, "relation": {"contains": client_id}},
@@ -297,3 +325,10 @@ def get_client_360(
 ) -> dict[str, Any] | None:
     source = data_source or Client360DataSource()
     return source.get_client_360(client_id)
+
+
+def fetch_client_contacts(
+    client_id: str, *, data_source: Client360DataSource | None = None
+) -> dict[str, Any] | None:
+    source = data_source or Client360DataSource()
+    return source.fetch_client_contacts(client_id)
