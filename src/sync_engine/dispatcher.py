@@ -25,7 +25,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Container, Mapping, MutableMapping
+from typing import Any, Mapping, MutableMapping
 
 import requests
 
@@ -43,14 +43,25 @@ from src.sync_engine.conflict_resolver import (
 from src.sync_engine.id_mapping import DuplicateExternalIdError, IdMapping, IdMappingStore
 from src.sync_engine.new_record_builder import build_notion_properties_for_new_record
 from src.sync_engine.slack_notifier import SlackNotifier
+from src.sync_engine.spreadsheet_outbox import (
+    REASON_NEW_RECORD_ROW_PROPERTIES_UNAVAILABLE,
+    REASON_NEW_RECORD_ROW_WRITE_FAILED,
+    REASON_NEW_RECORD_ROW_WRITE_SKIPPED,
+    REASON_UPDATE_NOTION_FETCH_FAILED,
+    REASON_UPDATE_NOTION_PAGE_MISSING,
+    REASON_UPDATE_ROW_WRITE_ERROR,
+    REASON_UPDATE_ROW_WRITE_SKIPPED,
+    REASON_UPDATE_SCHEMA_UNAVAILABLE,
+    enqueue_row_creation,
+)
+from src.sync_engine.spreadsheet_row_fields import (
+    spreadsheet_row_properties as _spreadsheet_row_properties,
+)
 from src.sync_engine.spreadsheet_row_lock import acquire_row_creation_lock
 from src.sync_engine.sync_event import SyncEvent
 from src.sync_engine.sync_headers import is_own_system_event
 from src.sync_engine.sync_targets.base import SyncTarget
-from src.sync_engine.sync_targets.spreadsheet_sync import (
-    SpreadsheetSyncTarget,
-    drop_relation_properties,
-)
+from src.sync_engine.sync_targets.spreadsheet_sync import SpreadsheetSyncTarget
 
 logger = logging.getLogger(__name__)
 
@@ -964,25 +975,31 @@ class Dispatcher:
         後**で、500にしても得られるのはリトライだけ。`SkipTrackingDispatcher`も
         `DispatchResult.properties`しか見ないため、この経路の失敗は拾えない。
 
-        ■ **この割り切りの限界**（2026-09-03、ChatGPTがBLOCKER・Geminiが独立にWARN）
+        ■ **失敗した行はキューに積む**（2026-09-07、outbox）
 
-        「2xxを返すのに永続的なリトライを持っていない」ため、**Slackを見落とし、
-        そのレコードが二度と編集されなければ、シートには永久に現れない**。
-        今回直した不具合を、発生条件だけ変えて残していることになる。
+        2026-09-03の時点では、ここでの失敗を拾う手段が3つとも人任せだった
+        （`verify_spreadsheet_backfill.py`／`backfill_spreadsheet_rows.py`／
+        そのレコードの次の更新イベント）。**Slackを見落とし、そのレコードが二度と
+        編集されなければ、シートには永久に現れない**という穴が残っていた
+        （ChatGPTがBLOCKER・Geminiが独立にWARN）。
 
-        いま拾える手段は3つで、いずれも自動ではない。
+        そこで失敗を`SpreadsheetOutbox`へ積み、日次のcronが作り直すようにした
+        （`_handle_new_record_row_not_created()` → `src/sync_engine/spreadsheet_outbox.py`）。
 
         ```
-           verify_spreadsheet_backfill.py   「不足」として必ず出る（人が流す）
-           backfill_spreadsheet_rows.py     まとめて作り直す（人が流す）
-           そのレコードの次の更新イベント     行が無ければ作られる（いつ来るか不定）
+           これまで                        いま
+           ────────────────────────        ────────────────────────
+           2xxで返す（変わらず）            2xxで返す（変わらず）
+           Slackへ上げる                   ★キューへ積む ＋ Slackへ上げる
+           あとは人が拾う                   日次cronが Notion を読み直して行を作る
         ```
 
-        本筋の対処は**outbox（未完了の書き込みを永続化して再試行する仕組み）**で、
-        それが入れば「例外はACKせず500で返す」でも安全になる——mappingが既にある以上、
-        再送は`_try_create_new_record()`へ入らず通常の更新経路を通り、そこで行が作られるため。
-        規模がこのイシューの外なので、`~/notes/Dev/crm-sfa-integration.md`のTODOに送った。
-        **「直した」と書かないこと。ここは割り切っている。**
+        **直ったのは「行がまるごと無い」状態だけ。** キューは値を持たず、作り直しは
+        必ずNotion（マスター）を読み直すので、「行はあるが1列だけ書けなかった」は
+        対象外のまま。そちらは従来どおり次の更新イベントで直る。
+
+        **積めなかった場合はSlackの文面が変わる**（「自動で復旧しない」と言い切る）。
+        DBが落ちていればキューにも積めないため、そこだけは元のとおり人が拾う。
         """
         target = self._targets.get(Tool.SPREADSHEET)
         if target is None or not _supports_sync_key(target):
@@ -1013,11 +1030,12 @@ class Dispatcher:
                 mapping.notion_key,
                 exc_info=True,
             )
-            self._notify_new_record_row_not_created(
+            self._handle_new_record_row_not_created(
                 event,
                 mapping,
                 f"シートへ流す項目を決められませんでした（エラーの種類: {type(exc).__name__}。"
                 "スキーマの設定漏れ・デプロイ不整合が疑われます）",
+                reason=REASON_NEW_RECORD_ROW_PROPERTIES_UNAVAILABLE,
             )
             return
 
@@ -1027,6 +1045,11 @@ class Dispatcher:
             # warning で出す。Slackまでは上げない——`client_master`のように必ず名前が入るDBでは
             # 起きず、起きるとすれば設定の問題で、`verify_spreadsheet_backfill.py`の
             # 「不足」に必ず現れるため。
+            #
+            # **outboxにも積まない**（2026-09-07）。ここは「失敗」ではなく「書けるものが
+            # 無い」。作り直しはNotionを読み直すが、そのNotionページは**ミリ秒前にこの
+            # `properties`で作ったばかり**なので、読み直しても結果は変わらない。
+            # 積めば毎回同じ判断で解決され、キューが実体のない件数で埋まるだけになる。
             logger.warning(
                 "new record creation: シートへ書ける項目が無いため行は作りません。"
                 "**このレコードはシートに現れません** (db_key=%r, notion_key=%r)",
@@ -1060,8 +1083,11 @@ class Dispatcher:
             # ここへ来る代表格は`psycopg`の接続エラーで、メッセージに接続先ホストや
             # ユーザー名が載る。CLAUDE.md「認証情報をログ・エラーメッセージに出さない」に
             # 従い、Slackには**種類だけ**を出す（全文はサーバー側のログにある）。
-            self._notify_new_record_row_not_created(
-                event, mapping, f"エラーの種類: {type(exc).__name__}（詳細は本番ログを参照）"
+            self._handle_new_record_row_not_created(
+                event,
+                mapping,
+                f"エラーの種類: {type(exc).__name__}（詳細は本番ログを参照）",
+                reason=REASON_NEW_RECORD_ROW_WRITE_FAILED,
             )
             return
 
@@ -1076,11 +1102,12 @@ class Dispatcher:
                 event.external_id,
                 mapping.notion_key,
             )
-            self._notify_new_record_row_not_created(
+            self._handle_new_record_row_not_created(
                 event,
                 mapping,
                 "別のワーカーが同じレコードの行を作成中だったか、シート側が書き込みを"
                 "見送りました（行作成ロックを取れなかった等）",
+                reason=REASON_NEW_RECORD_ROW_WRITE_SKIPPED,
             )
             return
 
@@ -1094,10 +1121,57 @@ class Dispatcher:
             len(row_properties),
         )
 
-    def _notify_new_record_row_not_created(
-        self, event: SyncEvent, mapping: IdMapping, detail: str
+    def _enqueue_missing_spreadsheet_row(self, mapping: IdMapping, reason: str) -> bool:
+        """**行がまだ無いレコードの行作成を見送った**ときに、作り直しを積む（2026-09-07）。
+
+        新規レコード作成の経路（`_handle_new_record_row_not_created()`）と対になる、
+        **更新イベント側**の口。更新イベントでも行がまだ無ければ作りに行くため、
+        そこで見送ると同じ「永久に現れない」が起きうる。
+
+        ```
+           見送りが起きる主なところ
+           ├ `_spreadsheet_properties_for_new_row()` が Notion を読めなかった
+           │    → 欠けた行を作らないためシートへ書かない（正しい判断）
+           ├ 行作成ロックを取れなかった／`append_with_sync_key()` が None を返した
+           └ 書き込みが例外で落ちた（このあと 500 を返して再送を待つ）
+        ```
+
+        **行が既にあるレコードでは積まない。** このキューが直せるのは「行がまるごと
+        無い」状態だけで、「行はあるが1列だけ書けなかった」は直せない
+        （作り直しは Notion を読み直して**追記**するため）。積んでも
+        「もう行がある」と判定されて解決されるだけなので、積まずに従来どおり
+        `skipped_tools` → Slack と次のイベントに任せる。
+        """
+        if mapping.spreadsheet_row is not None:
+            return False
+        target = self._targets.get(Tool.SPREADSHEET)
+        if target is None or not _supports_sync_key(target):
+            return False
+        if not _row_creation_allowed(target, mapping.db_key):
+            # 行を作らない設定のdb_key。積んでも作りに行けない。
+            return False
+        return enqueue_row_creation(
+            db_key=mapping.db_key, notion_key=mapping.notion_key, reason=reason
+        )
+
+    def _handle_new_record_row_not_created(
+        self, event: SyncEvent, mapping: IdMapping, detail: str, reason: str
     ) -> None:
-        """新規レコードのシート行が作れなかったことをSlackへ上げる。
+        """新規レコードのシート行が作れなかったときの後始末（2026-09-07に再試行を追加）。
+
+        ```
+           ① outboxへ積む      日次のcronが Notion を読み直して行を作る
+           ② Slackへ上げる      ①が積めたかによって文面を変える
+        ```
+
+        **①が本体で、②は知らせるためのもの。** 2026-09-03の時点では②しか無く、
+        「Slackを見落とし、そのレコードが二度と編集されなければシートには永久に現れない」
+        という穴が残っていた（ChatGPTがBLOCKER・Geminiが独立にWARN）。
+        積む先は`src/sync_engine/spreadsheet_outbox.py`、作り直すのは
+        `src/sync_engine/spreadsheet_outbox_drain.py`。
+
+        **積めなかったこと自体を握りつぶさない。** DBが落ちていれば積めない。
+        そのときは元のとおり人が拾うしかないので、Slackの文面でそう言い切る。
 
         **`notion_page_id`は渡さない**（2026-09-03、クマ指摘）。`notify_new_record_issue()`は
         それが渡ると「⚠️ 孤児ページの可能性あり」を無条件で付ける。ここでのページは
@@ -1105,6 +1179,17 @@ class Dispatcher:
         `mapping_registration_failed`と同じ対応（アーカイブ）を取ると、そのレコードの
         同期が本当に壊れる。ページIDは本文の中に、注意書き抜きで載せる。
         """
+        queued = enqueue_row_creation(
+            db_key=mapping.db_key, notion_key=mapping.notion_key, reason=reason
+        )
+        follow_up = (
+            "この行は再試行キューに積みました（日次の"
+            "`/api/cron/spreadsheet-outbox-drain`が作り直します）。"
+            if queued
+            else "**再試行キューにも積めませんでした（DBへ書けていません）。"
+            "このレコードは自動では復旧しないので、"
+            "`scripts/backfill_spreadsheet_rows.py`を流してください。**"
+        )
         if self._slack_notifier is None:
             return
         try:
@@ -1117,7 +1202,7 @@ class Dispatcher:
                     "Notionページ（"
                     f"{mapping.notion_key}"
                     "）は正常に作成・登録できましたが、スプレッドシートの行を"
-                    f"作れませんでした。{detail}"
+                    f"作れませんでした。{detail} {follow_up}"
                 ),
             )
         except Exception:  # noqa: BLE001 (通知の失敗で新規作成を落とさない)
@@ -1413,6 +1498,7 @@ class Dispatcher:
                     mapping.db_key,
                     exc_info=True,
                 )
+                self._enqueue_missing_spreadsheet_row(mapping, REASON_UPDATE_NOTION_FETCH_FAILED)
                 return _without_spreadsheet(payload_by_tool), None
 
         if record is None:
@@ -1423,6 +1509,7 @@ class Dispatcher:
                 mapping.notion_key,
                 mapping.db_key,
             )
+            self._enqueue_missing_spreadsheet_row(mapping, REASON_UPDATE_NOTION_PAGE_MISSING)
             return _without_spreadsheet(payload_by_tool), None
 
         try:
@@ -1439,6 +1526,7 @@ class Dispatcher:
                 mapping.notion_key,
                 exc_info=True,
             )
+            self._enqueue_missing_spreadsheet_row(mapping, REASON_UPDATE_SCHEMA_UNAVAILABLE)
             return _without_spreadsheet(payload_by_tool), None
 
         # シートへ流す項目だけを埋める（選び方は`_spreadsheet_row_properties()`に一本化。
@@ -1541,13 +1629,31 @@ class Dispatcher:
                 if new_row_values is not None
                 else None
             )
-            ok, mapping = self._write_value(
-                tool,
-                mapping,
-                sendable,
-                versions.take(tool) if versions is not None else None,
-                new_row_properties=sent,
-            )
+            row_was_missing = tool is Tool.SPREADSHEET and mapping.spreadsheet_row is None
+            try:
+                ok, mapping = self._write_value(
+                    tool,
+                    mapping,
+                    sendable,
+                    versions.take(tool) if versions is not None else None,
+                    new_row_properties=sent,
+                )
+            except Exception as exc:  # noqa: BLE001 (積んでから元どおり投げ直す)
+                # **握らない。** ここで握るとイベント全体が「成功」に見えてしまう。
+                # 例外は今までどおり伝播させ、Webhookは500を返して再送を待つ
+                # （2026-09-07）。ただし**kintoneのWebhookは再送しない**ため、
+                # 500にしただけでは行が永久に作られないことがある。行がまだ無い
+                # レコードに限って、作り直しをキューへ積んでから投げ直す。
+                if row_was_missing:
+                    self._enqueue_missing_spreadsheet_row(mapping, REASON_UPDATE_ROW_WRITE_ERROR)
+                    logger.warning(
+                        "spreadsheet: 行の作成が例外で落ちました。作り直しを積みます "
+                        "(db_key=%r, notion_key=%r, エラーの種類=%s)",
+                        mapping.db_key,
+                        mapping.notion_key,
+                        type(exc).__name__,
+                    )
+                raise
             # **報告は「実際に送った項目」に合わせる**（2026-09-02、Gemini・ChatGPTが独立に
             # 指摘）。行を新規作成したときは補完した項目も書いているので、差分だけを
             # 書いたことにすると`written_tools`（APIの応答・ログ）が実態とズレる。
@@ -1556,6 +1662,11 @@ class Dispatcher:
             written_by_tool[tool] = (
                 frozenset(sent if sent is not None else sendable) if ok else frozenset()
             )
+            if not ok and row_was_missing:
+                # 行を作るつもりで作れなかった（ロックを取れなかった・ターゲットが
+                # 見送った）。`skipped_tools`経由でSlackには上がるが、それだけだと
+                # 人が見落とした時点で永久に行が無いままになる（2026-09-07）。
+                self._enqueue_missing_spreadsheet_row(mapping, REASON_UPDATE_ROW_WRITE_SKIPPED)
         return written_by_tool, mapping
 
     def _version_tracker(
@@ -1911,49 +2022,6 @@ def _build_update_skip_detail(
             "この同期イベントは一切適用されていません（書き込みは行われていません）。"
         )
     return f"{status} error={exc!r}"
-
-
-def _spreadsheet_row_properties(
-    source: Mapping[str, Any],
-    schema: Any,
-    db_key: str,
-    *,
-    exclude: Container[str] = (),
-) -> dict[str, Any]:
-    """`source`から**シートの1行に流してよい項目だけ**を取り出す（2026-09-03に一本化）。
-
-    「シートへ流してよい項目とは何か」は業務ルールで、2箇所に散らすと片方だけ直して
-    片方を忘れる（2026-09-03、おばさん指摘）。使うのは次の2つ。
-
-    ```
-       _spreadsheet_properties_for_new_row()          既にあるレコードの行を作るとき
-         source=Notionページの現在値 / exclude=イベントで既に入っている項目
-
-       _append_spreadsheet_row_for_created_record()   新規作成でその場の行を作るとき
-         source=Notionページを作るのに使った全項目 / exclude=なし
-    ```
-
-    落とすものは2種類。
-
-    1. **スキーマがシートへ同期しない項目**（`properties_synced_to`）。Notionにしか無い
-       メタ情報やスキーマ外のプロパティを持ち込まない。`source`に無いキーも飛ばす。
-       落ちるのはロールアップ・unique_idのような読み取り専用型だけで、それらは
-       `SyncScope.INTERNAL`固定のため最初からこの一覧に入らない（`db_schema/base.py`）。
-    2. **リレーション**（`drop_relation_properties`）。書き込み側と同じ関数を使う。
-       落とされるものを数に入れると、実際には1列だけの行なのに「補えた」と誤認する
-       （2026-09-02、クマ指摘）。
-
-    `exclude`は**プロパティ名の集合**（`Container[str]`）。辞書を渡してもキーで判定
-    されるが、型で意図を示しておく（2026-09-03、GeminiのINFO指摘）。
-    """
-    return drop_relation_properties(
-        {
-            prop.name: source[prop.name]
-            for prop in schema.properties_synced_to(Tool.SPREADSHEET)
-            if prop.name not in exclude and prop.name in source
-        },
-        db_key,
-    )
 
 
 def _without_spreadsheet(

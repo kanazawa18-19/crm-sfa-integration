@@ -31,6 +31,14 @@ import psycopg
 import requests
 
 from src.db_schema.registry import ALL_SCHEMAS
+from src.sync_engine.spreadsheet_outbox import (
+    STATUS_FAILED as OUTBOX_STATUS_FAILED,
+    STATUS_PENDING as OUTBOX_STATUS_PENDING,
+    outbox_stats,
+)
+
+#: これ以上「未処理」が残っていたら、待ちではなく詰まりとみなす（日次のcronで拾うため）。
+OUTBOX_STALLED_DAYS = 3
 from src.sync_engine.webhook_receipts import (
     KINTONE,
     NOTION,
@@ -522,6 +530,81 @@ def probe_webhook_receipts() -> ProbeResult:
     )
 
 
+def probe_spreadsheet_outbox() -> ProbeResult:
+    """シートの行を作れなかったレコードの滞留（`src/sync_engine/spreadsheet_outbox.py`）。
+
+    **ここは異常判定をする。** `webhook_receipts`と違い、判定の材料が揃っているため。
+
+    ```
+       failed が1件でもある            failed  ← 8回試して駄目。人が作り直す
+       pending が3日以上滞留している    failed  ← 下記「静かな滞留」
+       pending がある（3日未満）        ok      ← 次のcronが拾う。件数だけ出す
+       テーブルが無い                   not_configured（マイグレーション未適用）
+    ```
+
+    ■ **なぜ滞留の古さも異常にするのか**（2026-09-07、シロクマ指摘）
+
+    シートのタブやNotionクライアントが**丸ごと構成できていない**とき、作り直しは
+    `release()`（試したうちに入れない差し戻し）を通る。これは正しい——混み合っただけで
+    `failed`へ落とさないため——が、**構成ミスのように恒常的な失敗でも同じ経路**なので、
+    `MAX_ATTEMPTS`に永遠に到達せず、Slackも鳴らず、この診断も緑のままになる。
+
+    「放っておいても翌日には行ができる」が成立していないのに、誰も気づけない状態。
+    日次のcronで拾えるものが3日残っていたら、それは待ちではなく**詰まり**。
+    """
+    if not os.environ.get("DATABASE_URL"):
+        return ProbeResult("spreadsheet_outbox", NOT_CONFIGURED, detail="DATABASE_URL未設定")
+    try:
+        stats = outbox_stats()
+    except psycopg.errors.UndefinedTable:
+        return ProbeResult(
+            "spreadsheet_outbox",
+            NOT_CONFIGURED,
+            detail="SpreadsheetOutboxテーブルが未作成（マイグレーション未適用）",
+        )
+    by_status = stats["by_status"]
+    failed_count = by_status.get(OUTBOX_STATUS_FAILED, {}).get("count", 0)
+    pending = by_status.get(OUTBOX_STATUS_PENDING, {})
+    pending_count = pending.get("count", 0)
+    stalled_days = _pending_age_days(pending.get("oldest_created_at"))
+
+    problems: list[str] = []
+    if failed_count:
+        problems.append(
+            f"{failed_count}件が再試行を打ち切られています"
+            "（scripts/backfill_spreadsheet_rows.py で作り直してください。"
+            "作り直せば翌日のcronが自動で消し込みます）"
+        )
+    if stalled_days is not None and stalled_days >= OUTBOX_STALLED_DAYS:
+        problems.append(
+            f"未処理の最も古いものが{stalled_days}日前から残っています"
+            "（日次で拾えるはずのものが残る＝詰まっています。"
+            "シート・Notionの認証と SPREADSHEET_ROW_CREATION_DB_KEYS を確認してください）"
+        )
+    notes = list(problems)
+    if pending_count and not problems:
+        notes.append(f"{pending_count}件が未処理（次のcronで作り直します）")
+    return ProbeResult(
+        "spreadsheet_outbox",
+        FAILED if problems else OK,
+        detail="。".join(notes),
+        extra={**stats, "pending_oldest_age_days": stalled_days},
+    )
+
+
+def _pending_age_days(oldest_created_at: str | None) -> float | None:
+    """未処理の最も古いものが何日前に積まれたか。読めなければNone（異常にはしない）。"""
+    if not oldest_created_at:
+        return None
+    try:
+        oldest = datetime.fromisoformat(oldest_created_at)
+    except ValueError:
+        return None
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    return round((datetime.now(timezone.utc) - oldest).total_seconds() / 86400, 1)
+
+
 #: 実行する診断の一覧。追加はここに1行足すだけで済むようにしている。
 PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
     ("postgres", probe_postgres),
@@ -535,6 +618,7 @@ PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
     ("slack", probe_slack),
     ("web_engagement_tool", probe_web_engagement_tool),
     ("webhook_receipts", probe_webhook_receipts),
+    ("spreadsheet_outbox", probe_spreadsheet_outbox),
 )
 
 

@@ -32,6 +32,7 @@ from src.incident_detection.notify import run_incident_digest
 from src.project_mirror.sync import refresh_projects_incrementally
 from src.relation_sync.sync import refresh_client_names_incrementally
 from src.reports.batch import run_report_batch
+from src.sync_engine.spreadsheet_outbox_drain import drain_spreadsheet_outbox
 from src.sync_engine.webhook_events import purge_old_events
 from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.zoho_client import ZohoApiError
@@ -298,3 +299,26 @@ def run_relation_sync_reconcile(
     return refresh_client_names_incrementally(
         notion_client=wiring.client_master_notion_client
     )
+
+
+@router.get("/api/cron/spreadsheet-outbox-drain", dependencies=[Depends(verify_cron_secret)])
+def run_spreadsheet_outbox_drain() -> dict[str, Any]:
+    """シートの行を作れなかったレコードを作り直す（2026-09-07、outbox）。
+
+    同期エンジンは「行を作れなかった」ときもWebhookに2xxを返す（Notionページと
+    IDマッピングは既にできており、500でリトライさせると重複ページを作りかねない経路を
+    叩き直すため）。その取りこぼしを`SpreadsheetOutbox`へ積んでおき、ここで作り直す。
+
+    ```
+       これまで   失敗 → Slackへ通知 → 人が backfill を流すまで行は無いまま
+       いま      失敗 → キューへ積む → このcronが Notion を読み直して行を作る
+    ```
+
+    **フラグの確認は`drain_spreadsheet_outbox()`が中でやる**（`SPREADSHEET_ROW_CREATION_*`で
+    許可されたdb_keyだけを対象にする）。許可が無いDBの行は`pending`のまま置いておく
+    ——作りに行っても弾かれるので、試行回数だけ空に減って「諦めた」になってしまう。
+
+    戻り値は集計（作成 / 既にあった / 対象外 / 再試行 / 諦めた / 見送り）。
+    滞留の件数は`/api/diagnostics/integrations?only=spreadsheet_outbox`でも見られる。
+    """
+    return drain_spreadsheet_outbox()

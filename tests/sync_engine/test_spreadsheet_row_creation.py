@@ -1309,3 +1309,289 @@ def test_スキーマが引けなければ行を作らずSlackへ上げる(
     assert シート.append_calls == 0, "どの列がシート行きか分からないまま行を作っている"
     assert len(notifier.issues) == 1
     assert notifier.issues[0]["reason"] == "spreadsheet_row_not_created"
+
+
+# --- 行を作れなかったものを積んで、後から作り直す（2026-09-07、outbox） -----------------
+
+
+class _積まれたもの:
+    """`enqueue_row_creation()`の呼び出しを記録するFake。"""
+
+    def __init__(self, 積める: bool = True) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._積める = 積める
+
+    def __call__(self, *, db_key: str, notion_key: str, reason: str) -> bool:
+        self.calls.append({"db_key": db_key, "notion_key": notion_key, "reason": reason})
+        return self._積める
+
+
+def test_新規作成でシートに書けなかったらキューへ積む(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**ここが本命。** 2026-09-03の時点ではSlackへ上げるだけで、見落とせば永久に
+    行が無いままだった（ChatGPTがBLOCKER・Geminiが独立にWARN）。
+    """
+    def 追記に失敗する(*args: Any, **kwargs: Any) -> int:
+        raise requests.exceptions.ConnectionError("シートに繋がりません")
+
+    monkeypatch.setattr(シート, "append_row_with_sync_key", 追記に失敗する)
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+    notifier = _通知の記録()
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=notifier)
+
+    dispatcher.dispatch(_新規レコードのイベント())
+
+    assert 積まれた.calls == [
+        {
+            "db_key": "client_master",
+            "notion_key": "CLI-NEW",
+            "reason": "new_record_row_write_failed",
+        }
+    ]
+    assert "再試行キューに積みました" in notifier.issues[0]["detail"]
+
+
+def test_キューにも積めなかったらSlackで手動対応を促す(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**積めなかったことを握りつぶさない。** DBが落ちていれば積めない。
+    そのときは元のとおり人が拾うしかないので、文面でそう言い切る。
+    """
+    def 追記に失敗する(*args: Any, **kwargs: Any) -> int:
+        raise requests.exceptions.ConnectionError("シートに繋がりません")
+
+    monkeypatch.setattr(シート, "append_row_with_sync_key", 追記に失敗する)
+    monkeypatch.setattr(
+        "src.sync_engine.dispatcher.enqueue_row_creation", _積まれたもの(積める=False)
+    )
+    notifier = _通知の記録()
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone, notifier=notifier)
+
+    dispatcher.dispatch(_新規レコードのイベント())
+
+    assert "自動では復旧しない" in notifier.issues[0]["detail"]
+    assert "backfill_spreadsheet_rows.py" in notifier.issues[0]["detail"]
+
+
+def test_更新でNotionが読めず行を見送ったときも積む(
+    notion付きdispatcher: Dispatcher, シート: _シート, notion: _Notion,
+    行がまだ無いmapping: IdMapping, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """更新イベントでも、行がまだ無ければ作りに行く。そこで見送れば同じ穴が開く。
+
+    Notionが読めないときに欠けた行を作らないのは正しい判断だが、
+    **見送りっぱなしにすると行が永久にできない**。
+    """
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+    notion.raises = requests.exceptions.ConnectionError("Notionに繋がりません")
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert シート.append_calls == 0
+    assert 積まれた.calls == [
+        {
+            "db_key": "client_master",
+            "notion_key": "CLI-001",
+            "reason": "update_notion_fetch_failed",
+        }
+    ]
+
+
+def test_行が既にあるレコードでは積まない(
+    notion付きdispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**このキューが直せるのは「行がまるごと無い」状態だけ。**
+
+    行はあるが1列だけ書けなかった、は作り直し（追記）では直らない。積んでも
+    「もう行がある」で解決されるだけなので、積まずに従来どおり次のイベントに任せる。
+    """
+    store.upsert(
+        IdMapping(
+            notion_key="CLI-001",
+            db_key="client_master",
+            spreadsheet_row="5",
+            last_synced_at=NOW - timedelta(days=1),
+        )
+    )
+    シート.rows[5] = {"取引先名": "既存商事", SYNC_KEY_COLUMN: "CLI-001"}
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+
+    def 更新に失敗する(*args: Any, **kwargs: Any) -> str | None:
+        raise requests.exceptions.ConnectionError("シートに繋がりません")
+
+    monkeypatch.setattr(シート, "upsert_record", 更新に失敗する)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert 積まれた.calls == []
+
+
+# --- 積む reason の網羅（2026-09-07、クマ指摘で追加） -----------------------------------
+#
+# reason は Slack の文面ではなく**あとで数えるためのラベル**なので、
+# 経路ごとに正しく付いていないと「何が原因で行ができていないのか」が分からなくなる。
+# `docs/spreadsheet_outbox_note.md` の表と一致していることは
+# `test_reasonの一覧がドキュメントと一致している` が機械的に見る。
+
+
+def test_新規作成でロックが取れなかったときのreason(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 取れないロック(db_key: str, notion_key: str):
+        yield False
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.acquire_row_creation_lock", 取れないロック)
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+
+    dispatcher.dispatch(_新規レコードのイベント())
+
+    assert [c["reason"] for c in 積まれた.calls] == ["new_record_row_write_skipped"]
+
+
+def test_新規作成でスキーマが引けなかったときのreason(
+    新規作成を許可する: None, store: SQLiteIdMappingStore, シート: _シート,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    呼ばれた回数 = {"n": 0}
+
+    def 途中から引けない(key: str):
+        呼ばれた回数["n"] += 1
+        # 1回目は`_try_create_new_record()`の必須プロパティ判定で使うので通す。
+        if 呼ばれた回数["n"] >= 2:
+            raise KeyError(key)
+        return _2プロパティのスキーマ()
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", 途中から引けない)
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+    kintone = _新規レコードのkintone({"62300": {"顧客名": "新規商事"}})
+    dispatcher = _新規作成のdispatcher(store, シート, kintone=kintone)
+
+    dispatcher.dispatch(_新規レコードのイベント())
+
+    assert [c["reason"] for c in 積まれた.calls] == ["new_record_row_properties_unavailable"]
+
+
+def test_更新でNotionページが読めなかったときのreason(
+    notion付きdispatcher: Dispatcher, notion: _Notion, 行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+    notion._record = None
+
+    notion付きdispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert [c["reason"] for c in 積まれた.calls] == ["update_notion_page_missing"]
+
+
+def test_更新でスキーマが引けなかったときのreason(
+    store: SQLiteIdMappingStore, シート: _シート, 行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    呼ばれた回数 = {"n": 0}
+
+    def たまに引けない(key: str):
+        呼ばれた回数["n"] += 1
+        if 呼ばれた回数["n"] >= 2:
+            raise KeyError(key)
+        return _2プロパティのスキーマ()
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.get_schema", たまに引けない)
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+    dispatcher = Dispatcher(
+        store,
+        {
+            Tool.NOTION: _Notion(_Notionの現在値(取引先名="サンライズホテルズ")),
+            Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
+        },
+    )
+
+    dispatcher.dispatch(_イベント(備考="更新後のメモ"))
+
+    assert [c["reason"] for c in 積まれた.calls] == ["update_schema_unavailable"]
+
+
+def test_更新で行作成を見送ったときのreason(
+    dispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**ここが一番効く経路。** 更新イベントで行を作ろうとして見送ると、
+    `skipped_tools`でSlackへは出るが、見落とせば行は永久にできない。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def 取れないロック(db_key: str, notion_key: str):
+        yield False
+
+    monkeypatch.setattr("src.sync_engine.dispatcher.acquire_row_creation_lock", 取れないロック)
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+
+    dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+
+    assert シート.append_calls == 0
+    assert [c["reason"] for c in 積まれた.calls] == ["update_row_write_skipped"]
+
+
+def test_更新で行作成が例外になったときのreason(
+    dispatcher: Dispatcher, シート: _シート, 行がまだ無いmapping: IdMapping,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**例外は今までどおり投げ直す**（Webhookは500を返して再送を待つ）。
+    ただしkintoneのWebhookは再送しないので、積んでから投げ直す。"""
+    def 追記に失敗する(*args: Any, **kwargs: Any) -> int:
+        raise requests.exceptions.ConnectionError("シートに繋がりません")
+
+    monkeypatch.setattr(シート, "append_row_with_sync_key", 追記に失敗する)
+    積まれた = _積まれたもの()
+    monkeypatch.setattr("src.sync_engine.dispatcher.enqueue_row_creation", 積まれた)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        dispatcher.dispatch(_イベント(取引先名="サンライズホテルズ"))
+
+    assert [c["reason"] for c in 積まれた.calls] == ["update_row_write_error"]
+
+
+def test_reasonの一覧がドキュメントと一致している() -> None:
+    """**コードとドキュメントの二重管理を機械で見る**（2026-09-07、クマ指摘）。
+
+    reason は Slack の文面ではなく**あとで数えるためのラベル**なので、
+    足したり変えたりしたときに`docs/spreadsheet_outbox_note.md`の表を直し忘れると、
+    運用の人が読む資料だけが古くなる。
+
+    コード側の一覧は`spreadsheet_outbox.REASONS`が正本（リテラルは散らさない）。
+    """
+    import re
+    from pathlib import Path
+
+    from src.sync_engine.spreadsheet_outbox import REASONS
+
+    ドキュメント = (
+        Path(__file__).resolve().parents[2] / "docs" / "spreadsheet_outbox_note.md"
+    ).read_text(encoding="utf-8")
+    ドキュメントのreason = set(re.findall(r"`((?:new_record|update)_[a-z_]+)`", ドキュメント))
+
+    assert REASONS == ドキュメントのreason, (
+        "コードとドキュメントのreasonがずれている: "
+        f"コードだけ={sorted(REASONS - ドキュメントのreason)} / "
+        f"ドキュメントだけ={sorted(ドキュメントのreason - REASONS)}"
+    )

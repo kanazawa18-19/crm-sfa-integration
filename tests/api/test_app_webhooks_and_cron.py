@@ -1240,3 +1240,54 @@ def test_cron_document_approval_poll_runs_poll_when_secret_matches(
 
     assert response.status_code == 200
     assert response.json() == {"checked": 2, "resolved": 1, "errors": 0}
+
+
+# --- /api/cron/spreadsheet-outbox-drain -------------------------------------------------
+# 2026-09-07、outbox: シートの行を作れなかったレコードを作り直す日次cron。
+# cronが`vercel.json`の配置ミスで一度も実行されていなかった事故（このファイル冒頭）を
+# 踏まえ、新しいcronでも「認証が要ること」と「実際に本体が呼ばれること」を固定する。
+
+
+def test_cron_spreadsheet_outbox_drain_returns_401_without_secret_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+
+    response = client.get("/api/cron/spreadsheet-outbox-drain")
+
+    assert response.status_code == 401
+
+
+def test_cron_spreadsheet_outbox_drain_returns_401_with_wrong_secret(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+
+    response = client.get(
+        "/api/cron/spreadsheet-outbox-drain",
+        headers={"Authorization": "Bearer wrong-secret"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_cron_spreadsheet_outbox_drain_runs_when_secret_matches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    calls: list[dict[str, Any]] = []
+
+    def _fake_drain(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"status": "success", "claimed": 2, "created": 2}
+
+    monkeypatch.setattr("src.api.routes.cron.drain_spreadsheet_outbox", _fake_drain)
+
+    response = client.get(
+        "/api/cron/spreadsheet-outbox-drain",
+        headers={"Authorization": "Bearer correct-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "success", "claimed": 2, "created": 2}
+    assert len(calls) == 1

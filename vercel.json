@@ -32,6 +32,10 @@
     {
       "path": "/api/cron/relation-sync-reconcile",
       "schedule": "0 19 * * *"
+    },
+    {
+      "path": "/api/cron/spreadsheet-outbox-drain",
+      "schedule": "0 17 * * *"
     }
   ]
 }

@@ -357,3 +357,97 @@ def test_本物のPROBESを差し替えずに実行できる() -> None:
 
     assert [r["name"] for r in report["results"]] == ["spreadsheet_row_creation"]
     assert "spreadsheet_row_creation" in {name for name, _ in integrations.PROBES}
+
+
+# --- 行の再試行キューの滞留（2026-09-07、outbox） ---------------------------------------
+#
+# ここは**異常判定をする**プローブ。判定を間違えると、
+# 「自動で復旧しないものが残っているのに緑」か「対処不要なのに永久に赤」のどちらかになる。
+
+
+def _滞留(pending: int = 0, failed: int = 0, oldest: str | None = None) -> dict[str, object]:
+    by_status: dict[str, object] = {}
+    if pending:
+        by_status["pending"] = {"count": pending, "oldest_created_at": oldest}
+    if failed:
+        by_status["failed"] = {"count": failed, "oldest_created_at": oldest}
+    return {"by_status": by_status, "by_resolution": {}, "pending_by_db_key": {}}
+
+
+def test_キューにDBが無ければ未設定として返す(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    result = integrations.probe_spreadsheet_outbox()
+
+    assert result.status == NOT_CONFIGURED
+
+
+def test_キューのテーブルが無ければ未設定として返す(monkeypatch: pytest.MonkeyPatch) -> None:
+    """マイグレーション未適用は「壊れている」ではなく「まだ入れていない」。"""
+    import psycopg
+
+    def テーブルが無い() -> dict[str, object]:
+        raise psycopg.errors.UndefinedTable("relation does not exist")
+
+    monkeypatch.setenv("DATABASE_URL", "postgres://example")
+    monkeypatch.setattr(integrations, "outbox_stats", テーブルが無い)
+
+    result = integrations.probe_spreadsheet_outbox()
+
+    assert result.status == NOT_CONFIGURED
+    assert "マイグレーション" in result.detail
+
+
+def test_空のキューは正常(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgres://example")
+    monkeypatch.setattr(integrations, "outbox_stats", lambda: _滞留())
+
+    result = integrations.probe_spreadsheet_outbox()
+
+    assert result.status == OK
+    assert result.detail == ""
+
+
+def test_未処理が少し残っているだけなら正常(monkeypatch: pytest.MonkeyPatch) -> None:
+    """次のcronが拾う。ここで赤くすると毎日鳴って、本物の通知が無視されるようになる。"""
+    from datetime import datetime, timedelta, timezone
+
+    昨日 = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
+    monkeypatch.setenv("DATABASE_URL", "postgres://example")
+    monkeypatch.setattr(integrations, "outbox_stats", lambda: _滞留(pending=3, oldest=昨日))
+
+    result = integrations.probe_spreadsheet_outbox()
+
+    assert result.status == OK
+    assert "3件" in result.detail
+
+
+def test_諦めた行があれば異常として返す(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`failed`は「8回試して駄目だった」もの。解釈の余地なく人の対処が要る。"""
+    monkeypatch.setenv("DATABASE_URL", "postgres://example")
+    monkeypatch.setattr(integrations, "outbox_stats", lambda: _滞留(failed=2))
+
+    result = integrations.probe_spreadsheet_outbox()
+
+    assert result.status == FAILED
+    assert "backfill_spreadsheet_rows.py" in result.detail
+
+
+def test_未処理が何日も動かなければ異常として返す(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**静かな滞留を見逃さない**（2026-09-07、シロクマ指摘）。
+
+    シートやNotionが丸ごと構成できていないと、作り直しは「差し戻し」を通り続け、
+    `failed`にならないためSlackも鳴らない。日次で拾えるはずのものが何日も残るのは、
+    待ちではなく詰まり。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    ずっと前 = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    monkeypatch.setenv("DATABASE_URL", "postgres://example")
+    monkeypatch.setattr(integrations, "outbox_stats", lambda: _滞留(pending=1, oldest=ずっと前))
+
+    result = integrations.probe_spreadsheet_outbox()
+
+    assert result.status == FAILED
+    assert "詰まって" in result.detail
+    assert result.extra["pending_oldest_age_days"] >= 5

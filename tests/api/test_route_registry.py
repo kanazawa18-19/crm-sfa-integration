@@ -52,6 +52,7 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/cron/zoho-webhook-renewal"),
     ("GET", "/api/cron/project-mirror-reconcile"),
     ("GET", "/api/cron/relation-sync-reconcile"),
+    ("GET", "/api/cron/spreadsheet-outbox-drain"),
     # --- dashboard(Next.js)から叩かれる読み取り系 ---
     ("GET", "/api/dashboard/summary"),
     # 外部連携の疎通診断（2026-08-31追加、読み取りのみ）。

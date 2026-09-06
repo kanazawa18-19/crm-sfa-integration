@@ -86,6 +86,12 @@ _ISSUE_REASON_ACTION_HINTS: dict[str, str] = {
         "🚨 監査ログとNotion上を突き合わせて実際にページが作成されたか確認してください。"
         "見つかった場合は正式なIdMappingを手動登録するか、不要であればアーカイブしてください。"
     ),
+    "spreadsheet_row_not_created": (
+        "⚠️ Notionページと同期の紐付けはできています（**孤児ページではありません。"
+        "アーカイブしないでください**）。足りないのはスプレッドシートの行だけです。"
+        "詳細に「再試行キューに積みました」とあれば翌日のcronが作り直すので対応は不要、"
+        "「積めませんでした」とあれば`scripts/backfill_spreadsheet_rows.py`が必要です。"
+    ),
     "source_record_fetch_failed": (
         "🚨 kintone/Zoho側APIの障害・レート制限、または対象レコードのapp/IDの不整合が"
         "疑われます。ログのexternal_id/db_keyから該当レコードを特定し、kintone/Zoho側で"
@@ -112,6 +118,13 @@ _UPDATE_SKIP_REASON_ACTION_HINTS: dict[str, str] = {
         "特定し、Notion側の状態を確認してください。原因が解消すれば、送信元ツール側で"
         "対象レコードを再度更新するなどして再送させる必要があります（自動リトライは"
         "行われません。未適用のプロパティは再送されるまで反映されないままです）。"
+    ),
+    "spreadsheet_row_outbox_gave_up": (
+        "🚨 シートの行の作り直しを規定回数試して失敗したため、**自動での再試行を"
+        "止めました**。`scripts/backfill_spreadsheet_rows.py --db-key <db> --apply`で"
+        "作り直してください（作り直せば翌日のcronがキューを自動で消し込みます）。"
+        "何度も出る場合はGoogle認証・シートのタブ名・SPREADSHEET_ROW_CREATION_DB_KEYSを"
+        "確認してください。"
     ),
     "update_target_value_fetch_failed": (
         "🚨 上記詳細の通り、このイベントに含まれる一部プロパティは既に他ツールへ書き込み"

@@ -551,3 +551,46 @@ model ContactMailConsent {
   @@index([contactEmail])
   @@index([basis])
 }
+
+/// シートの行を作れなかったレコードの再試行キュー（2026-09-07、outbox）。
+///
+/// **なぜ要るか。** Webhookは「行を作れなかった」ときも2xxを返す。Notionページと
+/// IDマッピングは既にできており、500でリトライさせると重複ページを作りかねない経路を
+/// 叩き直すことになるため。結果として、Slackの通知を見落とし、そのレコードが二度と
+/// 編集されなければ**シートには永久に現れなかった**。ここに積んでおき、日次のcron
+/// （/api/cron/spreadsheet-outbox-drain）が Notion の現在値を読み直して行を作る。
+///
+/// **値は持たない。持つのは「どのレコードか」だけ。** 作成時点のスナップショットを
+/// 貯めて後から流すと、その間に入った新しい値を古い値で巻き戻す。行を作るときは必ず
+/// Notion（マスター）を読み直す。
+///
+/// 書き込みはPython側（src/sync_engine/spreadsheet_outbox.py）から行う。
+model SpreadsheetOutbox {
+  /// 対象のDB（client_master / chain / contact / project / product / action）。
+  dbKey     String
+  /// Notionのpage_id。シートの同期キー列に書かれる値でもある。
+  notionKey String
+  /// pending（未処理）/ done（解決済み）/ failed（諦めた。人の対処が要る）。
+  status    String @default("pending")
+  /// 積まれた理由（new_record_row_write_failed 等）。src/sync_engine/spreadsheet_outbox.py 参照。
+  reason    String
+  /// 取り出した回数。取り出しの時点で増やすので、処理中に落ちても数え漏れない。
+  attempts  Int    @default(0)
+  /// 次に取り出してよい時刻（失敗するほど後ろへ下げる）。
+  nextAttemptAt DateTime @default(now())
+  /// 直近の失敗の種類。**例外の全文は入れない**（接続先やユーザー名が載るため）。
+  lastError String?
+  /// どう決着したか。created（行を作れた）/ already_present（もう行があった）/
+  /// not_applicable（作る先が無い・書ける項目が無い）/ gave_up（諦めた）/
+  /// recovered_manually（人がbackfillで作ったのを後から検知した）。
+  /// status だけだと「効いているのか」を数えられないため分けて持つ。
+  resolution String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+  /// done / failed になった時刻。古い done はここを見て掃除する。
+  resolvedAt DateTime?
+
+  @@id([dbKey, notionKey])
+  @@index([status, nextAttemptAt])
+  @@index([resolvedAt])
+}
