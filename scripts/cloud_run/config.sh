@@ -9,7 +9,9 @@ set -euo pipefail
 
 # 環境変数で上書きできるようにしておく（別プロジェクトへ試し打ちしたいとき用）。
 : "${GCP_PROJECT_ID:=}"
-: "${GCP_REGION:=asia-northeast1}"   # 東京。NeonもGoogle Sheetsも日本から叩くため
+: "${GCP_REGION:=us-east4}"   # 北バージニア。Neon が AWS us-east-1（北バージニア）にあり、そのすぐ隣に置くため
+#                              （旧: asia-northeast1。「日本から叩くため」というコメントは誤りだった。
+#                               接続先は ep-...c-12.us-east-1.aws.neon.tech で、DBは米国東部にある）
 : "${CLOUD_RUN_SERVICE:=crm-sfa-backend}"
 
 # プロジェクトIDは gcloud の既定値から拾う（未指定なら）。

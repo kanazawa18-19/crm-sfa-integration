@@ -107,7 +107,10 @@ Homebrew が macOS 26 に未対応で壊れているため、公式tarballを `$
 ```
    GCPプロジェクト   fabled-electron-406310
                     表示名は crm-sfa-integration-cloudrun に変えてある
-   リージョン        asia-northeast1（東京）
+   リージョン        us-east4（北バージニア）
+                    ★ 2026-09-07 に asia-northeast1（東京）から変更。
+                      Neon が AWS us-east-1（北バージニア）にあり、東京だと
+                      DBアクセスのたびに太平洋を往復する（片道100〜150ms）
    サービス名        crm-sfa-backend
    課金アカウント     01EA6F-556121-34B9A6（紐づけ済み）
 ```
@@ -213,7 +216,7 @@ sqliteバックエンド（`SYNC_ID_MAPPING_DB_PATH`）に落とすと書き込�
 ```
    コマンドで見る（早い）
      gcloud run services logs read crm-sfa-backend \
-       --region=asia-northeast1 --limit=50
+       --region=us-east4 --limit=50
 
    画面で見る（絞り込み・期間指定ができる）
      https://console.cloud.google.com/logs
@@ -234,8 +237,8 @@ sqliteバックエンド（`SYNC_ID_MAPPING_DB_PATH`）に落とすと書き込�
 **やめるときは3つ消す。**
 
 ```
-   gcloud run services delete crm-sfa-backend --region=asia-northeast1
-   gcloud artifacts repositories delete cloud-run-source-deploy --location=asia-northeast1
+   gcloud run services delete crm-sfa-backend --region=us-east4
+   gcloud artifacts repositories delete cloud-run-source-deploy --location=us-east4
    gcloud secrets delete DATABASE_URL          # 他2つも同様
 ```
 
