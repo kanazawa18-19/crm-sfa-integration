@@ -1,7 +1,47 @@
+# Vercel へアップロードしないもの。
+#
+# ★ .vercelignore が存在すると、Vercel は .gitignore を見なくなる。
+#   つまり「.gitignore に書いてあるから安全」は成り立たない。
+#   認証情報とPIIの除外は、このファイルに自分で書く必要がある。
+#
+# ★ 行末コメントは書けない（.gitignore と同じで `#` 以降もパターンの一部になる）。
+#   説明は必ず独立した行に書くこと。
+#
+# ★ .dockerignore / .gcloudignore とは目的が別（あちらは Cloud Run 用）。
+#   3ファイルを揃える必要は無い。ここは Vercel のルートプロジェクト
+#   （api/index.py ＝ Python バックエンド）に要らないものを書く。
+
+# --- 認証情報・個人情報。絶対に上げない -----------------------------------
+.env
+.env.*
+*/.env
+*/.env.*
+# migration_output/ は氏名・部署・役職・携帯番号・メールアドレスを含む
+migration_output/
+
+# --- 別のVercelプロジェクトとして個別にデプロイされるもの -------------------
+# dashboard/ は自前の .vercel/project.json を持つ別プロジェクト
+dashboard/
+
+# --- 実行に要らないもの ---------------------------------------------------
 pyproject.toml
 tests/
-dashboard/
 docs/
 scripts/
 gas/
+requirements-dev.txt
+
+# --- Cloud Run 用。Vercelには不要 ------------------------------------------
+Dockerfile
+.dockerignore
+.gcloudignore
+
+# --- ローカルの生成物 ------------------------------------------------------
 .venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.claude/
+*.log
+.DS_Store
