@@ -87,18 +87,29 @@ INFO
 
 # ここから先は課金が発生する。dry-run でも --yes でもないときだけ、手で止まって確認する。
 if [[ "${DRY_RUN}" -eq 0 && "${ASSUME_YES}" -eq 0 ]]; then
+  # 件数は SECRETS から数える。手で書くとシークレットが増えたときに嘘になる
+  # （実際 2026-09-08 に「4つ」と表示しながら5つ扱っていた）。
+  # ★ 本文の heredoc は 'CONFIRM' のまま（クォート必須）。
+  #   クォートを外すと本文中のバッククォートがコマンド実行になり、
+  #   案内文のつもりで deploy.sh を再帰実行してしまう。件数だけ別行で出す。
+  SECRET_COUNT="$(printf '%s' "${SECRETS}" | tr ',' '\n' | grep -c .)"
   cat <<'CONFIRM'
 
 これから次の6つを実行します。API・ビルド・Cloud Runは課金対象です。
   1. GCPのAPIを有効化（Cloud Run / Cloud Build / Artifact Registry / Secret Manager）
   2. 専用のサービスアカウントを作成
-  3. シークレット4つに読み取り権限を付与
+CONFIRM
+  printf '  3. シークレット%sつに読み取り権限を付与\n' "${SECRET_COUNT}"
+  cat <<'CONFIRM'
   4. ソースをアップロードしてイメージをビルドし、Cloud Run へデプロイ
   5. 実行用サービスアカウント自身に、このサービスだけの呼び出し権限を付与
   6. 実行者に、実行用サービスアカウントのIDトークン発行権限だけを付与
 
 まだ何も実行していません。中身だけ見たいなら Ctrl-C で抜けて
 `bash scripts/cloud_run/deploy.sh --dry-run` を先に実行してください。
+
+★ キーボードから入力できない場所（Claude Code の ! 実行など）では、
+  ここで止まったまま何も起きません。その場合は --yes を付けて叩き直してください。
 
 CONFIRM
   read -r -p "続行しますか？ yes と入力してください: " _answer
