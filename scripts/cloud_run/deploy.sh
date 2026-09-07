@@ -65,6 +65,7 @@ cat <<INFO
  サービス名   : ${CLOUD_RUN_SERVICE}
  サービスAC   : ${SA_EMAIL}
  認証         : IAM必須（--no-allow-unauthenticated）。公開しない
+ 疎通確認     : 実行用SAのIDトークンを使う（本人には発行権限だけ付与）
  タイムアウト : 3600秒（Vercelの300秒制限を外すのが移行の目的の1つ）
  dry-run      : $([[ "${DRY_RUN}" -eq 1 ]] && echo "はい（何もしない）" || echo "いいえ（実行する）")
 ────────────────────────────────────────────────────────────────
@@ -74,11 +75,13 @@ INFO
 if [[ "${DRY_RUN}" -eq 0 && "${ASSUME_YES}" -eq 0 ]]; then
   cat <<'CONFIRM'
 
-これから次の4つを実行します。いずれも課金対象です。
+これから次の6つを実行します。API・ビルド・Cloud Runは課金対象です。
   1. GCPのAPIを有効化（Cloud Run / Cloud Build / Artifact Registry / Secret Manager）
   2. 専用のサービスアカウントを作成
   3. シークレット3つに読み取り権限を付与
   4. ソースをアップロードしてイメージをビルドし、Cloud Run へデプロイ
+  5. 実行用サービスアカウント自身に、このサービスだけの呼び出し権限を付与
+  6. 実行者に、実行用サービスアカウントのIDトークン発行権限だけを付与
 
 まだ何も実行していません。中身だけ見たいなら Ctrl-C で抜けて
 `bash scripts/cloud_run/deploy.sh --dry-run` を先に実行してください。
@@ -98,6 +101,7 @@ run gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
+  iamcredentials.googleapis.com \
   --project="${GCP_PROJECT_ID}"
 
 # --- 2. 専用サービスアカウント（無ければ作る） ----------------------------------
@@ -194,8 +198,48 @@ run gcloud run deploy "${CLOUD_RUN_SERVICE}" \
   --cpu=1 \
   --min-instances=0 \
   --max-instances=2 \
-  --concurrency=20
+  --concurrency=20 \
+  --quiet
 
+trap - ERR
+
+# 非公開サービスを smoke_test.sh から呼ぶための最小権限。
+# 一般ユーザーの `gcloud auth print-identity-token` は audience が Cloud Run URLではなく、
+# この環境では404になる。実行用SA自身を invoker にし、デプロイした本人には
+# IAM Credentials APIでそのSAのIDトークンを発行する権限だけを付ける。
+DEPLOY_ACCOUNT="$(gcloud config get-value account 2>/dev/null)"
+if [[ "${DEPLOY_ACCOUNT}" == *.gserviceaccount.com ]]; then
+  TOKEN_CREATOR_MEMBER="serviceAccount:${DEPLOY_ACCOUNT}"
+else
+  TOKEN_CREATOR_MEMBER="user:${DEPLOY_ACCOUNT}"
+fi
+
+on_iam_failure() {
+  cat <<'FAIL' >&2
+
+────────────────────────────────────────────────────────────────
+ Cloud Run本体のデプロイは完了しましたが、疎通確認用の権限設定に失敗しました。
+ deploy.sh は冪等なので、そのまま再実行して構いません。既存サービスを更新した後、
+ 同じ権限設定をもう一度試します。
+────────────────────────────────────────────────────────────────
+FAIL
+  exit 1
+}
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+  trap 'on_iam_failure' ERR
+fi
+run gcloud run services add-iam-policy-binding "${CLOUD_RUN_SERVICE}" \
+  --project="${GCP_PROJECT_ID}" \
+  --region="${GCP_REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet
+run gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+  --project="${GCP_PROJECT_ID}" \
+  --member="${TOKEN_CREATOR_MEMBER}" \
+  --role="roles/iam.serviceAccountOpenIdTokenCreator" \
+  --condition=None \
+  --quiet
 trap - ERR
 
 if [[ "${DRY_RUN}" -eq 0 ]]; then

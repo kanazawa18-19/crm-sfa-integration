@@ -1,7 +1,7 @@
 # Python同期エンジンを Cloud Run へ移す
 
-作成: 2026-09-07（主機CC）／状態: **第1段の準備まで完了。デプロイは未実施**
-／レビュー: 2026-09-07 に動物チーム2体（shirokuma-sec / obasan-quality）が点検し、指摘を反映済み
+作成: 2026-09-07（主機CC）／状態: **第1段完了。Cloud RunからNeonへの到達確認済み**
+／レビュー: 2026-09-07 に動物チーム3体が2周点検し、指摘を反映済み
 
 ## 1行で
 
@@ -58,7 +58,7 @@ Vercelの関数には「5分で強制終了」「定時実行が1時間ずれる
 ## 段階
 
 ```
-   第1段  読み取り1本だけ動かす      ◀── いまここ（準備完了・未デプロイ）
+   第1段  読み取り1本だけ動かす      ✅ 完了（デプロイ・Neon到達確認済み）
           Cloud Runを並走させ、GCPからNeonへ届くかだけを確かめる
           Vercelは一切触らない
             │
@@ -172,7 +172,7 @@ Vercel の Sensitive 指定の環境変数は、画面もCLIもプレースホ�
 | `scripts/cloud_run/config.sh` | プロジェクトID・リージョン・サービス名 |
 | `scripts/cloud_run/bootstrap_secrets.sh` | Secret Managerへ認証情報を登録 |
 | `scripts/cloud_run/deploy.sh` | API有効化 → SA作成 → 権限付与 → デプロイ |
-| `scripts/cloud_run/smoke_test.sh` | `/healthz` と DB到達の確認 |
+| `scripts/cloud_run/smoke_test.sh` | `/openapi.json` の起動確認と DB到達の確認 |
 
 `requirements.txt` を分けたので、**CI（`.github/workflows/ci.yml`）は
 `requirements-dev.txt` を入れるように直してある。**
@@ -189,6 +189,16 @@ Cloud RunのIAM認証も、このアプリのトークン認証も、どちら�
    X-Serverless-Authorization: Bearer <GoogleのIDトークン>   ← Cloud Runが見る
    Authorization:              Bearer <DASHBOARD_API_TOKEN>  ← アプリが見る
 ```
+
+GoogleのIDトークンは、IAM Credentials APIで実行用サービスアカウントのものを発行し、
+Cloud RunのURLを発行先（audience）に明示する。本人アカウントで単に
+`gcloud auth print-identity-token` を実行すると、発行先がgcloud自身のクライアントIDになり、
+この環境ではCloud Runの手前で404になる。また、gcloudのサービスアカウント偽装は
+アクセストークン発行権限まで要求するため使わない。`deploy.sh` は次の最小権限を設定する。
+
+- 実行用サービスアカウント自身: 対象サービスの呼び出し権限（`roles/run.invoker`）
+- デプロイした本人: 実行用サービスアカウントのトークン発行権限
+  （`roles/iam.serviceAccountOpenIdTokenCreator`。IDトークンの発行だけに限定）
 
 出典: https://docs.cloud.google.com/run/docs/authenticating/service-to-service
 
@@ -251,8 +261,9 @@ sqliteバックエンド（`SYNC_ID_MAPPING_DB_PATH`）に落とすと書き込�
 （実装を二重化しない方針の必然）。
 
 **歯止めは IAM 認証だけ。** `--no-allow-unauthenticated` で、`run.invoker` 権限を
-持つ人以外は呼べない。`deploy.sh` は誰にも `run.invoker` を付けていないので、
-今の状態では本人（プロジェクトのオーナー）以外は叩けない。
+持つ主体以外は呼べない。`deploy.sh` が付けるのは、疎通確認で使う
+**実行用サービスアカウント自身へのサービス単位の権限だけ**。本人はそのIDトークンを
+発行して呼び出す。一般ユーザーや外部サービスには `run.invoker` を付けない。
 **将来この権限を誰かに渡すときは、「読み取りのつもりが書き込み系にも届く」ことを思い出すこと。**
 
 ### ★ Neon 側のIP制限
@@ -292,8 +303,15 @@ Vercel 側も並行して使っている**ため、両方合わせて Neon の�
 | `/healthz` が200・トークン無しの診断が401 | ✅ Dockerfileと同じCMDで再現して実測 |
 | テスト2,633件（本番用依存を削った後） | ✅ クリーンなvenvで再実行し全部通る |
 | **Dockerイメージのビルド** | ⚠️ ローカルにdockerが無く未実行。**CIに `docker build` を足したので、push すれば無料で分かる** |
-| **Cloud Runへのデプロイ** | 🔴 **未検証**。`gcloud auth login` が未実施 |
-| **GCPからNeonへの到達** | 🔴 **未検証**。デプロイしないと分からない |
+| **Cloud Runへのデプロイ** | ✅ 旧リージョンで実測。コンテナ起動・リビジョンReadyを確認（2026-09-07） |
+| **Cloud Runの公開経路** | ✅ 同じプロジェクト・`us-east4` の公式helloでHTTP 200と到達ログを確認（2026-09-07） |
+| **非公開crm-sfaへの正しいIDトークン認証** | ✅ IAM Credentials API＋限定権限で実測（2026-09-07） |
+| **GCPからNeonへの到達** | ✅ pooled通常接続・非pooled排他制御接続とも実測（2026-09-07） |
+
+`/healthz` はローカルでは200だが、このCloud RunサービスではGoogle FrontendのHTML 404となり、
+コンテナ到達ログも無い。原因は未確定。一方、同じサービスの `/openapi.json` と
+`/api/diagnostics/integrations` は200でコンテナまで届くため、第1段の**起動確認**には
+`/openapi.json` を使う。これは `/healthz` 自体の健康確認を代替するものではない。
 
 **`Dockerfile` は書いただけで、手元では一度もビルドしていない**（ローカルに docker が無い）。
 ただし2026-09-07のレビューで CI に `docker build` ＋ 起動確認を足したので、
