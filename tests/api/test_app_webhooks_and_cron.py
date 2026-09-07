@@ -741,6 +741,55 @@ def test_cron_daily_batch_runs_batch_when_secret_matches(
     }
 
 
+def test_cron_daily_batch_runs_with_cloud_scheduler_header(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OIDCがAuthorizationを使っていても、専用ヘッダーでアプリ認証できる。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    calls: list[None] = []
+
+    def _run_report_batch() -> dict[str, object]:
+        calls.append(None)
+        return {"date": "2026-08-11", "daily_report_sent": True, "weekly_report_sent": False}
+
+    monkeypatch.setattr(
+        "src.api.routes.cron.run_report_batch",
+        _run_report_batch,
+    )
+
+    response = client.get(
+        "/api/cron/daily-batch",
+        headers={
+            "Authorization": "Bearer google-oidc-token",
+            "X-Cron-Secret": "correct-secret",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "date": "2026-08-11",
+        "daily_report_sent": True,
+        "weekly_report_sent": False,
+    }
+    assert calls == [None]
+
+
+def test_cron_daily_batch_rejects_wrong_cloud_scheduler_header(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+
+    response = client.get(
+        "/api/cron/daily-batch",
+        headers={
+            "Authorization": "Bearer google-oidc-token",
+            "X-Cron-Secret": "wrong-secret",
+        },
+    )
+
+    assert response.status_code == 401
+
+
 # --- /api/cron/zoho-webhook-renewal ---------------------------------------------------------
 
 

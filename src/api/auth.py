@@ -32,20 +32,31 @@ def verify_dashboard_api_token(authorization: str | None = Header(default=None))
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-def verify_cron_secret(authorization: str | None = Header(default=None)) -> None:
-    """Vercel Cronからの呼び出しであることを検証するFastAPI依存性。
+def verify_cron_secret(
+    authorization: str | None = Header(default=None),
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+) -> None:
+    """Vercel CronまたはCloud Schedulerからの呼び出しを検証する依存性。
 
     Vercelは`CRON_SECRET`環境変数が設定されているプロジェクトに対し、Cron Jobからの
     リクエストへ自動的に`Authorization: Bearer $CRON_SECRET`ヘッダーを付与する
     （https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs）。
-    `verify_dashboard_api_token`と同様fail-closed設計であり、`CRON_SECRET`未設定時は
-    デフォルトで全リクエストを401にする。
+    Cloud SchedulerのOIDC認証は`Authorization`をGoogleのIDトークンに使うため、
+    アプリの合言葉は専用の`X-Cron-Secret`ヘッダーで受け取る。段階移行中のVercel Cronは
+    従来どおり`Authorization: Bearer <CRON_SECRET>`を使える。どちらの経路でも
+    `CRON_SECRET`未設定時は401にする（fail-closed）。
     """
     expected = os.environ.get("CRON_SECRET")
     if not expected:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+    authorization_matches = authorization is not None and hmac.compare_digest(
+        authorization, f"Bearer {expected}"
+    )
+    cron_secret_header_matches = x_cron_secret is not None and hmac.compare_digest(
+        x_cron_secret, expected
+    )
+    if not authorization_matches and not cron_secret_header_matches:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 

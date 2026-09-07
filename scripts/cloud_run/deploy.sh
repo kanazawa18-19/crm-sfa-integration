@@ -9,7 +9,7 @@
 #   1. gcloud が入っていて `gcloud auth login` 済み
 #   2. `gcloud config set project <PROJECT_ID>` 済み（または GCP_PROJECT_ID を指定）
 #   3. 課金が有効なプロジェクト（Cloud Run / Cloud Build は課金必須）
-#   4. scripts/cloud_run/bootstrap_secrets.sh で3つのシークレットを登録済み
+#   4. scripts/cloud_run/bootstrap_secrets.sh で必要なシークレットを登録済み
 #
 # 使い方:
 #   bash scripts/cloud_run/deploy.sh --dry-run  # コマンドを出すだけ。何もしない（まずこれ）
@@ -43,11 +43,12 @@ esac
 SERVICE_ACCOUNT="${CLOUD_RUN_SERVICE}-sa"
 SA_EMAIL="${SERVICE_ACCOUNT}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
-# 第1段で必要な認証情報だけ。増やすときはここに足す。
+# 第1段のDB診断3つと、第2段のCloud Scheduler認証に必要な値。
 # 形式: <コンテナ内の環境変数名>=<Secret Manager のシークレット名>:<版>
 SECRETS="DATABASE_URL=DATABASE_URL:latest"
 SECRETS="${SECRETS},DATABASE_URL_UNPOOLED=DATABASE_URL_UNPOOLED:latest"
 SECRETS="${SECRETS},DASHBOARD_API_TOKEN=DASHBOARD_API_TOKEN:latest"
+SECRETS="${SECRETS},CRON_SECRET=CRON_SECRET:latest"
 
 run() {
   echo "+ $*"
@@ -78,7 +79,7 @@ if [[ "${DRY_RUN}" -eq 0 && "${ASSUME_YES}" -eq 0 ]]; then
 これから次の6つを実行します。API・ビルド・Cloud Runは課金対象です。
   1. GCPのAPIを有効化（Cloud Run / Cloud Build / Artifact Registry / Secret Manager）
   2. 専用のサービスアカウントを作成
-  3. シークレット3つに読み取り権限を付与
+  3. シークレット4つに読み取り権限を付与
   4. ソースをアップロードしてイメージをビルドし、Cloud Run へデプロイ
   5. 実行用サービスアカウント自身に、このサービスだけの呼び出し権限を付与
   6. 実行者に、実行用サービスアカウントのIDトークン発行権限だけを付与

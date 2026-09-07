@@ -142,13 +142,17 @@ API有効化・シークレット登録・プロジェクト操作は通る。**
    ①  pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL_UNPOOLED
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DASHBOARD_API_TOKEN
-                     ▲ 2026-09-07 に登録済み。やり直すときだけ実行する
+       pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh CRON_SECRET
+                     ▲ 先頭3つは登録済み。CRON_SECRETだけ第2段のデプロイ前に登録する
 
    ②  bash scripts/cloud_run/deploy.sh --dry-run   ← 何が起きるか見る（何もしない）
        bash scripts/cloud_run/deploy.sh            ← 実行。yes と打つまで止まる
 
    ③  bash scripts/cloud_run/smoke_test.sh
 ```
+
+先頭3つは2026-09-07に登録済み。`CRON_SECRET`は第2段で追加するため未登録。
+現在の`deploy.sh`は4つすべてを要求するので、次の再デプロイ前に登録する。
 
 ③で `"ok": ["postgres", "advisory_lock"]` が返れば第1段は合格。
 **確かめたいのは1点だけ：GCPからNeonへ、pooled と 非pooled の両方で届くか。**
@@ -179,7 +183,9 @@ Vercel の Sensitive 指定の環境変数は、画面もCLIもプレースホ�
 
 ## 引っかかるところ
 
-### ★ Authorization ヘッダーが2つ要る
+### ★ Cloud Run IAMとアプリ認証のヘッダー競合
+
+#### 手動のAPI呼び出し
 
 Cloud RunのIAM認証も、このアプリのトークン認証も、どちらも `Authorization: Bearer ...`
 を使うのでぶつかる。Googleの仕様では**両方あるときは `X-Serverless-Authorization`
@@ -202,10 +208,37 @@ Cloud RunのURLを発行先（audience）に明示する。本人アカウント
 
 出典: https://docs.cloud.google.com/run/docs/authenticating/service-to-service
 
-**第2段で効いてくる。** Cloud Scheduler は OIDC トークンを `Authorization` に載せるため、
-そのままだとアプリ側の `CRON_SECRET` を送る場所が無くなる。
-移すときに「cronの合言葉を専用ヘッダーで受け取る」実装を足すか、Schedulerのカスタム
-ヘッダーで渡すかを決める必要がある。**まだ決めていない。**
+#### Cloud Schedulerからの呼び出し
+
+**第2段の方式は2026-09-07に確定した。** Cloud Scheduler は OIDC トークンを
+`Authorization` に載せ、アプリ側の `CRON_SECRET` はカスタムヘッダー
+`X-Cron-Secret` に載せる。`verify_cron_secret`は次の両方を受け付けるため、1本ずつ移しても
+既存のVercel Cronを壊さない。
+
+```
+   移行前  Authorization: Bearer <CRON_SECRET>  ← Vercel Cron
+   移行後  Authorization: Bearer <Google OIDC>  ← Cloud Run IAM
+           X-Cron-Secret: <CRON_SECRET>          ← アプリ
+```
+
+Cloud SchedulerはOIDCを有効にすると、カスタム設定した`Authorization`を上書きする。
+一方、任意のカスタムヘッダーは送れるため、専用ヘッダーへの分離が必要になる。
+出典: https://docs.cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs
+
+`CRON_SECRET`を廃止してCloud Run IAMだけに寄せる案は見送った。同じアプリをVercelでも
+動かす段階移行中であり、アプリ自身の認証を残した方が誤設定時にも二重の歯止めになるため。
+
+第2段のデプロイ前に、Vercelと同じ`CRON_SECRET`をSecret Managerへ登録する。
+**現在の`deploy.sh`は第2段対応版なので、この登録後でなければ再デプロイできない。**
+
+```
+   pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh CRON_SECRET
+```
+
+Cloud Schedulerのジョブ設定には`X-Cron-Secret`の値が保存される。閲覧権限を持つ人からも
+隠す保管庫（Secret Manager）ではないため、SchedulerのIAM閲覧権限は必要最小限にする。
+値をコマンドラインへ直接書くとシェル履歴や`ps`に残るので、ジョブ作成スクリプトでは
+標準入力または一時ファイル経由で渡す。
 
 ### 書き込めるのは /tmp だけ
 

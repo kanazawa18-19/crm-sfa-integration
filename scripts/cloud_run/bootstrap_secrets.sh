@@ -14,8 +14,10 @@
 #   画面にもシェル履歴にも ps にも残らない。
 #   手入力の場合もエコーは止めてあるが、クリップボード経由のほうが確実。
 #
-# 第1段（読み取り系1本だけを動かす）で必要なのは次の3つだけ:
-#   DATABASE_URL / DATABASE_URL_UNPOOLED / DASHBOARD_API_TOKEN
+# 現在の deploy.sh（第2段対応版）が必要とするのは次の4つ:
+#   DATABASE_URL / DATABASE_URL_UNPOOLED / DASHBOARD_API_TOKEN / CRON_SECRET
+# 第1段のデプロイ時点では先頭3つだけだったが、現在版を再デプロイする場合は
+# Cloud Schedulerをまだ作らなくてもCRON_SECRETまで先に登録する。
 #
 # ★ Vercel 側の値は読み戻せない（Sensitive指定は画面もCLIもプレースホルダを返す）。
 #   Neonのダッシュボードなど、発行元から取り直すこと。
