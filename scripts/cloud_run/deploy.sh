@@ -105,6 +105,21 @@ if ! gcloud iam service-accounts describe "${SA_EMAIL}" --project="${GCP_PROJECT
   run gcloud iam service-accounts create "${SERVICE_ACCOUNT}" \
     --project="${GCP_PROJECT_ID}" \
     --display-name="crm-sfa-integration backend (Cloud Run)"
+
+  # ★ 作った直後は、まだ「存在しない」と返ってくることがある（GCP側の反映待ち）。
+  #   待たずに権限を付けにいくと 400 "Service account ... does not exist" で落ちる。
+  #   2026-09-07 に実際に踏んだので、見えるようになるまで待つ。
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    echo -n "  サービスアカウントの反映を待っています"
+    for _i in $(seq 1 30); do
+      if gcloud iam service-accounts describe "${SA_EMAIL}" --project="${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+        echo " → できました"
+        break
+      fi
+      echo -n "."
+      sleep 2
+    done
+  fi
 else
   echo "= サービスアカウントは既にあります: ${SA_EMAIL}"
 fi
@@ -113,11 +128,33 @@ fi
 for pair in ${SECRETS//,/ }; do
   secret_name="${pair#*=}"      # DATABASE_URL:latest
   secret_name="${secret_name%%:*}"  # DATABASE_URL
-  run gcloud secrets add-iam-policy-binding "${secret_name}" \
-    --project="${GCP_PROJECT_ID}" \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/secretmanager.secretAccessor" \
-    --condition=None
+  # 反映待ちで一度は失敗しうるので、数回やり直す（冪等な操作なので繰り返して安全）。
+  for _try in 1 2 3 4 5; do
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      run gcloud secrets add-iam-policy-binding "${secret_name}" \
+        --project="${GCP_PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/secretmanager.secretAccessor" \
+        --condition=None
+      break
+    fi
+    if gcloud secrets add-iam-policy-binding "${secret_name}" \
+        --project="${GCP_PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/secretmanager.secretAccessor" \
+        --condition=None >/dev/null 2>&1; then
+      echo "+ ${secret_name} に読み取り権限を付けました"
+      break
+    fi
+    if [[ "${_try}" -eq 5 ]]; then
+      echo "ERROR: ${secret_name} への権限付与が5回とも失敗しました。" >&2
+      echo "  → シークレットが存在するか確認してください:" >&2
+      echo "     bash scripts/cloud_run/bootstrap_secrets.sh --list" >&2
+      exit 1
+    fi
+    echo "  ${secret_name} の権限付与を再試行します（${_try}回目・反映待ち）"
+    sleep 5
+  done
 done
 
 # --- 4. デプロイ（Dockerfileから Cloud Build がイメージを作る） ------------------
