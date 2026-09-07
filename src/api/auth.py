@@ -47,6 +47,16 @@ def verify_cron_secret(
     `X-Cloud-Scheduler: true`を受け付ける。Vercel側で同じヘッダーを偽装しても、環境変数が
     無いため通らない。段階移行中のVercel Cronは従来どおり
     `Authorization: Bearer <CRON_SECRET>`を使える。
+
+    ★ Cloud Run側の歯止めはIAMだけ（2026-09-08 本人判断で確定）。
+      この分岐に入るのは`CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true`のCloud Runだけだが、
+      その環境では**`roles/run.invoker`を持つ主体なら誰でも**`X-Cloud-Scheduler: true`を
+      付けるだけで全cronを叩ける。Scheduler専用サービスアカウントに限定されるわけではない。
+      サービスは`--no-allow-unauthenticated`で公開しておらず、invokerを持つのは
+      実行用SAとScheduler専用SAだけなので、これを受け入れる方針にした。
+      **`run.invoker`の付与は「全cronの実行権限の付与」と同義**である点に注意。
+      詳細と、方針を変える場合の代償は`docs/cloud_run_migration_note.md`の
+      「認証方針の決着」に書いてある。
     """
     if (
         os.environ.get("CLOUD_RUN_SCHEDULER_AUTH_ENABLED", "").lower() == "true"

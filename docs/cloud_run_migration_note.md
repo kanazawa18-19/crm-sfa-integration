@@ -233,7 +233,40 @@ Cloud SchedulerはOIDCを有効にすると、`Authorization`をGoogleのIDト�
 出典: https://docs.cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs
 
 Cloud Schedulerのジョブ設定に秘密値を置かないため、閲覧権限から合言葉が漏れる経路もない。
-Cloud Runへの到達はScheduler専用サービスアカウントの`run.invoker`権限で制限する。
+
+#### ★ 認証方針の決着（2026-09-08 本人判断）
+
+**Cloud Run 側は IAM だけを歯止めにする。合言葉は足さない。**
+
+外部モデルレビュー（Gemini Pro / ChatGPT）が独立に同じ点を指摘したので、実態を正確に書く。
+
+```
+   CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true が入っている以上、
+   X-Cloud-Scheduler: true を付ければ CRON_SECRET なしで cron を叩ける
+      ▼
+   つまり「Scheduler専用アカウントだけが叩ける」のではない。
+   ★ run.invoker を持つ主体なら誰でも、全cronを叩ける ★
+```
+
+**それでよいと判断した理由**
+
+- `--no-allow-unauthenticated` なので、`run.invoker` を持たない者は
+  そもそもホストに到達できない（認証なしは Google の404で弾かれる）
+- 現在 `run.invoker` を持つのは**1つだけ**（2026-09-08 実測）
+
+```
+   serviceAccount:crm-sfa-backend-sa@fabled-electron-406310.iam.gserviceaccount.com
+   （実行用SA自身。疎通確認のときだけ本人がIDトークンを発行して借りる）
+   ＋ create のたびに Scheduler専用SA が1つ増える
+```
+
+- 合言葉を足しても、守る相手が増えない。`run.invoker` を渡す＝
+  cronを叩ける、という等式が変わるだけで、鍵の管理先が1つ増える
+
+**★ だから `run.invoker` は「読み取り権限」ではない。** これを誰かに渡すことは
+「全cronの実行権限を渡す」ことと同じ。付与するときは必ずここを読み直す。
+方針を変えるなら、Schedulerのジョブに `X-Cron-Secret` を持たせる形になるが、
+その瞬間から合言葉がジョブ設定の閲覧権限で読める側へ移る（今はそれが無い）。
 
 ### 第2段：cronを1本ずつ移す
 

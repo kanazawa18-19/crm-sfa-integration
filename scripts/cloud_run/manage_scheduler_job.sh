@@ -119,6 +119,62 @@ KEEP
   exit 0
 fi
 
+# ────────────────────────────────────────────────────────────────
+# 定刻ガード（2026-09-08、Gemini Proの指摘を反映）
+# ────────────────────────────────────────────────────────────────
+# 移行作業は「Vercelを止める」と「Schedulerを動かす」の2手に分かれる。その隙間に
+# 本来の定刻が来ると、片方だけが走る（取りこぼし）か、両方が走る（二重起動）。
+#
+#   定刻 10:00 の例
+#     09:58 Vercel削除 → 10:00 まだ activate していない  → 取りこぼし
+#     09:58 activate   → 10:00 VercelとSchedulerの両方   → 二重起動
+#
+# 人間が手で進める以上、時間帯そのものを避けるのが確実なので、
+# 定刻の前後1時間はコマンド自体を止める。plan（下見）は読み取りだけなので通す。
+if [[ "${SKIP_SCHEDULE_GUARD:-}" == "1" ]]; then
+  echo "⚠ SKIP_SCHEDULE_GUARD=1 のため定刻ガードを飛ばします。二重起動に注意してください。" >&2
+else
+  GUARD_MSG="$(python3 - "${SCHEDULE}" <<'GUARD'
+import datetime
+import sys
+
+# SCHEDULE は "分 時 * * *"（UTC）の形しか使っていない。
+minute, hour = sys.argv[1].split()[:2]
+now = datetime.datetime.now(datetime.timezone.utc)
+target = now.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+
+# 日をまたぐ場合も見るので、前日・当日・翌日の3つで一番近いものを取る。
+diff_min = min(
+    abs((target + datetime.timedelta(days=d) - now).total_seconds()) / 60
+    for d in (-1, 0, 1)
+)
+if diff_min < 60:
+    print(
+        f"定刻 {hour.zfill(2)}:{minute.zfill(2)} UTC まで残り {diff_min:.0f} 分です"
+        f"（現在 {now:%H:%M} UTC）"
+    )
+GUARD
+)"
+  if [[ -n "${GUARD_MSG}" ]]; then
+    cat >&2 <<ERROR
+
+────────────────────────────────────────────────────────────────
+ 定刻に近すぎるので止めました。
+────────────────────────────────────────────────────────────────
+ ${GUARD_MSG}
+
+ この時間帯に移行を進めると、VercelとCloud Schedulerの
+ どちらも走らない（取りこぼし）か、両方走る（二重起動）ことがあります。
+ 定刻の前後1時間を外してからやり直してください。
+
+ どうしても今やる必要がある場合だけ:
+   SKIP_SCHEDULE_GUARD=1 bash scripts/cloud_run/manage_scheduler_job.sh ${ACTION} ${JOB_KEY}
+────────────────────────────────────────────────────────────────
+ERROR
+    exit 1
+  fi
+fi
+
 if [[ "${ACTION}" == "run" ]]; then
   STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   gcloud scheduler jobs run "${SCHEDULER_JOB}" \

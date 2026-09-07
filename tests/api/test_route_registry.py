@@ -31,6 +31,7 @@ _VERCEL_JSON = _REPO_ROOT / "vercel.json"
 # 実装されている全ルート（メソッド, パス）。増減させる場合はここも更新する。
 _EXPECTED_ROUTES = {
     ("GET", "/healthz"),
+    ("GET", "/api/healthz"),
     # --- 外部システムから叩かれるWebhook ---
     ("POST", "/api/webhooks/notion"),
     ("POST", "/api/webhooks/kintone"),

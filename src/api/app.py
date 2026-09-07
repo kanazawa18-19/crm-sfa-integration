@@ -134,9 +134,36 @@ app.add_middleware(
 )
 
 
+# ★ 健康確認の入口が2つある理由（2026-09-08）
+#
+#   Cloud Run では `/healthz` を叩いても Google のフロントエンドが横取りし、
+#   コンテナまで届かない（HTMLの404が返り、アクセスログも残らない）。
+#   アプリにルートが実在してもこうなる。パス単位の横取りで、認証とは無関係。
+#
+#   実測（crm-sfa-backend / us-east4、正規のIDトークン付き）:
+#       /healthz          404  GoogleのHTML            ← 届かない
+#       /healthz/         307  FastAPIのリダイレクト   ← 届く
+#       /healthzz         404  {"detail":"Not Found"}  ← 届く
+#       /nonexistent-abc  404  {"detail":"Not Found"}  ← 届く
+#       /openapi.json     200  FastAPI                 ← 届く
+#
+#   存在しない適当なパスは届くのに `/healthz` だけ届かないので、パス横取りと確定できる。
+#   そこで Cloud Run 用に `/api/healthz` を足した。`/healthz` は Vercel 側が
+#   使い続けられるよう残す（横取りするのは Google だけ）。中身は同じ。
+def _healthz_payload() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    """Vercel向け。Cloud Runでは Google に横取りされて届かない。"""
+    return _healthz_payload()
+
+
+@app.get("/api/healthz")
+def api_healthz() -> dict[str, str]:
+    """Cloud Run向け。`/healthz` と同じ内容を返す。"""
+    return _healthz_payload()
 
 
 

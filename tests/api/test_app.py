@@ -36,6 +36,19 @@ def test_healthz_returns_200_without_authentication(
     assert response.json() == {"status": "ok"}
 
 
+def test_api_healthz_returns_the_same_as_healthz(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cloud Run向けの `/api/healthz`。`/healthz` は Google に横取りされて届かない。"""
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_DASHBOARD_API", raising=False)
+
+    response = client.get("/api/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == client.get("/healthz").json()
+
+
 # --- 認証 -------------------------------------------------------------------------------------
 
 
