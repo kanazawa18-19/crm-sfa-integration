@@ -1,14 +1,14 @@
+# 本番（Vercel Python Functions / Cloud Runコンテナ）で実行するために必要な依存だけを書く。
+# テスト専用の依存は requirements-dev.txt へ分けた（2026-09-07、Cloud Run移行の第1段）。
+# コンテナイメージにpytest等を含めると、本番に不要なコードが載る上にイメージが太る。
+#
+# ★ ここに足す前に、src/ か api/ から実際に import されているか確認すること。
+#   2026-09-07に boto3 / python-dotenv を外した（全文検索で利用箇所0件）。
+#   httpx は fastapi.testclient が使うだけなので requirements-dev.txt へ移した。
 requests>=2.31
 google-auth>=2.35
 psycopg[binary]>=3.2
 cryptography>=42.0
-python-dotenv>=1.0
 pydantic>=2.6
-boto3>=1.34
 fastapi>=0.115
 uvicorn[standard]>=0.30
-httpx>=0.27
-pytest>=8.0
-pytest-mock>=3.12
-freezegun>=1.4
-requests-mock>=1.12

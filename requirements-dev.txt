@@ -1,0 +1,11 @@
+# ローカル開発・CIでのみ使う依存。本番の実行環境には入れない。
+-r requirements.txt
+
+pytest>=8.0
+pytest-mock>=3.12
+freezegun>=1.4
+requests-mock>=1.12
+
+# fastapi.testclient.TestClient が内部で使う（tests/ の3ファイルが利用）。
+# 本番コードからは import していないので、本番用には入れない。
+httpx>=0.27

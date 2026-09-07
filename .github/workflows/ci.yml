@@ -18,8 +18,32 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements-dev.txt
       - run: pytest -q
+
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    # Cloud Run へ出す前に、Dockerfile が壊れていないかを無料の場所で確かめる。
+    # これが無いと「最初にビルドが失敗する場所が、課金の発生する Cloud Build 上」になる。
+    # 押すのはビルドまで。イメージはどこへも push しない。
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t crm-sfa-backend:ci .
+      - name: 起動して /healthz が返るか確認
+        run: |
+          docker run -d --name smoke -p 8080:8080 crm-sfa-backend:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/healthz; then echo; echo "healthz OK"; exit 0; fi
+            sleep 1
+          done
+          echo "healthz が30秒返りませんでした。コンテナのログ:"
+          docker logs smoke
+          exit 1
+      - name: 後片付け
+        if: always()
+        run: docker rm -f smoke || true
 
   gas-tests:
     name: GAS tests

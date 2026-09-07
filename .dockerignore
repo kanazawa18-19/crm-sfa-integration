@@ -1,0 +1,26 @@
+# ★ このファイルと .gcloudignore は対です。片方だけ直すとズレます。
+#   .dockerignore  … イメージに入れないもの（COPY の対象を絞る）
+#   .gcloudignore  … Cloud Build へアップロードしないもの（転送量を減らす）
+#   .vercelignore  … 別物。Vercel 用なので揃える必要はありません。
+#
+# イメージに入れないもの。Dockerfile の COPY 対象を絞ってあるので保険だが、
+# ビルドコンテキストの転送量を減らす効果もある。
+.git/
+.github/
+.venv/
+.vercel/
+.claude/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+node_modules/
+dashboard/
+docs/
+gas/
+scripts/
+tests/
+migration_output/
+*.log
+.env*
+.DS_Store

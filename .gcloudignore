@@ -1,0 +1,30 @@
+# ★ このファイルと .gcloudignore は対です。片方だけ直すとズレます。
+#   .dockerignore  … イメージに入れないもの（COPY の対象を絞る）
+#   .gcloudignore  … Cloud Build へアップロードしないもの（転送量を減らす）
+#   .vercelignore  … 別物。Vercel 用なので揃える必要はありません。
+#
+# `gcloud run deploy --source .` が Cloud Build へアップロードする範囲を絞る。
+# .dockerignore はイメージのCOPY対象を絞るだけで、アップロード量には効かない。
+#
+# 先頭に `#!include:.gitignore` を書くとgitignoreも取り込めるが、
+# 何が上がるかを1ファイルで見える形にしたいので明示的に列挙する。
+.git/
+.github/
+.venv/
+.vercel/
+.claude/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+node_modules/
+dashboard/
+docs/
+gas/
+scripts/
+tests/
+migration_output/
+*.log
+*.xlsx
+.env*
+.DS_Store

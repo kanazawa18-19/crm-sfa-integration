@@ -56,7 +56,7 @@ gas/                Googleスプレッドシート側のGoogle Apps Script（onE
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # 本番用は requirements.txt（テスト依存を含まない）
 cp config/.env.example config/.env  # 各種APIキーを設定
 ```
 
