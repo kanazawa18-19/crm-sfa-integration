@@ -102,13 +102,44 @@ Homebrew が macOS 26 に未対応で壊れているため、公式tarballを `$
 **docker は要らない。** `gcloud run deploy --source .` はイメージを Cloud Build 側で
 作るので、手元にDockerを入れる必要はない。
 
+## 決まったこと（2026-09-07 夕方）
+
+```
+   GCPプロジェクト   fabled-electron-406310
+                    表示名は crm-sfa-integration-cloudrun に変えてある
+   リージョン        asia-northeast1（東京）
+   サービス名        crm-sfa-backend
+   課金アカウント     01EA6F-556121-34B9A6（紐づけ済み）
+```
+
+**★ 新規プロジェクトは作れなかった。** プロジェクト数が上限の30個に達していたため。
+削除はせず、**空だった既定プロジェクト（旧名 `My First Project`）を再利用した**。
+Cloud Run / Secret Manager / Compute のAPIが一度も有効化されておらず、中身が無いことを
+確認済み。APIを足すだけなので、他のプロジェクトやGASには影響しない。
+
+**シークレットの値の出どころ**（Vercelからは読み戻せないので手元のファイルから取った）
+
+| シークレット | 出どころ |
+|---|---|
+| `DATABASE_URL` | `dashboard/.env.local`（Neon pooled） |
+| `DATABASE_URL_UNPOOLED` | `dashboard/.env.local`（Neon 非pooled） |
+| `DASHBOARD_API_TOKEN` | `config/.env` |
+
+**★ `DASHBOARD_API_TOKEN` はローカルの値。本番と同じとは限らない。**
+第1段は「コンテナと `smoke_test.sh` が同じ値を見る」だけで成立するので支障は無いが、
+第2段以降で本番と揃える必要が出たら差し替えること。
+
+**★ Auto Mode は `gcloud run deploy` をブロックする**（`vercel --prod` と同じ扱い）。
+API有効化・シークレット登録・プロジェクト操作は通る。**止まるのはデプロイだけ**なので、
+そこだけ本人が `!` を付けて叩く。
+
 ## 第1段でやること（3コマンド）
 
 ```
-   ①  bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL
-       bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL_UNPOOLED
-       bash scripts/cloud_run/bootstrap_secrets.sh DASHBOARD_API_TOKEN
-                                    ▲ 値は画面に出ない。貼って Ctrl-D
+   ①  pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL
+       pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL_UNPOOLED
+       pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DASHBOARD_API_TOKEN
+                     ▲ 2026-09-07 に登録済み。やり直すときだけ実行する
 
    ②  bash scripts/cloud_run/deploy.sh --dry-run   ← 何が起きるか見る（何もしない）
        bash scripts/cloud_run/deploy.sh            ← 実行。yes と打つまで止まる
