@@ -43,12 +43,25 @@ esac
 SERVICE_ACCOUNT="${CLOUD_RUN_SERVICE}-sa"
 SA_EMAIL="${SERVICE_ACCOUNT}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
-# 第1段のDB診断3つと、第2段のCloud Scheduler認証に必要な値。
+# 第1段のDB診断3つと、第2段で最初に移すcron（token-encryption-healthcheck）が読む2つ。
 # 形式: <コンテナ内の環境変数名>=<Secret Manager のシークレット名>:<版>
+#
+# ★ CRON_SECRET は載せない（2026-09-08に撤回）。
+#   Cloud Schedulerからの呼び出しは Cloud Run IAM の OIDC で認証し、アプリ側は
+#   CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true のときだけ X-Cloud-Scheduler を受け付ける
+#   （src/api/auth.py の verify_cron_secret）。Schedulerは CRON_SECRET を送らないので、
+#   ここに置いても認証の足しにならない。しかもVercelの CRON_SECRET は Sensitive 指定で
+#   読み戻せないため、載せたままだと「取れない値」を待つだけデプロイが進まない。
+#   なお CRON_SECRET が無い状態でも、ヘッダーの無い呼び出しは 401 で閉じる（fail-closed）。
+#
+# ★ SLACK_WEBHOOK_URL_ALERT は「任意」ではない。
+#   未設定でも healthcheck は 200 を返すが、失敗したときの通知先が無くなるので、
+#   異常を検知しても誰にも届かない（このリポジトリが繰り返し踏んでいる無音の失敗）。
 SECRETS="DATABASE_URL=DATABASE_URL:latest"
 SECRETS="${SECRETS},DATABASE_URL_UNPOOLED=DATABASE_URL_UNPOOLED:latest"
 SECRETS="${SECRETS},DASHBOARD_API_TOKEN=DASHBOARD_API_TOKEN:latest"
-SECRETS="${SECRETS},CRON_SECRET=CRON_SECRET:latest"
+SECRETS="${SECRETS},TOKEN_ENCRYPTION_KEY=TOKEN_ENCRYPTION_KEY:latest"
+SECRETS="${SECRETS},SLACK_WEBHOOK_URL_ALERT=SLACK_WEBHOOK_URL_ALERT:latest"
 
 run() {
   echo "+ $*"

@@ -55,8 +55,32 @@ require_gcloud
 SCHEDULER_SA_NAME="${CLOUD_RUN_SERVICE}-scheduler"
 SCHEDULER_SA_EMAIL="${SCHEDULER_SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 SCHEDULER_JOB="${CLOUD_RUN_SERVICE}-${JOB_KEY}"
-SERVICE_URL="https://${CLOUD_RUN_SERVICE}-$(gcloud projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)').${GCP_REGION}.run.app"
-TARGET_URL="${SERVICE_URL}/api/cron/${PATH_SUFFIX}"
+# ★ URLは組み立てず、必ずgcloudに聞く（2026-09-08）。
+#   Cloud RunのURLには2つの形式があり、どちらが割り当てられるかは選べない。
+#     新形式  https://<サービス名>-<プロジェクト番号>.<リージョン>.run.app
+#     旧形式  https://<サービス名>-<ハッシュ>-<リージョン略号>.a.run.app  ← 本番はこちら
+#   実測（2026-09-08）:
+#     組み立て https://crm-sfa-backend-1052958139029.us-east4.run.app  ← 存在しない
+#     実際     https://crm-sfa-backend-gqk5cir6ea-uk.a.run.app
+#   組み立てた側は宛先ホストが実在しないうえ、--oidc-token-audience も食い違うため、
+#   createは通るのにrunだけが原因不明で失敗する（既に一度踏んだ404と同じ形）。
+SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+  --project="${GCP_PROJECT_ID}" \
+  --region="${GCP_REGION}" \
+  --format='value(status.url)' 2>/dev/null || true)"
+
+# URLが要るのは create（宛先とaudienceを固定する）だけ。plan / run / activate は
+# ジョブ名だけで動くので、未デプロイでも下見はできるようにしておく。
+if [[ -z "${SERVICE_URL}" && "${ACTION}" == "create" ]]; then
+  cat >&2 <<ERROR
+ERROR: Cloud Runサービス ${CLOUD_RUN_SERVICE} のURLを取得できませんでした。
+  ・まだデプロイしていない  → bash scripts/cloud_run/deploy.sh
+  ・リージョン違い          → scripts/cloud_run/config.sh の GCP_REGION=${GCP_REGION}
+ERROR
+  exit 1
+fi
+
+TARGET_URL="${SERVICE_URL:-（未デプロイのため不明）}/api/cron/${PATH_SUFFIX}"
 
 cat <<INFO
 ────────────────────────────────────────────────────────────────
@@ -77,6 +101,21 @@ if [[ "${ACTION}" == "plan" ]]; then
 
 1〜2で失敗した場合はVercel側を残したまま、Cloud Schedulerジョブを削除または修正する。
 PLAN
+
+  # ★ 1本目だけは手順3を飛ばす。詳しくは docs/cloud_run_migration_note.md の第2段。
+  if [[ "${JOB_KEY}" == "token-encryption-healthcheck" ]]; then
+    cat <<'KEEP'
+★ このジョブは手順3をやらない（Vercel側のcronを残す）。
+  診断しているのは「自分が動いている環境の TOKEN_ENCRYPTION_KEY」で、
+  鍵を実際に使うGmail連携・見積書承認はまだVercelにいる。Vercelのcronを消すと
+  Vercelの鍵を誰も見ていない状態になる。読み取りだけで副作用が無いので、
+  両方で走らせるのが正しい。Vercel側を落とすのはgmail-syncを移すとき。
+
+★ activate の前に、登録した鍵が本番と同じかを1回だけ確かめること。
+  自分で暗号化して自分で復号する往復なので、鍵が違っても緑になる。
+  手順は docs/cloud_run_migration_note.md の「登録した値と、まだ確かめていないこと」。
+KEEP
+  fi
   exit 0
 fi
 

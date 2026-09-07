@@ -142,8 +142,9 @@ API有効化・シークレット登録・プロジェクト操作は通る。**
    ①  pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL_UNPOOLED
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DASHBOARD_API_TOKEN
-       pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh CRON_SECRET
-                     ▲ 先頭3つは第1段で登録済み。CRON_SECRETは第2段へ進む前に追加する
+       pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh TOKEN_ENCRYPTION_KEY
+       pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh SLACK_WEBHOOK_URL_ALERT
+                     ▲ 5つとも登録済み（前3つ 09-07、後2つ 09-08）。作業は不要
 
    ②  bash scripts/cloud_run/deploy.sh --dry-run   ← 何が起きるか見る（何もしない）
        bash scripts/cloud_run/deploy.sh            ← 実行。yes と打つまで止まる
@@ -153,11 +154,11 @@ API有効化・シークレット登録・プロジェクト操作は通る。**
 
 | 目的 | 必要なシークレット |
 |---|---|
-| 第1段を再デプロイするだけ | 4つすべて（現在の`deploy.sh`の要件） |
-| 第2段へ進む | 上の4つに加え、Cloud Schedulerへ渡す値として`CRON_SECRET`を入力する |
+| 第1段のDB診断だけ | `DATABASE_URL` `DATABASE_URL_UNPOOLED` `DASHBOARD_API_TOKEN` |
+| 第2段の1本目まで | 上の3つ＋`TOKEN_ENCRYPTION_KEY` `SLACK_WEBHOOK_URL_ALERT` |
 
-先頭3つは2026-09-07に登録済み。`CRON_SECRET`は第2段へ進む前に追加する。
-現在の`deploy.sh`は4つすべてを要求するため、先に登録してから再デプロイする。
+**5つとも登録済み。追加の入力作業は無い。** `CRON_SECRET` は要らなくなった
+（理由は第2段の節）。
 
 ③で `"ok": ["postgres", "advisory_lock"]` が返れば第1段は合格。
 **確かめたいのは1点だけ：GCPからNeonへ、pooled と 非pooled の両方で届くか。**
@@ -183,6 +184,7 @@ Vercel の Sensitive 指定の環境変数は、画面もCLIもプレースホ�
 | `scripts/cloud_run/deploy.sh` | API有効化 → SA作成 → 権限付与 → デプロイ |
 | `scripts/cloud_run/smoke_test.sh` | `/openapi.json` の起動確認と DB到達の確認 |
 | `scripts/cloud_run/manage_scheduler_job.sh` | cronを1本ずつ作成・試運転する。Vercel停止前の順序を固定する |
+| `scripts/cloud_run/list_cron_env.py` | どのcronがどの環境変数を読むかを静的に棚卸しする |
 
 `requirements.txt` を分けたので、**CI（`.github/workflows/ci.yml`）は
 `requirements-dev.txt` を入れるように直してある。**
@@ -238,26 +240,129 @@ Cloud Runへの到達はScheduler専用サービスアカウントの`run.invoke
 **Vercelのcronを先に消してはいけない。** 移行対象を1本選び、Cloud Schedulerが実際に
 200を返したことを確認してから、同じpathだけをVercelから止める。
 
-**現在のCloud Runには第1段用の4つしか設定していない。** 各cronが使うNotion・Zoho・
-Gmail・Slack等の値はまだCloud Runへ渡していないので、現時点で9本の移行を実行しては
-いけない。対象cronごとに必要な環境変数を棚卸しし、Cloud Runで同じ値を参照できることを
-先に確認する。これはVercelのSensitive指定の値を読み戻せないため、発行元から値を取り直す
-本人作業を含む。
+**現在のCloud Runには第1段用の3つしか入っていない**（`crm-sfa-backend-00002-x7v`
+を実測。`CLOUD_RUN_SCHEDULER_AUTH_ENABLED` も付いていないので、**今のリビジョンに
+Schedulerから叩くと401になる**）。9本の移行はどれも再デプロイが前提。
+
+#### 9本が読む環境変数（2026-09-08 実測）
+
+各エンドポイントから到達するモジュールを辿って集めた「使いうる上限」。
+分岐で実際は読まないものも含む。
+
+| ジョブ名 | 個数 | 追加で要る値（第1段の3つを除く） |
+|---|---:|---|
+| `token-encryption-healthcheck` | 2 | `TOKEN_ENCRYPTION_KEY` `SLACK_WEBHOOK_URL_ALERT` |
+| `gmail-watch-renewal` | 4 | ＋`GOOGLE_OAUTH_CLIENT_ID` `..._SECRET` |
+| `zoho-webhook-renewal` | 5 | Zoho一式5つ（DB不要） |
+| `incident-digest` | 8 | ＋Notion・Slack Bot・`SYNC_SYSTEM_ID` |
+| `project-mirror-reconcile` | 10 | ＋`PROJECT_MIRROR_*` 2つ |
+| `relation-sync-reconcile` | 10 | ＋`RELATION_SYNC_*` 2つ |
+| `gmail-sync` | 14 | ＋Google OAuth・web-engagement webhook |
+| `daily-batch` | 15 | ＋Googleサービスアカウント・売上目標Notion |
+| `spreadsheet-outbox-drain` | 32 | kintone・Zoho・Sheets・IDマッピング全部 |
+
+再現するには `python3 scripts/cloud_run/list_cron_env.py`。
+
+#### 最初に移す1本は `token-encryption-healthcheck`
 
 ```
-  ① plan    何を移すか・時刻・URLを表示
-  ② create  停止状態のジョブを作成（定時実行はまだ始まらない）
-  ③ run     手動実行し、Cloud LoggingでHTTP 200を確認
-  ④ Vercel  vercel.jsonから同じpathだけを削除してデプロイ
-  ⑤ activate 定時実行を有効化し、次の実行が200になったことを確認
+   選んだ理由                        避けたかったこと
+   ─────────────────────────────    ─────────────────────────────
+   環境変数が2つで最少               32個を揃えないと動かない
+   DBに触らない                      移行の失敗とDB到達の失敗が混ざる
+   書き込みが1つも無い                二重実行で本番データが壊れる
+   （やるのは暗号化の往復だけ）        （Vercelと重なる瞬間が必ずある）
+```
+
+**★ ただしこの1本は、Vercel側を止めない。**
+このcronは「**自分が動いている環境の鍵**」を診断するもので、鍵を実際に使う
+Gmail連携・見積書承認はまだVercelにいる。Vercelのcronを消すと、
+**Vercelの鍵を誰も見ていない状態**になる。読み取りだけで副作用が無いので、
+両方で走らせるのが正しい姿。
+
+```
+   いま           Vercel cron ──▶ Vercelの鍵を診る          ✅
+   1本目のあと     Vercel cron ──▶ Vercelの鍵を診る          ✅ 残す
+                  Scheduler   ──▶ Cloud Runの鍵を診る       ✅ 追加
+   gmail-sync移行後 Vercel側を落とす（鍵を使う側が居なくなるので）
+```
+
+つまり1本目は「Scheduler → Cloud Run → IAM/OIDC の経路が通ることを、
+**壊れても何も失わない的で確かめる**」ための1本。Vercelから実際に剥がす
+最初の1本は、`gmail-watch-renewal` 以降で改めて選ぶ。
+
+#### ★ `CRON_SECRET` は要らなくなった（2026-09-08に撤回）
+
+`deploy.sh` が4つ目に要求していたが、外した。
+
+```
+   Scheduler ──OIDC(IAM)──▶ Cloud Run ──▶ X-Cloud-Scheduler: true
+                                           ＋ CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true
+                                           ＝ ここで認証が済んでいる
+   Scheduler は CRON_SECRET を送らない  → Cloud Run に置いても使われない
+```
+
+しかもVercelの `CRON_SECRET` はSensitive指定で読み戻せない。置いたままだと
+**取れない値を待つだけでデプロイが進まない。** 無い状態でもヘッダーの無い
+呼び出しは401で閉じる（`src/api/auth.py`）ので、緩めたことにはならない。
+
+#### 登録した値と、まだ確かめていないこと
+
+| シークレット | 出どころ | 状態 |
+|---|---|---|
+| `TOKEN_ENCRYPTION_KEY` | `dashboard/.env.local`（64桁hex） | 登録済み・**本番と同一かは未検証** |
+| `SLACK_WEBHOOK_URL_ALERT` | `config/.env`（hooks.slack.com） | 登録済み |
+
+**★ 鍵が本番と違っても、このヘルスチェックは緑になる。**
+やっているのは「自分で暗号化して自分で復号する」往復なので、**どんな正しい鍵でも
+通ってしまう**。本番と同じ鍵かどうかは、DBに入っている既存の暗号文が解けるかで
+しか分からない。**activate の前に1回だけ確かめること**（読み取りのみ）。
+
+```
+   cd ~/crm-sfa-integration && .venv/bin/python - <<'EOF'
+   import os, pathlib, sys; sys.path.insert(0, ".")
+   for l in pathlib.Path("dashboard/.env.local").read_text().splitlines():
+       if l.startswith(("DATABASE_URL=", "TOKEN_ENCRYPTION_KEY=")):
+           k, v = l.split("=", 1); os.environ[k] = v.strip().strip('"')
+   from src.gmail_sync.token_crypto import decrypt_token
+   import psycopg
+   with psycopg.connect(os.environ["DATABASE_URL"]) as c, c.cursor() as cur:
+       cur.execute('select "refreshTokenEnc" from "RepGmailConnection" limit 3')
+       for (enc,) in cur.fetchall():
+           try: decrypt_token(enc); print("復号OK")
+           except Exception as e: print("復号NG", type(e).__name__)
+   EOF
+```
+
+**「復号NG」が出たら、その鍵は本番の鍵ではない。** Vercelから読み戻せないので、
+dashboard側の発行元（`dashboard/lib/tokenCrypto.ts` を使っている環境）から
+取り直して `bootstrap_secrets.sh TOKEN_ENCRYPTION_KEY` で版を足し直す。
+
+```
+  ⓪ deploy   ★先に再デプロイ。今のリビジョンには
+             CLOUD_RUN_SCHEDULER_AUTH_ENABLED が無く、必ず401になる
+  ① plan     何を移すか・時刻・URLを表示
+  ② create   停止状態のジョブを作成（定時実行はまだ始まらない）
+  ③ run      手動実行し、Cloud LoggingでHTTP 200を確認
+  ④ Vercel   vercel.jsonから同じpathだけを削除してデプロイ
+             ← token-encryption-healthcheck だけは**やらない**（上記の理由）
+  ⑤ activate 定時実行を有効にし、次の実行が200になったことを確認
 ```
 
 ```
-  bash scripts/cloud_run/manage_scheduler_job.sh plan daily-batch
-  bash scripts/cloud_run/manage_scheduler_job.sh create daily-batch
-  bash scripts/cloud_run/manage_scheduler_job.sh run daily-batch
-  bash scripts/cloud_run/manage_scheduler_job.sh activate daily-batch
+  bash scripts/cloud_run/deploy.sh --dry-run
+  bash scripts/cloud_run/deploy.sh
+  bash scripts/cloud_run/manage_scheduler_job.sh plan   token-encryption-healthcheck
+  bash scripts/cloud_run/manage_scheduler_job.sh create token-encryption-healthcheck
+  bash scripts/cloud_run/manage_scheduler_job.sh run    token-encryption-healthcheck
+  bash scripts/cloud_run/manage_scheduler_job.sh activate token-encryption-healthcheck
 ```
+
+**★ 宛先URLは組み立てず、必ず `gcloud run services describe` に聞く**
+（2026-09-08に修正）。本番のURLは `crm-sfa-backend-gqk5cir6ea-uk.a.run.app` という
+旧形式で、プロジェクト番号から組み立てた
+`crm-sfa-backend-1052958139029.us-east4.run.app` は**存在しない**。
+組み立てたままだと `create` は通り、`run` だけが原因不明で失敗する。
 
 9本の対応表（時刻はすべてUTC、Vercelの設定をそのまま引き継ぐ）:
 
@@ -265,7 +370,7 @@ Gmail・Slack等の値はまだCloud Runへ渡していないので、現時点�
 |---|---|---:|---|
 | `daily-batch` | `/api/cron/daily-batch` | 10:00 | 未移行 |
 | `zoho-webhook-renewal` | `/api/cron/zoho-webhook-renewal` | 20:00 | 未移行 |
-| `token-encryption-healthcheck` | `/api/cron/token-encryption-healthcheck` | 01:00 | 未移行 |
+| `token-encryption-healthcheck` | `/api/cron/token-encryption-healthcheck` | 01:00 | **1本目（Vercelは残す）** |
 | `gmail-sync` | `/api/cron/gmail-sync` | 03:00 | 未移行 |
 | `gmail-watch-renewal` | `/api/cron/gmail-watch-renewal` | 02:00 | 未移行 |
 | `incident-digest` | `/api/cron/incident-digest` | 04:00 | 未移行 |

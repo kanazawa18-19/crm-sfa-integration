@@ -14,10 +14,14 @@
 #   画面にもシェル履歴にも ps にも残らない。
 #   手入力の場合もエコーは止めてあるが、クリップボード経由のほうが確実。
 #
-# 現在の deploy.sh（第2段対応版）が必要とするのは次の4つ:
-#   DATABASE_URL / DATABASE_URL_UNPOOLED / DASHBOARD_API_TOKEN / CRON_SECRET
-# 第1段のデプロイ時点では先頭3つだけだったが、現在版を再デプロイする場合は
-# Cloud Schedulerをまだ作らなくてもCRON_SECRETまで先に登録する。
+# 現在の deploy.sh（第2段対応版）が必要とするのは次の5つ:
+#   DATABASE_URL / DATABASE_URL_UNPOOLED / DASHBOARD_API_TOKEN
+#   TOKEN_ENCRYPTION_KEY / SLACK_WEBHOOK_URL_ALERT
+# 先頭3つは第1段で登録済み。後ろ2つは最初に移すcron
+# （token-encryption-healthcheck）が読む値で、2026-09-08に追加した。
+#
+# ★ CRON_SECRET は要らなくなった（2026-09-08）。Cloud SchedulerはOIDCで認証するため、
+#   Cloud Run側にVercelの合言葉を置く意味が無い。詳しくは deploy.sh のコメント。
 #
 # ★ Vercel 側の値は読み戻せない（Sensitive指定は画面もCLIもプレースホルダを返す）。
 #   Neonのダッシュボードなど、発行元から取り直すこと。
