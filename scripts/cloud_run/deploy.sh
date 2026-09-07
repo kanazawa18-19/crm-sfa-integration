@@ -103,6 +103,7 @@ run gcloud services enable \
   artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
   iamcredentials.googleapis.com \
+  cloudscheduler.googleapis.com \
   --project="${GCP_PROJECT_ID}"
 
 # --- 2. 専用サービスアカウント（無ければ作る） ----------------------------------
@@ -194,6 +195,7 @@ run gcloud run deploy "${CLOUD_RUN_SERVICE}" \
   --service-account="${SA_EMAIL}" \
   --no-allow-unauthenticated \
   --set-secrets="${SECRETS}" \
+  --set-env-vars="CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true" \
   --timeout=3600 \
   --memory=1Gi \
   --cpu=1 \

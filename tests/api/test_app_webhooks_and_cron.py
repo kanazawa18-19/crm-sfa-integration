@@ -790,6 +790,38 @@ def test_cron_daily_batch_rejects_wrong_cloud_scheduler_header(
     assert response.status_code == 401
 
 
+def test_cron_daily_batch_runs_with_cloud_run_scheduler_iam_mode(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cloud RunだけはIAM通過後のScheduler識別ヘッダーを受け付ける。"""
+    monkeypatch.setenv("CLOUD_RUN_SCHEDULER_AUTH_ENABLED", "true")
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setattr(
+        "src.api.routes.cron.run_report_batch",
+        lambda: {"date": "2026-08-11", "daily_report_sent": True, "weekly_report_sent": False},
+    )
+
+    response = client.get(
+        "/api/cron/daily-batch", headers={"X-Cloud-Scheduler": "true"}
+    )
+
+    assert response.status_code == 200
+
+
+def test_cron_daily_batch_rejects_scheduler_marker_outside_cloud_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Vercelで同じヘッダーを偽装しても通さない。"""
+    monkeypatch.delenv("CLOUD_RUN_SCHEDULER_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+
+    response = client.get(
+        "/api/cron/daily-batch", headers={"X-Cloud-Scheduler": "true"}
+    )
+
+    assert response.status_code == 401
+
+
 # --- /api/cron/zoho-webhook-renewal ---------------------------------------------------------
 
 

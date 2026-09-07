@@ -136,14 +136,14 @@ Cloud Run / Secret Manager / Compute のAPIが一度も有効化されておら�
 API有効化・シークレット登録・プロジェクト操作は通る。**止まるのはデプロイだけ**なので、
 そこだけ本人が `!` を付けて叩く。
 
-## 第1段でやること（3コマンド）
+## 第1段（完了済み）の再デプロイと、第2段の準備
 
 ```
    ①  pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DATABASE_URL_UNPOOLED
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh DASHBOARD_API_TOKEN
        pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh CRON_SECRET
-                     ▲ 先頭3つは登録済み。CRON_SECRETだけ第2段のデプロイ前に登録する
+                     ▲ 先頭3つは第1段で登録済み。CRON_SECRETは第2段へ進む前に追加する
 
    ②  bash scripts/cloud_run/deploy.sh --dry-run   ← 何が起きるか見る（何もしない）
        bash scripts/cloud_run/deploy.sh            ← 実行。yes と打つまで止まる
@@ -151,8 +151,13 @@ API有効化・シークレット登録・プロジェクト操作は通る。**
    ③  bash scripts/cloud_run/smoke_test.sh
 ```
 
-先頭3つは2026-09-07に登録済み。`CRON_SECRET`は第2段で追加するため未登録。
-現在の`deploy.sh`は4つすべてを要求するので、次の再デプロイ前に登録する。
+| 目的 | 必要なシークレット |
+|---|---|
+| 第1段を再デプロイするだけ | 4つすべて（現在の`deploy.sh`の要件） |
+| 第2段へ進む | 上の4つに加え、Cloud Schedulerへ渡す値として`CRON_SECRET`を入力する |
+
+先頭3つは2026-09-07に登録済み。`CRON_SECRET`は第2段へ進む前に追加する。
+現在の`deploy.sh`は4つすべてを要求するため、先に登録してから再デプロイする。
 
 ③で `"ok": ["postgres", "advisory_lock"]` が返れば第1段は合格。
 **確かめたいのは1点だけ：GCPからNeonへ、pooled と 非pooled の両方で届くか。**
@@ -177,6 +182,7 @@ Vercel の Sensitive 指定の環境変数は、画面もCLIもプレースホ�
 | `scripts/cloud_run/bootstrap_secrets.sh` | Secret Managerへ認証情報を登録 |
 | `scripts/cloud_run/deploy.sh` | API有効化 → SA作成 → 権限付与 → デプロイ |
 | `scripts/cloud_run/smoke_test.sh` | `/openapi.json` の起動確認と DB到達の確認 |
+| `scripts/cloud_run/manage_scheduler_job.sh` | cronを1本ずつ作成・試運転する。Vercel停止前の順序を固定する |
 
 `requirements.txt` を分けたので、**CI（`.github/workflows/ci.yml`）は
 `requirements-dev.txt` を入れるように直してある。**
@@ -210,35 +216,65 @@ Cloud RunのURLを発行先（audience）に明示する。本人アカウント
 
 #### Cloud Schedulerからの呼び出し
 
-**第2段の方式は2026-09-07に確定した。** Cloud Scheduler は OIDC トークンを
-`Authorization` に載せ、アプリ側の `CRON_SECRET` はカスタムヘッダー
-`X-Cron-Secret` に載せる。`verify_cron_secret`は次の両方を受け付けるため、1本ずつ移しても
-既存のVercel Cronを壊さない。
+Cloud SchedulerはCloud Run IAMのOIDC認証で呼出元を制限する。アプリ側はCloud Runにだけ
+`CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true`を置き、Schedulerが付ける
+`X-Cloud-Scheduler: true`を受け付ける。Vercel環境にはこの設定を置かないため、同じヘッダーを
+外部から偽装しても通らない。Vercel Cronは従来どおり`CRON_SECRET`を使い続ける。
 
 ```
    移行前  Authorization: Bearer <CRON_SECRET>  ← Vercel Cron
    移行後  Authorization: Bearer <Google OIDC>  ← Cloud Run IAM
-           X-Cron-Secret: <CRON_SECRET>          ← アプリ
+           X-Cloud-Scheduler: true               ← Cloud Run側だけが受理
 ```
 
-Cloud SchedulerはOIDCを有効にすると、カスタム設定した`Authorization`を上書きする。
-一方、任意のカスタムヘッダーは送れるため、専用ヘッダーへの分離が必要になる。
+Cloud SchedulerはOIDCを有効にすると、`Authorization`をGoogleのIDトークンに使う。
 出典: https://docs.cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs
 
-`CRON_SECRET`を廃止してCloud Run IAMだけに寄せる案は見送った。同じアプリをVercelでも
-動かす段階移行中であり、アプリ自身の認証を残した方が誤設定時にも二重の歯止めになるため。
+Cloud Schedulerのジョブ設定に秘密値を置かないため、閲覧権限から合言葉が漏れる経路もない。
+Cloud Runへの到達はScheduler専用サービスアカウントの`run.invoker`権限で制限する。
 
-第2段のデプロイ前に、Vercelと同じ`CRON_SECRET`をSecret Managerへ登録する。
-**現在の`deploy.sh`は第2段対応版なので、この登録後でなければ再デプロイできない。**
+### 第2段：cronを1本ずつ移す
+
+**Vercelのcronを先に消してはいけない。** 移行対象を1本選び、Cloud Schedulerが実際に
+200を返したことを確認してから、同じpathだけをVercelから止める。
+
+**現在のCloud Runには第1段用の4つしか設定していない。** 各cronが使うNotion・Zoho・
+Gmail・Slack等の値はまだCloud Runへ渡していないので、現時点で9本の移行を実行しては
+いけない。対象cronごとに必要な環境変数を棚卸しし、Cloud Runで同じ値を参照できることを
+先に確認する。これはVercelのSensitive指定の値を読み戻せないため、発行元から値を取り直す
+本人作業を含む。
 
 ```
-   pbpaste | bash scripts/cloud_run/bootstrap_secrets.sh CRON_SECRET
+  ① plan    何を移すか・時刻・URLを表示
+  ② create  停止状態のジョブを作成（定時実行はまだ始まらない）
+  ③ run     手動実行し、Cloud LoggingでHTTP 200を確認
+  ④ Vercel  vercel.jsonから同じpathだけを削除してデプロイ
+  ⑤ activate 定時実行を有効化し、次の実行が200になったことを確認
 ```
 
-Cloud Schedulerのジョブ設定には`X-Cron-Secret`の値が保存される。閲覧権限を持つ人からも
-隠す保管庫（Secret Manager）ではないため、SchedulerのIAM閲覧権限は必要最小限にする。
-値をコマンドラインへ直接書くとシェル履歴や`ps`に残るので、ジョブ作成スクリプトでは
-標準入力または一時ファイル経由で渡す。
+```
+  bash scripts/cloud_run/manage_scheduler_job.sh plan daily-batch
+  bash scripts/cloud_run/manage_scheduler_job.sh create daily-batch
+  bash scripts/cloud_run/manage_scheduler_job.sh run daily-batch
+  bash scripts/cloud_run/manage_scheduler_job.sh activate daily-batch
+```
+
+9本の対応表（時刻はすべてUTC、Vercelの設定をそのまま引き継ぐ）:
+
+| ジョブ名 | path | UTC | 状態 |
+|---|---|---:|---|
+| `daily-batch` | `/api/cron/daily-batch` | 10:00 | 未移行 |
+| `zoho-webhook-renewal` | `/api/cron/zoho-webhook-renewal` | 20:00 | 未移行 |
+| `token-encryption-healthcheck` | `/api/cron/token-encryption-healthcheck` | 01:00 | 未移行 |
+| `gmail-sync` | `/api/cron/gmail-sync` | 03:00 | 未移行 |
+| `gmail-watch-renewal` | `/api/cron/gmail-watch-renewal` | 02:00 | 未移行 |
+| `incident-digest` | `/api/cron/incident-digest` | 04:00 | 未移行 |
+| `project-mirror-reconcile` | `/api/cron/project-mirror-reconcile` | 18:00 | 未移行 |
+| `relation-sync-reconcile` | `/api/cron/relation-sync-reconcile` | 19:00 | 未移行 |
+| `spreadsheet-outbox-drain` | `/api/cron/spreadsheet-outbox-drain` | 17:00 | 未移行 |
+
+各cron入口はVercelまたはCloud Schedulerから呼ばれる。移行済みかどうかと、障害時に
+確認する実行履歴はこの表とCloud Schedulerのジョブ詳細を正本にする。
 
 ### 書き込めるのは /tmp だけ
 

@@ -35,17 +35,25 @@ def verify_dashboard_api_token(authorization: str | None = Header(default=None))
 def verify_cron_secret(
     authorization: str | None = Header(default=None),
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    x_cloud_scheduler: str | None = Header(default=None, alias="X-Cloud-Scheduler"),
 ) -> None:
     """Vercel CronまたはCloud Schedulerからの呼び出しを検証する依存性。
 
     Vercelは`CRON_SECRET`環境変数が設定されているプロジェクトに対し、Cron Jobからの
     リクエストへ自動的に`Authorization: Bearer $CRON_SECRET`ヘッダーを付与する
     （https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs）。
-    Cloud SchedulerのOIDC認証は`Authorization`をGoogleのIDトークンに使うため、
-    アプリの合言葉は専用の`X-Cron-Secret`ヘッダーで受け取る。段階移行中のVercel Cronは
-    従来どおり`Authorization: Bearer <CRON_SECRET>`を使える。どちらの経路でも
-    `CRON_SECRET`未設定時は401にする（fail-closed）。
+    Cloud SchedulerはCloud Run IAMで呼出元を認証する。Cloud Run専用に
+    `CLOUD_RUN_SCHEDULER_AUTH_ENABLED=true`を設定した場合だけ、Schedulerが付ける
+    `X-Cloud-Scheduler: true`を受け付ける。Vercel側で同じヘッダーを偽装しても、環境変数が
+    無いため通らない。段階移行中のVercel Cronは従来どおり
+    `Authorization: Bearer <CRON_SECRET>`を使える。
     """
+    if (
+        os.environ.get("CLOUD_RUN_SCHEDULER_AUTH_ENABLED", "").lower() == "true"
+        and x_cloud_scheduler == "true"
+    ):
+        return
+
     expected = os.environ.get("CRON_SECRET")
     if not expected:
         raise HTTPException(status_code=401, detail="unauthorized")
