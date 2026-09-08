@@ -97,16 +97,7 @@ def acquire_record_sync_lock(store: Any, db_key: str, notion_key: str) -> Iterat
             lock.release()
         return
 
-    url = os.environ.get('DATABASE_URL_UNPOOLED')
-    if not url:
-        raise RecordSyncConfigurationError('DATABASE_URL_UNPOOLED が必要です')
-    try:
-        host = conninfo_to_dict(url).get('host', '')
-    except Exception:
-        raise RecordSyncConfigurationError('同期用DB接続の形式が不正です') from None
-    if '-pooler' in host:
-        raise RecordSyncConfigurationError('同期用DB接続には直接接続が必要です')
-    conn = db_utils.connect_for_advisory_lock(logger)
+    conn = _connect_direct()
     key = lock_key(db_key, notion_key)
     acquired = False
     try:
@@ -120,4 +111,46 @@ def acquire_record_sync_lock(store: Any, db_key: str, notion_key: str) -> Iterat
         yield RecordSyncGuard(db_key, notion_key, conn=conn)
     finally:
         # 接続を閉じるとロックも解放される。例外時も接続を残さない。
+        conn.close()
+
+
+def _connect_direct() -> Any:
+    """環境変数の暗黙ホストを使わず、直接接続の設定を確認する。"""
+    url = os.environ.get('DATABASE_URL_UNPOOLED')
+    if not url:
+        raise RecordSyncConfigurationError('DATABASE_URL_UNPOOLED が必要です')
+    try:
+        host = conninfo_to_dict(url).get('host', '')
+    except Exception:
+        raise RecordSyncConfigurationError('同期用DB接続の形式が不正です') from None
+    if not host or any(not part for part in host.split(',')):
+        raise RecordSyncConfigurationError('同期用DB接続にはホストの明示が必要です')
+    if '-pooler' in host.lower():
+        raise RecordSyncConfigurationError('同期用DB接続には直接接続が必要です')
+    return db_utils.connect_for_advisory_lock(logger)
+
+
+def validate_record_sync_storage(store: Any) -> None:
+    """キューを取得する前に、共有する同期DBの必要条件を読み取りで検査する。"""
+    if isinstance(store, SQLiteIdMappingStore):
+        return
+    conn = _connect_direct()
+    try:
+        with conn.cursor() as cur:
+            # 実際の列を解決し、未配備やスキーマの不一致を先に検出する。
+            cur.execute(
+                'SELECT "dbKey", "notionKey", "acceptedAt", "completedAt" '
+                'FROM "RecordSyncWatermark" LIMIT 0'
+            )
+            cur.execute(
+                "SELECT has_table_privilege(%s, 'SELECT') "
+                "AND has_table_privilege(%s, 'INSERT') "
+                "AND has_table_privilege(%s, 'UPDATE') "
+                "AND current_setting('transaction_read_only') = 'off' AS ready",
+                ('"RecordSyncWatermark"',) * 3,
+            )
+            row = cur.fetchone()
+            if not row or not row['ready']:
+                raise RecordSyncConfigurationError('同期時刻テーブルの読み書き権限が必要です')
+    finally:
         conn.close()

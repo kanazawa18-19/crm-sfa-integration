@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, MutableMapping
 
 import requests
+import psycopg
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
@@ -41,7 +42,9 @@ from src.sync_engine.conflict_resolver import (
     resolve_conflict,
 )
 from src.sync_engine.id_mapping import DuplicateExternalIdError, IdMapping, IdMappingStore
-from src.sync_engine.record_sync_lock import RecordSyncGuard, acquire_record_sync_lock
+from src.sync_engine.record_sync_lock import (
+    RecordSyncBusy, RecordSyncConfigurationError, RecordSyncGuard, acquire_record_sync_lock,
+)
 from src.sync_engine.new_record_builder import build_notion_properties_for_new_record
 from src.sync_engine.slack_notifier import SlackNotifier
 from src.sync_engine.spreadsheet_outbox import (
@@ -935,6 +938,7 @@ class Dispatcher:
             with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
                 latest = self._store.get(new_notion_key)
                 watermark = guard.latest(latest.last_synced_at if latest else None)
+                # 登録した自身の時刻とは等しいため、新規行追加では厳密に古い時だけ除外する。
                 if latest is None or guard.rejects(event.occurred_at) or (
                     watermark is not None and event.occurred_at < watermark
                 ):
@@ -953,10 +957,20 @@ class Dispatcher:
                         )
                 else:
                     self._append_spreadsheet_row_for_created_record(event, latest, properties)
-        except Exception:
+        except Exception as exc:
+            # 例外本文は接続情報を含みうるので、固定の分類だけを記録する。
+            if isinstance(exc, RecordSyncBusy):
+                failure_kind = "record_sync_busy"
+            elif isinstance(exc, RecordSyncConfigurationError):
+                failure_kind = "record_sync_configuration"
+            elif isinstance(exc, psycopg.Error):
+                failure_kind = "record_sync_database"
+            else:
+                failure_kind = "record_sync_or_row_creation"
+            logger.warning("new record creation: 同期状態の確認または行追加に失敗 (%s)", failure_kind)
             # mapping登録済みなので新ページは作り直さず、既存の行作成再試行へ渡す。
             self._handle_new_record_row_not_created(
-                event, new_mapping, "同じレコードの同期中、または排他取得に失敗しました。",
+                event, new_mapping, "同期状態の確認または行追加に失敗しました。",
                 REASON_NEW_RECORD_ROW_WRITE_FAILED,
             )
         return DispatchResult(skipped=False)

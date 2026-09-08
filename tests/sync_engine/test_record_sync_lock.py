@@ -155,3 +155,44 @@ def test_outboxは同期中のレコードを差し戻して値を読まない(s
         )
     assert result == 'deferred'
     assert released == [dict(db_key=mapping.db_key, notion_key=mapping.notion_key, retry_after_minutes=1)]
+
+
+def test_環境変数のpooledホストを暗黙使用しない(monkeypatch):
+    monkeypatch.setenv('DATABASE_URL_UNPOOLED', 'dbname=example user=test')
+    monkeypatch.setenv('PGHOST', 'ep-example-pooler.example')
+    with pytest.raises(RecordSyncConfigurationError, match='ホストの明示'):
+        with acquire_record_sync_lock(object(), 'db', 'key'):
+            pytest.fail('暗黙ホストを使用してはいけない')
+
+
+@pytest.mark.parametrize('failure', ['missing_table', 'permissions'])
+def test_outbox共通設定不備ではキュー取得前に失敗する(monkeypatch, failure):
+    from unittest.mock import MagicMock
+    from src.sync_engine import record_sync_lock, spreadsheet_outbox_drain
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    if failure == 'missing_table':
+        cur.execute.side_effect = RuntimeError('テーブル未配備')
+    else:
+        cur.fetchone.return_value = {'ready': False}
+    monkeypatch.setattr(record_sync_lock, '_connect_direct', lambda: conn)
+    monkeypatch.setattr(spreadsheet_outbox_drain, 'spreadsheet_row_creation_enabled', lambda key: True)
+    claim = MagicMock()
+    monkeypatch.setattr(spreadsheet_outbox_drain.spreadsheet_outbox, 'claim_due', claim)
+    with pytest.raises((RecordSyncConfigurationError, RuntimeError)):
+        spreadsheet_outbox_drain.drain_spreadsheet_outbox(store=object())
+    claim.assert_not_called()
+    conn.close.assert_called_once()
+
+
+def test_事前検査は行を変更せず権限を確認する(monkeypatch):
+    from unittest.mock import MagicMock
+    from src.sync_engine import record_sync_lock
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = {'ready': True}
+    monkeypatch.setattr(record_sync_lock, '_connect_direct', lambda: conn)
+    record_sync_lock.validate_record_sync_storage(object())
+    assert len(cur.execute.call_args_list) == 2
+    assert all(call.args[0].startswith('SELECT ') for call in cur.execute.call_args_list)
+    conn.close.assert_called_once()

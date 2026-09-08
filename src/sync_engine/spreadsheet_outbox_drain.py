@@ -49,7 +49,9 @@ from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
 from src.sync_engine import spreadsheet_outbox
 from src.sync_engine.id_mapping import IdMappingStore
-from src.sync_engine.record_sync_lock import RecordSyncBusy, acquire_record_sync_lock
+from src.sync_engine.record_sync_lock import (
+    RecordSyncBusy, acquire_record_sync_lock, validate_record_sync_storage,
+)
 from src.sync_engine.production_wiring import (
     build_id_mapping_store,
     build_notion_clients_by_db,
@@ -106,9 +108,10 @@ def drain_spreadsheet_outbox(
             "claimed": 0,
         }
 
-    entries = spreadsheet_outbox.claim_due(db_keys=enabled_db_keys, limit=limit)
-
     store = store if store is not None else build_id_mapping_store()
+    # 共通設定の不備で全件の再試行回数を使い切らない。失敗時はキューに触れず終了する。
+    validate_record_sync_storage(store)
+    entries = spreadsheet_outbox.claim_due(db_keys=enabled_db_keys, limit=limit)
     notion_clients = notion_clients if notion_clients is not None else build_notion_clients_by_db()
     spreadsheet_targets = (
         spreadsheet_targets
