@@ -1,0 +1,33 @@
+{
+  "displayName": "crm-gmail-trial-check_missing",
+  "combiner": "OR",
+  "enabled": false,
+  "notificationChannels": [],
+  "userLabels": {
+    "purpose": "gmail-watch-trial"
+  },
+  "conditions": [
+    {
+      "displayName": "check_completed_missing",
+      "conditionAbsent": {
+        "filter": "metric.type=\"logging.googleapis.com/user/crm-gmail-trial-checks\" AND resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\"",
+        "duration": "600s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "600s",
+            "perSeriesAligner": "ALIGN_SUM",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "groupByFields": []
+          }
+        ]
+      }
+    }
+  ],
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "隔離検証の照合完了ログが途絶えています。業務更新の失敗や未実行を断定しないでください。業務処理の再runは禁止。初回の実データ到達が前提です。監視停止・復旧と通知到達の実検証が必要です。"
+  }
+}

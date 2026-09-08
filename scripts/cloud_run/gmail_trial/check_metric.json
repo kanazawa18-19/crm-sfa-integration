@@ -1,0 +1,10 @@
+{
+  "name": "crm-gmail-trial-checks",
+  "description": "隔離検証サービスの照合完了ログ件数。業務更新の成功件数ではない。",
+  "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\" AND jsonPayload.monitor_job=\"gmail-watch-trial-monitor\" AND jsonPayload.event=\"check_completed\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1"
+  }
+}

@@ -1,0 +1,137 @@
+[
+  {
+    "displayName": "crm-gmail-trial-business_failure",
+    "combiner": "OR",
+    "enabled": false,
+    "userLabels": {
+      "purpose": "gmail-watch-trial"
+    },
+    "conditions": [
+      {
+        "displayName": "business_failure",
+        "conditionMatchedLog": {
+          "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\" AND jsonPayload.job=\"gmail-watch-renewal\" AND jsonPayload.event=\"finished\" AND (jsonPayload.status=\"failed\" OR jsonPayload.status=\"partial_failure\" OR jsonPayload.status=\"interrupted\" OR jsonPayload.completed=false)"
+        }
+      }
+    ],
+    "alertStrategy": {
+      "notificationRateLimit": {
+        "period": "300s"
+      },
+      "autoClose": "1800s"
+    },
+    "documentation": {
+      "mimeType": "text/markdown",
+      "content": "Gmail隔離検証の通知です。本番の失敗通知ではありません。終了記録欠落は結果不明で、更新失敗や未実行の証拠ではありません。本文取得のための業務再runは禁止。HTTP500でも保存済みの場合があります。"
+    },
+    "notificationChannels": []
+  },
+  {
+    "displayName": "crm-gmail-trial-http_failure",
+    "combiner": "OR",
+    "enabled": false,
+    "userLabels": {
+      "purpose": "gmail-watch-trial"
+    },
+    "conditions": [
+      {
+        "displayName": "http_failure",
+        "conditionMatchedLog": {
+          "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\" AND log_id(\"run.googleapis.com/requests\") AND httpRequest.status>=500"
+        }
+      }
+    ],
+    "alertStrategy": {
+      "notificationRateLimit": {
+        "period": "300s"
+      },
+      "autoClose": "1800s"
+    },
+    "documentation": {
+      "mimeType": "text/markdown",
+      "content": "Gmail隔離検証の通知です。本番の失敗通知ではありません。終了記録欠落は結果不明で、更新失敗や未実行の証拠ではありません。本文取得のための業務再runは禁止。HTTP500でも保存済みの場合があります。"
+    },
+    "notificationChannels": []
+  },
+  {
+    "displayName": "crm-gmail-trial-missing_finish",
+    "combiner": "OR",
+    "enabled": false,
+    "userLabels": {
+      "purpose": "gmail-watch-trial"
+    },
+    "conditions": [
+      {
+        "displayName": "missing_finish",
+        "conditionMatchedLog": {
+          "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\" AND jsonPayload.monitor_job=\"gmail-watch-trial-monitor\" AND jsonPayload.event=\"missing_finish\""
+        }
+      }
+    ],
+    "alertStrategy": {
+      "notificationRateLimit": {
+        "period": "300s"
+      },
+      "autoClose": "1800s"
+    },
+    "documentation": {
+      "mimeType": "text/markdown",
+      "content": "Gmail隔離検証の通知です。本番の失敗通知ではありません。終了記録欠落は結果不明で、更新失敗や未実行の証拠ではありません。本文取得のための業務再runは禁止。HTTP500でも保存済みの場合があります。"
+    },
+    "notificationChannels": []
+  },
+  {
+    "displayName": "crm-gmail-trial-monitor_error",
+    "combiner": "OR",
+    "enabled": false,
+    "userLabels": {
+      "purpose": "gmail-watch-trial"
+    },
+    "conditions": [
+      {
+        "displayName": "monitor_error",
+        "conditionMatchedLog": {
+          "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\" AND jsonPayload.monitor_job=\"gmail-watch-trial-monitor\" AND jsonPayload.event=\"monitor_error\""
+        }
+      }
+    ],
+    "alertStrategy": {
+      "notificationRateLimit": {
+        "period": "300s"
+      },
+      "autoClose": "1800s"
+    },
+    "documentation": {
+      "mimeType": "text/markdown",
+      "content": "Gmail隔離検証の通知です。本番の失敗通知ではありません。終了記録欠落は結果不明で、更新失敗や未実行の証拠ではありません。本文取得のための業務再runは禁止。HTTP500でも保存済みの場合があります。"
+    },
+    "notificationChannels": []
+  },
+  {
+    "displayName": "crm-gmail-trial-arrival_unconfirmed",
+    "enabled": false,
+    "notificationChannels": [],
+    "combiner": "OR",
+    "userLabels": {
+      "purpose": "gmail-watch-trial"
+    },
+    "conditions": [
+      {
+        "displayName": "arrival_unconfirmed",
+        "conditionMatchedLog": {
+          "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"crm-gmail-watch-trial\" AND jsonPayload.monitor_job=\"gmail-watch-trial-monitor\" AND jsonPayload.event=\"check_completed\" AND jsonPayload.entry_count=0"
+        }
+      }
+    ],
+    "alertStrategy": {
+      "notificationRateLimit": {
+        "period": "300s"
+      },
+      "autoClose": "1800s"
+    },
+    "documentation": {
+      "mimeType": "text/markdown",
+      "content": "検証ログの検索が0件で、到達は未確認です。業務成功や未実行を意味しません。確認のための業務再runは禁止。"
+    }
+  }
+]
