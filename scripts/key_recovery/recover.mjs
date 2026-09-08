@@ -42,6 +42,15 @@ function run(cmd, args, opts = {}) {
   return r.stdout;
 }
 
+// ★ alias が実際にどのデプロイを指しているかを引く（2026-09-08 の失敗を受けて追加）。
+//   `vercel inspect <デプロイ>` の Aliases 欄はデプロイ側の記録で、実際の指し先と
+//   ずれることがある。判断は必ず「alias を inspect して出るデプロイID」で行う。
+//   空文字は「どのデプロイも指していない＝宙に浮いている」。
+function resolveAlias(aliasUrl) {
+  const out = spawnSync('vercel', ['inspect', aliasUrl], { cwd: DASHBOARD, encoding: 'utf8' });
+  return ((`${out.stdout}\n${out.stderr}`).match(/\bdpl_[A-Za-z0-9]+/) || [])[0] || '';
+}
+
 // vercel inspect の出力から id と alias を拾う
 function inspect(url) {
   const out = spawnSync('vercel', ['inspect', url], { cwd: DASHBOARD, encoding: 'utf8' });
@@ -52,6 +61,9 @@ function inspect(url) {
 }
 
 let tmp = null;
+let primaryAlias = null;
+let aliasesToRestore = [];
+let beforeId = null;
 let createdUrl = null;
 let secret = null;
 
@@ -66,8 +78,13 @@ try {
   const before = inspect(prodUrl);
   before.id || die('現在の本番デプロイIDを取得できません');
   before.aliases.length || die('現在のaliasを取得できません');
+  beforeId = before.id;
   say(1, `いまの本番 ${before.id}`);
-  before.aliases.forEach((a) => say(1, `  alias ${a}`));
+  for (const a of before.aliases) say(1, `  alias ${a} → ${resolveAlias(a) || '(なし)'}`);
+  // 主ドメイン = 一番短いalias。ここだけは絶対に動かさない。
+  primaryAlias = [...before.aliases].sort((x, y) => x.length - y.length)[0];
+  say(1, `主ドメイン ${primaryAlias}（これが動いたら中止する）`);
+  aliasesToRestore = before.aliases;
 
   // ── 2. 回収用の鍵をメモリ上に作る ───────────────────────────
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 3072 });
@@ -95,14 +112,20 @@ try {
   say(4, `作成 ${createdUrl}`);
 
   // ── 5. 本番が動いていないことを確かめる ──────────────────────
-  const after = inspect(prodUrl);
-  if (after.id !== before.id) die(`本番デプロイIDが変わりました: ${before.id} → ${after.id}`);
-  const lost = before.aliases.filter((a) => !after.aliases.includes(a));
-  if (lost.length) die(`aliasが外れました: ${lost.join(', ')}`);
-  const mine = inspect(createdUrl);
-  const stolen = mine.aliases.filter((a) => before.aliases.includes(a));
-  if (stolen.length) die(`新しいデプロイが本番aliasを取りました: ${stolen.join(', ')}`);
-  say(5, '本番デプロイIDとaliasは元のまま。新デプロイは本番ドメインを持っていない');
+  // ★ --skip-domain が守るのは主ドメインだけ（2026-09-08 実測）。
+  //   チーム用の <プロジェクト>-<チーム>.vercel.app は、それでも新しい本番デプロイへ移る。
+  //   なので「主ドメインが動いたら中止」「チーム別名は移る前提で最後に戻す」に分ける。
+  //   前回はここで中止したせいで、削除後に別名が宙に浮いた（404）。
+  const primaryNow = resolveAlias(primaryAlias);
+  if (primaryNow !== before.id) {
+    die(`主ドメインが動きました: ${primaryAlias} → ${primaryNow || '(なし)'}。回収せず中止`);
+  }
+  say(5, `主ドメインは元のまま ${primaryAlias} → ${before.id}`);
+  for (const a of before.aliases) {
+    if (a === primaryAlias) continue;
+    const now = resolveAlias(a);
+    if (now !== before.id) say(5, `  ${a} は一時的に移りました（最後に戻します）`);
+  }
 
   const anon = await fetch(`${createdUrl}/recovery.json`, { redirect: 'manual' });
   if (anon.status === 200) die(`未認証で開けてしまいます (HTTP ${anon.status})。回収せず中止`);
@@ -152,4 +175,19 @@ try {
       : `★手で消してください: vercel remove ${createdUrl} --yes`);
   }
   if (tmp) { rmSync(tmp, { recursive: true, force: true }); say(9, '仮置き場を削除'); }
+
+  // ★ 別名を元のデプロイへ戻す（2026-09-08 の失敗の再発防止）。
+  //   デプロイを消すと、そこへ移っていた別名は宙に浮いて404になる。
+  //   実際に指し先がずれているものだけを、控えておいた元のデプロイへ張り直す。
+  if (beforeId && aliasesToRestore.length) {
+    for (const a of aliasesToRestore) {
+      const host = a.replace(/^https?:\/\//, '');
+      if (resolveAlias(a) === beforeId) continue;
+      const r = spawnSync('vercel', ['alias', 'set', beforeId, host],
+        { cwd: DASHBOARD, encoding: 'utf8' });
+      const fixed = resolveAlias(a) === beforeId;
+      say(9, fixed ? `別名を戻しました ${host} → ${beforeId}`
+        : `★手で戻してください: vercel alias set ${beforeId} ${host}\n    ${(r.stderr || '').trim().slice(-200)}`);
+    }
+  }
 }
