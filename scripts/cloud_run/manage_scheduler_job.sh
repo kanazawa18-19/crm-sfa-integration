@@ -16,8 +16,8 @@ source "${SCRIPT_DIR}/config.sh"
 
 ACTION="${1:-}"
 JOB_KEY="${2:-}"
-ALLOW_BUSINESS_WRITES="${3:-}"
-if [[ $# -gt 3 || ( -n "${ALLOW_BUSINESS_WRITES}" && ( "${ACTION}" != "run" || "${ALLOW_BUSINESS_WRITES}" != "--allow-business-writes" ) ) ]]; then
+CONFIRMATION="${3:-}"
+if [[ $# -gt 3 || ( -n "${CONFIRMATION}" && ( ( "${ACTION}" != "run" || "${CONFIRMATION}" != "--allow-business-writes" ) && ( "${ACTION}" != "activate" || "${CONFIRMATION}" != "--confirm-vercel-cron-removed" ) ) ) ]]; then
   echo "ERROR: 不明な引数です。" >&2
   exit 1
 fi
@@ -28,7 +28,7 @@ usage() {
   bash scripts/cloud_run/manage_scheduler_job.sh plan <ジョブ名>
   bash scripts/cloud_run/manage_scheduler_job.sh create <ジョブ名>
   bash scripts/cloud_run/manage_scheduler_job.sh run <ジョブ名> [--allow-business-writes]
-  bash scripts/cloud_run/manage_scheduler_job.sh activate <ジョブ名>
+  bash scripts/cloud_run/manage_scheduler_job.sh activate <ジョブ名> [--confirm-vercel-cron-removed]
 
 ジョブ名:
   daily-batch / zoho-webhook-renewal / token-encryption-healthcheck
@@ -196,20 +196,22 @@ SAFE_DATE
 
 scheduler() {
   gcloud scheduler jobs "$@" "${SCHEDULER_JOB}" \
-    --project="${GCP_PROJECT_ID}" --location="${GCP_REGION}"
+    --project="${GCP_PROJECT_ID}" --location="${GCP_REGION}" --quiet
 }
 
 # 現在の設定が移行用の停止ジョブと完全に一致する場合だけ操作する。
-if [[ "${ACTION}" == "run" || "${ACTION}" == "activate" ]]; then
-  JOB_JSON="$(scheduler describe --format=json)"
+validate_job() {
+  local expected_state="$1" expected_schedule="$2" JOB_JSON
+  JOB_JSON="$(scheduler describe --format=json)" || return 1
   printf '%s' "${JOB_JSON}" | python3 -c '
 import json, sys
 job = json.load(sys.stdin)
-target, audience, account = sys.argv[1:]
+target, audience, account, state, schedule = sys.argv[1:]
 http = job.get("httpTarget", {})
 expected = {
-    "state": (job.get("state"), "PAUSED"),
-    "schedule": (job.get("schedule"), "0 0 29 2 *"),
+    "state": (job.get("state") in ("PAUSED", "ENABLED"), True) if state == "CREATE_RECOVERY" else (job.get("state"), state),
+    "schedule": (job.get("schedule"), schedule),
+    "attemptDeadline": (job.get("attemptDeadline"), "1800s"),
     "timeZone": (job.get("timeZone"), "Etc/UTC"),
     "uri": (http.get("uri"), target),
     "httpMethod": (http.get("httpMethod"), "GET"),
@@ -220,37 +222,86 @@ expected = {
     "maxRetryDuration": (job.get("retryConfig", {}).get("maxRetryDuration", "0s"), "0s"),
 }
 errors = [key for key, (actual, required) in expected.items() if actual != required]
+# 自動付与される標準ヘッダーと移行用マーカー以外は拒否する。値は出力しない。
+allowed_headers = {"x-cloud-scheduler", "x-cloudscheduler", "x-cloudscheduler-jobname", "x-cloudscheduler-scheduletime", "user-agent", "host", "content-length"}
+errors.extend("header:" + key for key in http.get("headers", {}) if key.lower() not in allowed_headers)
 if http.get("body") or http.get("oauthToken"):
     errors.append("body/oauthToken")
 if errors:
-    sys.exit("ERROR: 移行用停止ジョブの設定と不一致: " + ", ".join(errors))
-' "${TARGET_URL}" "${SERVICE_URL}" "${SCHEDULER_SA_EMAIL}"
+    sys.exit("ERROR: 期待するジョブの設定と不一致: " + ", ".join(errors))
+' "${TARGET_URL}" "${SERVICE_URL}" "${SCHEDULER_SA_EMAIL}" "${expected_state}" "${expected_schedule}"
+}
+
+
+if [[ "${ACTION}" == "run" || "${ACTION}" == "activate" ]]; then
+  validate_job PAUSED "0 0 29 2 *"
 fi
 
-if [[ "${ACTION}" == "run" ]]; then
-  if [[ "${JOB_KEY}" != "token-encryption-healthcheck" && "${ALLOW_BUSINESS_WRITES}" != "--allow-business-writes" ]]; then
-    echo "ERROR: 本番書き込みを伴います。影響確認と実行許可の後に --allow-business-writes を指定してください（フラグは許可の代わりではありません）。" >&2
-    exit 1
+pause_recovery() {
+  echo "手動復旧: gcloud scheduler jobs pause '${SCHEDULER_JOB}' --project='${GCP_PROJECT_ID}' --location='${GCP_REGION}'" >&2
+}
+create_readonly_recovery() {
+  echo "ERROR: 作成対象と一致する仮日程ジョブか確認できないため、停止操作は行いません。" >&2
+  echo "読取診断: gcloud scheduler jobs describe '${SCHEDULER_JOB}' --project='${GCP_PROJECT_ID}' --location='${GCP_REGION}' --format='yaml(state,schedule,timeZone,httpTarget.uri,httpTarget.httpMethod,httpTarget.oidcToken.audience,httpTarget.oidcToken.serviceAccountEmail)'" >&2
+}
+cleanup_interrupted() {
+  echo "ERROR: 停止確認が中断されました。状態は未確認です。" >&2
+  if [[ "${ACTION}" == "create" && "${CREATE_RECOVERY_VERIFIED:-}" != "1" ]]; then
+    create_readonly_recovery
+  else
+    pause_recovery
   fi
-  cleanup() {
-    local result=$? stopped
-    trap - EXIT
-    trap '' INT TERM
-    if ! scheduler pause; then
-      echo "ERROR: 停止要求が失敗しました。" >&2
-      result=1
+  if [[ -n "${CLEANUP_STATE_FILE:-}" ]]; then rm -f "${CLEANUP_STATE_FILE}"; fi
+  exit 1
+}
+cleanup() {
+  local result=$? stopped pause_failed=0
+  trap - EXIT
+  trap cleanup_interrupted INT TERM
+  if [[ "${ACTION}" == "create" ]]; then
+    # 作成と同時に別の操作者が既存ジョブを置いた可能性もある。実行先と仮日程を再照合する。
+    validate_job CREATE_RECOVERY "0 0 29 2 *" &
+    if ! wait "$!"; then
+      create_readonly_recovery
+      exit 1
     fi
-    stopped="$(scheduler describe --format='value(state)')" || stopped="不明"
-    if [[ "${stopped}" != "PAUSED" || ${result} -ne 0 ]]; then
-      echo "ERROR: 手動実行または停止処理に失敗しました。現在状態: ${stopped}" >&2
-      echo "手動復旧: gcloud scheduler jobs pause '${SCHEDULER_JOB}' --project='${GCP_PROJECT_ID}' --location='${GCP_REGION}'" >&2
-      result=1
+    CREATE_RECOVERY_VERIFIED=1
+  fi
+  # バックグラウンド＋waitにすることで、停止コマンド待ち中も中断を処理できる。
+  scheduler pause &
+  if ! wait "$!"; then
+    echo "ERROR: 停止要求が失敗しました。" >&2
+    pause_failed=1
+  fi
+  CLEANUP_STATE_FILE="$(mktemp)"
+  scheduler describe --format='value(state)' >"${CLEANUP_STATE_FILE}" &
+  if wait "$!"; then stopped="$(cat "${CLEANUP_STATE_FILE}")"; else stopped="不明"; fi
+  rm -f "${CLEANUP_STATE_FILE}"
+  CLEANUP_STATE_FILE=""
+  if [[ "${stopped}" != "PAUSED" ]]; then
+    echo "ERROR: 停止を確認できません。現在状態: ${stopped}" >&2
+    pause_recovery
+    result=1
+  else
+    echo "停止状態PAUSEDを確認しました。進行中の処理はキャンセルされません。" >&2
+    if [[ ${result} -ne 0 ]]; then
+      echo "ERROR: ${ACTION}が失敗・中断しました。停止済みですが業務実行の有無は未確認です。再実行前にログを確認してください。" >&2
     fi
-    exit "${result}"
-  }
+  fi
+  if [[ ${pause_failed} -ne 0 ]]; then result=1; fi
+  exit "${result}"
+}
+register_cleanup() {
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+}
+if [[ "${ACTION}" == "run" ]]; then
+  if [[ "${JOB_KEY}" != "token-encryption-healthcheck" && "${CONFIRMATION}" != "--allow-business-writes" ]]; then
+    echo "ERROR: 本番書き込みを伴います。影響確認と実行許可の後に --allow-business-writes を指定してください（フラグは許可の代わりではありません）。" >&2
+    exit 1
+  fi
+  register_cleanup
   STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "実行後のpauseは処理をキャンセルしません。失敗・中断後の再runも二重実行になり得るため、実行ログと業務結果を先に確認してください。" >&2
   scheduler resume
@@ -260,15 +311,21 @@ if [[ "${ACTION}" == "run" ]]; then
   echo "次のコマンドは ${STARTED_AT} 以降のHTTP状態だけを表示します。応答本文は取得しません。"
   echo "業務結果の照合は docs/cloud_scheduler_trial.md に従ってください。本文を取るための再runは行わないでください。"
   echo "gcloud logging read 'resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${CLOUD_RUN_SERVICE}\" AND httpRequest.requestUrl:\"/api/cron/${PATH_SUFFIX}\" AND timestamp>=\"${STARTED_AT}\"' --project=\"${GCP_PROJECT_ID}\" --limit=10 --format='table(timestamp,httpRequest.status)'"
+  echo "Scheduler側の要求受付・終了ログも確認してください:"
+  echo "gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${SCHEDULER_JOB}\" AND timestamp>=\"${STARTED_AT}\"' --project=\"${GCP_PROJECT_ID}\" --limit=20 --format='table(timestamp,jsonPayload.@type,jsonPayload.status)'"
   exit 0
 fi
 
 if [[ "${ACTION}" == "activate" ]]; then
-  gcloud scheduler jobs update http "${SCHEDULER_JOB}" \
+  if [[ "${JOB_KEY}" != "token-encryption-healthcheck" && "${CONFIRMATION}" != "--confirm-vercel-cron-removed" ]]; then
+    echo "ERROR: 旧cron停止の確認後、--confirm-vercel-cron-removed を指定してください。フラグは本番移行の許可の代わりではありません。" >&2
+    exit 1
+  fi
+  gcloud scheduler jobs update http "${SCHEDULER_JOB}" --quiet \
     --project="${GCP_PROJECT_ID}" --location="${GCP_REGION}" \
     --schedule="${SCHEDULE}" --time-zone="Etc/UTC"
-  if ! scheduler resume; then
-    echo "ERROR: 本日程への更新後、有効化に失敗しました。日程は自動で戻しません。" >&2
+  if ! scheduler resume || ! validate_job ENABLED "${SCHEDULE}"; then
+    echo "ERROR: 本日程への更新後、有効状態と設定を確認できませんでした。日程は自動で戻しません。" >&2
     echo "現在の状態と日程:" >&2
     scheduler describe --format='yaml(state,schedule,timeZone,httpTarget.uri,httpTarget.httpMethod,httpTarget.oidcToken.audience,httpTarget.oidcToken.serviceAccountEmail)' >&2 || \
       echo "ERROR: 現在の設定を取得できませんでした。認証・権限を確認してください。" >&2
@@ -280,8 +337,15 @@ if [[ "${ACTION}" == "activate" ]]; then
   exit 0
 fi
 
-if gcloud scheduler jobs describe "${SCHEDULER_JOB}" \
-    --project="${GCP_PROJECT_ID}" --location="${GCP_REGION}" >/dev/null 2>&1; then
+# 存在確認の失敗を「存在しない」と解釈しない。完全名で絞った一覧取得の成功が必須。
+if ! EXISTING_JOBS="$(gcloud scheduler jobs list \
+    --project="${GCP_PROJECT_ID}" --location="${GCP_REGION}" --quiet \
+    --filter="name=projects/${GCP_PROJECT_ID}/locations/${GCP_REGION}/jobs/${SCHEDULER_JOB}" \
+    --format='value(name)')"; then
+  echo "ERROR: ジョブの存在確認に失敗しました。作成・停止は行いません。" >&2
+  exit 1
+fi
+if [[ -n "${EXISTING_JOBS}" ]]; then
   echo "ERROR: ${SCHEDULER_JOB} は既にあります。設定を上書きせず停止しました。" >&2
   exit 1
 fi
@@ -300,7 +364,9 @@ gcloud run services add-iam-policy-binding "${CLOUD_RUN_SERVICE}" \
   --member="serviceAccount:${SCHEDULER_SA_EMAIL}" \
   --role="roles/run.invoker"
 
-gcloud scheduler jobs create http "${SCHEDULER_JOB}" \
+# 通信失敗でも作成済みの可能性があるため、要求前から停止復旧を登録する。
+register_cleanup
+if ! gcloud scheduler jobs create http "${SCHEDULER_JOB}" --quiet \
   --project="${GCP_PROJECT_ID}" \
   --location="${GCP_REGION}" \
   --schedule="0 0 29 2 *" \
@@ -312,10 +378,11 @@ gcloud scheduler jobs create http "${SCHEDULER_JOB}" \
   --max-retry-duration=0s \
   --oidc-service-account-email="${SCHEDULER_SA_EMAIL}" \
   --oidc-token-audience="${SERVICE_URL}" \
-  --headers="X-Cloud-Scheduler=true"
+  --headers="X-Cloud-Scheduler=true"; then
+  echo "ERROR: create要求が失敗しました。通信結果不明の場合は作成済みの可能性があるため、停止と状態確認を試みます。" >&2
+  exit 1
+fi
 
-gcloud scheduler jobs pause "${SCHEDULER_JOB}" \
-  --project="${GCP_PROJECT_ID}" --location="${GCP_REGION}"
-
-echo "停止状態で作成しました。業務ジョブの試運転は影響確認・実行許可と --allow-business-writes が必要です。"
-echo "次に 'bash scripts/cloud_run/manage_scheduler_job.sh run ${JOB_KEY}' を実行します。HTTP状態と業務結果の照合は docs/cloud_scheduler_trial.md を参照してください。"
+echo "作成要求が完了しました。終了時に停止と状態確認を行います。"
+echo "業務ジョブの試運転は影響確認・実行許可と --allow-business-writes が必要です。"
+echo "次の試運転と業務結果の照合は docs/cloud_scheduler_trial.md を参照してください。"
