@@ -148,7 +148,7 @@ def run_incident_digest_cron() -> dict[str, Any]:
     (`src/incident_detection/`)の中優先度日次ダイジェスト配信エントリポイント(2026-08-16)。
 
     高優先度(スコア8点以上)は`src/gmail_sync/sync.py`側で受信メール記録時に即座に
-    Slack通知される。このcronは中優先度(4〜7点)を直近24時間分まとめて1通で配信する。
+    Slack通知される。このcronは中優先度(4〜7点)の未送信分を最大50件まとめて1通で配信する。
     """
     return run_incident_digest()
 

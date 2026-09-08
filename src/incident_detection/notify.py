@@ -9,8 +9,8 @@
 (`src/email_reminders/slack_notify.py`と同じ再利用方針)。使うのは既存の`SLACK_BOT_TOKEN`
 (meeting_sync/email_remindersと同じ環境変数)。新規env変数は無い。
 
-中優先度の日次ダイジェスト(`run_incident_digest()`)は今回変更しない(既存の
-`SLACK_WEBHOOK_URL_ALERT`チャンネルのまま、合意済み)。
+中優先度の日次ダイジェスト(`run_incident_digest()`)は既存の
+`SLACK_WEBHOOK_URL_ALERT`チャンネルへ送り、Slack受理後に送信済みを確定する。
 
 `SLACK_BOT_TOKEN`未設定・`isManager`のユーザーが0人・`find_manager_emails()`自体の失敗
 (DB接続エラー等)のいずれの場合も何もせず静かにreturnする(`gmail_sync/notify.py`の
@@ -114,35 +114,57 @@ def notify_managers_immediate(
             )
 
 
-def run_incident_digest() -> dict[str, int]:
-    """`incidentPriority`が"medium"で、まだダイジェスト未送信(`digestedAt IS NULL`)の
-    EmailLogをまとめて1通のSlackメッセージで送る日次ダイジェスト(`GET /api/cron/incident-digest`
-    から呼ばれる想定)。0件ならSlack送信自体をスキップする。
+class IncidentDigestDeliveryError(RuntimeError):
+    """通知先URLやHTTP応答本文を含めない、日次通知の失敗。"""
 
-    `db.claim_undigested_medium_priority_emails()`が対象行の`digestedAt`をアトミックに
-    埋めてから返すため、以前の相対時刻ウィンドウ方式と異なりCronの実行タイミングのズレ・
-    多重起動があっても二重送信/取りこぼしが起きない(shirokuma-secレビューWARN対応、
-    2026-08-16、詳細は`db.claim_undigested_medium_priority_emails()`のdocstring参照)。
+
+def _digest_field(value: object, limit: int = 160) -> str:
+    """通知の長さと改行を制限し、Slackの特殊文字をエスケープする。"""
+    text = " ".join(str(value).split())
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if len(escaped) > limit:
+        escaped = escaped[:limit]
+        # 切断位置に掛かった文字参照だけ除く。完結した&amp;等は保持する。
+        if escaped.rfind("&") > escaped.rfind(";"):
+            escaped = escaped[:escaped.rfind("&")]
+        escaped += "…"
+    return escaped
+
+
+def run_incident_digest() -> dict[str, int | bool]:
+    """最大50件を通知し、Slack受理後にだけ送信済みを確定する。
+
+    未設定・送信失敗はcronへ例外を返す。残りは次回実行に持ち越す。
     """
-    rows = db.claim_undigested_medium_priority_emails()
-    if not rows:
-        return {"count": 0}
-
-    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
+    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT", "").strip()
     if not url:
-        return {"count": len(rows)}
+        raise IncidentDigestDeliveryError("日次通知のSlack通知先が未設定です")
 
-    lines = [f"[インシデント検知 日次ダイジェスト] 中優先度 {len(rows)}件"]
-    for row in rows:
-        lines.append(
-            f"・{row['contactEmail']}(担当: {row['repEmail']}) "
-            f"スコア: {row['incidentScore']} 件名: {row.get('subject') or '(件名なし)'}"
-        )
-    text = "\n".join(lines)
+    with db.claim_undigested_medium_priority_emails() as rows:
+        if not rows:
+            return {"count": 0, "batch_limit_reached": False}
+        lines = [f"[インシデント検知 日次ダイジェスト] 中優先度 {len(rows)}件"]
+        for row in rows:
+            lines.append(
+                f"・{_digest_field(row['contactEmail'], 80)}"
+                f"(担当: {_digest_field(row['repEmail'], 80)}) "
+                f"スコア: {_digest_field(row['incidentScore'], 8)} "
+                f"件名: {_digest_field(row.get('subject') or '(件名なし)', 120)}"
+            )
+        batch_limit_reached = len(rows) >= db.DIGEST_BATCH_SIZE
+        if batch_limit_reached:
+            lines.append(
+                "今回の上限50件に達しました。未通知分が残っている可能性があり、次回へ持ち越します"
+            )
+        try:
+            response = requests.post(
+                url, json={"text": "\n".join(lines)},
+                timeout=_REQUEST_TIMEOUT_SECONDS, allow_redirects=False,
+            )
+        except Exception:
+            # requestsの例外は秘密のWebhook URLを含むため連鎖させない。
+            raise IncidentDigestDeliveryError("日次通知のSlack通信に失敗しました") from None
+        if response.status_code != 200 or response.text.strip() != "ok":
+            raise IncidentDigestDeliveryError("日次通知がSlackに受理されませんでした")
 
-    try:
-        requests.post(url, json={"text": text}, timeout=_REQUEST_TIMEOUT_SECONDS)
-    except Exception:
-        logger.exception("incident_detection: failed to post digest to slack")
-
-    return {"count": len(rows)}
+    return {"count": len(rows), "batch_limit_reached": batch_limit_reached}

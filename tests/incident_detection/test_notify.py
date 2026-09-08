@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from types import SimpleNamespace
+import traceback
 from typing import Any
 
 import pytest
@@ -19,14 +21,6 @@ class _FakeSlackResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
-
-
-# run_incident_digest()は`db.claim_undigested_medium_priority_emails()`が対象行の
-# claim(digestedAt更新)まで済ませた上で返す設計(2026-08-16、shirokuma-secレビューWARN対応)
-# のため、notify.py側のテストではclaim自体の中身(UPDATE...RETURNINGのアトミック性)は
-# 検証せず、db.claim_undigested_medium_priority_emails()の戻り値をそのまま信頼して
-# Slack投稿ロジックのみを検証する(claim自体の検証はraw SQLを叩くdb.pyの実装であり、
-# 他モジュール同様このリポジトリでは単体テスト対象外としている)。
 
 
 def test_notify_managers_immediate_skips_when_slack_bot_token_not_configured(
@@ -180,110 +174,93 @@ def test_notify_managers_immediate_continues_to_next_manager_when_one_post_messa
     assert calls[0]["json"]["channel"] == "C-HIRAMOTO"
 
 
-def test_run_incident_digest_skips_slack_post_when_no_medium_priority_emails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", lambda: [])
-    calls: list[Any] = []
-    monkeypatch.setattr(notify.requests, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
+@pytest.fixture
+def digest_setup(monkeypatch):
+    rows = [{"id": "log-1", "contactEmail": "lead@example.com",
+             "repEmail": "rep@example.com", "subject": "対応状況", "incidentScore": 5}]
+    state = {"committed": False, "rolled_back": False, "calls": []}
 
-    result = notify.run_incident_digest()
+    @contextmanager
+    def claim():
+        try:
+            yield rows
+            state["committed"] = True
+        except Exception:
+            state["rolled_back"] = True
+            raise
 
-    assert result == {"count": 0}
-    assert calls == []
+    def post(*args, **kwargs):
+        assert not state["committed"]
+        state["calls"].append(kwargs)
+        return SimpleNamespace(status_code=200, text="ok")
 
-
-def test_run_incident_digest_posts_single_summary_message_when_medium_priority_emails_exist(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    rows = [
-        {
-            "id": "log-1",
-            "contactEmail": "lead1@client.example.com",
-            "repEmail": "rep1@cnctor.jp",
-            "subject": "対応状況について",
-            "incidentScore": 5,
-            "sentAt": datetime(2026, 8, 16, 9, 0, tzinfo=timezone.utc),
-        },
-        {
-            "id": "log-2",
-            "contactEmail": "lead2@client.example.com",
-            "repEmail": "rep2@cnctor.jp",
-            "subject": None,
-            "incidentScore": 6,
-            "sentAt": datetime(2026, 8, 16, 10, 0, tzinfo=timezone.utc),
-        },
-    ]
-    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", lambda: rows)
-    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://hooks.slack.com/services/xxx")
-    calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        notify.requests,
-        "post",
-        lambda url, json, timeout: calls.append({"url": url, "json": json, "timeout": timeout}),
-    )
-
-    result = notify.run_incident_digest()
-
-    assert result == {"count": 2}
-    assert len(calls) == 1
-    text = calls[0]["json"]["text"]
-    assert "2件" in text
-    assert "lead1@client.example.com" in text
-    assert "lead2@client.example.com" in text
+    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", claim)
+    monkeypatch.setattr(notify.requests, "post", post)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://example.invalid/secret")
+    return rows, state
 
 
-def test_run_incident_digest_skips_slack_post_when_webhook_url_not_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        notify.db,
-        "claim_undigested_medium_priority_emails",
-        lambda: [
-            {
-                "id": "log-1",
-                "contactEmail": "lead1@client.example.com",
-                "repEmail": "rep1@cnctor.jp",
-                "subject": "対応状況について",
-                "incidentScore": 5,
-                "sentAt": datetime(2026, 8, 16, 9, 0, tzinfo=timezone.utc),
-            }
-        ],
-    )
-    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT", raising=False)
-    calls: list[Any] = []
-    monkeypatch.setattr(notify.requests, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
-
-    result = notify.run_incident_digest()
-
-    assert result == {"count": 1}
-    assert calls == []
+def test_digest_success_commits_after_slack(digest_setup):
+    rows, state = digest_setup
+    assert notify.run_incident_digest() == {"count": 1, "batch_limit_reached": False}
+    assert state["committed"]
+    assert "lead@example.com" in state["calls"][0]["json"]["text"]
+    assert state["calls"][0]["allow_redirects"] is False
 
 
-def test_run_incident_digest_does_not_raise_and_still_counts_claimed_rows_when_slack_post_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # claim(digestedAt更新)はSlack投稿より先にコミット済みのため、投稿自体が失敗しても
-    # 「claimしたが送信できなかった」件数として結果に反映される(claimされた行は次回の
-    # ダイジェストから漏れる、という設計上のトレードオフをテストで固定する)。
-    rows = [
-        {
-            "id": "log-1",
-            "contactEmail": "lead1@client.example.com",
-            "repEmail": "rep1@cnctor.jp",
-            "subject": "対応状況について",
-            "incidentScore": 5,
-            "sentAt": datetime(2026, 8, 16, 9, 0, tzinfo=timezone.utc),
-        }
-    ]
-    monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", lambda: rows)
-    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://hooks.slack.com/services/xxx")
+def test_digest_empty_does_not_send(digest_setup):
+    rows, state = digest_setup
+    rows.clear()
+    assert notify.run_incident_digest() == {"count": 0, "batch_limit_reached": False}
+    assert not state["calls"]
 
-    def fail_post(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("network error")
 
-    monkeypatch.setattr(notify.requests, "post", fail_post)
+def test_digest_unconfigured_fails_without_claim(monkeypatch, digest_setup):
+    rows, state = digest_setup
+    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT")
+    with pytest.raises(notify.IncidentDigestDeliveryError):
+        notify.run_incident_digest()
+    assert not state["committed"] and not state["calls"]
 
-    result = notify.run_incident_digest()
 
-    assert result == {"count": 1}
+@pytest.mark.parametrize("status,body", [(400, "invalid_payload"), (429, "rate_limited"),
+                                         (500, "error"), (302, "ok"), (200, "error")])
+def test_digest_slack_rejection_rolls_back(monkeypatch, digest_setup, status, body):
+    rows, state = digest_setup
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k:
+                        SimpleNamespace(status_code=status, text=body))
+    with pytest.raises(notify.IncidentDigestDeliveryError):
+        notify.run_incident_digest()
+    assert state["rolled_back"] and not state["committed"]
+
+
+def test_digest_transport_failure_hides_secret_and_rolls_back(monkeypatch, digest_setup):
+    rows, state = digest_setup
+    def fail(*args, **kwargs):
+        raise notify.requests.Timeout("https://example.invalid/secret")
+    monkeypatch.setattr(notify.requests, "post", fail)
+    with pytest.raises(notify.IncidentDigestDeliveryError) as error:
+        notify.run_incident_digest()
+    assert "https://example.invalid/secret" not in "".join(traceback.format_exception(error.value))
+    assert state["rolled_back"] and not state["committed"]
+
+
+def test_digest_large_fields_are_bounded(digest_setup):
+    rows, state = digest_setup
+    rows[0].update(contactEmail="&" * 10000, repEmail="<" * 10000,
+                   subject=">" * 10000)
+    rows.extend([dict(rows[0])] * 49)
+    assert notify.run_incident_digest() == {"count": 50, "batch_limit_reached": True}
+    text = state["calls"][0]["json"]["text"]
+    assert len(text) < 20000
+    assert "未通知分が残っている可能性" in text
+
+
+@pytest.mark.parametrize("value,limit,expected", [
+    ("A&Bxxxxxxxxxx", 10, "A&amp;Bxxx…"),
+    ("abcd&long", 6, "abcd…"),
+    ("A&B", 7, "A&amp;B"),
+    ("longplainstring", 5, "longp…"),
+])
+def test_digest_field_preserves_complete_character_references(value, limit, expected):
+    assert notify._digest_field(value, limit) == expected

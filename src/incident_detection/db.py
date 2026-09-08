@@ -17,6 +17,8 @@ DB解決ロジックを集約)。ここでは既存呼び出し元(`notify.py`�
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from collections.abc import Iterator
 from typing import Any
 
 import psycopg
@@ -45,37 +47,36 @@ def update_incident_classification(email_log_id: str, score: int, priority: str 
         conn.commit()
 
 
-def claim_undigested_medium_priority_emails() -> list[dict[str, Any]]:
-    """`incidentPriority`が"medium"で、まだ日次ダイジェストに載せていない
-    (`digestedAt IS NULL`)EmailLogを、アトミックに"claim"(`digestedAt`をnow()で埋める)
-    してから返す(`notify.run_incident_digest()`向け、shirokuma-secレビューWARN対応、
-    2026-08-16)。
+DIGEST_BATCH_SIZE = 50
 
-    以前は素朴な相対時刻ウィンドウ(`createdAt >= now() - 24h`)で対象を絞っていたが、
-    Vercel Cronの実行タイミングのズレ・多重起動があると同じインシデントが2日連続で
-    ダイジェストに載ったり、逆に一生載らず漏れたりする問題があった。
-    `src/email_reminders/db.py`の`record_reminder_sent()`と同じ「送信の権利を先にDB側で
-    アトミックに獲得してから送る」設計を踏襲し、`UPDATE ... WHERE "digestedAt" IS NULL
-    ... RETURNING`の単一クエリで「対象の特定」と「claim」を同時に行う(別クエリに分けると
-    そこにも別のレース条件が生まれるため、`record_reminder_sent()`より一歩進めて1クエリに
-    まとめている)。
 
-    トレードオフとして、claim(`digestedAt`更新・コミット)に成功した後でSlack送信自体が
-    失敗した場合、その回のダイジェストからは漏れる(`email_reminders.reminder_check`と
-    同じ設計判断 — 二重送信より安全な設計として採用する)。
+@contextmanager
+def claim_undigested_medium_priority_emails() -> Iterator[list[dict[str, Any]]]:
+    """送信中だけ対象行をロックし、正常終了した場合のみ送信済みにする。
+
+    例外時は接続コンテキストがロールバックする。同時実行はロック済み行を
+    飛ばす。Slack受理後の通信切断・commit失敗では再送時に重複し得る。
     """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            """
-            UPDATE "EmailLog"
-            SET "digestedAt" = now()
+            '''
+            SELECT id, "contactEmail", "repEmail", subject, "incidentScore", "sentAt"
+            FROM "EmailLog"
             WHERE "incidentPriority" = 'medium' AND "digestedAt" IS NULL
-            RETURNING id, "contactEmail", "repEmail", subject, "incidentScore", "sentAt"
-            """
+            ORDER BY "createdAt", id
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+            ''',
+            (DIGEST_BATCH_SIZE,),
         )
         rows = cur.fetchall()
+        yield rows
+        if rows:
+            cur.execute(
+                'UPDATE "EmailLog" SET "digestedAt" = now() WHERE id = ANY(%s)',
+                ([row["id"] for row in rows],),
+            )
         conn.commit()
-    return rows
 
 
 def find_manager_emails() -> list[str]:
