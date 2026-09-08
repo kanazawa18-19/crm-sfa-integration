@@ -1,0 +1,12 @@
+{
+  "framework": null,
+  "buildCommand": "node seal.mjs",
+  "installCommand": "node --version",
+  "outputDirectory": "public",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}
