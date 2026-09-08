@@ -9,11 +9,11 @@
 |---|---|
 | ローカルPostgres | Homebrewで17.11を導入。使い捨てクラスタをUnixソケットのみで起動、独立QA後に停止 |
 | 隔離スイート | 19 passed / 1 deselected / 1 warning、0.83秒。19件中18件が実DB fixtureを使用、1件はDB不要 |
-| Google通信・復号 | 偽応答のまま。実Gmailの連携許可・watch実行は未実施 |
+| Google通信・復号 | 本人同意を保存済み。実Gmailのwatch更新2回・スキップ1回、実復号を確認 |
 | Pub/Sub | 検証topicとpull subscriptionを作成・読み取り照合済み。Gmailの発行権限を検証topicだけに付与・照合済み |
 | Cloud Logging | 専用bucket・sink・非公開Cloud Run作成済み。起動ログ2件の専用bucket到達・検索を確認。製品結果ログは未検証 |
 | 監視 | 失敗／終了欠落／HTTP500の通知設定は未実施 |
-| Google連携設定 | 外部Testingアプリ・デスクトップclient・指定Gmail1件を設定済み。本人の同意待ち |
+| Google連携設定 | 外部Testingアプリ・デスクトップclient・指定Gmail1件を設定済み。本人同意済み |
 
 ## Postgres検証の方法と限界
 
@@ -58,7 +58,7 @@ GCP `fabled-electron-406310`。
 | 未使用時の期限設定 | 604,800秒（7日） |
 
 topicは自動削除ではない。検証終了後の片付け対象として残す。
-Gmail由来の通知到達は未確認。本人の指定した検証GmailはVaultに記録し、コードへ埋め込まない。
+Gmail由来の通知1件を取得し、指定アカウントと隔離DBのhistoryId一致を確認。本人の指定した検証GmailはVaultに記録し、コードへ埋め込まない。
 
 ## 権限と認証の状況
 
@@ -70,9 +70,9 @@ Gmail由来の通知到達は未確認。本人の指定した検証GmailはVaul
 露出したため直ちに削除した。削除後に一覧0件を確認してからv2を作成した。
 露出したclientは使わない。v2の秘密値は出力していない。
 
-本人のGoogle同意は未完了。専用のローカル受け取り口はPKCE・state・1回限りcallbackを
+本人のGoogle同意を保存済み。専用のローカル受け取り口はPKCE・state・1回限りcallbackを
 使い、gmail.metadataだけを要求する。profileで指定Gmail一致を確認してからrefresh tokenを
-キーチェーンへ保存する。実Gmail更新はまだ1回も行っていない。
+キーチェーンへ保存する。指定検証Gmailで初回登録・再更新の2回が成功した。業務Gmailは変更していない。
 
 自動承認審査が検証SAのログ閲覧権限を拒否したため、次の限定操作について本人へ確認中。
 
@@ -106,13 +106,10 @@ Gmail通知にはこのGoogle管理主体の発行権限が必要。OAuth実行�
 
 ## 次の手順
 
-1. 本人のGoogle同意と限定権限の回答を受け取る。秘密値はチャットへ送らない。
-2. 修正版の独立レビュー・Gemini Pro／Claude Opus 5高レビューを完了。
-   初回Geminiは回答拒否、修正後の最終レビューではBLOCKER/WARN/INFO各0件。Claudeも最終BLOCKER 0。WARNの採否は下記。
-3. 実Postgresに検証専用DBを新規作成し、実Gmailの初回登録・期限余裕のスキップ・
-   検証DBだけの期限変更後の再更新を別ケースとして実施する。一度きりの実行印を
-   原子的に作成し、途中失敗しても消さない。本文取得目的の再runをしない。
-4. Pub/Subの通知到達と保存結果を照合。メール本文は取得しない。
+1. 限定権限とテスト通知先の承認を受け取る。本人のGoogle同意は取得済み。
+2. 独立レビュー・両社レビューは実施済み。Gemini最終B0W0、Claude最終B0W5の採否は下記。
+3. 実Gmail/実Postgres3ケースは成功済み。一度きりの実行印を保持し、再runしない。
+4. Pub/Sub通知1件の到達・DB照合・ACKは成功済み。実更新2回の各回との1対1対応は未確認。
 5. 反映済み検証revisionで製品JSONログの到達・run_id／sequenceを照合。
    専用viewの閲覧成功と対象外viewの拒否を確認する。
 6. アラート・監視自身の欠落監視を設定し、本人だけの通知先で到達確認。
@@ -157,3 +154,39 @@ Claude最終WARNの判断：
    受信を実測する。現時点の全6テンプレートは無効のまま。
 5. invalid分類の粒度：stageと固定error_kindで初期切り分けする。件数上限/ページ上限/不正認証応答の
    固定個別理由コード追加は見送り。検証専用の診断粒度の限界として残す。
+
+## 実Gmail・実Postgresの照合（本人同意後）
+
+独立QAがレビュー済み一時スクリプトを1回だけ実行。製品cron route・Google通信・
+キーチェーン由来の検証OAuth・本物の暗号化/復号・psycopg接続を使用した。
+接続先はUnixソケット専用クラスタの新規DB、対象は本人指定の検証Gmail1件。
+本番の鍵や旧 `.env.local` は使用していない。
+
+| ケース | HTTP | 判定 | 更新件数 | ログ行数 | 秒 |
+|---|---:|---|---:|---:|---:|
+| 初回登録 | 200 | success | 1 | 5 | 0.663 |
+| 期限に余裕あり | 200 | skipped | 0 | 4 | 0.013 |
+| 既存登録の更新 | 200 | success | 1 | 5 | 0.630 |
+
+3ケース・ログ14行・実更新2回。全ケース失敗0、DB対象行1、HTTPと終了ログの集計一致、
+run_id統一・連番・既存historyId維持を確認。秘密値/メールアドレスがHTTP・結果ログへ
+混入していない検査も成功。`/private/tmp/crm-gmail-live-trial-result.json` のcomplete=true。
+一度きり実行印は保持し、本文取得目的の再runはしない。
+
+限界：最小7列のPrisma相当テーブルで、全スキーマやNeonは未検証。ローカルFastAPI
+TestClient経由であり、Cloud Runで実Gmail処理を実行した証拠ではない。
+実Gmailの異常応答は人工注入していない。Pub/Sub到達は別に照合する。
+
+### Pub/Subの実測と残る限界
+
+独立QAが検証subscriptionだけから1回pullし、通知1件・重複0を確認。
+通知アカウントと指定Gmailの一致、通知historyIdと隔離DB保存値の一致を確認し、
+個人情報を含まない集計を保存してからACKを送った。ACK成功応答も確認。
+`/private/tmp/crm-gmail-pubsub-trial-result.json` はcomplete=true・ack_status=confirmed。
+実watch更新2回に対して取得通知1件。更新ごとの1対1到達は未確認で、原因を推測しない。
+製品Webhookへのpushは設定しておらず、Webhook受信処理は未検証。
+使い捨てPostgresは照合後に停止、データと実行印は保持した。
+検証Gmailのwatchは今回の期限まで残る。自動更新Schedulerは作成していない。
+
+残る依存は検証用IAM3点と本人宛通知の承認。Google本人同意は完了済みなので、再同意を求めない。
+本番配備・本番試運転は実施していない。
