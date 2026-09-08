@@ -234,13 +234,21 @@ def test_digest_slack_rejection_rolls_back(monkeypatch, digest_setup, status, bo
     assert state["rolled_back"] and not state["committed"]
 
 
-def test_digest_transport_failure_hides_secret_and_rolls_back(monkeypatch, digest_setup):
+@pytest.mark.parametrize("exception_type,category", [
+    (notify.requests.Timeout, "タイムアウト"),
+    (notify.requests.ConnectionError, "接続失敗"),
+    (RuntimeError, "その他の通信失敗"),
+])
+def test_digest_transport_failure_hides_secret_and_rolls_back(
+    monkeypatch, digest_setup, exception_type, category
+):
     rows, state = digest_setup
     def fail(*args, **kwargs):
-        raise notify.requests.Timeout("https://example.invalid/secret")
+        raise exception_type("https://example.invalid/secret")
     monkeypatch.setattr(notify.requests, "post", fail)
     with pytest.raises(notify.IncidentDigestDeliveryError) as error:
         notify.run_incident_digest()
+    assert str(error.value) == f"日次通知のSlack通信に失敗しました（{category}）"
     assert "https://example.invalid/secret" not in "".join(traceback.format_exception(error.value))
     assert state["rolled_back"] and not state["committed"]
 

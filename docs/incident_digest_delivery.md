@@ -18,7 +18,7 @@ DB更新・commit失敗、プロセス停止では次回に重複送信し得る
 
 ## 2026-09-08の検証
 
-- 独立QAによる全pytest：2,756件成功、既存Starlette/httpx非推奨警告1件。
+- 独立QAによる全pytest：2,758件成功、既存Starlette/httpx非推奨警告1件。
 - 新しいローカルPostgres専用クラスタで、未設定時無更新、送信成功後commit、
   HTTP失敗/Timeout時rollbackと次回再送、同時2接続で同一行の送信1回を確認。
 - 53件を初回50件・次回3件に分けて確定することを確認。
@@ -29,11 +29,42 @@ DB更新・commit失敗、プロセス停止では次回に重複送信し得る
   API試験は認証依存・DB取得・Slack送信を差し替え、routeとnotifyは製品実装。
 - 独立セキュリティ/品質再レビュー：BLOCKER 0・WARN 0。
 - 一時証跡：`/private/tmp/incident-qa.6BrLqi/` の`check.py`、`api_check.py`、
-  `pytest-final.log`。一時ファイルは永続保存の保証なし。QA専用Postgresは停止済み。
+  `pytest-final.log`、`pytest-final2.log`。一時ファイルは永続保存の保証なし。QA専用Postgresは停止済み。
 - 実Slack送達・本番cron・Neon接続プールは未検証。本番配備・試運転は未実施。
-- Gemini Pro / Claudeの外部レビューは未実施。Geminiへのコード貼付が自動承認審査で
-  拒否されたため、本人の具体的な送信承認待ち。レビュー予定本文は
-  `/private/tmp/incident-digest-review.txt`。顧客情報・実鍵を含めず、コードと合成テストのみ。
+- 本人の具体的送信承認後、Gemini Pro / Claude Opus 5（高）で外部レビューを実施。
+  同一本文の空白除外6,952文字・ハッシュ4040696799を両社の入力内容と照合。
+  Claudeは添付テキストのプレビューで全文一致を確認し、先頭依頼文を入力欄に添えて送信。
+- Geminiの通信失敗の識別改善を採用。例外本文や動的な型名を出さず、
+  タイムアウト/接続失敗/その他の固定分類にした。追加修正後の独立SECはB0/W0、
+  QA全2,758件・API200/500・秘密非露出を再確認。SQL不変のため実DB再試験なし。
+  この追加修正版を他社へ再送はしていない。
+
+## 外部レビューの採否
+
+- [Gemini Pro](https://gemini.google.com/app/efd25a213ee8d241)：BLOCKERなし。
+  通信失敗分類のWARNは上記対応。明示commitの削除は実害がなく処理境界が明確なため見送り。
+- [Claude Opus 5](https://claude.ai/chat/c8244fd7-d4a0-4abe-8a74-a0b72eb1fc66)：
+  次の2点をBLOCKERとしたが、要件・公式仕様・テストと照合して不採用と判断。
+  1. 約15,000文字でSlackが切り捨てるとの指摘：
+     [Slack公式](https://docs.slack.dev/changelog/2018-truncating-really-long-messages/)の
+     Incoming Webhooksにも適用される切り捨て上限は40,000文字。
+     項目ごとの文字数制限×最大50件と、2万文字未満のテストで上限内を確認済み。
+     表示上の折り畳みと内容切り捨ては区別する。実Slack表示は未検証。
+  2. HTTP200+本文okをやめて2xxだけで確定する案：
+     [公式Incoming Webhooks](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks)
+     の正常応答に合わせた判定を維持する。Workflow Builder等の別方式は今回対象外。
+     別方式の受口を混用せず、配備前に対象受口がIncoming Webhooksであることを確認する。
+- 両社のNULLメール指摘：Prisma定義でcontactEmail/repEmailは非NULL。
+  件名NULLは既に「件名なし」で表示する。incidentScoreはNULL可のため不整合データでは
+  None表示の余地があるが、送達欠落の問題とは分けて扱う。
+- Claudeのロック中HTTP通信・DB切断/commit失敗による重複指摘は既知の制約。
+  HTTPタイムアウトの実値は10秒。これは総実行時間の上限保証ではない。
+  実測せずセッション設定を変更する案は見送り、Neonでの接続維持は配備前確認へ残す。
+- 送信受理後のDB失敗の区別、詳細な構造化ログ、連続失敗検知は運用上の改善余地。
+  今回はHTTP500と固定失敗分類、成功件数/上限表示まで。連続失敗アラートと
+  実流入量/積み残しの確認を配備条件として残す。独立した監視実装・設定が必要。
+- テストのRuntimeError捕捉改善・防御的WHERE追加等のINFOは、独立実DB/API試験と
+  現行制約で今回の目的を確認できているため見送り。不要な改修の往復はしない。
 
 ## 反映時の注意
 

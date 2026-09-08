@@ -212,12 +212,10 @@ model EmailLog {
   // direction="outbound"や検知対象外(スコア0)のメールはどちらもnullのまま。
   incidentScore    Int?
   incidentPriority String?
-  // 中優先度("medium")インシデントの日次ダイジェスト配信済み時刻(shirokuma-secレビューWARN
-  // 対応、2026-08-16)。src/incident_detection/db.pyのclaim_undigested_medium_priority_emails()が
-  // `UPDATE ... WHERE "digestedAt" IS NULL ... RETURNING`でアトミックに埋めてから返す
-  // (email_reminders/db.pyのrecord_reminder_sent()と同じ「送信の権利を先にDB側でアトミックに
-  // 獲得してから送る」設計)。Vercel Cronの実行タイミングのズレ・多重起動があっても、
-  // 同じインシデントが二重にダイジェストへ載ったり、逆に一生載らず漏れたりしない。
+  // 中優先度("medium")インシデントの日次ダイジェスト配信済み時刻。
+  // src/incident_detection/db.pyが送信中の対象行をロックし、同時実行は対象を飛ばす。
+  // Slack受理後に同じトランザクションで更新・確定し、送信失敗時は未処理のまま残す。
+  // Slack受理後の通信切断やDB確定失敗では、次回の再送で重複する可能性がある。
   digestedAt       DateTime?
 
   reminderLogs EmailReminderLog[]

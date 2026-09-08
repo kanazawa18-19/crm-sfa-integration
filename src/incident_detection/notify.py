@@ -161,9 +161,17 @@ def run_incident_digest() -> dict[str, int | bool]:
                 url, json={"text": "\n".join(lines)},
                 timeout=_REQUEST_TIMEOUT_SECONDS, allow_redirects=False,
             )
-        except Exception:
-            # requestsの例外は秘密のWebhook URLを含むため連鎖させない。
-            raise IncidentDigestDeliveryError("日次通知のSlack通信に失敗しました") from None
+        except Exception as exc:
+            # 例外本文・型名は外へ出さず、あらかじめ決めた分類だけ残す。
+            if isinstance(exc, requests.Timeout):
+                category = "タイムアウト"
+            elif isinstance(exc, requests.ConnectionError):
+                category = "接続失敗"
+            else:
+                category = "その他の通信失敗"
+            raise IncidentDigestDeliveryError(
+                f"日次通知のSlack通信に失敗しました（{category}）"
+            ) from None
         if response.status_code != 200 or response.text.strip() != "ok":
             raise IncidentDigestDeliveryError("日次通知がSlackに受理されませんでした")
 
