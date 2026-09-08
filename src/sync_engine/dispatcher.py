@@ -41,6 +41,7 @@ from src.sync_engine.conflict_resolver import (
     resolve_conflict,
 )
 from src.sync_engine.id_mapping import DuplicateExternalIdError, IdMapping, IdMappingStore
+from src.sync_engine.record_sync_lock import RecordSyncGuard, acquire_record_sync_lock
 from src.sync_engine.new_record_builder import build_notion_properties_for_new_record
 from src.sync_engine.slack_notifier import SlackNotifier
 from src.sync_engine.spreadsheet_outbox import (
@@ -289,8 +290,21 @@ class Dispatcher:
                 return self._try_create_new_record(event)
             return DispatchResult(skipped=True, reason="unknown_record")
 
+        # 判定前から最終同期時刻の保存まで、同じレコードの同期を直列化する。
+        with acquire_record_sync_lock(self._store, mapping.db_key, mapping.notion_key) as guard:
+            mapping = self._store.get(mapping.notion_key)
+            if mapping is None:
+                return DispatchResult(skipped=True, reason="unknown_record")
+            watermark = guard.latest(mapping.last_synced_at)
+            mapping = dataclasses.replace(mapping, last_synced_at=watermark)
+            return self._dispatch_locked(event, mapping, guard)
+
+    def _dispatch_locked(self, event: SyncEvent, mapping: IdMapping, guard: RecordSyncGuard) -> DispatchResult:
         # 差分更新の原則：last_synced_atより新しいイベントのみ処理する。
         if mapping.last_synced_at is not None and event.occurred_at <= mapping.last_synced_at:
+            return DispatchResult(skipped=True, reason="stale_event")
+
+        if guard.rejects(event.occurred_at):
             return DispatchResult(skipped=True, reason="stale_event")
 
         schema = get_schema(event.db_key)
@@ -366,6 +380,7 @@ class Dispatcher:
             payload_by_tool, new_row_properties = self._spreadsheet_properties_for_new_row(
                 payload_by_tool, mapping, notion_record=None, notion_record_fetched=False
             )
+            guard.accept(event.occurred_at)
             written_by_tool, mapping = self._write_values(
                 payload_by_tool, mapping, versions, new_row_properties=new_row_properties
             )
@@ -373,6 +388,7 @@ class Dispatcher:
                 _property_result(property_name, None, intended_by_property, written_by_tool)
                 for property_name, _prop, _value in prepared
             ]
+            guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
             return DispatchResult(skipped=False, properties=tuple(results))
 
@@ -380,6 +396,7 @@ class Dispatcher:
             # 実処理の対象プロパティが1つも無い（全てスキーマ未定義だった）場合は、
             # 現在値の取得自体が不要。ここで取得しに行くと、以前は発生しなかったAPI呼び出しと
             # その失敗（＝イベント全体のスキップ）を新たに生んでしまう。
+            guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
             return DispatchResult(skipped=False, properties=())
 
@@ -562,6 +579,7 @@ class Dispatcher:
         payload_by_tool, new_row_properties = self._spreadsheet_properties_for_new_row(
             payload_by_tool, mapping, notion_record=notion_record, notion_record_fetched=True
         )
+        guard.accept(event.occurred_at)
         written_by_tool, mapping = self._write_values(
             payload_by_tool, mapping, versions, new_row_properties=new_row_properties
         )
@@ -588,6 +606,7 @@ class Dispatcher:
                 for rejected_item in item.resolution.rejected:
                     self._slack_notifier.notify_conflict(rejected_item)
 
+        guard.advance(event.occurred_at)
         self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
         return DispatchResult(skipped=False, properties=tuple(results))
 
@@ -912,7 +931,34 @@ class Dispatcher:
                 notion_page_id=new_notion_key,
             )
         # **ここでシートの行も作る**（2026-09-03）。理由は下のメソッドのdocstring参照。
-        self._append_spreadsheet_row_for_created_record(event, new_mapping, properties)
+        try:
+            with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
+                latest = self._store.get(new_notion_key)
+                watermark = guard.latest(latest.last_synced_at if latest else None)
+                if latest is None or guard.rejects(event.occurred_at) or (
+                    watermark is not None and event.occurred_at < watermark
+                ):
+                    row_mapping = latest if latest is not None else new_mapping
+                    target = self._targets.get(Tool.SPREADSHEET)
+                    if (
+                        row_mapping.spreadsheet_row is None
+                        and target is not None
+                        and _supports_sync_key(target)
+                        and _row_creation_allowed(target, row_mapping.db_key)
+                    ):
+                        self._handle_new_record_row_not_created(
+                            event, row_mapping,
+                            "新しい更新が先行したため、古い作成時の値による行追加を見送りました。",
+                            REASON_NEW_RECORD_ROW_WRITE_SKIPPED,
+                        )
+                else:
+                    self._append_spreadsheet_row_for_created_record(event, latest, properties)
+        except Exception:
+            # mapping登録済みなので新ページは作り直さず、既存の行作成再試行へ渡す。
+            self._handle_new_record_row_not_created(
+                event, new_mapping, "同じレコードの同期中、または排他取得に失敗しました。",
+                REASON_NEW_RECORD_ROW_WRITE_FAILED,
+            )
         return DispatchResult(skipped=False)
 
     def _append_spreadsheet_row_for_created_record(

@@ -117,7 +117,7 @@ def mapping(store: SQLiteIdMappingStore) -> IdMapping:
     return m
 
 
-class _FlakyIdMappingStore:
+class _FlakyIdMappingStore(SQLiteIdMappingStore):
     """`SQLiteIdMappingStore`をラップし、`upsert()`を指定回数だけ失敗させるテスト用スタブ
     （BLOCKER1対応、2026-08-25: 新規レコード作成時のIdMapping登録リトライ・補償アクションの
     検証用。`upsert()`以外は内側のストアへそのまま委譲する）。
@@ -127,6 +127,8 @@ class _FlakyIdMappingStore:
         self, inner: SQLiteIdMappingStore, *, fail_times: int, exc: Exception | None = None
     ) -> None:
         self._inner = inner
+        self._sync_lock_registry_guard = inner._sync_lock_registry_guard
+        self._sync_locks = inner._sync_locks
         self._fail_times = fail_times
         self._exc = exc or RuntimeError("transient id mapping store failure")
         self.upsert_attempts = 0
@@ -2092,7 +2094,7 @@ def test_zoho_stage_change_newer_than_notion_reaches_notion_end_to_end(
     assert targets[Tool.ZOHO].upsert_calls == []  # 送信元には書き戻さない
 
 
-class _WriteLandedButFailedIdMappingStore:
+class _WriteLandedButFailedIdMappingStore(SQLiteIdMappingStore):
     """`upsert()`は必ず例外を投げるが、書き込み自体はサーバー側で成功しているストア。
 
     Notionへの書き込みが完了した直後に読み取りタイムアウトした状況を再現する
@@ -2101,6 +2103,8 @@ class _WriteLandedButFailedIdMappingStore:
 
     def __init__(self, inner: SQLiteIdMappingStore, *, exc: Exception | None = None) -> None:
         self._inner = inner
+        self._sync_lock_registry_guard = inner._sync_lock_registry_guard
+        self._sync_locks = inner._sync_locks
         self._exc = exc or RuntimeError("read timed out after the write landed")
         self.upsert_attempts = 0
 

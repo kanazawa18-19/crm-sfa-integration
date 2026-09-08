@@ -592,3 +592,13 @@ model SpreadsheetOutbox {
   @@index([status, nextAttemptAt])
   @@index([resolvedAt])
 }
+
+// 同一レコードのWebhook受理時刻。削除すると古い再送への保護を失う。
+model RecordSyncWatermark {
+  dbKey       String
+  notionKey   String
+  acceptedAt  DateTime @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+
+  @@id([dbKey, notionKey])
+}

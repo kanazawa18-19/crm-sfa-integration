@@ -8,6 +8,7 @@ last_synced_at を併せて管理する。本番は DynamoDB / Firestore 想定�
 from __future__ import annotations
 
 import sqlite3
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -118,6 +119,8 @@ class SQLiteIdMappingStore(IdMappingStore):
     """ローカル開発・テスト用のSQLite実装。db_path=":memory:" でインメモリ動作も可能。"""
 
     def __init__(self, db_path: str = ":memory:") -> None:
+        self._sync_lock_registry_guard = threading.Lock()
+        self._sync_locks: dict = {}
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()

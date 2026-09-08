@@ -49,6 +49,7 @@ from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
 from src.sync_engine import spreadsheet_outbox
 from src.sync_engine.id_mapping import IdMappingStore
+from src.sync_engine.record_sync_lock import RecordSyncBusy, acquire_record_sync_lock
 from src.sync_engine.production_wiring import (
     build_id_mapping_store,
     build_notion_clients_by_db,
@@ -245,7 +246,23 @@ def _sweep_failed(
     return closed
 
 
-def _repair_one(
+def _repair_one(entry, *, store, notion_clients, spreadsheet_targets, slack_notifier) -> str:
+    try:
+        with acquire_record_sync_lock(store, entry.db_key, entry.notion_key):
+            return _repair_one_locked(
+                entry, store=store, notion_clients=notion_clients,
+                spreadsheet_targets=spreadsheet_targets, slack_notifier=slack_notifier,
+            )
+    except RecordSyncBusy:
+        spreadsheet_outbox.release(
+            db_key=entry.db_key, notion_key=entry.notion_key, retry_after_minutes=1,
+        )
+        return "deferred"
+    except Exception:
+        return _fail(entry, "レコード同期の排他または修復に失敗", slack_notifier)
+
+
+def _repair_one_locked(
     entry: spreadsheet_outbox.OutboxEntry,
     *,
     store: IdMappingStore,
@@ -303,7 +320,7 @@ def _repair_one(
 
     if row is not None:
         # 別のワーカーか次のイベントが先に作っていた。行番号だけ記録して解決。
-        _remember_row(store, mapping, row)
+        _remember_row_locked(store, mapping, row)
         spreadsheet_outbox.mark_done(
             db_key=db_key,
             notion_key=notion_key,
@@ -378,7 +395,7 @@ def _repair_one(
             # ロックを取ってから、もう一度だけ探す。待っている間に相手が作り終えている。
             row = target.find_row_by_sync_key(notion_key)
             if row is not None:
-                _remember_row(store, mapping, row)
+                _remember_row_locked(store, mapping, row)
                 spreadsheet_outbox.mark_done(
                     db_key=db_key,
                     notion_key=notion_key,
@@ -391,7 +408,7 @@ def _repair_one(
     except Exception:  # noqa: BLE001 (Sheets API・Postgres接続いずれも起こりうる)
         return _fail(entry, "行の追記に失敗", slack_notifier)
 
-    _remember_row(store, mapping, created)
+    _remember_row_locked(store, mapping, created)
     spreadsheet_outbox.mark_done(
         db_key=db_key,
         notion_key=notion_key,
@@ -409,7 +426,15 @@ def _repair_one(
     return "created"
 
 
-def _remember_row(store: IdMappingStore, mapping: Any, row: Any) -> None:
+def _remember_row(store, mapping, row_number) -> None:
+    try:
+        with acquire_record_sync_lock(store, mapping.db_key, mapping.notion_key):
+            _remember_row_locked(store, mapping, row_number)
+    except Exception:
+        logger.warning("spreadsheet outbox drain: 行番号の排他記録を見送りました")
+
+
+def _remember_row_locked(store: IdMappingStore, mapping: Any, row: Any) -> None:
     """行番号を`IdMapping`へ記録する。**失敗しても行の作成は取り消さない。**
 
     行番号はあくまで次回の読み直しを減らすための控えで、正は**シートに書かれた
