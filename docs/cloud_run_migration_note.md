@@ -1,5 +1,16 @@
 # Python同期エンジンを Cloud Run へ移す
 
+## 最新の運用状態（2026-09-08 主機CX）
+
+- 1本目 `crm-sfa-backend-token-encryption-healthcheck` をus-east4に作成・有効化済み。予定 `0 1 * * *` / `Etc/UTC`（毎日10時JST）。Vercel側の同cronは維持。
+- 手動実行は `2026-09-08T02:21:00.047251Z` にCloud Run `crm-sfa-backend-00003-rv8` でHTTP 200、約4.42秒。Scheduler側もHTTP 200終了を記録。別途本文の `ok: true` を確認。
+- 有効化後に設定を再取得し、`ENABLED`・次回 `2026-09-09T01:00:00Z`（9月9日10時JST）を確認。初回の定時実行はまだ未検証。
+- 鍵は主機CCが本番から回収・既存Gmail暗号文1/1復号・Secret Manager版2登録済み。今回は再探索・再検証していない。
+- **運用で判明：PAUSEDジョブへの `jobs run` は `FAILED_PRECONDITION` で拒否された。** 今回は仮日程 `0 0 29 2 *`（次回2028年2月29日）を確認して一時resume → run → pause → 成功確認 → activateとした。`manage_scheduler_job.sh` 自体は未修正。既に毎日実行するジョブへこの手順をそのまま当てはめない。
+- 残り8本は未作成。移行前に、手動実行で業務データを書き換える影響と、上記PAUSED制約への対応を決める。
+
+以下は準備時からの経緯。古い「未デプロイ」「全9本未作成」「鍵未検証」は上記で更新済み。
+
 作成: 2026-09-07（主機CC）／状態: **第1段完了。Cloud RunからNeonへの到達確認済み**
 ／レビュー: 2026-09-07 に動物チーム3体が2周点検し、指摘を反映済み
 
@@ -403,7 +414,7 @@ dashboard側の発行元（`dashboard/lib/tokenCrypto.ts` を使っている環�
 |---|---|---:|---|
 | `daily-batch` | `/api/cron/daily-batch` | 10:00 | 未移行 |
 | `zoho-webhook-renewal` | `/api/cron/zoho-webhook-renewal` | 20:00 | 未移行 |
-| `token-encryption-healthcheck` | `/api/cron/token-encryption-healthcheck` | 01:00 | **1本目（Vercelは残す）** |
+| `token-encryption-healthcheck` | `/api/cron/token-encryption-healthcheck` | 01:00 | **有効化済み・手動実行200確認（Vercelは残す）。初回定時は9月9日** |
 | `gmail-sync` | `/api/cron/gmail-sync` | 03:00 | 未移行 |
 | `gmail-watch-renewal` | `/api/cron/gmail-watch-renewal` | 02:00 | 未移行 |
 | `incident-digest` | `/api/cron/incident-digest` | 04:00 | 未移行 |
