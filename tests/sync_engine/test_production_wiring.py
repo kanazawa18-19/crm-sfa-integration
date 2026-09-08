@@ -1229,9 +1229,10 @@ def test_warn_if_id_mapping_store_not_persistent_only_logs_once(
 
 
 def test_warn_if_id_mapping_store_not_persistent_does_not_log_for_persistent_path(
-    caplog: pytest.LogCaptureFixture, tmp_path: Any
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    persistent_path = str(tmp_path / "sync_id_mapping.db")
+    # パス文字列の判定だけを試す。実行環境の一時ディレクトリには依存しない。
+    persistent_path = "/var/lib/crm-sfa/sync_id_mapping.db"
 
     with caplog.at_level("WARNING"):
         _warn_if_id_mapping_store_not_persistent(persistent_path)
