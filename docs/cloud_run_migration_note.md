@@ -6,8 +6,8 @@
 - 手動実行は `2026-09-08T02:21:00.047251Z` にCloud Run `crm-sfa-backend-00003-rv8` でHTTP 200、約4.42秒。Scheduler側もHTTP 200終了を記録。別途本文の `ok: true` を確認。
 - 有効化後に設定を再取得し、`ENABLED`・次回 `2026-09-09T01:00:00Z`（9月9日10時JST）を確認。初回の定時実行はまだ未検証。
 - 鍵は主機CCが本番から回収・既存Gmail暗号文1/1復号・Secret Manager版2登録済み。今回は再探索・再検証していない。
-- **運用で判明：PAUSEDジョブへの `jobs run` は `FAILED_PRECONDITION` で拒否された。** 今回は仮日程 `0 0 29 2 *`（次回2028年2月29日）を確認して一時resume → run → pause → 成功確認 → activateとした。`manage_scheduler_job.sh` 自体は未修正。既に毎日実行するジョブへこの手順をそのまま当てはめない。
-- 残り8本は未作成。移行前に、手動実行で業務データを書き換える影響と、上記PAUSED制約への対応を決める。
+- **運用で判明：PAUSEDジョブへの `jobs run` は `FAILED_PRECONDITION` で拒否された。** 今回は仮日程 `0 0 29 2 *`（次回2028年2月29日）を確認して一時resume → run → pause → 成功確認 → activateとした。この事象を受けた修正と試運転条件は [Scheduler試運転](cloud_scheduler_trial.md) を参照。既に毎日実行するジョブへこの手順をそのまま当てはめない。
+- 残り8本は未作成。試運転時の書き込み影響は [Scheduler試運転](cloud_scheduler_trial.md) に整理。本番移行の実行は別イシューとする。
 
 以下は準備時からの経緯。古い「未デプロイ」「全9本未作成」「鍵未検証」は上記で更新済み。
 
@@ -350,57 +350,27 @@ Gmail連携・見積書承認はまだVercelにいる。Vercelのcronを消す�
 **取れない値を待つだけでデプロイが進まない。** 無い状態でもヘッダーの無い
 呼び出しは401で閉じる（`src/api/auth.py`）ので、緩めたことにはならない。
 
-#### 登録した値と、まだ確かめていないこと
+#### 登録鍵と試運転の現在の前提
 
-| シークレット | 出どころ | 状態 |
-|---|---|---|
-| `TOKEN_ENCRYPTION_KEY` | `dashboard/.env.local`（64桁hex） | 登録済み・**本番と同一かは未検証** |
-| `SLACK_WEBHOOK_URL_ALERT` | `config/.env`（hooks.slack.com） | 登録済み |
+鍵の問題は解決済み。Vercel本番から回収した鍵で既存Gmail暗号文1/1の復号を確認し、
+Secret Manager版2へ登録済み。`latest` も版2。`dashboard/.env.local` は旧鍵なので使わない。
+鍵の再探索・再復号確認は不要。旧鍵を読む検証コマンドは誤操作を防ぐため削除した。
 
-**★ 鍵が本番と違っても、このヘルスチェックは緑になる。**
-やっているのは「自分で暗号化して自分で復号する」往復なので、**どんな正しい鍵でも
-通ってしまう**。本番と同じ鍵かどうかは、DBに入っている既存の暗号文が解けるかで
-しか分からない。**activate の前に1回だけ確かめること**（読み取りのみ）。
+Cloud Runは `crm-sfa-backend-00003-rv8`、1本目のSchedulerは有効化済み。
+以下は**未作成のジョブを今後移すときの手順**。このイシューでは本番操作しない。
 
 ```
-   cd ~/crm-sfa-integration && .venv/bin/python - <<'EOF'
-   import os, pathlib, sys; sys.path.insert(0, ".")
-   for l in pathlib.Path("dashboard/.env.local").read_text().splitlines():
-       if l.startswith(("DATABASE_URL=", "TOKEN_ENCRYPTION_KEY=")):
-           k, v = l.split("=", 1); os.environ[k] = v.strip().strip('"')
-   from src.gmail_sync.token_crypto import decrypt_token
-   import psycopg
-   with psycopg.connect(os.environ["DATABASE_URL"]) as c, c.cursor() as cur:
-       cur.execute('select "refreshTokenEnc" from "RepGmailConnection" limit 3')
-       for (enc,) in cur.fetchall():
-           try: decrypt_token(enc); print("復号OK")
-           except Exception as e: print("復号NG", type(e).__name__)
-   EOF
+  ① 影響確認  隔離環境で検証 → 本番実行の対象・副作用を明示して承認
+  ② plan      対象・時刻・URLを表示（本番処理は呼ばない）
+  ③ create    仮日程で作成し停止
+  ④ run       設定照合 → 一時再開 → 実行要求 → 再停止・状態確認
+  ⑤ 結果確認  Scheduler終了・Cloud Run応答・業務結果を読み取り照合
+  ⑥ 移行      Vercelの同じ1本を停止 → activate → 定時実行を確認
 ```
 
-**「復号NG」が出たら、その鍵は本番の鍵ではない。** Vercelから読み戻せないので、
-dashboard側の発行元（`dashboard/lib/tokenCrypto.ts` を使っている環境）から
-取り直して `bootstrap_secrets.sh TOKEN_ENCRYPTION_KEY` で版を足し直す。
-
-```
-  ⓪ deploy   ★先に再デプロイ。今のリビジョンには
-             CLOUD_RUN_SCHEDULER_AUTH_ENABLED が無く、必ず401になる
-  ① plan     何を移すか・時刻・URLを表示
-  ② create   停止状態のジョブを作成（定時実行はまだ始まらない）
-  ③ run      手動実行し、Cloud LoggingでHTTP 200を確認
-  ④ Vercel   vercel.jsonから同じpathだけを削除してデプロイ
-             ← token-encryption-healthcheck だけは**やらない**（上記の理由）
-  ⑤ activate 定時実行を有効にし、次の実行が200になったことを確認
-```
-
-```
-  bash scripts/cloud_run/deploy.sh --dry-run
-  bash scripts/cloud_run/deploy.sh
-  bash scripts/cloud_run/manage_scheduler_job.sh plan   token-encryption-healthcheck
-  bash scripts/cloud_run/manage_scheduler_job.sh create token-encryption-healthcheck
-  bash scripts/cloud_run/manage_scheduler_job.sh run    token-encryption-healthcheck
-  bash scripts/cloud_run/manage_scheduler_job.sh activate token-encryption-healthcheck
-```
+`run` の成功表示は要求の受付と再停止の確認で、業務処理の成功ではない。
+既に有効化済みの1本目へ `run` を繰り返さない。Vercelの鍵診断は維持する。
+8本の副作用、明示フラグ、失敗時の対処は [Scheduler試運転](cloud_scheduler_trial.md) を参照。
 
 **★ 宛先URLは組み立てず、必ず `gcloud run services describe` に聞く**
 （2026-09-08に修正）。本番のURLは `crm-sfa-backend-gqk5cir6ea-uk.a.run.app` という
