@@ -29,5 +29,11 @@
   "documentation": {
     "mimeType": "text/markdown",
     "content": "隔離検証の照合完了ログが途絶えています。業務更新の失敗や未実行を断定しないでください。業務処理の再runは禁止。初回の実データ到達が前提です。監視停止・復旧と通知到達の実検証が必要です。"
+  },
+  "alertStrategy": {
+    "notificationPrompts": [
+      "OPENED",
+      "CLOSED"
+    ]
   }
 }

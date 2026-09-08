@@ -18,7 +18,10 @@
       "notificationRateLimit": {
         "period": "300s"
       },
-      "autoClose": "1800s"
+      "autoClose": "1800s",
+      "notificationPrompts": [
+        "OPENED"
+      ]
     },
     "documentation": {
       "mimeType": "text/markdown",
@@ -45,7 +48,10 @@
       "notificationRateLimit": {
         "period": "300s"
       },
-      "autoClose": "1800s"
+      "autoClose": "1800s",
+      "notificationPrompts": [
+        "OPENED"
+      ]
     },
     "documentation": {
       "mimeType": "text/markdown",
@@ -72,7 +78,10 @@
       "notificationRateLimit": {
         "period": "300s"
       },
-      "autoClose": "1800s"
+      "autoClose": "1800s",
+      "notificationPrompts": [
+        "OPENED"
+      ]
     },
     "documentation": {
       "mimeType": "text/markdown",
@@ -99,7 +108,10 @@
       "notificationRateLimit": {
         "period": "300s"
       },
-      "autoClose": "1800s"
+      "autoClose": "1800s",
+      "notificationPrompts": [
+        "OPENED"
+      ]
     },
     "documentation": {
       "mimeType": "text/markdown",
@@ -127,7 +139,10 @@
       "notificationRateLimit": {
         "period": "300s"
       },
-      "autoClose": "1800s"
+      "autoClose": "1800s",
+      "notificationPrompts": [
+        "OPENED"
+      ]
     },
     "documentation": {
       "mimeType": "text/markdown",
