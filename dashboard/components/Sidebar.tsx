@@ -70,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 const MASTER_ONLY_NAV_LINKS: NavLink[] = [
+  { href: "/integrations", label: "連携状態" },
   { href: "/users", label: "ユーザー管理" },
   { href: "/audit-log", label: "データ監査ログ" },
   { href: "/email-log", label: "メールログ" },

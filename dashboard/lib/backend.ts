@@ -21,7 +21,7 @@ export function getErrorMessage(error: unknown): string {
 
 async function fetchBackend<T>(
   path: string,
-  options?: { method?: "GET" | "POST"; body?: unknown }
+  options?: { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal; redirect?: RequestRedirect }
 ): Promise<T> {
   const baseUrl = process.env.BACKEND_API_URL;
   if (!baseUrl) {
@@ -39,6 +39,8 @@ async function fetchBackend<T>(
       },
       body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
       cache: "no-store",
+      ...(options?.signal ? { signal: options.signal } : {}),
+      ...(options?.redirect ? { redirect: options.redirect } : {}),
     });
   } catch (error) {
     throw new BackendApiError(
@@ -595,3 +597,11 @@ export function bulkEmailConsentOverview(payload: {
   });
 }
 
+
+// 診断だけに時間制限を設ける。通常の業務APIの待ち時間は変えない。
+export function getIntegrationDiagnostic(target: string): Promise<unknown> {
+  return fetchBackend<unknown>(`/api/diagnostics/integrations?only=${encodeURIComponent(target)}`, {
+    signal: AbortSignal.timeout(45_000),
+    redirect: "error",
+  });
+}
