@@ -13,14 +13,13 @@ Google仕様上、`watch()`の有効期限は登録・延長時点から最大7�
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 from src.db_utils import ensure_utc
 from src.gmail_sync import db, gmail_client
 from src.gmail_sync.token_crypto import decrypt_token
-
 from src.gmail_sync.watch_result import WatchRenewalProgress
 
 # renew_all_watches()が「延長が必要」と判断する残り猶予日数。Google仕様の上限(7日)に対し
@@ -111,7 +110,15 @@ def renew_all_watches(
 
     report()
     for conn in connections:
-        if not _needs_renewal(conn, now=now):
+        try:
+            due = _needs_renewal(conn, now=now)
+        except Exception:
+            # 判定不能も担当ごとの失敗にし、外部更新せず後続担当を続ける。
+            results[conn.rep_email] = "error: renewal_failed"
+            progress = replace(progress, attempted=progress.attempted + 1, failed=progress.failed + 1)
+            report()
+            continue
+        if not due:
             results[conn.rep_email] = "skipped"
             progress = replace(progress, skipped=progress.skipped + 1)
             report()

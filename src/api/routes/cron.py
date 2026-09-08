@@ -24,11 +24,11 @@ from src.api.user_directory import NotionUserDirectory
 from src.document_generation.approval_poll import poll_document_approvals
 from src.email_reminders.reminder_check import run_reminder_check
 from src.gmail_sync.sync import sync_all
-from src.infrastructure.cron_result_log import WatchRenewalLog
 from src.gmail_sync.watch_registration import (
     GmailWatchNotConfiguredError,
     renew_all_watches,
 )
+from src.infrastructure.cron_result_log import ResultLogWriteError, WatchRenewalLog
 from src.incident_detection.notify import run_incident_digest
 from src.project_mirror.sync import refresh_projects_incrementally
 from src.relation_sync.sync import refresh_client_names_incrementally
@@ -106,25 +106,40 @@ def run_gmail_watch_renewal() -> dict[str, Any]:
     no-opにせず明確な500エラーとして表面化させる(`renew_zoho_watch_channel()`と同じ方針)。
     """
     run = WatchRenewalLog()
-    run.emit("started")
+    failed = False
+    reason = "iteration_completed"
     try:
+        run.emit("started")
         renew_all_watches(on_progress=run.update)
     except GmailWatchNotConfiguredError:
-        result = run.emit("finished", status="failed", reason="not_configured")
-        raise HTTPException(status_code=500, detail=result) from None
+        failed, reason = True, "not_configured"
+    except ResultLogWriteError:
+        failed, reason = True, "log_write_failed"
     except Exception:
-        result = run.emit("finished", status="failed", reason="execution_failed")
-        raise HTTPException(status_code=500, detail=result) from None
+        failed, reason = True, "execution_failed"
     except BaseException:
         # 協調的な中断は記録して再送出する。強制終了では終了行を保証できない。
-        run.emit("finished", status="interrupted", reason="interrupted")
+        try:
+            run.emit("finished", status="interrupted", reason="interrupted")
+        except ResultLogWriteError:
+            pass  # 出力失敗で元の中断を別の例外へ置き換えない。
         raise
-    reason = "iteration_completed"
-    if run.progress.total == 0:
+    if failed:
+        status = "partial_failure" if run.progress.renewed else "failed"
+    else:
+        status = run.progress.outcome()
+    if not failed and run.progress.total == 0:
         reason = "no_connections"
-    elif run.progress.skipped == run.progress.total:
+    elif not failed and run.progress.skipped == run.progress.total:
         reason = "not_due"
-    return run.emit("finished", status=run.progress.outcome(), reason=reason, completed=True)
+    # 元の業務例外の処理を抜けてから記録し、出力失敗も安全なHTTP応答にする。
+    try:
+        result = run.emit("finished", status=status, reason=reason, completed=not failed)
+    except ResultLogWriteError as exc:
+        raise HTTPException(status_code=500, detail={**exc.record, "log_write_failed": True}) from None
+    if failed:
+        raise HTTPException(status_code=500, detail=result) from None
+    return result
 
 
 @router.get("/api/cron/incident-digest", dependencies=[Depends(verify_cron_secret)])

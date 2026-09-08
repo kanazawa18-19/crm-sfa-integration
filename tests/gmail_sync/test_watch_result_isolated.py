@@ -5,6 +5,7 @@ SQLiteはPostgresの代替検証ではない。SQL保存件数とログの対応
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -74,7 +75,8 @@ class Connection:
 
 
 @pytest.fixture
-def isolated(monkeypatch, tmp_path):
+def isolated(monkeypatch, tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
     def forbidden(*args, **kwargs):
         raise AssertionError('隔離テストから外部通信は禁止')
 
@@ -278,7 +280,7 @@ cron.run_gmail_watch_renewal()
             deadline = time.monotonic() + 15
             logs = []
             while time.monotonic() < deadline:
-                logs = [json.loads(line) for line in log_path.read_text().splitlines()]
+                logs = [json.loads(line) for line in log_path.read_bytes().split(b'\n')[:-1]]
                 if logs and logs[-1]['counts']['attempted'] == 2:
                     break
                 assert process.poll() is None, '子プロセスが予定外に終了した'
@@ -292,7 +294,7 @@ cron.run_gmail_watch_renewal()
                 process.kill()
                 process.wait(timeout=5)
             process.stderr.close()
-    logs = [json.loads(line) for line in log_path.read_text().splitlines()]
+    logs = [json.loads(line) for line in log_path.read_bytes().split(b'\n')[:-1]]
     assert logs[0]['event'] == 'started'
     assert all(row['event'] != 'finished' and row['ended_at'] is None for row in logs)
     assert logs[-1]['counts']['renewed'] == 1
@@ -326,3 +328,124 @@ def test_commit_failure_is_counted_and_next_rep_continues(isolated, monkeypatch,
     logs = records(capsys)
     assert logs[-1] == result
     assert 'example.invalid' not in json.dumps(logs) + response.text
+
+
+
+def test_unexpected_abort_after_save_is_partial_failure(isolated, monkeypatch, capsys):
+    client, seed, _, _, path = isolated
+    seed('first@example.invalid')
+    original = cron.renew_all_watches
+
+    def abort(**kwargs):
+        original(**kwargs)
+        raise RuntimeError('private@example.invalid DUMMY_PRIVATE_VALUE')
+
+    monkeypatch.setattr(cron, 'renew_all_watches', abort)
+    response = call(client)
+    assert response.status_code == 500
+    result = response.json()['detail']
+    assert result['status'] == 'partial_failure'
+    assert result['reason'] == 'execution_failed'
+    assert result['completed'] is False
+    assert result['counts']['renewed'] == 1
+    assert records(capsys)[-1] == result
+    with sqlite3.connect(path) as connection:
+        assert connection.execute('SELECT count(*) FROM "RepGmailConnection" WHERE "watchExpiration" IS NOT NULL').fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('mode', ['start', 'error_finish', 'progress', 'success_finish'])
+def test_output_failure_is_safe_and_does_not_silently_continue(
+    isolated, monkeypatch, capsys, caplog, mode,
+):
+    import builtins
+    from src.infrastructure import cron_result_log
+
+    client, seed, attempts, _, path = isolated
+    seed('first@example.invalid')
+    seed('second@example.invalid')
+    real_print = builtins.print
+
+    def fail_output(payload, **kwargs):
+        record = json.loads(payload)
+        should_fail = (
+            mode == 'start'
+            or (mode == 'error_finish' and record['event'] == 'finished')
+            or (mode == 'success_finish' and record['event'] == 'finished')
+            or (mode == 'progress' and record['counts']['renewed'] == 1)
+        )
+        if should_fail:
+            raise OSError('private@example.invalid DUMMY_PRIVATE_VALUE')
+        real_print(payload, **kwargs)
+
+    monkeypatch.setattr(cron_result_log, 'print', fail_output, raising=False)
+    if mode == 'error_finish':
+        def fail_list():
+            raise RuntimeError('private@example.invalid DUMMY_PRIVATE_VALUE')
+        monkeypatch.setattr(db, 'list_gmail_connections', fail_list)
+    response = call(client)
+    assert response.status_code == 500
+    result = response.json()['detail']
+    assert result['log_write_failed'] is True
+    expected_saved = {'start': 0, 'error_finish': 0, 'progress': 1, 'success_finish': 2}[mode]
+    assert result['counts']['renewed'] == expected_saved
+    assert len(attempts) == expected_saved
+    if mode == 'progress':
+        assert result['status'] == 'partial_failure'
+        assert result['reason'] == 'log_write_failed'
+        assert result['completed'] is False
+    if mode == 'success_finish':
+        # 業務走査は終了したが、終了ログは出せていないためHTTPは500。
+        assert result['status'] == 'success'
+        assert result['completed'] is True
+    with sqlite3.connect(path) as connection:
+        assert connection.execute('SELECT count(*) FROM "RepGmailConnection" WHERE "watchExpiration" IS NOT NULL').fetchone()[0] == expected_saved
+    captured = capsys.readouterr()
+    combined = response.text + captured.out + captured.err + caplog.text
+    for secret in ('example.invalid', 'DUMMY_PRIVATE_VALUE', 'test-only'):
+        assert secret not in combined
+
+
+def test_output_error_suppresses_original_exception_chain(monkeypatch):
+    import traceback
+    from src.infrastructure import cron_result_log
+
+    marker = 'DUMMY_PRIVATE_VALUE'
+    def fail_output(*args, **kwargs):
+        raise OSError(marker)
+    monkeypatch.setattr(cron_result_log, 'print', fail_output, raising=False)
+    try:
+        try:
+            raise RuntimeError(marker)
+        except RuntimeError:
+            cron_result_log.WatchRenewalLog().emit('finished', status='failed')
+    except cron_result_log.ResultLogWriteError as exc:
+        formatted = ''.join(traceback.format_exception(exc))
+        assert marker not in formatted
+        assert 'During handling' not in formatted
+    else:
+        pytest.fail('出力失敗を検出しなかった')
+
+
+def test_invalid_expiration_fails_one_rep_without_stopping_others(isolated, monkeypatch, capsys):
+    client, seed, attempts, _, path = isolated
+    seed('first@example.invalid')
+    seed('second@example.invalid')
+    original = db.list_gmail_connections
+
+    def invalid_first():
+        from dataclasses import replace
+        rows = original()
+        return [replace(rows[0], watch_expiration='private@example.invalid'), *rows[1:]]
+
+    monkeypatch.setattr(db, 'list_gmail_connections', invalid_first)
+    response = call(client)
+    assert response.status_code == 200
+    result = response.json()
+    assert result['status'] == 'partial_failure'
+    assert result['counts']['attempted'] == 2
+    assert result['counts']['failed'] == result['counts']['renewed'] == 1
+    assert result['counts']['remaining'] == result['counts']['in_flight'] == 0
+    assert len(attempts) == 1
+    assert records(capsys)[-1] == result
+    with sqlite3.connect(path) as connection:
+        assert connection.execute('SELECT count(*) FROM "RepGmailConnection" WHERE "watchExpiration" IS NOT NULL').fetchone()[0] == 1
