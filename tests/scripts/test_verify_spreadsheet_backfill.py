@@ -92,8 +92,9 @@ def test_json_keeps_all_missing_keys_and_refuses_overwrite(monkeypatch, tmp_path
     assert audit.main(args) == 1
     original = path.read_text()
     assert len(json.loads(original)["reports"][0]["missing_keys"]) == 24
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit) as exc:
         audit.main(args)
+    assert exc.value.code == 2
     assert path.read_text() == original
 
 
@@ -103,4 +104,21 @@ def test_help_never_loads_credentials(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         audit.main(["--help"])
     assert exc.value.code == 0
+    loader.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["missing_parent", "existing_file", "dangling_link"])
+def test_bad_report_destination_stops_before_credentials(monkeypatch, tmp_path, kind):
+    path = tmp_path / "report.json"
+    if kind == "missing_parent":
+        path = tmp_path / "missing" / "report.json"
+    elif kind == "existing_file":
+        path.write_text("既存の証跡")
+    else:
+        path.symlink_to(tmp_path / "missing.json")
+    loader = Mock(side_effect=AssertionError("認証情報に触れた"))
+    monkeypatch.setattr(audit, "_load_env", loader)
+    with pytest.raises(SystemExit) as exc:
+        audit.main(["--db-keys", "client_master", "--report-json", str(path)])
+    assert exc.value.code == 2
     loader.assert_not_called()

@@ -109,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
     # 引数検証と --help は認証情報の読み込みより前に完了する。
     for db_key in args.db_keys:
         get_schema(db_key)
+    if args.report_json:
+        if args.report_json.exists() or args.report_json.is_symlink():
+            parser.error("レポート保存先が既に存在します。別のファイル名を指定してください")
+        if not args.report_json.parent.is_dir():
+            parser.error("レポート保存先のフォルダがありません。既存のフォルダを指定してください")
     os.environ.update(_load_env())
 
     targets = build_spreadsheet_targets_by_db()
