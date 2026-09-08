@@ -70,7 +70,29 @@ fi
 echo "受け取った値: ${#SECRET_VALUE} 文字（中身は表示しません）"
 
 # 既存なら版を足す、無ければ作る。どちらも標準入力から読ませる。
-if gcloud secrets describe "${SECRET_NAME}" --project="${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+#
+# ★ describe の失敗を「無い」と決めつけない（2026-09-08）。
+#   認証切れでも describe は失敗するので、以前の書き方だと
+#   「シークレットが無い」と誤診して create へ進んでいた。
+#   実際に踏んだ：Reauthentication failed → create を呼びに行った。
+#   NOT_FOUND のときだけ新規作成し、それ以外の失敗はここで止める。
+#   ★ set -e を一時的に外す。外さないと、describe が失敗した瞬間に
+#     スクリプトが無言で終わり、下の判定に到達しない（2026-09-08 に実際に踏んだ）。
+set +e
+DESCRIBE_ERR="$(gcloud secrets describe "${SECRET_NAME}" \
+  --project="${GCP_PROJECT_ID}" 2>&1 >/dev/null)"
+DESCRIBE_STATUS=$?
+set -e
+
+if [[ ${DESCRIBE_STATUS} -ne 0 ]] && ! grep -qiE 'NOT_FOUND|was not found' <<<"${DESCRIBE_ERR}"; then
+  echo "ERROR: シークレットの有無を確認できませんでした。何も登録していません。" >&2
+  # gcloud は理由を先頭に書く（末尾は「別アカウントを使うなら…」の案内）ので head を取る。
+  echo "${DESCRIBE_ERR}" | head -3 >&2
+  echo "  → 認証切れなら 'gcloud auth login' を実行してからやり直してください。" >&2
+  exit 1
+fi
+
+if [[ ${DESCRIBE_STATUS} -eq 0 ]]; then
   printf '%s' "${SECRET_VALUE}" | gcloud secrets versions add "${SECRET_NAME}" \
     --project="${GCP_PROJECT_ID}" --data-file=-
   echo "→ 既存のシークレットに新しい版を追加しました。"
