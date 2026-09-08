@@ -24,6 +24,7 @@ from src.api.user_directory import NotionUserDirectory
 from src.document_generation.approval_poll import poll_document_approvals
 from src.email_reminders.reminder_check import run_reminder_check
 from src.gmail_sync.sync import sync_all
+from src.infrastructure.cron_result_log import WatchRenewalLog
 from src.gmail_sync.watch_registration import (
     GmailWatchNotConfiguredError,
     renew_all_watches,
@@ -104,11 +105,26 @@ def run_gmail_watch_renewal() -> dict[str, Any]:
     Pub/Subトピック(`GMAIL_PUBSUB_TOPIC_NAME`)が未設定の場合は、成功したように見える
     no-opにせず明確な500エラーとして表面化させる(`renew_zoho_watch_channel()`と同じ方針)。
     """
+    run = WatchRenewalLog()
+    run.emit("started")
     try:
-        return renew_all_watches()
-    except GmailWatchNotConfiguredError as exc:
-        logger.error("gmail watch renewal failed (not configured): %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        renew_all_watches(on_progress=run.update)
+    except GmailWatchNotConfiguredError:
+        result = run.emit("finished", status="failed", reason="not_configured")
+        raise HTTPException(status_code=500, detail=result) from None
+    except Exception:
+        result = run.emit("finished", status="failed", reason="execution_failed")
+        raise HTTPException(status_code=500, detail=result) from None
+    except BaseException:
+        # 協調的な中断は記録して再送出する。強制終了では終了行を保証できない。
+        run.emit("finished", status="interrupted", reason="interrupted")
+        raise
+    reason = "iteration_completed"
+    if run.progress.total == 0:
+        reason = "no_connections"
+    elif run.progress.skipped == run.progress.total:
+        reason = "not_due"
+    return run.emit("finished", status=run.progress.outcome(), reason=reason, completed=True)
 
 
 @router.get("/api/cron/incident-digest", dependencies=[Depends(verify_cron_secret)])

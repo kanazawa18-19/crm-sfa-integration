@@ -125,6 +125,8 @@ def update_watch_expiration(rep_email: str, expiration: datetime) -> None:
             'UPDATE "RepGmailConnection" SET "watchExpiration" = %s WHERE "repEmail" = %s',
             (expiration, rep_email),
         )
+        if cur.rowcount != 1:
+            raise RuntimeError("Gmail watch保存対象が1件ではありません")
         conn.commit()
 
 
@@ -136,6 +138,8 @@ def update_watch_state(rep_email: str, history_id: str, expiration: datetime) ->
             'UPDATE "RepGmailConnection" SET "historyId" = %s, "watchExpiration" = %s WHERE "repEmail" = %s',
             (history_id, expiration, rep_email),
         )
+        if cur.rowcount != 1:
+            raise RuntimeError("Gmail watch保存対象が1件ではありません")
         conn.commit()
 
 

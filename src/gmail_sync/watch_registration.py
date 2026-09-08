@@ -12,15 +12,16 @@ Google仕様上、`watch()`の有効期限は登録・延長時点から最大7�
 
 from __future__ import annotations
 
-import logging
 import os
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
+from dataclasses import replace
 
 from src.db_utils import ensure_utc
 from src.gmail_sync import db, gmail_client
 from src.gmail_sync.token_crypto import decrypt_token
 
-logger = logging.getLogger(__name__)
+from src.gmail_sync.watch_result import WatchRenewalProgress
 
 # renew_all_watches()が「延長が必要」と判断する残り猶予日数。Google仕様の上限(7日)に対し
 # 十分な安全マージンを取る(cronは1日1回のみのため、ぎりぎりまで待つと1回の実行漏れで
@@ -52,7 +53,7 @@ def register_or_renew_watch(rep_email: str, refresh_token: str, topic_name: str)
 
     expiration_ms = result.get("expiration")
     if not expiration_ms:
-        raise gmail_client.GmailApiError(200, f"watch response missing expiration: {result!r}")
+        raise gmail_client.GmailApiError(200, "watch response missing expiration")
     expiration = datetime.fromtimestamp(int(expiration_ms) / 1000, tz=timezone.utc)
 
     existing = db.find_connection_by_email(rep_email)
@@ -62,7 +63,7 @@ def register_or_renew_watch(rep_email: str, refresh_token: str, topic_name: str)
 
     history_id = result.get("historyId")
     if not history_id:
-        raise gmail_client.GmailApiError(200, f"watch response missing historyId: {result!r}")
+        raise gmail_client.GmailApiError(200, "watch response missing historyId")
     db.update_watch_state(rep_email, str(history_id), expiration)
 
 
@@ -77,14 +78,18 @@ def _needs_renewal(conn: db.RepGmailConnection, *, now: datetime) -> bool:
     return watch_expiration - now <= timedelta(days=_RENEWAL_THRESHOLD_DAYS)
 
 
-def renew_all_watches(*, topic_name: str | None = None) -> dict[str, str]:
+def renew_all_watches(
+    *,
+    topic_name: str | None = None,
+    on_progress: Callable[[WatchRenewalProgress], None] | None = None,
+) -> dict[str, str]:
     """全`RepGmailConnection`をループし、失効が近い/未登録の担当者だけwatchを登録・延長する。
 
     `topic_name`省略時は環境変数`GMAIL_PUBSUB_TOPIC_NAME`を使う。どちらも得られない場合は
     `GmailWatchNotConfiguredError`を送出する(Gmail APIへは到達しない)。
 
     1名の延長失敗が他の担当の延長を止めないよう、担当ごとにtry/exceptで独立させる
-    (`sync.sync_all()`と同じ方針)。戻り値は`{rep_email: "renewed"|"skipped"|"error: ..."}`。
+    (`sync.sync_all()`と同じ方針)。戻り値は`{rep_email: "renewed"|"skipped"|"error: renewal_failed"}`。
     """
     resolved_topic_name = topic_name if topic_name is not None else os.environ.get(_PUBSUB_TOPIC_NAME_ENV_VAR)
     if not resolved_topic_name:
@@ -97,15 +102,31 @@ def renew_all_watches(*, topic_name: str | None = None) -> dict[str, str]:
 
     now = datetime.now(timezone.utc)
     results: dict[str, str] = {}
-    for conn in db.list_gmail_connections():
+    connections = db.list_gmail_connections()
+    progress = WatchRenewalProgress(total=len(connections))
+
+    def report() -> None:
+        if on_progress is not None:
+            on_progress(progress)
+
+    report()
+    for conn in connections:
         if not _needs_renewal(conn, now=now):
             results[conn.rep_email] = "skipped"
+            progress = replace(progress, skipped=progress.skipped + 1)
+            report()
             continue
+        progress = replace(progress, attempted=progress.attempted + 1)
+        report()
         try:
             refresh_token = decrypt_token(conn.refresh_token_enc)
             register_or_renew_watch(conn.rep_email, refresh_token, resolved_topic_name)
+        except Exception:
+            # 例外本文はGoogle応答・DB値・鍵を含み得るため、固定の分類だけを返す。
+            results[conn.rep_email] = "error: renewal_failed"
+            progress = replace(progress, failed=progress.failed + 1)
+        else:
             results[conn.rep_email] = "renewed"
-        except Exception as exc:
-            logger.exception("gmail_sync: failed to renew watch for rep %s", conn.rep_email)
-            results[conn.rep_email] = f"error: {exc}"
+            progress = replace(progress, renewed=progress.renewed + 1)
+        report()
     return results
