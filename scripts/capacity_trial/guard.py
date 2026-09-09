@@ -8,8 +8,9 @@ import os
 from pathlib import Path
 import time
 
-PROJECT = "cnctor-crm-cap-trial-260910"
-DATABASE = "(default)"
+LEGACY_PROJECT = "cnctor-crm-cap-trial-260910"
+PROJECT = "actionpoint-autocalc"
+DATABASE = "crm-capacity-trial-260910"
 BASE = f"projects/{PROJECT}/databases/{DATABASE}"
 ACCOUNTS = {role: f"capacity-trial-{role}@{PROJECT}.iam.gserviceaccount.com"
             for role in ("runner", "observer")}
@@ -93,7 +94,10 @@ def validate_neon(dsn):
             or values.get("channel_binding", "require") != "require"):
         raise Refused("専用Neon以外の接続先または接続上書き設定")
     # この仮想環境の既存certifi CAだけを使い、環境変数から証明書を継承しない。
-    import certifi
+    try:
+        import certifi
+    except ImportError:
+        raise Refused("信頼済みCA bundleを読み込めません", code="credential_unavailable") from None
     ca_bundle = Path(certifi.where())
     if not ca_bundle.is_absolute() or not ca_bundle.is_file():
         raise Refused("信頼済みCA bundleが存在しません")
@@ -143,12 +147,29 @@ class Ledger:
         now = time.time() if now is None else now
         if not math.isfinite(created_at) or not 0 <= now-created_at < 14*86400:
             raise Refused("資源作成日時が不正または14日超過")
-        data = {"project": PROJECT, "created_at": created_at,
+        data = {"project": PROJECT, "database": DATABASE, "created_at": created_at,
                 "cost": None, "reserved": dict.fromkeys(LIMITS, 0),
                 "rpc_calls": {}, "returned_documents": 0}
         with Path(path).open("x") as output:
             json.dump(data, output)
         return cls(path)
+
+    def migrate_target(self, now=None):
+        """未使用の旧Firestore接続先だけ移す。期限・予約・費用履歴は保持する。"""
+        now = time.time() if now is None else now
+        if not math.isfinite(now):
+            raise Refused("移行日時が不正")
+        def update(data):
+            if (data.get("project") != LEGACY_PROJECT
+                    or data.get("database", "(default)") != "(default)"
+                    or any(data["reserved"].get(kind) != 0 for kind in ("reads", "writes", "deletes"))
+                    or data.get("rpc_calls") != {} or data.get("returned_documents") != 0):
+                raise Refused("未使用の旧Firestore台帳だけ移行できます")
+            data.update(project=PROJECT, database=DATABASE,
+                        target_migration={"from_project": LEGACY_PROJECT,
+                                          "from_database": "(default)", "at": now},
+                        cost_refresh_required=True)
+        self.transact(update)
 
     def cost(self, amount, observed_at, evidence, now=None, basis="metered"):
         now = time.time() if now is None else now
@@ -158,19 +179,26 @@ class Ledger:
                 or not 0 <= now-observed_at <= 3600 or not evidence.strip()):
             raise Refused("費用実測値・時刻・証跡参照が必要")
         def update(data):
+            if data.get("project") == PROJECT and basis != "metered":
+                raise Refused("費用根拠が不正")
+            if data.get("cost_refresh_required") and (
+                    basis != "metered" or observed_at < data["target_migration"]["at"]):
+                raise Refused("費用根拠が不正")
             old = data.get("cost")
             if old and (amount < old["usd"] or observed_at < old["observed_at"]):
                 raise Refused("累計費用または観測時刻を戻せません")
             data["cost"] = {"usd": amount, "observed_at": observed_at, "evidence": evidence, "basis": basis}
+            data["cost_refresh_required"] = False
         self.transact(update)
 
     def reserve(self, *, now=None, **amounts):
         now = time.time() if now is None else now
         def update(data):
             cost = data.get("cost")
-            if (data.get("project") != PROJECT or not 0 <= now-data["created_at"] < 14*86400
+            if (data.get("project") != PROJECT or data.get("database") != DATABASE
+                    or data.get("cost_refresh_required") or not 0 <= now-data["created_at"] < 14*86400
                     or not cost or not 0 <= now-cost["observed_at"] <= 3600
-                    or cost["usd"] >= 10):
+                    or cost.get("basis") != "metered" or cost["usd"] >= 10):
                 raise Refused("期限・費用停止値・費用取得途絶のため新規実行停止")
             for kind, amount in amounts.items():
                 if (kind not in LIMITS or not isinstance(amount, (int, float))

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from scripts.capacity_trial.guard import (
-    BASE, PROJECT, Ledger, Refused, validate_environment, validate_neon,
+    BASE, DATABASE, LEGACY_PROJECT, PROJECT, Ledger, Refused, validate_environment, validate_neon,
     validate_resource, validate_target,
 )
 from scripts.capacity_trial.firestore import GuardedAPI
@@ -20,11 +20,13 @@ def ledger(tmp_path):
 
 @pytest.mark.parametrize("project,database,scope,slots,role", [
     ("fabled-electron-406310", "(default)", "trial-smoke", 3, "runner"),
+    (PROJECT, "(default)", "trial-smoke", 3, "runner"),
+    (LEGACY_PROJECT, DATABASE, "trial-smoke", 3, "runner"),
     (PROJECT, "capacity-restore", "trial-smoke", 3, "runner"),
-    (PROJECT, "(default)", "production", 3, "runner"),
-    (PROJECT, "(default)", "trial-arbitrary", 3, "runner"),
-    (PROJECT, "(default)", "trial-smoke", 4, "runner"),
-    (PROJECT, "(default)", "trial-smoke", 3, "owner"),
+    (PROJECT, DATABASE, "production", 3, "runner"),
+    (PROJECT, DATABASE, "trial-arbitrary", 3, "runner"),
+    (PROJECT, DATABASE, "trial-smoke", 4, "runner"),
+    (PROJECT, DATABASE, "trial-smoke", 3, "owner"),
 ])
 def test_target_refuses_before_client(project, database, scope, slots, role):
     with pytest.raises(Refused):
@@ -158,9 +160,9 @@ def test_real_sdk_reads_pass_through_guard_without_network():
                                                 "slots": {"0": None, "1": None, "2": None}})))])
     raw.run_query.return_value = iter([RunQueryResponse(document=Document(
         name=scope+"/jobs/a", fields=_helpers.encode_dict({"state": "pending", "created_at": 1})))])
-    client = firestore.Client(project=PROJECT, credentials=AnonymousCredentials())
+    client = firestore.Client(project=PROJECT, database=DATABASE, credentials=AnonymousCredentials())
     client._firestore_api_internal = GuardedAPI(raw, Mock(), role="observer")
-    store = FirestoreJobStore(Settings(PROJECT, "(default)", "trial-smoke", 3), client=client)
+    store = FirestoreJobStore(Settings(PROJECT, DATABASE, "trial-smoke", 3), client=client)
     assert store.observe()["total"] == 1
     raw.commit.assert_not_called()
 
@@ -186,19 +188,29 @@ def test_neon_exact_target_and_certificate_verification():
             validate_neon(bad)
 
 
-def test_neon_probe_checks_two_sessions_and_closes(monkeypatch):
+@pytest.mark.parametrize("closed", [True, False])
+def test_neon_probe_checks_two_sessions_and_closes(monkeypatch, closed):
     from unittest.mock import MagicMock
     from scripts.capacity_trial import neon
     from scripts.capacity_trial.guard import NEON_HOST
     monkeypatch.setattr(neon, "validate_environment", lambda: None)
     first, second = MagicMock(), MagicMock()
     for connection in [first, second]:
+        connection.closed = True
         connection.__enter__.return_value = connection
     first.execute.return_value.fetchone.side_effect = [("neondb", "neondb_owner", 1), (True,), (True,)]
     second.execute.return_value.fetchone.side_effect = [("neondb", "neondb_owner", 2), (False,), (True,), (True,)]
     connector = Mock(side_effect=[first, second])
     monkeypatch.setattr("psycopg.connect", connector)
+    second.closed = closed
+    if not closed:
+        with pytest.raises(AssertionError, match="終了後もSQL接続"):
+            neon.probe(f"postgresql://neondb_owner:synthetic@{NEON_HOST}/neondb?sslmode=require", Mock())
+        first.__exit__.assert_called_once()
+        second.__exit__.assert_called_once()
+        return
     result = neon.probe(f"postgresql://neondb_owner:synthetic@{NEON_HOST}/neondb?sslmode=require", Mock())
+    assert result["connection_count"] == connector.call_count == 2
     assert result["advisory_exclusion"] and result["connections_closed"]
     assert result["sql_count"] == first.execute.call_count+second.execute.call_count == 7
     first.__exit__.assert_called_once()
@@ -212,6 +224,7 @@ def test_neon_failure_still_closes_all_connections(monkeypatch):
     monkeypatch.setattr(neon, "validate_environment", lambda: None)
     first, second = MagicMock(), MagicMock()
     for connection in [first, second]:
+        connection.closed = True
         connection.__enter__.return_value = connection
         connection.execute.side_effect = TimeoutError("合成")
     monkeypatch.setattr("psycopg.connect", Mock(side_effect=[first, second]))
@@ -250,6 +263,7 @@ def test_smoke_will_not_reuse_an_old_completed_job():
     with pytest.raises(Refused):
         smoke(store)
     store.enqueue.assert_not_called()
+    store.initialize.assert_not_called()
 
 
 def test_free_plan_basis_is_distinct_from_metered_cost(ledger):
@@ -291,3 +305,111 @@ def test_neon_missing_trusted_ca_bundle_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr("certifi.where", lambda: str(tmp_path / "missing-ca.pem"))
     with pytest.raises(Refused):
         validate_neon(f"postgresql://neondb_owner:synthetic@{NEON_HOST}/neondb?sslmode=require")
+
+
+@pytest.fixture
+def legacy_ledger(ledger):
+    def legacy(data):
+        data["project"] = LEGACY_PROJECT
+        data.pop("database")
+        data["reserved"].update(runtime_seconds=145, sql_connections=5, sql_statements=24)
+    ledger.transact(legacy)
+    return ledger
+
+
+def test_migration_preserves_deadline_totals_and_requires_new_metered_cost(legacy_ledger):
+    item = legacy_ledger
+    before = json.loads(item.path.read_text())
+    item.migrate_target(now=1100)
+    after = json.loads(item.path.read_text())
+    for key in ("created_at", "reserved", "rpc_calls", "returned_documents", "cost"):
+        assert after[key] == before[key]
+    assert after["project"] == PROJECT and after["database"] == DATABASE
+    with pytest.raises(Refused):
+        item.reserve(now=1100)
+    for observed_at, basis in [(1099, "metered"), (1100, "free-plan-verified")]:
+        with pytest.raises(Refused):
+            item.cost(0.1, observed_at, "合成再照合", now=1100, basis=basis)
+    item.cost(0.2, 1100, "合成再照合", now=1100)
+    item.reserve(now=1100, reads=1)
+    assert json.loads(item.path.read_text())["reserved"]["sql_statements"] == 24
+    with pytest.raises(Refused):
+        item.reserve(now=1000+14*86400)
+    with pytest.raises(Refused):
+        item.migrate_target(now=1101)
+
+
+@pytest.mark.parametrize("change", [
+    {"project": PROJECT}, {"database": "other"}, {"returned_documents": 1},
+    {"rpc_calls": {"run_query": 1}},
+    *[{"reserved": {"reads": 0, "writes": 0, "deletes": 0, kind: 1}}
+      for kind in ("reads", "writes", "deletes")],
+])
+def test_migration_rejects_used_or_unexpected_source_without_mutation(legacy_ledger, change):
+    legacy_ledger.transact(lambda data: data.update(change))
+    before = legacy_ledger.path.read_bytes()
+    with pytest.raises(Refused):
+        legacy_ledger.migrate_target(now=1100)
+    assert legacy_ledger.path.read_bytes() == before
+
+
+def test_named_database_is_allowed_and_default_resource_is_rejected():
+    validate_target(PROJECT, DATABASE, "trial-smoke")
+    with pytest.raises(Refused):
+        validate_resource(f"projects/{PROJECT}/databases/(default)")
+
+
+def test_migration_cannot_resume_using_previous_free_plan(legacy_ledger):
+    legacy_ledger.transact(lambda data: data["cost"].update(usd=0, basis="free-plan-verified"))
+    legacy_ledger.migrate_target(now=1100)
+    with pytest.raises(Refused):
+        legacy_ledger.cost(0, 1100, "旧Free契約", now=1100, basis="free-plan-verified")
+    with pytest.raises(Refused):
+        legacy_ledger.reserve(now=1100)
+
+
+def test_migration_cli_does_not_fetch_credentials(legacy_ledger, monkeypatch):
+    import sys
+    from scripts.capacity_trial import __main__ as runner
+    monkeypatch.setattr(sys, "argv", ["trial", "migrate-target", "--ledger", str(legacy_ledger.path)])
+    network = Mock(side_effect=AssertionError("認証・子起動は禁止"))
+    monkeypatch.setattr(runner.subprocess, "run", network)
+    result = runner.main()
+    assert result["state"] == "target_migrated"
+    assert result["project"] == PROJECT and result["database"] == DATABASE
+    network.assert_not_called()
+
+
+def test_new_target_rejects_free_cost_even_after_metered_zero(ledger):
+    ledger.transact(lambda data: data.update(cost=None))
+    for already_metered in (False, True):
+        if already_metered:
+            ledger.cost(0, 1000, "実費の合成値", now=1000)
+        with pytest.raises(Refused):
+            ledger.cost(0, 1000, "旧Free", now=1000, basis="free-plan-verified")
+    ledger.transact(lambda data: data["cost"].update(basis="free-plan-verified"))
+    with pytest.raises(Refused):
+        ledger.reserve(now=1000)
+
+
+def test_scan_runner_rejected_before_credentials(tmp_path, monkeypatch):
+    import sys
+    from scripts.capacity_trial import __main__ as runner
+    monkeypatch.setattr(sys, "argv", ["trial", "scan", "--ledger", str(tmp_path / "ledger.json")])
+    credentials = Mock(side_effect=AssertionError("認証取得は禁止"))
+    monkeypatch.setattr(runner.subprocess, "run", credentials)
+    reserve = Mock()
+    monkeypatch.setattr(runner.Ledger, "reserve", reserve)
+    with pytest.raises(Refused, match="^scanは観測用roleのみ$"):
+        runner.main()
+    reserve.assert_not_called()
+    credentials.assert_not_called()
+
+
+def test_missing_certifi_is_fixed_refusal(monkeypatch):
+    import sys
+    from scripts.capacity_trial.guard import NEON_HOST
+    monkeypatch.setitem(sys.modules, "certifi", None)
+    with pytest.raises(Refused) as captured:
+        validate_neon(f"postgresql://neondb_owner:synthetic@{NEON_HOST}/neondb?sslmode=require")
+    assert captured.value.code == "credential_unavailable"

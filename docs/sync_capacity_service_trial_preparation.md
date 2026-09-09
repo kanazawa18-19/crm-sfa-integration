@@ -1,7 +1,7 @@
 # 実規模観測・隔離実サービス試験の準備票
 
-> 後続状況（2026-09-10）：本人が資源作成・14日/20 USD案を承認。
-> 専用Neonは作成済み、GCPはproject quota超過で未作成。
+> 後続状況（2026-09-10）：本人が資源作成・14日/20 USD案を承認。GCPは本人指定actionpoint-autocalcへ変更、専用named DB作成済み。Claude送信・回答取得済み。IAM付与の自動承認審査で停止中。
+> 専用Neonは作成済み、旧GCP候補cnctor-crm-cap-trial-260910のみproject quota超過で未作成。
 > 以下は準備時点の記録。現在の到達点は[隔離試験記録](sync_capacity_service_trial_results.md)を参照。
 
 2026-09-10 主機CX。製品基準 `d1b4060`。今回の成果は準備文書であり、

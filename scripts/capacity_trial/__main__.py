@@ -10,15 +10,15 @@ import sys
 import tempfile
 import time
 
-from .guard import ACCOUNTS, ERROR_CODES, Ledger, PROJECT, Refused, validate_environment, validate_target
+from .guard import ACCOUNTS, DATABASE, ERROR_CODES, Ledger, PROJECT, Refused, validate_environment, validate_target
 
 
 def smoke(store):
     from src.sync_capacity.domain import submission, PayloadConflict
     from src.sync_capacity.application import drain_one
-    store.initialize(apply=True)
     if list(store.jobs.limit(1).stream()):
         raise Refused("smoke scopeは既に使用済み。過去の成功を再利用しません")
+    store.initialize(apply=True)
     now = time.time()
     item = submission("notion", {"id": "synthetic-smoke"}, None, now)
     store.enqueue(item, now)
@@ -48,7 +48,7 @@ def scan(store):
 
 def main():
     parser = argparse.ArgumentParser(description="承認済み専用Firestore・Neonの隔離試験。本番同期は対象外")
-    parser.add_argument("command", choices=["init-ledger", "record-cost", "smoke", "scan", "neon-probe"])
+    parser.add_argument("command", choices=["init-ledger", "migrate-target", "record-cost", "smoke", "scan", "neon-probe"])
     parser.add_argument("--ledger", required=True)
     parser.add_argument("--created-at", type=float)
     parser.add_argument("--usd", type=float)
@@ -64,14 +64,19 @@ def main():
         Ledger.initialize(args.ledger, args.created_at)
         return {"state": "ledger_initialized", "cost": "未観測・実行禁止"}
     ledger = Ledger(args.ledger)
+    if args.command == "migrate-target":
+        ledger.migrate_target()
+        return {"state": "target_migrated", "project": PROJECT, "database": DATABASE, "cost": "再照合待ち・実行禁止"}
     if args.command == "record-cost":
         if args.usd is None or args.observed_at is None:
             raise Refused("費用実測・観測時刻が必要。未観測を0と登録しない")
         ledger.cost(args.usd, args.observed_at, args.evidence, basis=args.cost_basis)
         return {"state": "cost_recorded"}
-    validate_target(PROJECT, "(default)", args.scope, role=args.role)
+    validate_target(PROJECT, DATABASE, args.scope, role=args.role)
     if args.command == "smoke" and (args.scope != "trial-smoke" or args.role != "runner"):
         raise Refused("smokeは専用scopeとrunnerのみ")
+    if args.command == "scan" and args.role != "observer":
+        raise Refused("scanは観測用roleのみ")
     if not os.environ.get("CAPACITY_TRIAL_CHILD"):
         # 接続情報・認証・Python startup設定は全て切り離す。
         ledger.reserve()
@@ -114,7 +119,7 @@ def main():
     from .firestore import make_store
     store = make_store(args.scope, token, ledger, role=args.role)
     result = smoke(store) if args.command == "smoke" else scan(store)
-    return {"state": "passed", "case": args.command, "project": PROJECT,
+    return {"state": "passed", "case": args.command, "project": PROJECT, "database": DATABASE,
             "scope": args.scope, "started_at": started, "finished_at": time.time(),
             "result": result, "limitations": "合成Firestoreのみ。請求読取り回数は未確定"}
 

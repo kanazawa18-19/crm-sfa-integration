@@ -1,0 +1,31 @@
+{
+  "project": "actionpoint-autocalc",
+  "database": {
+    "appEngineIntegrationMode": "DISABLED",
+    "concurrencyMode": "PESSIMISTIC",
+    "createTime": "2026-09-09T20:30:00.223688Z",
+    "databaseEdition": "STANDARD",
+    "deleteProtectionState": "DELETE_PROTECTION_ENABLED",
+    "earliestVersionTime": "2026-09-09T20:30:00.223688Z",
+    "enhancedTextSearchQueryMode": "ENHANCED_QUERY_MODE_ENABLED",
+    "etag": "IKX+/qOt4pYDMPqvy7qr4pYD",
+    "freeTier": true,
+    "locationId": "us-east4",
+    "name": "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910",
+    "pointInTimeRecoveryEnablement": "POINT_IN_TIME_RECOVERY_DISABLED",
+    "realtimeUpdatesMode": "REALTIME_UPDATES_MODE_ENABLED",
+    "type": "FIRESTORE_NATIVE",
+    "uid": "20aa18f8-1265-40ba-a3e7-cb2d6db8a6d4",
+    "updateTime": "2026-09-09T20:30:00.223688Z",
+    "versionRetentionPeriod": "3600s"
+  },
+  "trial_project_bindings": [],
+  "trial_sa_policies": {
+    "runner": {
+      "etag": "ACAB"
+    },
+    "observer": {
+      "etag": "ACAB"
+    }
+  }
+}

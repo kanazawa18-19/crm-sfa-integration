@@ -11,6 +11,7 @@ def probe(dsn, ledger):
     ledger.reserve(sql_connections=2, sql_statements=12)
     import psycopg
     events = []
+    sql_count = 0
     # PostgreSQLの同じセッションで保持・解放されるかを2接続で確認する。
     key = 260910314
     with ExitStack() as stack:
@@ -22,8 +23,10 @@ def probe(dsn, ledger):
             events.append({"connection": index+1, "event": "opened", "seconds": time.monotonic()-start})
         first, second = connections
         def query(connection, sql, params=None):
+            nonlocal sql_count
             start = time.monotonic()
             row = connection.execute(sql, params).fetchone()
+            sql_count += 1
             events.append({"connection": connections.index(connection)+1,
                            "event": "query_finished", "seconds": time.monotonic()-start})
             return row
@@ -40,7 +43,10 @@ def probe(dsn, ledger):
             raise AssertionError("解放後の別session取得失敗")
         if query(second, "SELECT pg_advisory_unlock(%s)", (key,)) != (True,):
             raise AssertionError("別sessionの終了時解放失敗")
+    connections_closed = all(connection.closed for connection in connections)
+    if not connections_closed:
+        raise AssertionError("終了後もSQL接続が残っています")
     return {"project": NEON_PROJECT, "branch": NEON_BRANCH, "endpoint": NEON_ENDPOINT,
-            "connection_count": 2, "sql_count": 7, "connections_closed": True,
+            "connection_count": len(connections), "sql_count": sql_count, "connections_closed": connections_closed,
             "advisory_exclusion": True, "events": events,
             "limitations": "専用SQLプローブ。既存同期の接続ピーク・outbox・外部連携は未検証"}
