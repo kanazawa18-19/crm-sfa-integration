@@ -1,0 +1,471 @@
+{
+  "started_at": 1788995394.0700958,
+  "before": {
+    "created_at": 1788983820.0,
+    "reserved": {
+      "deletes": 0,
+      "reads": 3453,
+      "runtime_seconds": 4345,
+      "sql_connections": 5,
+      "sql_statements": 24,
+      "writes": 315
+    },
+    "rpc_calls": {
+      "batch_get_documents": 848,
+      "commit": 163,
+      "run_query": 88
+    },
+    "returned_documents": 1444,
+    "halted": null,
+    "claimant_failures": [
+      {
+        "failures": [
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77175,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77176,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77177,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77178,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77179,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77180,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77182,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77183,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77184,
+            "return_code": 1
+          }
+        ],
+        "scope": "trial-concurrency-4",
+        "successful_children": 3
+      }
+    ],
+    "claimant_run_errors": [
+      {
+        "children_stop_verified_at_error": false,
+        "error_code": "child_failed",
+        "error_type": "Refused",
+        "phase": "collecting",
+        "scope": "trial-concurrency-4",
+        "started_children": 12
+      }
+    ],
+    "stage": 2,
+    "rpc_reserved": 1099,
+    "document_names_count": 64,
+    "upper_usd": 8
+  },
+  "pre_trial_python_count": 0,
+  "source_sha256": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "23eb24035f998f5f1e7128299dd83468699c4673e78191de2e23721c24f657bf",
+    "scripts/capacity_trial/concurrency.py": "eb36e80abf0a4af60e65c5c55bd7d3c13d866d5fadfab7f116b0bc74ea37e2ee",
+    "scripts/capacity_trial/diagnostics.py": "10b13907a8f34c2f8404a80e5700579ffe37f5b2e63eabe7812288e776fe7426",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "2b7e60f4e4dc7ed26f96cadc0e8f677968e7e5fe2b8cbfffcf525aeaedf4629e",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
+  },
+  "token_refresh": {
+    "runner": {
+      "updated_at": 1788995396.558795,
+      "requested_lifetime_seconds": 1800,
+      "keychain_match": true
+    },
+    "observer": {
+      "updated_at": 1788995397.942812,
+      "requested_lifetime_seconds": 1800,
+      "keychain_match": true
+    }
+  },
+  "trial": {
+    "return_code": 1,
+    "stdout": {
+      "invalid_json": true,
+      "bytes": 0
+    },
+    "stderr": {
+      "state": "failed",
+      "error_type": "Refused",
+      "error_code": "child_failed",
+      "partial_result": false
+    },
+    "elapsed_seconds": 36.11039590835571
+  },
+  "after": {
+    "created_at": 1788983820.0,
+    "reserved": {
+      "deletes": 0,
+      "reads": 3785,
+      "runtime_seconds": 5005,
+      "sql_connections": 5,
+      "sql_statements": 24,
+      "writes": 358
+    },
+    "rpc_calls": {
+      "batch_get_documents": 939,
+      "commit": 185,
+      "run_query": 101
+    },
+    "returned_documents": 1665,
+    "halted": null,
+    "claimant_failures": [
+      {
+        "failures": [
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77175,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77176,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77177,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77178,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77179,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77180,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77182,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77183,
+            "return_code": 1
+          },
+          {
+            "error_code": "unexpected_error",
+            "error_type": "unknown",
+            "pid": 77184,
+            "return_code": 1
+          }
+        ],
+        "scope": "trial-concurrency-4",
+        "successful_children": 3
+      },
+      {
+        "failures": [
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79631,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79632,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79634,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79635,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79636,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79637,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79638,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79639,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79640,
+            "return_code": 1
+          },
+          {
+            "diagnostic_state": "classified",
+            "error_code": "unexpected_error",
+            "error_type": "FailedPrecondition",
+            "pid": 79641,
+            "return_code": 1
+          }
+        ],
+        "scope": "trial-concurrency-5",
+        "successful_children": 2
+      }
+    ],
+    "claimant_run_errors": [
+      {
+        "children_stop_verified_at_error": false,
+        "error_code": "child_failed",
+        "error_type": "Refused",
+        "phase": "collecting",
+        "scope": "trial-concurrency-4",
+        "started_children": 12
+      },
+      {
+        "children_stop_verified_at_error": false,
+        "error_code": "child_failed",
+        "error_type": "Refused",
+        "phase": "collecting",
+        "scope": "trial-concurrency-5",
+        "started_children": 12
+      }
+    ],
+    "stage": 2,
+    "rpc_reserved": 1225,
+    "document_names_count": 77,
+    "upper_usd": 8
+  },
+  "post_trial_python_count": 0,
+  "inspection": {
+    "return_code": 0,
+    "stdout": {
+      "state": "passed",
+      "case": "inspect-state",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-concurrency-5",
+      "started_at": 1788995470.914311,
+      "finished_at": 1788995472.881838,
+      "result": {
+        "scope_exists": true,
+        "scope": {
+          "version": 1,
+          "slots": {
+            "2": null,
+            "0": {
+              "owner": "synthetic-process-79633",
+              "job_id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c"
+            },
+            "1": {
+              "owner": "synthetic-process-79642",
+              "job_id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85"
+            }
+          },
+          "limit": 3
+        },
+        "job_count": 12,
+        "jobs": [
+          {
+            "id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "owner": "synthetic-process-79642",
+            "state": "processing",
+            "slot": "1",
+            "attempts": 1
+          },
+          {
+            "id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "owner": "synthetic-process-79633",
+            "state": "processing",
+            "slot": "0",
+            "attempts": 1
+          },
+          {
+            "id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          }
+        ]
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    "stderr": null,
+    "elapsed_seconds": 2.1714260578155518,
+    "after": {
+      "created_at": 1788983820.0,
+      "reserved": {
+        "deletes": 0,
+        "reads": 3887,
+        "runtime_seconds": 5065,
+        "sql_connections": 5,
+        "sql_statements": 24,
+        "writes": 358
+      },
+      "rpc_calls": {
+        "batch_get_documents": 940,
+        "commit": 185,
+        "run_query": 102
+      },
+      "returned_documents": 1678,
+      "halted": null,
+      "rpc_reserved": 1227,
+      "document_names_count": 77
+    },
+    "independent_verification": {
+      "counts": {
+        "processing": 2,
+        "pending": 10
+      },
+      "job_count": 12,
+      "slot_count": 3,
+      "limit": 3,
+      "owners_slots_attempts_match": true,
+      "pending_unclaimed": true,
+      "write_reservation_delta": 0,
+      "original_trial_passed": false,
+      "occupied_slot_count": 2,
+      "empty_slot_count": 1
+    },
+    "trial_python_count": 0
+  }
+}
