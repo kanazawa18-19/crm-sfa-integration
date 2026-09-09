@@ -10,9 +10,9 @@
 (meeting_sync/email_remindersと同じ環境変数)。新規env変数は無い。
 
 中優先度の日次ダイジェスト(`run_incident_digest()`)は既存の
-`SLACK_WEBHOOK_URL_ALERT`チャンネルへ送り、Slack受理後に送信済みを確定する。
+金沢さんのDMへ送り、Slack受理後に送信済みを確定する。
 
-`SLACK_BOT_TOKEN`未設定・`isManager`のユーザーが0人・`find_manager_emails()`自体の失敗
+高優先度の即時通知は、`SLACK_BOT_TOKEN`未設定・`isManager`のユーザーが0人・`find_manager_emails()`自体の失敗
 (DB接続エラー等)のいずれの場合も何もせず静かにreturnする(`gmail_sync/notify.py`の
 `notify_web_engagement_tool`と同じパターン — インシデント検知自体はメール同期処理の
 副次的な効果であり、通知先解決の失敗を理由にメイン処理(EmailLog記録)を止めるべきではない)。
@@ -28,6 +28,7 @@ import os
 import requests
 
 from src.incident_detection import db
+from src.notifications import operations_dm
 from src.meeting_sync.slack_approval import (
     _REQUEST_TIMEOUT_SECONDS,
     _SLACK_API_BASE,
@@ -136,9 +137,10 @@ def run_incident_digest() -> dict[str, int | bool]:
 
     未設定・送信失敗はcronへ例外を返す。残りは次回実行に持ち越す。
     """
-    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT", "").strip()
-    if not url:
-        raise IncidentDigestDeliveryError("日次通知のSlack通知先が未設定です")
+    try:
+        operations_dm.require_bot_token()
+    except operations_dm.OperationsDMDeliveryError as exc:
+        raise IncidentDigestDeliveryError(operations_dm.safe_failure_message(exc)) from None
 
     with db.claim_undigested_medium_priority_emails() as rows:
         if not rows:
@@ -157,22 +159,8 @@ def run_incident_digest() -> dict[str, int | bool]:
                 "今回の上限50件に達しました。未通知分が残っている可能性があり、次回へ持ち越します"
             )
         try:
-            response = requests.post(
-                url, json={"text": "\n".join(lines)},
-                timeout=_REQUEST_TIMEOUT_SECONDS, allow_redirects=False,
-            )
-        except Exception as exc:
-            # 例外本文・型名は外へ出さず、あらかじめ決めた分類だけ残す。
-            if isinstance(exc, requests.Timeout):
-                category = "タイムアウト"
-            elif isinstance(exc, requests.ConnectionError):
-                category = "接続失敗"
-            else:
-                category = "その他の通信失敗"
-            raise IncidentDigestDeliveryError(
-                f"日次通知のSlack通信に失敗しました（{category}）"
-            ) from None
-        if response.status_code != 200 or response.text.strip() != "ok":
-            raise IncidentDigestDeliveryError("日次通知がSlackに受理されませんでした")
+            operations_dm.send_operations_dm("\n".join(lines))
+        except operations_dm.OperationsDMDeliveryError as exc:
+            raise IncidentDigestDeliveryError(operations_dm.safe_failure_message(exc)) from None
 
     return {"count": len(rows), "batch_limit_reached": batch_limit_reached}

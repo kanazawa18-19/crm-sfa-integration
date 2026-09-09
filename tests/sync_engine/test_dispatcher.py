@@ -945,7 +945,7 @@ def test_dispatch_completes_safely_even_when_slack_notification_itself_fails(
 
     monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
     monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post", _raise_from_requests_post
+        "src.sync_engine.slack_notifier.operations_dm.send_operations_dm", _raise_from_requests_post
     )
     targets = _all_targets()
     targets[Tool.KINTONE] = FakeSyncTarget(
@@ -954,7 +954,7 @@ def test_dispatch_completes_safely_even_when_slack_notification_itself_fails(
     targets[Tool.NOTION] = FakeSyncTarget(
         Tool.NOTION, upsert_raises=TimeoutError("Notion API response timed out")
     )
-    real_notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    real_notifier = WebhookSlackNotifier()
     dispatcher = Dispatcher(store, targets, slack_notifier=real_notifier)
     event = SyncEvent(
         source_tool=Tool.KINTONE,

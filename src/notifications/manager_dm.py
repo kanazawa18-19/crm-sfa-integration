@@ -124,7 +124,9 @@ def send_dm(manager_email: str, text: str, *, timeout: float = _DM_API_CALL_TIME
         raise RuntimeError(f"chat.postMessage失敗: {result.get('error')}")
 
 
-def notify_managers(text: str, *, log_context: str) -> None:
+def notify_managers(
+    text: str, *, log_context: str, exclude_emails: tuple[str, ...] = ()
+) -> None:
     """`text`を`User.isManager = true`の全員へSlack DMで送る。
 
     `SLACK_BOT_TOKEN`未設定・managerが0人・`find_manager_emails()`自体の失敗のいずれの
@@ -157,6 +159,10 @@ def notify_managers(text: str, *, log_context: str) -> None:
         )
         return
 
+    # 同じ警告を別経路で送る宛先は、表記揺れも含めて重複を避ける。
+    excluded = {email.strip().casefold() for email in exclude_emails}
+    manager_emails = [email for email in manager_emails
+                      if email.strip().casefold() not in excluded]
     deadline = time.monotonic() + _NOTIFY_MANAGERS_TIME_BUDGET_SECONDS
     for index, manager_email in enumerate(manager_emails):
         if time.monotonic() >= deadline:

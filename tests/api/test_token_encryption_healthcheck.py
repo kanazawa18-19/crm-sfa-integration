@@ -42,16 +42,14 @@ def test_run_healthcheck_posts_slack_alert_on_failure(monkeypatch: pytest.Monkey
 
     posted = {}
 
-    def fake_post(url: str, json: dict, timeout: float) -> None:
-        posted["url"] = url
-        posted["text"] = json["text"]
+    def fake_post(text: str) -> None:
+        posted["text"] = text
 
-    monkeypatch.setattr("src.api.token_encryption_healthcheck.requests.post", fake_post)
+    monkeypatch.setattr("src.api.token_encryption_healthcheck.operations_dm.send_operations_dm", fake_post)
 
     result = run_token_encryption_healthcheck()
 
     assert result["ok"] is False
-    assert posted["url"] == "https://hooks.slack.test/alert"
     assert "TOKEN_ENCRYPTION_KEY" in posted["text"]
 
 
@@ -62,22 +60,16 @@ def test_run_healthcheck_does_not_post_slack_alert_on_success(monkeypatch: pytes
     def fail_post(*args, **kwargs):
         raise AssertionError("should not post to slack when healthcheck succeeds")
 
-    monkeypatch.setattr("src.api.token_encryption_healthcheck.requests.post", fail_post)
+    monkeypatch.setattr("src.api.token_encryption_healthcheck.operations_dm.send_operations_dm", fail_post)
 
     result = run_token_encryption_healthcheck()
 
     assert result == {"ok": True, "error": None}
 
 
-def test_run_healthcheck_skips_slack_post_when_webhook_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_healthcheck_preserves_failure_when_dm_fails(monkeypatch):
     monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
-    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT", raising=False)
-
-    def fail_post(*args, **kwargs):
-        raise AssertionError("should not attempt to post when webhook url is unset")
-
-    monkeypatch.setattr("src.api.token_encryption_healthcheck.requests.post", fail_post)
-
-    result = run_token_encryption_healthcheck()
-
-    assert result["ok"] is False
+    def fail(*args, **kwargs):
+        raise RuntimeError("secret")
+    monkeypatch.setattr("src.api.token_encryption_healthcheck.operations_dm.send_operations_dm", fail)
+    assert run_token_encryption_healthcheck()["ok"] is False

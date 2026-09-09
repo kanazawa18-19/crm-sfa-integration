@@ -189,14 +189,20 @@ def digest_setup(monkeypatch):
             state["rolled_back"] = True
             raise
 
-    def post(*args, **kwargs):
+    def request(method, url, **kwargs):
         assert not state["committed"]
-        state["calls"].append(kwargs)
-        return SimpleNamespace(status_code=200, text="ok")
+        if url.endswith("users.lookupByEmail"):
+            result = {"ok": True, "user": {"id": "U123"}}
+        elif url.endswith("conversations.open"):
+            result = {"ok": True, "channel": {"id": "D123"}}
+        else:
+            state["calls"].append(kwargs)
+            result = {"ok": True}
+        return SimpleNamespace(status_code=200, json=lambda: result)
 
     monkeypatch.setattr(notify.db, "claim_undigested_medium_priority_emails", claim)
-    monkeypatch.setattr(notify.requests, "post", post)
-    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://example.invalid/secret")
+    monkeypatch.setattr(notify.operations_dm.requests, "request", request)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "test-bot-token")
     return rows, state
 
 
@@ -217,7 +223,7 @@ def test_digest_empty_does_not_send(digest_setup):
 
 def test_digest_unconfigured_fails_without_claim(monkeypatch, digest_setup):
     rows, state = digest_setup
-    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT")
+    monkeypatch.delenv("SLACK_BOT_TOKEN")
     with pytest.raises(notify.IncidentDigestDeliveryError):
         notify.run_incident_digest()
     assert not state["committed"] and not state["calls"]
@@ -227,8 +233,8 @@ def test_digest_unconfigured_fails_without_claim(monkeypatch, digest_setup):
                                          (500, "error"), (302, "ok"), (200, "error")])
 def test_digest_slack_rejection_rolls_back(monkeypatch, digest_setup, status, body):
     rows, state = digest_setup
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k:
-                        SimpleNamespace(status_code=status, text=body))
+    monkeypatch.setattr(notify.operations_dm.requests, "request", lambda *a, **k:
+                        SimpleNamespace(status_code=status, json=lambda: {"ok": False, "error": body}))
     with pytest.raises(notify.IncidentDigestDeliveryError):
         notify.run_incident_digest()
     assert state["rolled_back"] and not state["committed"]
@@ -237,7 +243,7 @@ def test_digest_slack_rejection_rolls_back(monkeypatch, digest_setup, status, bo
 @pytest.mark.parametrize("exception_type,category", [
     (notify.requests.Timeout, "タイムアウト"),
     (notify.requests.ConnectionError, "接続失敗"),
-    (RuntimeError, "その他の通信失敗"),
+    (RuntimeError, "その他"),
 ])
 def test_digest_transport_failure_hides_secret_and_rolls_back(
     monkeypatch, digest_setup, exception_type, category
@@ -245,10 +251,10 @@ def test_digest_transport_failure_hides_secret_and_rolls_back(
     rows, state = digest_setup
     def fail(*args, **kwargs):
         raise exception_type("https://example.invalid/secret")
-    monkeypatch.setattr(notify.requests, "post", fail)
+    monkeypatch.setattr(notify.operations_dm.requests, "request", fail)
     with pytest.raises(notify.IncidentDigestDeliveryError) as error:
         notify.run_incident_digest()
-    assert str(error.value) == f"日次通知のSlack通信に失敗しました（{category}）"
+    assert str(error.value) == f"運用DM送信失敗（工程: 本人検索、原因: {category}）"
     assert "https://example.invalid/secret" not in "".join(traceback.format_exception(error.value))
     assert state["rolled_back"] and not state["committed"]
 

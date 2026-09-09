@@ -1,6 +1,6 @@
 """Slack Bot Tokenでの承認依頼投稿・ボタン押下(interactivity)への応答。
 
-`src/sync_engine/slack_notifier.py`（Incoming Webhookでの一方向通知）とは別物。ボタンの
+`src/sync_engine/slack_notifier.py`（運用DMでの一方向通知）とは別物。ボタンの
 コールバックを受けるには`chat.postMessage`（Bot Token）でメッセージを送る必要があるため、
 本モジュール専用に`SLACK_BOT_TOKEN`を新規に導入する（新規SDK依存は増やさず、
 `slack_notifier.py`と同様に`requests`で直接Slack Web APIを呼ぶ）。
@@ -25,6 +25,8 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping, Protocol
 
 import requests
+
+from src.notifications import operations_dm
 
 from src.sync_engine.clients.notion_lookup import find_page_id_by_text_property
 
@@ -171,15 +173,7 @@ def _resolve_dm_channel(
 
 
 def _alert_delivery_failure(candidate: MeetingCandidate, reason: str) -> None:
-    """obasan-qualityレビューBLOCKER対応（2026-08-13）: Slack DM送信が失敗すると、
-    ログ（誰も見ていない）以外に気づく手段が無く、案件が永遠にNotionへ登録されない
-    まま静かに失われる。既存の運用アラート用Incoming Webhook（`SLACK_WEBHOOK_URL_ALERT`、
-    `src/sync_engine/slack_notifier.py`が使うものと同じ環境変数）へフォールバック通知する。
-    こちらも未設定なら何もしない（この場合はログのみに留まるが、これ以上できることはない）。
-    """
-    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
-    if not url:
-        return
+    """担当営業へのDM失敗を金沢さんに通知し、通知失敗は本処理へ返さない。"""
     text = (
         f"[商談アイテム自動検知] 担当営業へのSlack DM送信に失敗しました（{reason}）\n"
         f"対象: {candidate.title}\n"
@@ -188,9 +182,9 @@ def _alert_delivery_failure(candidate: MeetingCandidate, reason: str) -> None:
         f"手動でNotionアクション履歴DBへの登録要否をご確認ください。"
     )
     try:
-        requests.post(url, json={"text": text}, timeout=_REQUEST_TIMEOUT_SECONDS)
-    except Exception:
-        logger.exception("failed to post fallback alert to SLACK_WEBHOOK_URL_ALERT")
+        operations_dm.send_operations_dm(text)
+    except Exception as exc:
+        operations_dm.log_delivery_failure(logger, exc)
 
 
 def post_approval_request(candidate: MeetingCandidate) -> bool:
@@ -203,7 +197,7 @@ def post_approval_request(candidate: MeetingCandidate) -> bool:
     `SLACK_BOT_TOKEN`未設定時は連携自体が無効化された状態として何もせずFalseを返す
     （アラートも送らない。意図的な未設定と実際の障害を区別するため）。それ以外の失敗
     （ユーザー解決失敗・chat.postMessage失敗）は`_alert_delivery_failure()`で
-    `SLACK_WEBHOOK_URL_ALERT`へフォールバック通知した上でFalseを返す。
+    金沢さんのDMへフォールバック通知した上でFalseを返す。
     """
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:

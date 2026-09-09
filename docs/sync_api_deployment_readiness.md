@@ -8,7 +8,7 @@
 |---|---|---|
 | 現行API | `dpl_5iwWWdhTbz56vhGZtuvC7gurZT4g`、production/Ready、本番alias保持。コミット `19dc5a8` は前セッションの確認値 | 新配備なし |
 | テーブル | RecordSyncWatermark・SpreadsheetOutboxは前セッションで適用済みと確認 | 再適用不要 |
-| 通知先 | Vercel本番設定名一覧に `SLACK_WEBHOOK_URL_ALERT` なし | 未充足 |
+| 通知先 | 金沢さんDMへ移す実装を準備。既存Botの本人解決・DM権限・実送達は未検証 | 未充足 |
 | DB設定 | Vercelの2項目はSensitive。Neon実測は上限112・管理用予約6、確認時の通常接続2本 | ピーク/アプリ並列数との照合は未完了 |
 | 稼働設定 | Vercel APIでHobby、Fluid有効、iad1、標準タイムアウト300秒、elasticConcurrencyEnabled=false | アプリの同時処理数上限は未特定 |
 | 定時登録 | 実プロジェクトに9本。incident-digestは `0 4 * * *`、outboxは `0 17 * * *`。disabledAt=null | 登録あり。実行・到達の証明ではない |
@@ -131,6 +131,8 @@ ROLLBACK;
 
 次の実装イシューでは外部依存の少ない共通DM送信処理を追加し、HTTP成功だけでなくSlack JSONの成功を確認する。秘密や応答本文を失敗ログへ出さない。既存manager_dm/slack_approvalの循環importを増やさない。案件ミラー/関連同期は既存管理者DMも同時に呼ぶため、金沢さんへ重複通知する可能性を整理する。既存の高優先度・管理者宛通知の要件を無断で狭めない。
 
-今回の配備条件確認は、実測と必要変更の特定まで。DM送信処理・同時処理数の上限/容量保証・自動監視が残るため、新APIは配備しない。次はDM通知対応を1イシューとして実装・レビュー・隔離検証し、その後に残る配備条件を順に満たす。
+上記は配備条件確認時点の記録。2026-09-09の後続作業で6箇所のDM送信対応を準備した。
+変更内容・検証・未確認事項は [運用DM対応](operations_dm_delivery.md) を参照。
+実Botによる本人解決・DM権限・送達、同時処理数の上限/容量保証、自動監視が残るため、新APIは配備しない。
 
 関連：[日次通知](incident_digest_delivery.md)、[更新時刻と接続条件](record_sync_freshness.md)。

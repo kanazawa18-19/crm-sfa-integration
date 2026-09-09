@@ -22,58 +22,21 @@ REJECTED = RejectedData(
 )
 
 
-def test_notify_conflict_posts_to_configured_webhook_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def fake_post(url: str, json: dict[str, Any], timeout: int) -> None:
-        calls.append({"url": url, "json": json, "timeout": timeout})
-
-    monkeypatch.setattr("src.sync_engine.slack_notifier.requests.post", fake_post)
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
-
-    notifier.notify_conflict(REJECTED)
-
+def test_notify_conflict_sends_operations_dm(monkeypatch):
+    calls = []
+    monkeypatch.setattr("src.sync_engine.slack_notifier.operations_dm.send_operations_dm", calls.append)
+    WebhookSlackNotifier().notify_conflict(REJECTED)
     assert len(calls) == 1
-    assert calls[0]["url"] == "https://hooks.slack.com/services/xxx"
-    text = calls[0]["json"]["text"]
-    assert "MSA-PJ-001" in text
-    assert "営業ステータス" in text
-    assert "商談中(B)" in text
-    assert "失注" in text
-    assert "採用元: notion" in text
-    assert "却下元: kintone" in text
+    for expected in ["MSA-PJ-001", "営業ステータス", "商談中(B)", "失注", "採用元: notion", "却下元: kintone"]:
+        assert expected in calls[0]
 
 
-def test_notify_conflict_uses_env_var_when_url_not_explicitly_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append(url),
-    )
-    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://hooks.slack.com/services/from-env")
-    notifier = WebhookSlackNotifier()
-
-    notifier.notify_conflict(REJECTED)
-
-    assert calls == ["https://hooks.slack.com/services/from-env"]
-
-
-def test_notify_conflict_skips_when_no_webhook_url_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        "src.sync_engine.slack_notifier.requests.post",
-        lambda url, json, timeout: calls.append(url),
-    )
-    monkeypatch.delenv("SLACK_WEBHOOK_URL_ALERT", raising=False)
-    notifier = WebhookSlackNotifier()
-
-    notifier.notify_conflict(REJECTED)
-
-    assert calls == []
+def test_notify_conflict_ignores_legacy_webhook(monkeypatch):
+    calls = []
+    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://example.invalid/old")
+    monkeypatch.setattr("src.sync_engine.slack_notifier.operations_dm.send_operations_dm", calls.append)
+    WebhookSlackNotifier().notify_conflict(REJECTED)
+    assert len(calls) == 1
 
 
 # --- notify_new_record_created / notify_new_record_issue（2026-08-25、Round2） ------------------
@@ -395,16 +358,16 @@ def test_notify_new_record_created_falls_back_to_raw_db_key_when_schema_unknown(
 def test_notify_conflict_does_not_raise_when_requests_post_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def _raise(url: str, json: dict[str, Any], timeout: int) -> None:
+    def _raise(text: str) -> None:
         raise TimeoutError("slack webhook timed out")
 
-    monkeypatch.setattr("src.sync_engine.slack_notifier.requests.post", _raise)
-    notifier = WebhookSlackNotifier("https://hooks.slack.com/services/xxx")
+    monkeypatch.setattr("src.sync_engine.slack_notifier.operations_dm.send_operations_dm", _raise)
+    notifier = WebhookSlackNotifier()
 
     with caplog.at_level("WARNING"):
         notifier.notify_conflict(REJECTED)  # 例外を送出しないこと自体がこのテストの主眼。
 
-    assert any("failed to post to Slack" in r.getMessage() for r in caplog.records)
+    assert any("運用DM送信失敗" in r.getMessage() for r in caplog.records)
 
 
 def test_notify_new_record_created_does_not_raise_when_manager_dm_notify_managers_fails(

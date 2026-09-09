@@ -26,7 +26,7 @@ import logging
 import os
 from typing import Any, Mapping, Protocol
 
-import requests
+from src.notifications import operations_dm
 
 from src.api.notion_display import project_page_to_mirror_record
 from src.db_schema.project import PROJECT_SCHEMA
@@ -188,8 +188,10 @@ def refresh_all_projects(
                 "中止しました（既存データは変更していません）。"
             )
             logger.error(message)
-            _notify_slack_alert(message, source="refresh_all_projects")
-            _notify_managers_slack_dm(message, source="refresh_all_projects")
+            operations_sent = _notify_slack_alert(message, source="refresh_all_projects")
+            _notify_managers_slack_dm(
+                message, source="refresh_all_projects", operations_sent=operations_sent
+            )
             return {
                 "synced_count": len(rows),
                 "deleted_count": 0,
@@ -217,8 +219,10 @@ def refresh_all_projects(
                     "（既存データは変更していません）。"
                 )
                 logger.error(message)
-                _notify_slack_alert(message, source="refresh_all_projects")
-                _notify_managers_slack_dm(message, source="refresh_all_projects")
+                operations_sent = _notify_slack_alert(message, source="refresh_all_projects")
+                _notify_managers_slack_dm(
+                    message, source="refresh_all_projects", operations_sent=operations_sent
+                )
                 return {
                     "synced_count": len(rows),
                     "deleted_count": 0,
@@ -380,8 +384,10 @@ def refresh_projects_incrementally(
                 "直るまで一巡は完了しません。"
             )
             logger.error(message)
-            _notify_slack_alert(message, source="refresh_projects_incrementally")
-            _notify_managers_slack_dm(message, source="refresh_projects_incrementally")
+            operations_sent = _notify_slack_alert(message, source="refresh_projects_incrementally")
+            _notify_managers_slack_dm(
+                message, source="refresh_projects_incrementally", operations_sent=operations_sent
+            )
             return {
                 "synced_count": len(rows),
                 "deleted_count": 0,
@@ -420,8 +426,10 @@ def refresh_projects_incrementally(
                     "いないので次回また同じところから取り直します）。"
                 )
                 logger.error(message)
-                _notify_slack_alert(message, source="refresh_projects_incrementally")
-                _notify_managers_slack_dm(message, source="refresh_projects_incrementally")
+                operations_sent = _notify_slack_alert(message, source="refresh_projects_incrementally")
+                _notify_managers_slack_dm(
+                    message, source="refresh_projects_incrementally", operations_sent=operations_sent
+                )
                 return {
                     "synced_count": 0,
                     "deleted_count": 0,
@@ -475,8 +483,10 @@ def refresh_projects_incrementally(
                 "その後は必ず設定を戻してください。**"
             )
             logger.error(message)
-            _notify_slack_alert(message, source="refresh_projects_incrementally")
-            _notify_managers_slack_dm(message, source="refresh_projects_incrementally")
+            operations_sent = _notify_slack_alert(message, source="refresh_projects_incrementally")
+            _notify_managers_slack_dm(
+                message, source="refresh_projects_incrementally", operations_sent=operations_sent
+            )
             clear_cursor(CURSOR_NAME)
             return {
                 "synced_count": len(rows),
@@ -497,37 +507,26 @@ def refresh_projects_incrementally(
         release_refresh_lock(lock_conn)
 
 
-def _notify_slack_alert(message: str, *, source: str = "project_mirror") -> None:
-    """`src/incident_detection/notify.py`の日次ダイジェストと同じ`SLACK_WEBHOOK_URL_ALERT`
-    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。
-
-    `SLACK_WEBHOOK_URL_ALERT`は本番未設定であることが判明しており(`src/sync_engine/
-    slack_notifier.py`参照)、現状は実質no-opだが、将来設定された場合に備えてこのまま残す
-    (既存の`_MIN_SYNC_RATIO`ガードが使っている経路と同じ)。実際に運用者へ届く経路は
-    `_notify_managers_slack_dm()`側。
-    """
-    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
-    if not url:
-        return
+def _notify_slack_alert(message: str, *, source: str = "project_mirror") -> bool:
+    """金沢さんへ運用DM。送信失敗でも本処理と他管理者への通知を続ける。"""
     try:
-        requests.post(url, json={"text": message}, timeout=10)
-    except Exception:
-        logger.exception("%s: failed to post alert to slack", source)
+        operations_dm.send_operations_dm(message)
+        return True
+    except Exception as exc:
+        operations_dm.log_delivery_failure(logger, exc)
+        return False
 
 
-def _notify_managers_slack_dm(message: str, *, source: str = "project_mirror") -> None:
-    """`User.isManager = true`の全ユーザーへSlack DMで通知する
-    (`src/notifications/manager_dm.py`、2026-08-25新設)。`SLACK_WEBHOOK_URL_ALERT`が本番
-    未設定と判明している中で唯一本番で実際に届く通知経路であるため、`src/sync_engine/
-    slack_notifier.py`の`WebhookSlackNotifier._notify_managers()`と同じ理由でこちらを主経路と
-    する。`manager_dm`はここで遅延importする(`WebhookSlackNotifier._notify_managers()`の
-    docstring参照。循環import回避が主目的だが、project_mirror/syncからの参照でも同じ慣習に
-    揃える)。`manager_dm.notify_managers()`自体が例外を握りつぶす設計だが、念のためここでも
-    捕捉し、Slack通知の失敗でsweep中止の判断自体を失敗させない。
-    """
+def _notify_managers_slack_dm(
+    message: str, *, source: str = "project_mirror", operations_sent: bool = False
+) -> None:
+    """別経路の受理確認ができた金沢さんを除き、既存の管理者全員へ通知する。"""
     from src.notifications import manager_dm
 
     try:
-        manager_dm.notify_managers(message, log_context=source)
+        manager_dm.notify_managers(
+            message, log_context=source,
+            exclude_emails=(operations_dm.OPERATIONS_EMAIL,) if operations_sent else (),
+        )
     except Exception:
-        logger.exception("%s: failed to notify managers via Slack DM", source)
+        logger.warning("%s: 管理者DM送信失敗。本処理を継続します", source)

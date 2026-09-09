@@ -1,4 +1,4 @@
-"""Slack管理チャンネルへのアラート通知（05_同期・競合制御「アラート通知」）。
+"""Slack DMへのアラート通知（05_同期・競合制御「アラート通知」）。
 
 重要項目（config/conflict_alert_properties.json）のコンフリクトが自動解決された際、
 対象案件・変更項目・採用データ・却下データをSlackへ即時通知する。dispatcherはこの
@@ -24,19 +24,12 @@ Protocolを介して通知を行い、テストではモックNotifierを注入�
 断定していたが、複数プロパティのイベントで1つ目が既に書き込み済みのまま2つ目以降で失敗
 した場合にこれが事実と異なり、運用者に誤った状況認識を与える危険があったための対応。
 
-■ 通知先について（2026-08-25、送信先変更）: `notify_conflict`は引き続き
-`SLACK_WEBHOOK_URL_ALERT`環境変数のIncoming Webhookへ送る（Round1から変更なし、本番で
-このWebhookは設定済み・運用実績あり）。一方`notify_new_record_created`/
-`notify_new_record_issue`（Round2）は、本番環境に`SLACK_WEBHOOK_URL_ALERT`が未設定だった
-ことが判明したため、`src/incident_detection/notify.py`と同じ「`User.isManager = true`の
-全ユーザーへSlack DM」方式（`src/notifications/manager_dm.py`、`SLACK_BOT_TOKEN`を使用、
-新規env変数なし）に変更した。通知先をハードコードせず、dashboard管理画面で`isManager`
-フラグをON/OFFすることで動的に増減できる（金沢さん要望: まずは金沢のDM、将来的には
-マネージャー陣のDMへ拡張）。
+■ 通知先: 同期競合は金沢さんのDM。他の既存通知は管理者全員のDMを維持する。
+クラス名は既存の呼び出し元との互換性のため保持する。
 
 ■ 例外を投げない設計について（2026-08-25、3回目最終レビューBLOCKER対応。DM送信方式への
 変更後も踏襲）: `WebhookSlackNotifier`の各`notify_*`メソッドは、送信手段が
-Incoming Webhook（`_post()`）でもSlack DM（`_notify_managers()`、内部で
+運用DM（`_post()`）でもSlack DM（`_notify_managers()`、内部で
 `manager_dm.notify_managers()`を呼ぶ）でも、送信失敗（`requests`が送出する例外・
 Slack API側のエラーレスポンス・DB接続失敗等）を**呼び出し元へ一切伝播させない**
 （内部でtry/exceptし、失敗時はログのみ残して静かに戻る）。
@@ -52,10 +45,9 @@ kintone/Zoho側のリトライで同じイベントが再送され、Round2全�
 from __future__ import annotations
 
 import logging
-import os
 from typing import Protocol
 
-import requests
+from src.notifications import operations_dm
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
@@ -190,46 +182,14 @@ class SlackNotifier(Protocol):
 
 
 class WebhookSlackNotifier:
-    """コンフリクト通知（`notify_conflict`）はSLACK_WEBHOOK_URL_ALERT環境変数のIncoming
-    Webhookへ、新規レコード作成関連の通知（`notify_new_record_created`/
-    `notify_new_record_issue`）は`User.isManager = true`の全ユーザーへのSlack DMへ送る実装
-    （クラス名は歴史的経緯によりWebhook前提のままだが、送信手段はメソッドにより異なる。
-    モジュールdocstring「通知先について」参照）。
-
-    本番投入時はリトライ・レート制限・Block Kit等によるリッチな整形を検討すること。
-    ここでは仕様書05節の通知内容（対象案件 / 変更項目 / 採用データ / 却下データ）を
-    満たす最低限のテキスト通知のみを実装する。
-    """
-
-    def __init__(self, webhook_url: str | None = None) -> None:
-        self._webhook_url = webhook_url
-
-    @property
-    def _url(self) -> str | None:
-        return self._webhook_url or os.environ.get("SLACK_WEBHOOK_URL_ALERT")
+    """同期競合は金沢さんへ、その他の既存通知は管理者全員へDMする。"""
 
     def _post(self, text: str) -> None:
-        """Slack Incoming WebhookへPOSTする。`requests.post()`が送出する例外
-        （タイムアウト・接続断・5xx等）は、呼び出し元の同期処理（`Dispatcher`の保護ロジック
-        自体を含む）を巻き込んで失敗させないよう、ここで捕捉してログに残すのみとする
-        （モジュールdocstring「例外を投げない設計について」参照。3回目最終レビューBLOCKER
-        対応、2026-08-25）。Slack通知自体はあくまで副次的な機能であり、本来の同期処理を
-        失敗させてはならない（`src/audit_log/recorder.py`の「副次機能は失敗してもメインを
-        止めない」方針と同じ考え方）。
-        """
-        url = self._url
-        if not url:
-            # Webhook URL未設定時は通知を送らない（ローカル開発・URL未発行段階での動作を妨げない）。
-            return
+        """運用DMの失敗で同期処理を止めない。例外本文はログに出さない。"""
         try:
-            requests.post(url, json={"text": text}, timeout=10)
-        except Exception:
-            logger.warning(
-                "WebhookSlackNotifier: failed to post to Slack webhook; continuing without "
-                "raising (Slack notification is a secondary feature and must not block the "
-                "caller's main processing)",
-                exc_info=True,
-            )
+            operations_dm.send_operations_dm(text)
+        except Exception as exc:
+            operations_dm.log_delivery_failure(logger, exc)
 
     def _notify_managers(self, text: str) -> None:
         """`text`を`manager_dm.notify_managers()`経由で`User.isManager = true`の全員へ

@@ -21,7 +21,7 @@ import logging
 import os
 from typing import Any, Mapping, Protocol
 
-import requests
+from src.notifications import operations_dm
 
 from src.migration.zoho_client_master import normalize_company_name_strong
 import dataclasses
@@ -144,8 +144,10 @@ def refresh_all_client_names(
                 "中止しました（既存データは変更していません）。"
             )
             logger.error(message)
-            _notify_slack_alert(message, source="refresh_all_client_names")
-            _notify_managers_slack_dm(message, source="refresh_all_client_names")
+            operations_sent = _notify_slack_alert(message, source="refresh_all_client_names")
+            _notify_managers_slack_dm(
+                message, source="refresh_all_client_names", operations_sent=operations_sent
+            )
             return {
                 "synced_count": len(rows),
                 "deleted_count": 0,
@@ -286,8 +288,10 @@ def refresh_client_names_incrementally(
                 "直るまで一巡は完了しません。"
             )
             logger.error(message)
-            _notify_slack_alert(message, source="refresh_client_names_incrementally")
-            _notify_managers_slack_dm(message, source="refresh_client_names_incrementally")
+            operations_sent = _notify_slack_alert(message, source="refresh_client_names_incrementally")
+            _notify_managers_slack_dm(
+                message, source="refresh_client_names_incrementally", operations_sent=operations_sent
+            )
             return {
                 "synced_count": len(rows),
                 "deleted_count": 0,
@@ -344,8 +348,10 @@ def refresh_client_names_incrementally(
                 "その後は必ず設定を戻してください。**"
             )
             logger.error(message)
-            _notify_slack_alert(message, source="refresh_client_names_incrementally")
-            _notify_managers_slack_dm(message, source="refresh_client_names_incrementally")
+            operations_sent = _notify_slack_alert(message, source="refresh_client_names_incrementally")
+            _notify_managers_slack_dm(
+                message, source="refresh_client_names_incrementally", operations_sent=operations_sent
+            )
             clear_cursor(CURSOR_NAME)
             return {
                 "synced_count": len(rows),
@@ -366,42 +372,26 @@ def refresh_client_names_incrementally(
         release_refresh_lock(lock_conn)
 
 
-def _notify_slack_alert(message: str, *, source: str = "relation_sync") -> None:
-    """`src/project_mirror/sync.py`の`_notify_slack_alert()`と同じ`SLACK_WEBHOOK_URL_ALERT`
-    (運用アラートチャンネル)へ通知する。送信失敗はログのみで握りつぶす。
-
-    **`SLACK_WEBHOOK_URL_ALERT`は本番未設定であることが判明しており、この経路は実質no-op。**
-    実際に運用者へ届くのは`_notify_managers_slack_dm()`側なので、**必ず両方を呼ぶこと**
-    （2026-09-01、レビュー指摘。急減チェックを足したのに通知が誰にも届かない状態だった）。
-
-    `source`には呼び出し元の関数名を渡す。全件版と分割実行版のどちらで起きたのかが
-    ログから分からないと、運用者が原因を追えないため。
-    """
-    url = os.environ.get("SLACK_WEBHOOK_URL_ALERT")
-    if not url:
-        return
+def _notify_slack_alert(message: str, *, source: str = "relation_sync") -> bool:
+    """金沢さんへ運用DM。送信失敗でも本処理と他管理者への通知を続ける。"""
     try:
-        requests.post(url, json={"text": message}, timeout=10)
-    except Exception:
-        logger.exception("%s: failed to post alert to slack", source)
+        operations_dm.send_operations_dm(message)
+        return True
+    except Exception as exc:
+        operations_dm.log_delivery_failure(logger, exc)
+        return False
 
 
-def _notify_managers_slack_dm(message: str, *, source: str = "relation_sync") -> None:
-    """`User.isManager = true`の全ユーザーへSlack DMで通知する
-    （`src/notifications/manager_dm.py`）。
-
-    `src/project_mirror/sync.py`の同名関数と同じ理由でこちらが**主経路**。
-    `SLACK_WEBHOOK_URL_ALERT`が本番未設定と判明している中で、実際に人へ届くのはこの経路だけ
-    （2026-09-01追加。それまで取引先名インデックス側にはこれが無く、案件ミラー側とは
-    通知の生存性が非対称だった。判定ロジックだけ揃えても、鳴らない通知では意味がない）。
-
-    `manager_dm`はここで遅延importする（循環import回避。`project_mirror/sync.py`と同じ慣習）。
-    `notify_managers()`自体が例外を握りつぶす設計だが、念のためここでも捕捉し、
-    Slack通知の失敗で掃除中止の判断自体を失敗させない。
-    """
+def _notify_managers_slack_dm(
+    message: str, *, source: str = "relation_sync", operations_sent: bool = False
+) -> None:
+    """別経路の受理確認ができた金沢さんを除き、既存の管理者全員へ通知する。"""
     from src.notifications import manager_dm
 
     try:
-        manager_dm.notify_managers(message, log_context=source)
+        manager_dm.notify_managers(
+            message, log_context=source,
+            exclude_emails=(operations_dm.OPERATIONS_EMAIL,) if operations_sent else (),
+        )
     except Exception:
-        logger.exception("%s: failed to notify managers via Slack DM", source)
+        logger.warning("%s: 管理者DM送信失敗。本処理を継続します", source)

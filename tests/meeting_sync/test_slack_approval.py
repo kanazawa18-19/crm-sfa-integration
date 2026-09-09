@@ -135,26 +135,17 @@ def test_post_approval_request_skips_when_user_lookup_fails(requests_mock) -> No
 
     # conversations.openやchat.postMessageへのリクエストは一切飛ばない
     assert result is False
-    assert requests_mock.call_count == 1
+    assert requests_mock.call_count == 2
 
 
-def test_post_approval_request_alerts_ops_channel_when_dm_delivery_fails(
-    monkeypatch: pytest.MonkeyPatch, requests_mock
-) -> None:
-    monkeypatch.setenv("SLACK_WEBHOOK_URL_ALERT", "https://hooks.slack.com/services/T000/alert")
-    requests_mock.get(
-        f"{_SLACK_API}/users.lookupByEmail",
-        json={"ok": False, "error": "users_not_found"},
-    )
-    alert_call = requests_mock.post(
-        "https://hooks.slack.com/services/T000/alert", json={"ok": True}
-    )
-
-    result = post_approval_request(_candidate())
-
-    assert result is False
-    assert alert_call.call_count == 1
-    assert "sales@cnctor.jp" in alert_call.last_request.json()["text"]
+def test_post_approval_request_alerts_operations_dm_when_delivery_fails(monkeypatch, requests_mock):
+    requests_mock.get(f"{_SLACK_API}/users.lookupByEmail",
+                      json={"ok": False, "error": "users_not_found"})
+    calls = []
+    monkeypatch.setattr("src.meeting_sync.slack_approval.operations_dm.send_operations_dm", calls.append)
+    assert post_approval_request(_candidate()) is False
+    assert len(calls) == 1
+    assert "sales@cnctor.jp" in calls[0]
 
 
 # --- handle_interaction: 承認/却下ボタン ----------------------------------------------------
