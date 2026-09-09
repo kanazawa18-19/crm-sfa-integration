@@ -768,3 +768,13 @@ def test_concurrency_failure_records_only_fixed_classification(ledger, monkeypat
     assert len(entry["failures"]) == 12 and entry["successful_children"] == 0
     assert all(item["error_type"] == "FailedPrecondition" for item in entry["failures"])
     assert "synthetic-not-for-ledger" not in raw
+
+
+@pytest.mark.skipif(__import__("sys").platform != "darwin", reason="macOS専用launcher検証")
+def test_outer_early_exit_preserves_child_error(tmp_path):
+    import os,sys,json
+    from scripts.capacity_trial.__main__ import isolated_run
+    result = isolated_run([sys.executable, "-c",
+        "import sys,json;sys.stdin.close();print(json.dumps({'error_code':'environment_rejected'}),file=sys.stderr);sys.exit(1)"],
+        cwd=tmp_path, env=dict(os.environ), input="synthetic"*10000, timeout=2)
+    assert result.returncode == 1 and json.loads(result.stderr)["error_code"] == "environment_rejected"

@@ -75,11 +75,22 @@ def isolated_run(command, *, cwd, env, input, timeout=60):
         try:
             for reader in readers:
                 reader.start()
-            process.stdin.write(input)
-            process.stdin.close()
-            process.stdin = None
+            try:
+                process.stdin.write(input)
+            except BrokenPipeError:
+                # 先に終了した子の固定JSONと終了コードを読み取る。
+                pass
+            finally:
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+                process.stdin = None
             deadline = time.monotonic() + timeout
-            while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            while True:
+                info = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if info is not None and info.si_pid == process.pid:
+                    break
                 if time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(command, timeout)
                 time.sleep(0.02)

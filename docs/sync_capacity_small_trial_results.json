@@ -397,18 +397,7 @@
     "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2",
     "src/sync_capacity/firestore_store.py": "26bf178621843ad1858b20b5de4999d937113fdb06472057ff41a96d8f2ef988"
   },
-  "source_sha256_final": {
-    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
-    "scripts/capacity_trial/__main__.py": "5ba2d7fe6a287f4d7a0b628876deeb5e3159c522461c0c36f2214f7dc50712eb",
-    "scripts/capacity_trial/concurrency.py": "75b1990c0d44bc7f0860db2b8d506d31bc9b01ff1570a9d68dcd7611d304934e",
-    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
-    "scripts/capacity_trial/guard.py": "d7750fc38188b54beeec8a583467800379a26038689886f664b6c4c192003b13",
-    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
-    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
-    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
-    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
-  },
-  "source_limitation": "smoke後にpermissionのevent比較を修正。応答喪失実行中に独立のinspect-state分岐を追加。各ケースの完全なファイル指紋は未採取。製品Firestore storeは全ケース不変。",
+  "source_limitation": "smoke後にpermissionのevent比較を修正。応答喪失実行中に独立のinspect-state分岐を追加。各ケースの完全なファイル指紋は未採取。製品Firestore storeは全ケース不変。 最後のlauncher終了PID照合/早期終了修正はローカル検証のみ、実再試験なし。",
   "pre_smoke_failures": {
     "attempts": 4,
     "run_query_reserved": 4,
@@ -512,6 +501,28 @@
   "source_sha256_concurrency2": {
     "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
     "scripts/capacity_trial/__main__.py": "5ba2d7fe6a287f4d7a0b628876deeb5e3159c522461c0c36f2214f7dc50712eb",
+    "scripts/capacity_trial/concurrency.py": "75b1990c0d44bc7f0860db2b8d506d31bc9b01ff1570a9d68dcd7611d304934e",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "d7750fc38188b54beeec8a583467800379a26038689886f664b6c4c192003b13",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
+  },
+  "source_sha256_before_final_launcher_fix": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "5ba2d7fe6a287f4d7a0b628876deeb5e3159c522461c0c36f2214f7dc50712eb",
+    "scripts/capacity_trial/concurrency.py": "75b1990c0d44bc7f0860db2b8d506d31bc9b01ff1570a9d68dcd7611d304934e",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "d7750fc38188b54beeec8a583467800379a26038689886f664b6c4c192003b13",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
+  },
+  "source_sha256_final_local_only": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "cffe85e9af075301f61f13fae57a5b0bc25db64387fc9b15f49507eb9fecadc7",
     "scripts/capacity_trial/concurrency.py": "75b1990c0d44bc7f0860db2b8d506d31bc9b01ff1570a9d68dcd7611d304934e",
     "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
     "scripts/capacity_trial/guard.py": "d7750fc38188b54beeec8a583467800379a26038689886f664b6c4c192003b13",
