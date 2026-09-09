@@ -97,6 +97,10 @@ needs_attentionは実際の同期先とwatermark/outboxを照合し、不足分�
 
 ## 定期drainと監視の配備要件
 
+2026-09-10の実サービス読み取り結果は[容量・流量・監視の確認](sync_capacity_live_readiness.md)を参照。
+対象GCPのFirestore DBは0件、同期drain未登録、既存監視6件は検証用で全停止。
+本番容量保証は未充足。Firestore APIは一覧閲覧時に自動有効化され、監査ログで確認済み。
+
 - Firestoreのdatabase、保管時暗号化、IAMアクセス範囲、バックアップ/復元方法を配備前に確認する。pending/processingを含む全job/slotのTTLは禁止。
 - `config/firestore.sync-capacity.indexes.json` の複合indexを配備し準備完了を確認する。query失敗でも保存済みpendingは消えない。
 - Cloud Scheduler等から既存cron認証付きで `/api/cron/sync-capacity-drain` を定期呼出しする。本変更ではcronを新規有効化しない。
