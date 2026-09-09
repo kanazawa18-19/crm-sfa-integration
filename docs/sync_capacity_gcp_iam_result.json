@@ -1,0 +1,60 @@
+{
+  "observed_at": "2026-09-09T20:49:31.463725+00:00",
+  "project": "actionpoint-autocalc",
+  "project_bindings": [
+    {
+      "condition": {
+        "expression": "resource.name==\"projects/actionpoint-autocalc/databases/crm-capacity-trial-260910\" && request.time < timestamp(\"2026-09-23T19:57:00Z\")",
+        "title": "capacity_trial_database_only"
+      },
+      "members": [
+        "serviceAccount:capacity-trial-observer@actionpoint-autocalc.iam.gserviceaccount.com"
+      ],
+      "role": "projects/actionpoint-autocalc/roles/capacityTrialObserver260910"
+    },
+    {
+      "condition": {
+        "expression": "resource.name==\"projects/actionpoint-autocalc/databases/crm-capacity-trial-260910\" && request.time < timestamp(\"2026-09-23T19:57:00Z\")",
+        "title": "capacity_trial_database_only"
+      },
+      "members": [
+        "serviceAccount:capacity-trial-runner@actionpoint-autocalc.iam.gserviceaccount.com"
+      ],
+      "role": "projects/actionpoint-autocalc/roles/capacityTrialRunner260910"
+    }
+  ],
+  "service_accounts": {
+    "runner": {
+      "bindings": [
+        {
+          "condition": {
+            "expression": "request.time < timestamp(\"2026-09-23T19:57:00Z\")",
+            "title": "capacity_trial_expiry"
+          },
+          "members": [
+            "user:kanazawa@cnctor.jp"
+          ],
+          "role": "projects/actionpoint-autocalc/roles/capacityTrialToken260910"
+        }
+      ],
+      "etag": "BwZbEvm9OSg=",
+      "version": 3
+    },
+    "observer": {
+      "bindings": [
+        {
+          "condition": {
+            "expression": "request.time < timestamp(\"2026-09-23T19:57:00Z\")",
+            "title": "capacity_trial_expiry"
+          },
+          "members": [
+            "user:kanazawa@cnctor.jp"
+          ],
+          "role": "projects/actionpoint-autocalc/roles/capacityTrialToken260910"
+        }
+      ],
+      "etag": "BwZbEvogys4=",
+      "version": 3
+    }
+  }
+}

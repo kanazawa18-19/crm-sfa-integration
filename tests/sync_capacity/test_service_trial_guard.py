@@ -9,6 +9,7 @@ from scripts.capacity_trial.guard import (
     validate_resource, validate_target,
 )
 from scripts.capacity_trial.firestore import GuardedAPI
+from src.sync_capacity.domain import submission
 
 
 @pytest.fixture
@@ -288,12 +289,14 @@ def test_launcher_only_propagates_known_child_error_codes(tmp_path, monkeypatch,
     monkeypatch.delenv("CAPACITY_TRIAL_CHILD", raising=False)
     monkeypatch.setattr(sys, "argv", ["trial", "neon-probe", "--ledger", str(tmp_path / "ledger.json")])
     monkeypatch.setattr(runner.Ledger, "reserve", lambda *a, **kw: None)
+    monkeypatch.setattr(runner.Ledger, "authorize_command", lambda *a, **kw: None)
     responses = iter([
         subprocess.CompletedProcess([], 0, stdout="synthetic-secret", stderr=""),
         subprocess.CompletedProcess([], 1, stdout="", stderr=json.dumps({
             "state": "failed", "error_code": child_code, "message": "synthetic-secret"})),
     ])
     monkeypatch.setattr(runner.subprocess, "run", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(runner, "isolated_run", lambda *a, **kw: next(responses))
     with pytest.raises(Refused) as captured:
         runner.main()
     assert captured.value.code == expected
@@ -413,3 +416,355 @@ def test_missing_certifi_is_fixed_refusal(monkeypatch):
     with pytest.raises(Refused) as captured:
         validate_neon(f"postgresql://neondb_owner:synthetic@{NEON_HOST}/neondb?sslmode=require")
     assert captured.value.code == "credential_unavailable"
+
+
+def test_concurrency_starts_twelve_real_processes_with_stdin_barrier(ledger, monkeypatch):
+    import subprocess
+    import sys
+    from scripts.capacity_trial import concurrency as module
+    original = subprocess.Popen
+    def synthetic_child(command, **kwargs):
+        # 実Firestoreの代わりにIPCだけを実プロセスで照合する。
+        code = ('import json,os,sys; '
+                'assert sys.stdin.readline().strip()=="synthetic-token"; '
+                'print(json.dumps({"ready":os.getpid()}),flush=True); '
+                'assert sys.stdin.readline()=="go\\n"; '
+                'print(json.dumps({"pid":os.getpid(),"claim":None}))')
+        assert "synthetic-token" not in str(command)
+        return original([sys.executable, "-s", "-c", code], **kwargs)
+    monkeypatch.setattr(module.subprocess, "Popen", synthetic_child)
+    result = module.run_claimants("trial-concurrency-1", "synthetic-token", ledger)
+    assert len(result) == len({row["pid"] for row in result}) == 12
+
+
+@pytest.mark.skipif(__import__("sys").platform != "darwin", reason="macOS専用runnerの孤児回収検証")
+@pytest.mark.parametrize("parent_exit", [False, True])
+def test_outer_stops_actual_grandchild_before_reaping(tmp_path, parent_exit):
+    import os
+    import sys
+    import subprocess
+    from scripts.capacity_trial import __main__ as runner
+    pid_file = tmp_path / "grandchild.pid"
+    code = ("import subprocess,sys,time; "
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']); "
+            "open(sys.argv[1],'w').write(str(p.pid)); "
+            + ("sys.exit(2)" if parent_exit else "time.sleep(60)"))
+    command = [sys.executable, "-c", code, str(pid_file)]
+    if parent_exit:
+        result = runner.isolated_run(command, cwd=tmp_path, env=dict(os.environ), input="", timeout=2)
+        assert result.returncode == 2
+    else:
+        with pytest.raises(subprocess.TimeoutExpired):
+            runner.isolated_run(command, cwd=tmp_path, env=dict(os.environ), input="", timeout=0.5)
+    pid = int(pid_file.read_text())
+    # macOSの孤児回収まで短い猶予を置く。生存していれば失敗。
+    import time
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("孫プロセスが残っています")
+
+
+def test_concurrency_rejects_used_scope_before_writing():
+    from scripts.capacity_trial.concurrency import concurrency
+    store = Mock()
+    store.scope_ref.get.return_value.exists = True
+    with pytest.raises(Refused, match="競合scopeは使用済み"):
+        concurrency(store, "synthetic", Mock())
+    store.initialize.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["initialize", "enqueue", "claim", "finish", "recover"])
+def test_response_loss_verifies_committed_state_without_replaying(operation):
+    from src.sync_capacity.domain import submission
+    from scripts.capacity_trial.response_loss import response_loss
+    store = Mock()
+    store.settings.scope = "trial-loss-" + operation
+    item = submission("notion", {"id": "synthetic-response-loss"}, None, 1)
+    claim = Mock(owner="synthetic-loss-owner")
+    states = {"enqueue": "pending", "claim": "processing", "finish": "completed", "recover": "needs_attention"}
+    slots = {"0": None, "1": None, "2": None}
+    if operation == "claim":
+        slots["0"] = {"job_id": item.job_id, "owner": "synthetic-loss-owner"}
+    store.scope_ref.get.return_value.exists = False
+    store.scope_ref.get.return_value.to_dict.return_value = {"limit": 3, "slots": slots}
+    doc = Mock(id=item.job_id)
+    doc.to_dict.return_value = {"state": states.get(operation), "slot": "0"}
+    store.jobs.limit.return_value.stream.side_effect = [iter([]), iter([] if operation == "initialize" else [doc])]
+    raw = Mock()
+    store.client._firestore_api_internal = raw
+    def commit(*args, **kwargs):
+        store.client._firestore_api_internal.commit(request={})
+        return claim
+    for name in ("initialize", "enqueue", "claim", "finish", "recover"):
+        getattr(store, name).side_effect = commit
+    result = response_loss(store)
+    assert result["commit_calls"] == result["committed"] == 1
+    assert result["saved_state_verified"]
+    assert store.client._firestore_api_internal is raw
+
+
+def test_response_loss_does_not_mislabel_an_actual_rpc_failure():
+    from scripts.capacity_trial.response_loss import DropCommitResponse, LostResponse
+    raw = Mock()
+    raw.commit.side_effect = TimeoutError("実RPCの結果不明")
+    drop = DropCommitResponse(raw)
+    with pytest.raises(TimeoutError) as captured:
+        drop.commit(request={})
+    assert not isinstance(captured.value, LostResponse)
+    assert drop.calls == 1 and drop.committed == 0
+
+
+@pytest.fixture
+def upper_ledger(tmp_path):
+    import time
+    now = time.time()
+    item = Ledger.initialize(tmp_path / "upper.json", now)
+    item.activate_upper_bound("合成未使用DB・Free・追加資源なし証跡", confirmed=True)
+    return item
+
+
+def test_upper_activation_preserves_cost_deadline_and_refuses_reset(upper_ledger):
+    before = json.loads(upper_ledger.path.read_text())
+    assert before["cost"] is None and before["upper_bound"]["usd"] == 4
+    with pytest.raises(Refused):
+        upper_ledger.activate_upper_bound("再実行", confirmed=True)
+    assert json.loads(upper_ledger.path.read_text()) == before
+    upper_ledger.reserve(now=before["created_at"]+7200, reads=1)
+    with pytest.raises(Refused):
+        upper_ledger.reserve(now=before["created_at"]+14*86400)
+    for command in ("scan", "neon-probe"):
+        with pytest.raises(Refused):
+            upper_ledger.authorize_command(command)
+
+
+def test_upper_counts_rpc_reads_and_unique_names_atomically(upper_ledger):
+    names = [f"synthetic-{n}" for n in range(100)]
+    upper_ledger.reserve(reads=4999, rpc=True, document_names=names)
+    upper_ledger.reserve(reads=1, rpc=True, document_names=names)
+    before = upper_ledger.path.read_bytes()
+    for args in ({"reads": 1}, {"document_names": ["synthetic-101"]}, {"sql_connections": 1}):
+        with pytest.raises(Refused):
+            upper_ledger.reserve(**args)
+        assert upper_ledger.path.read_bytes() == before
+    upper_ledger.transact(lambda data: data["upper_bound"].update(rpc_reserved=1000))
+    with pytest.raises(Refused):
+        upper_ledger.reserve(rpc=True)
+
+
+def test_upper_query_shapes_reject_unbounded_or_arbitrary_filters():
+    from google.cloud.firestore_v1.types import StructuredQuery
+    from scripts.capacity_trial.small_policy import query_shape
+    query = StructuredQuery(from_=[{"collection_id": "jobs"}])
+    assert query_shape(query) == 101
+    for extra in ({"offset": 1}, {"limit": 1000}, {"select": {"fields": [{"field_path": "event"}]}}):
+        with pytest.raises(Refused):
+            query_shape(StructuredQuery(from_=[{"collection_id": "jobs"}], **extra))
+
+
+def test_upper_sdk_create_and_partial_update_are_reserved_and_size_checked(upper_ledger):
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud import firestore
+    from google.cloud.firestore_v1 import _helpers
+    from google.cloud.firestore_v1.types import BatchGetDocumentsResponse, Document
+    from google.protobuf.timestamp_pb2 import Timestamp
+    stamp = Timestamp(seconds=1000)
+    name = BASE + "/documents/sync_capacity_scopes/trial-smoke"
+    raw = Mock()
+    from google.cloud.firestore_v1.types import CommitResponse
+    raw.commit.return_value = CommitResponse()
+    raw.batch_get_documents.return_value = iter([BatchGetDocumentsResponse(found=Document(
+        name=name, fields=_helpers.encode_dict({"version": 1, "limit": 3,
+            "slots": {"0": None, "1": None, "2": None}}), update_time=stamp))])
+    client = firestore.Client(project=PROJECT, database=DATABASE, credentials=AnonymousCredentials())
+    client._firestore_api_internal = GuardedAPI(raw, upper_ledger, role="runner")
+    ref = client.document("sync_capacity_scopes/trial-smoke")
+    batch = client.batch()
+    batch.create(ref, {"version": 1, "limit": 3, "slots": {"0": None, "1": None, "2": None}})
+    batch.commit()
+    batch = client.batch()
+    batch.update(ref, {"version": 1}, option=firestore.LastUpdateOption(stamp))
+    batch.commit()
+    data = json.loads(upper_ledger.path.read_text())
+    assert data["upper_bound"]["document_names"] == [name]
+    assert data["upper_bound"]["rpc_reserved"] == 3
+    assert data["reserved"]["reads"] == 1 and data["reserved"]["writes"] == 2
+    batch = client.batch()
+    batch.create(client.document("sync_capacity_scopes/trial-smoke/jobs/too-big"), {"event": "x"*4096})
+    with pytest.raises(Refused):
+        batch.commit()
+    assert raw.commit.call_count == 2
+
+
+@pytest.mark.parametrize("denied", [True, False])
+def test_permission_probe_reaches_server_and_halts_if_write_succeeds(upper_ledger, denied):
+    from google.api_core.exceptions import PermissionDenied
+    from scripts.capacity_trial.permission import probe
+    raw = Mock()
+    raw.commit.side_effect = PermissionDenied("合成IAM拒否") if denied else None
+    store = Mock()
+    store.client._firestore_api_internal = GuardedAPI(raw, upper_ledger, role="observer")
+    store.client.document.return_value.get.return_value.exists = True
+    store.client.document.return_value.get.return_value.to_dict.return_value = {"event": submission("notion", {"id": "synthetic-smoke"}, None, 0).event}
+    if denied:
+        assert probe(store, upper_ledger)["server_code"] == 403
+        upper_ledger.reserve()
+    else:
+        with pytest.raises(Refused, match="以後停止"):
+            probe(store, upper_ledger)
+        with pytest.raises(Refused):
+            upper_ledger.reserve()
+    raw.commit.assert_called_once()
+    data = json.loads(upper_ledger.path.read_text())
+    assert data["upper_bound"]["rpc_reserved"] == 1
+    assert data["upper_bound"]["document_names"] == [
+        BASE+"/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied"]
+
+
+def test_upper_all_actual_sdk_query_shapes(upper_ledger):
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud import firestore
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    raw = Mock()
+    raw.run_query.side_effect = lambda **kwargs: iter([])
+    client = firestore.Client(project=PROJECT, database=DATABASE, credentials=AnonymousCredentials())
+    client._firestore_api_internal = GuardedAPI(raw, upper_ledger, role="runner")
+    jobs = client.collection("sync_capacity_scopes").document("trial-smoke").collection("jobs")
+    for query in (jobs.limit(1), jobs.select(["state", "created_at"]),
+                  jobs.where(filter=FieldFilter("state", "in", ["pending", "retry"]))
+                      .order_by("available_at").limit(20)):
+        assert list(query.stream()) == []
+    data = json.loads(upper_ledger.path.read_text())
+    assert data["reserved"]["reads"] == 122
+    assert data["upper_bound"]["rpc_reserved"] == 3
+
+
+def test_upper_partial_update_checks_full_size_and_same_version():
+    from google.api_core.exceptions import FailedPrecondition
+    from google.cloud.firestore_v1.types import Write, Document
+    from google.cloud.firestore_v1 import _helpers
+    from google.protobuf.timestamp_pb2 import Timestamp
+    from scripts.capacity_trial.small_policy import full_document
+    name = BASE+"/documents/sync_capacity_scopes/trial-smoke/jobs/partial"
+    stamp = Timestamp(seconds=1000)
+    write = Write(update=Document(name=name, fields=_helpers.encode_dict({"state": "completed"})),
+                  update_mask={"field_paths": ["state"]}, current_document={"update_time": stamp})
+    with pytest.raises(FailedPrecondition):
+        full_document(write, lambda name: Document(name=name, update_time=Timestamp(seconds=1001)))
+    existing = Document(name=name, fields=_helpers.encode_dict({"event": "x"*4096}), update_time=stamp)
+    with pytest.raises(Refused, match="4KiB"):
+        full_document(write, lambda name: existing)
+
+
+def test_permission_unconfirmed_write_halts_future_trials(upper_ledger):
+    from google.api_core.exceptions import DeadlineExceeded
+    from scripts.capacity_trial.permission import probe
+    raw = Mock()
+    raw.commit.side_effect = DeadlineExceeded("合成の応答喪失")
+    store = Mock()
+    store.client._firestore_api_internal = GuardedAPI(raw, upper_ledger, role="observer")
+    store.client.document.return_value.get.return_value.exists = True
+    store.client.document.return_value.get.return_value.to_dict.return_value = {"event": submission("notion", {"id": "synthetic-smoke"}, None, 0).event}
+    with pytest.raises(DeadlineExceeded):
+        probe(store, upper_ledger)
+    raw.commit.assert_called_once()
+    data = json.loads(upper_ledger.path.read_text())
+    assert data["halted"].startswith("observer_write_pending:")
+    with pytest.raises(Refused):
+        upper_ledger.reserve()
+
+
+def test_permission_forced_exit_leaves_persisted_stop(upper_ledger):
+    from scripts.capacity_trial.permission import probe
+    raw = Mock()
+    def interrupted(**kwargs):
+        assert json.loads(upper_ledger.path.read_text())["halted"].startswith("observer_write_pending:")
+        raise SystemExit("合成の強制終了")
+    raw.commit.side_effect = interrupted
+    store = Mock()
+    store.client._firestore_api_internal = GuardedAPI(raw, upper_ledger, role="observer")
+    store.client.document.return_value.get.return_value.exists = True
+    store.client.document.return_value.get.return_value.to_dict.return_value = {"event": submission("notion", {"id": "synthetic-smoke"}, None, 0).event}
+    with pytest.raises(SystemExit):
+        probe(store, upper_ledger)
+    with pytest.raises(Refused):
+        upper_ledger.reserve()
+
+
+def test_permission_local_refusal_does_not_claim_remote_uncertainty(upper_ledger):
+    from scripts.capacity_trial.permission import probe
+    raw = Mock()
+    store = Mock()
+    store.client._firestore_api_internal = GuardedAPI(raw, upper_ledger, role="observer")
+    store.client.document.return_value.get.return_value.exists = True
+    store.client.document.return_value.get.return_value.to_dict.return_value = {"event": submission("notion", {"id": "synthetic-smoke"}, None, 0).event}
+    upper_ledger.transact(lambda data: data["upper_bound"].update(rpc_reserved=1000))
+    with pytest.raises(Refused):
+        probe(store, upper_ledger)
+    raw.commit.assert_not_called()
+    assert "halted" not in json.loads(upper_ledger.path.read_text())
+
+
+@pytest.mark.skipif(__import__("sys").platform != "darwin", reason="macOSの終了済group検証")
+def test_outer_normal_exit_without_live_group(tmp_path):
+    import os,sys
+    from scripts.capacity_trial import __main__ as runner
+    result = runner.isolated_run([sys.executable, "-c", "print('synthetic')"],
+                                cwd=tmp_path, env=dict(os.environ), input="", timeout=2)
+    assert result.returncode == 0 and result.stdout == "synthetic\n"
+
+
+def test_dns_resolver_cannot_be_overridden(tmp_path):
+    env = {"HOME": str(tmp_path), "CAPACITY_TRIAL_CHILD": "1", "PYTHONNOUSERSITE": "1", "GRPC_DNS_RESOLVER": "native"}
+    validate_environment(env)
+    env["GRPC_DNS_RESOLVER"] = "ares"
+    with pytest.raises(Refused):
+        validate_environment(env)
+
+
+def test_inspect_state_omits_payload_and_keeps_failure_evidence():
+    from scripts.capacity_trial.__main__ import inspect_state
+    store = Mock()
+    store.scope_ref.get.return_value.exists = True
+    store.scope_ref.get.return_value.to_dict.return_value = {"limit": 3, "slots": {"0": None}}
+    doc = Mock(id="synthetic-job")
+    doc.to_dict.return_value = {"state": "processing", "owner": "synthetic-owner", "attempts": 1,
+                               "event": {"body": "合成本文"}, "payload_hash": "合成hash"}
+    store.jobs.limit.return_value.stream.return_value = iter([doc])
+    result = inspect_state(store)
+    assert result["job_count"] == 1 and result["jobs"] == [
+        {"id": "synthetic-job", "state": "processing", "owner": "synthetic-owner", "attempts": 1}]
+    store.jobs.limit.assert_called_once_with(101)
+    store.initialize.assert_not_called()
+    store.recover.assert_not_called()
+
+
+def test_inspect_state_rejects_truncated_result_without_small_guard():
+    from scripts.capacity_trial.__main__ import inspect_state
+    store = Mock()
+    store.jobs.limit.return_value.stream.return_value = iter([Mock()] * 101)
+    with pytest.raises(Refused, match="部分結果"):
+        inspect_state(store)
+
+
+def test_concurrency_failure_records_only_fixed_classification(ledger, monkeypatch):
+    import subprocess,sys
+    from scripts.capacity_trial import concurrency as module
+    original = subprocess.Popen
+    def failing_child(command, **kwargs):
+        code = ('import json,os,sys;sys.stdin.readline();'
+                'print(json.dumps({"ready":os.getpid()}),flush=True);sys.stdin.readline();'
+                'print(json.dumps({"error_type":"FailedPrecondition","error_code":"unexpected_error","secret":"synthetic-not-for-ledger"}),file=sys.stderr);sys.exit(1)')
+        return original([sys.executable, "-s", "-c", code], **kwargs)
+    monkeypatch.setattr(module.subprocess,"Popen",failing_child)
+    with pytest.raises(Refused):
+        module.run_claimants("trial-concurrency-2", "synthetic-token", ledger)
+    raw = ledger.path.read_text()
+    entry = json.loads(raw)["claimant_failures"][0]
+    assert len(entry["failures"]) == 12 and entry["successful_children"] == 0
+    assert all(item["error_type"] == "FailedPrecondition" for item in entry["failures"])
+    assert "synthetic-not-for-ledger" not in raw

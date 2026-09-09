@@ -1,0 +1,523 @@
+{
+  "cases": [
+    {
+      "state": "passed",
+      "case": "smoke",
+      "scope": "trial-smoke",
+      "started_at": 1788989120.6397781,
+      "finished_at": 1788989133.823974,
+      "job_id": "3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12",
+      "worker_state": "completed",
+      "observed_total": 1,
+      "observed_completed": 1,
+      "source": "CLI成功JSONの主要値を転記"
+    },
+    {
+      "state": "failed",
+      "error_type": "Refused",
+      "error_code": "guard_refused",
+      "partial_result": false,
+      "case": "permission-probe",
+      "scope": "trial-permission",
+      "diagnosis": "期待event形式不一致による送信前ローカル拒否。修正後別ケースで成功"
+    },
+    {
+      "state": "passed",
+      "case": "permission-probe",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-permission",
+      "started_at": 1788989264.868209,
+      "finished_at": 1788989266.780637,
+      "result": {
+        "read_verified": true,
+        "write_denied_by_server": true,
+        "server_code": 403,
+        "attempted_document": "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied"
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "failed",
+      "error_type": "Refused",
+      "error_code": "child_failed",
+      "partial_result": false,
+      "case": "concurrency",
+      "scope": "trial-concurrency-1"
+    },
+    {
+      "state": "passed",
+      "case": "response-loss",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-loss-initialize",
+      "started_at": 1788989371.981339,
+      "finished_at": 1788989376.094826,
+      "result": {
+        "operation": "initialize",
+        "commit_calls": 1,
+        "committed": 1,
+        "response_loss_injected": true,
+        "saved_state_verified": true,
+        "job_count": 0,
+        "slots_retained": false
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "response-loss",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-loss-enqueue",
+      "started_at": 1788989376.2773278,
+      "finished_at": 1788989383.8133261,
+      "result": {
+        "operation": "enqueue",
+        "commit_calls": 1,
+        "committed": 1,
+        "response_loss_injected": true,
+        "saved_state_verified": true,
+        "job_count": 1,
+        "slots_retained": false
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "response-loss",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-loss-claim",
+      "started_at": 1788989384.00108,
+      "finished_at": 1788989393.843335,
+      "result": {
+        "operation": "claim",
+        "commit_calls": 1,
+        "committed": 1,
+        "response_loss_injected": true,
+        "saved_state_verified": true,
+        "job_count": 1,
+        "slots_retained": true
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "response-loss",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-loss-finish",
+      "started_at": 1788989394.035359,
+      "finished_at": 1788989407.0135539,
+      "result": {
+        "operation": "finish",
+        "commit_calls": 1,
+        "committed": 1,
+        "response_loss_injected": true,
+        "saved_state_verified": true,
+        "job_count": 1,
+        "slots_retained": false
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "response-loss",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-loss-recover",
+      "started_at": 1788989407.210408,
+      "finished_at": 1788989420.252657,
+      "result": {
+        "operation": "recover",
+        "commit_calls": 1,
+        "committed": 1,
+        "response_loss_injected": true,
+        "saved_state_verified": true,
+        "job_count": 1,
+        "slots_retained": false
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "inspect-state",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-concurrency-1",
+      "started_at": 1788989495.342401,
+      "finished_at": 1788989497.0902112,
+      "result": {
+        "scope_exists": true,
+        "scope": {
+          "limit": 3,
+          "version": 1,
+          "slots": {
+            "1": {
+              "owner": "synthetic-process-72950",
+              "job_id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144"
+            },
+            "0": {
+              "owner": "synthetic-process-72955",
+              "job_id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c"
+            },
+            "2": {
+              "owner": "synthetic-process-72954",
+              "job_id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85"
+            }
+          }
+        },
+        "job_count": 12,
+        "jobs": [
+          {
+            "id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "slot": "2",
+            "attempts": 1,
+            "owner": "synthetic-process-72954",
+            "state": "processing"
+          },
+          {
+            "id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "slot": "0",
+            "attempts": 1,
+            "owner": "synthetic-process-72955",
+            "state": "processing"
+          },
+          {
+            "id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "slot": "1",
+            "attempts": 1,
+            "owner": "synthetic-process-72950",
+            "state": "processing"
+          },
+          {
+            "id": "417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          },
+          {
+            "id": "f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "attempts": 0,
+            "slot": null,
+            "owner": null,
+            "state": "pending"
+          }
+        ]
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "concurrency",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-concurrency-2",
+      "started_at": 1788989655.8495219,
+      "finished_at": 1788989693.9674292,
+      "result": {
+        "process_count": 12,
+        "claimed_count": 3,
+        "claims": [
+          {
+            "job_id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "owner": "synthetic-process-73259",
+            "slot": "2",
+            "source": "notion",
+            "event": {
+              "headers": {},
+              "body": "{\"id\": \"synthetic-concurrency-7\"}"
+            }
+          },
+          {
+            "job_id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "owner": "synthetic-process-73265",
+            "slot": "1",
+            "source": "notion",
+            "event": {
+              "headers": {},
+              "body": "{\"id\": \"synthetic-concurrency-10\"}"
+            }
+          },
+          {
+            "job_id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "owner": "synthetic-process-73266",
+            "slot": "0",
+            "source": "notion",
+            "event": {
+              "headers": {},
+              "body": "{\"id\": \"synthetic-concurrency-9\"}"
+            }
+          }
+        ],
+        "pids": [
+          73257,
+          73258,
+          73259,
+          73260,
+          73261,
+          73262,
+          73263,
+          73264,
+          73265,
+          73266,
+          73267,
+          73268
+        ],
+        "documents": 12,
+        "children_stopped": true,
+        "slots_retained": true
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    {
+      "state": "passed",
+      "case": "concurrency",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-concurrency-3",
+      "started_at": 1788989737.466753,
+      "finished_at": 1788989769.576301,
+      "result": {
+        "process_count": 12,
+        "claimed_count": 3,
+        "claims": [
+          {
+            "job_id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "owner": "synthetic-process-73337",
+            "slot": "0",
+            "source": "notion",
+            "event": {
+              "headers": {},
+              "body": "{\"id\": \"synthetic-concurrency-10\"}"
+            }
+          },
+          {
+            "job_id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "owner": "synthetic-process-73339",
+            "slot": "1",
+            "source": "notion",
+            "event": {
+              "body": "{\"id\": \"synthetic-concurrency-9\"}",
+              "headers": {}
+            }
+          },
+          {
+            "job_id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "owner": "synthetic-process-73340",
+            "slot": "2",
+            "source": "notion",
+            "event": {
+              "headers": {},
+              "body": "{\"id\": \"synthetic-concurrency-7\"}"
+            }
+          }
+        ],
+        "pids": [
+          73332,
+          73333,
+          73334,
+          73335,
+          73336,
+          73337,
+          73338,
+          73339,
+          73340,
+          73341,
+          73342,
+          73343
+        ],
+        "documents": 12,
+        "children_stopped": true,
+        "slots_retained": true
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    }
+  ],
+  "source_sha256_at_smoke": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "741a5716c9bf34db2856c455986d0239b3fe9c706ddcb07ed988e477f0693be8",
+    "scripts/capacity_trial/concurrency.py": "dc55ada4955eeed7b2514c7a6f4a71b4e61d7222c5d4d0230db539759d9df9cf",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "55269ea582ae5f39e0ffd54cdb35a99e5651c2a570e11ca3be22c10708ca3817",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "f3b3187c4564a8966ca43c8c13976c4d1f005069c8562617d899762efa1d94d3",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2",
+    "src/sync_capacity/firestore_store.py": "26bf178621843ad1858b20b5de4999d937113fdb06472057ff41a96d8f2ef988"
+  },
+  "source_sha256_final": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "5ba2d7fe6a287f4d7a0b628876deeb5e3159c522461c0c36f2214f7dc50712eb",
+    "scripts/capacity_trial/concurrency.py": "75b1990c0d44bc7f0860db2b8d506d31bc9b01ff1570a9d68dcd7611d304934e",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "d7750fc38188b54beeec8a583467800379a26038689886f664b6c4c192003b13",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
+  },
+  "source_limitation": "smoke後にpermissionのevent比較を修正。応答喪失実行中に独立のinspect-state分岐を追加。各ケースの完全なファイル指紋は未採取。製品Firestore storeは全ケース不変。",
+  "pre_smoke_failures": {
+    "attempts": 4,
+    "run_query_reserved": 4,
+    "writes_reserved": 0,
+    "diagnosis": "最初2回は終了済groupのkillpg EPERMがDNS例外を覆った。次2回でServiceUnavailable/DNSを固定フラグで確認。native resolver変更で解消。"
+  },
+  "ledger_after": {
+    "cost": {
+      "basis": "free-plan-verified",
+      "evidence": "2026-09-10 JST: Neon Free free_v3, 0/100 CUh, 0/0.5GB, 0/5GB transfer; GCP project creation failed, no billable trial GCP resources. Display may lag 1 hour.",
+      "observed_at": 1788984763.559802,
+      "usd": 0
+    },
+    "cost_refresh_required": true,
+    "created_at": 1788983820.0,
+    "database": "crm-capacity-trial-260910",
+    "project": "actionpoint-autocalc",
+    "reserved": {
+      "deletes": 0,
+      "reads": 1728,
+      "runtime_seconds": 2905,
+      "sql_connections": 5,
+      "sql_statements": 24,
+      "writes": 242
+    },
+    "returned_documents": 1093,
+    "rpc_calls": {
+      "batch_get_documents": 677,
+      "commit": 126,
+      "run_query": 62
+    },
+    "target_migration": {
+      "at": 1788986336.492353,
+      "from_database": "(default)",
+      "from_project": "cnctor-crm-cap-trial-260910"
+    },
+    "upper_bound": {
+      "activated_at": 1788988847.708948,
+      "basis": "reserved-upper-bound",
+      "document_names": [
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+        "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+      ],
+      "evidence": "docs/sync_capacity_service_trial_results.md",
+      "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+      "rpc_reserved": 865,
+      "usd": 4
+    }
+  },
+  "captured_at": "2026-09-09T21:37:40.127898+00:00",
+  "outcome": "partial: smoke/IAM/5 response-loss成功、concurrency1失敗・2/3成功、4/5未実行。小規模残135RPCは直近成功1回210RPCより少ないため新規競合を開始しない。",
+  "source_sha256_concurrency2": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "5ba2d7fe6a287f4d7a0b628876deeb5e3159c522461c0c36f2214f7dc50712eb",
+    "scripts/capacity_trial/concurrency.py": "75b1990c0d44bc7f0860db2b8d506d31bc9b01ff1570a9d68dcd7611d304934e",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "d7750fc38188b54beeec8a583467800379a26038689886f664b6c4c192003b13",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
+  }
+}

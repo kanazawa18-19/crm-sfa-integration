@@ -6,10 +6,10 @@
 
 ## 現在の到達点
 
-**隔離試験全体は未完了。本人指定の `actionpoint-autocalc` に専用Firestore DBを作成済み、IAM付与の承認審査で停止。**
+**隔離試験全体は未完了。本人の限定IAM明示承認後、専用DB権限・短期認証を付与し小規模実試験を実施。**
 専用NeonはFreeで作成済み、本番アプリとの接続は0件。
 本人「claude送信OK」後、Claude Opus 5・中の回答を取得し、必要な改善を反映。
-接続先変更時に元の期限・使用量を保つ移行機能を追加。実Firestore文書操作はまだ0件。
+接続先変更時に元の期限・使用量を保つ移行機能を追加。実Firestoreのsmokeと観測SAの403拒否は成功。請求明細は当日未反映で、実費0とせず小規模推定枠で実行中。
 作成枠+1申請はAPI無料を確認したが、組織の上限閲覧権限が不足し未送信。
 
 ## 資源の実測
@@ -23,8 +23,8 @@
 | Firestore | `crm-capacity-trial-260910` / us-east4 / Standard / Native / 削除保護あり。2026-09-09T20:30:00.223688Z作成、PITR無効 |
 | 既存DB確認 | API有効化後、作成直前の一覧0件。既存の別用途データは読まない |
 | API変更 | firestore.googleapis.com、iamcredentials.googleapis.com、cloudquotas.googleapis.com有効化成功 |
-| SA / custom role | capacity-trial-runner / capacity-trial-observer と各最小custom roleを新規作成。IAM付与なし |
-| index / 文書 | 未作成・未書込み。専用SAの認証発行も未実施 |
+| SA / custom role | 実行・観測2 SA、DB用2 role、短期token用1 role。本人承認後、専用DB限定2 binding・各SA上の本人token発行bindingを期限付きで付与 |
+| index / 文書 | state/available_at複合索引1件がREADY（CICAgOjXh4EK）。smoke合成文書の保存・完了確認済み。短期SA token2件発行成功、キーチェーン保存のみ |
 | Neon名 | `crm-capacity-trial-260910` |
 | Neon project | `fragrant-silence-24771784` |
 | branch | `br-silent-king-avubki1s`（新規空projectのmain。本番branch複製なし） |
@@ -33,7 +33,7 @@
 | database/role | `neondb` / `neondb_owner` |
 | Vercel資源 | `store_xW8Esi5eapEwgREA`、接続project一覧 `[]` |
 | 契約 | `free_v3` / Free。追加有料契約なし |
-| region/compute | AWS us-east-1、min=max 0.25 CU、自動休止設定5分。試験2分後はACTIVE、休止到達は未確認 |
+| region/compute | AWS us-east-1、min=max 0.25 CU、自動休止設定5分。試験2分後はACTIVE、後続のDashboardでIdle到達を確認 |
 | 使用枠表示 | 作成直後0/100 CU時間、0/0.5 GB、転送0/5 GB。最大1時間の表示遅延あり |
 | 作成日時 | 2026-09-09 19:57 UTC頃（JST 09-10 04:57）。期間管理は19:57 UTCを保守的な起点にする |
 
@@ -72,12 +72,12 @@ DB作成応答は `freeTier:true`。最初に作ったDBの無料枠表示を確
 既存用途のサービスアカウント2件は変更せず、専用named DBと専用SAを追加した。
 API有効化は一度自動承認レビューに拒否されたが、先の14日/20 USD承認と接続先指定を
 明記した再審査が通り実行済み。DB作成・SA2件・custom role2件も成功。
-[資源読み戻し証跡](sync_capacity_gcp_resource_result.json)：専用SAを含むproject直接付与0、各SA上のbindingも0。継承を含む実効権限全体の否定ではない。
+[付与前の資源読み戻し証跡](sync_capacity_gcp_resource_result.json)：当時は専用SAを含むproject直接付与0、各SA上のbindingも0。継承を含む実効権限全体の否定ではない。
 
-**IAM付与は2回とも自動承認レビューが拒否し、未実行。**
+**当初IAM付与は2回とも自動承認レビューが拒否した。その後、本人の「承認するよ」を受けて付与・読み戻しまで完了。**
 理由は「準備文書だけでは特定SAへの権限・対象・期限の明示承認を満たさない」。
 本人の認証で直接文書を操作する代替は、専用SAの隔離検証を省くため採用しない。
-次の権限案について本人の明示指示が必要：
+本人が明示承認した権限：
 
 | 対象 | 権限と範囲 |
 |---|---|
@@ -87,8 +87,44 @@ API有効化は一度自動承認レビューに拒否されたが、先の14日
 
 DB権限の条件は `resource.name=="projects/actionpoint-autocalc/databases/crm-capacity-trial-260910"`。
 全付与の有効期限は `request.time < timestamp("2026-09-23T19:57:00Z")`（JST 9/24 04:57）。
-削除・DB管理・既存アプリへの権限を含めない。token発行用のcustom roleと付与は未作成。
-本人承認後、付与を読み戻し、専用SAによる許可/拒否の実地確認から再開する。
+削除・DB管理・既存アプリへの権限を含めない。token発行用は `capacityTrialToken260910`（getAccessTokenだけ）。
+[付与後IAM証跡](sync_capacity_gcp_iam_result.json)でDB限定・本人限定・期限を照合済み。
+30分の短期tokenを2件発行し、キーチェーンの専用serviceだけに保存した。静的鍵は発行しない。
+
+## 請求反映遅延と小規模枠
+
+[試験前費用表示](sync_capacity_cost_preflight.json)。GCPレポートをprojectで絞り、表示0円を確認したが、
+反映済期間は9/8まで。本試験資源は9/10作成なので当日費用は未確定。
+取得時刻を現在にしてmetered=0と登録することはしない。独立SECも同判断。
+[Cloud Monitoring読取り](sync_capacity_gcp_usage_preflight.json)も4指標でseriesなし。
+これは観測点0件であって、実際の操作数・保存量0の計測ではない。
+最初の標準PythonではCA検証エラー、既存certifi CAを指定した再取得は成功（検証無効化なし）。
+Neon専用projectはFree、0/100 CUh・0/0.5 GB・0/5 GB表示、Idleを確認。
+
+請求反映前に許可するのは、小規模合成ケースだけを対象とする別根拠
+`reserved-upper-bound` の実装・独立検証後。meteredの停止条件は緩和しない。
+大規模scan・新Neon試験・バックアップ/復元はこの根拠で実行しない。
+同じ元台帳で期限・予約を保持し、累計文書名100、文書read予約5000、RPC1000を拘束する実装を有効化済み。
+無料枠は控除せず4 USDを予約する。実測費用でも、撤去までの生涯費用保証でもない。
+
+[Firestore上限](https://firebase.google.com/docs/firestore/quotas)の文書1 MiB・索引8 MiB・
+索引entry4万/文書、[価格](https://cloud.google.com/firestore/pricing)のus-east4単価と
+下り最大0.23 USD/GiBを使う保守式：
+
+| 費目 | 枠全体の予約式 | USD |
+|---|---|---:|
+| 14日保存 | 100×9 MiB×336h×0.000135616/GiBh | 0.0400491 |
+| 索引read | 1000 RPC×4000 read units×0.033/10万 | 1.32 |
+| 文書read | 5000×0.033/10万 | 0.00165 |
+| 文書write | 1000 RPC×8文書×0.099/10万 | 0.00792 |
+| 下り | 5000文書×2 MiB×0.23/GiB | 2.24609375 |
+| 計算合計 | 上記合計 | 3.61571285 |
+| 確保する管理枠 | 付随応答等の予備を含む | 4 |
+
+文書4 KiB・commit8文書/32 KiB・query形状の制限を合わせ、送信前にprocess間で予約する。
+転送2 MiB/文書はサービス上限1 MiBと応答包み用の保守枠。空queryの最低readも予約対象。
+追加課金要因のPITRは無効、backup schedule0・TTL設定0を管理APIで確認。
+別経路投入、計算できない費目、台帳/前提の欠落では停止する。
 
 ## 作成枠1件の追加申請
 
@@ -104,8 +140,7 @@ DB権限の条件は `resource.name=="projects/actionpoint-autocalc/databases/cr
 
 ## 未完了の試験
 
-Firestore実IAM拒否・index query・保存/再起動・12process×3枠×5回・
-5操作commit応答喪失・強制停止復旧・9回全件観測・持続負荷・監視合成受信口・別DB復元、
+12process×3枠×5回の合格・実worker強制停止復旧・9回全件観測・持続負荷・監視合成受信口・別DB復元、
 既存同期/outboxと実Neonの組合せは未検証。
 新runnerにまだ実装していない試験はREADMEに明記する。
 本番容量保証・本番7日観測も未達。NeonだけのSELECT/排他試験で代替しない。
@@ -114,7 +149,7 @@ Firestore実IAM拒否・index query・保存/再起動・12process×3枠×5回�
 
 独立SEC最終BLOCKER 0 / WARN 0、品質最終BLOCKER 0 / WARN 0 / INFO 1。
 旧版21772c6のQAは `tests/sync_capacity` 115成功・10skip（emulator未起動）、専用ガード37件はその内数。
-今回の最終版は132成功・10skip（専用54件は内数）。独立SEC/品質の再レビューB0/W0。QAの拒否テスト改善も反映済み。
+前回8a4bdf6は132成功・10skip（専用54件は内数）。独立SEC/品質の再レビューB0/W0。QAの拒否テスト改善も反映済み。
 台帳12独立process×100予約＝1,200件、欠落0。異常値4ケースと時刻境界3ケース、
 launcher正常/認証失敗/空token/子失敗/timeout/JSON不正の6ケースは追加模擬検証。
 実60秒kill・実Firestoreの確認ではない。製品コード変更なしのため全製品pytestは再実行しない。
@@ -190,3 +225,73 @@ Claudeへ送信済みの旧実装レビュー資料は `/Users/cnctor/.local/sta
 ACTIVE（試験終了約2分後）、0.25 CU。5分無操作の自動休止設定は確認済みだが、
 この記録時点で休止への到達は未確認。古い画面のSUSPENDED表示を終了証跡には使わない。
 台帳予約累計：145秒、接続5本、SQL24本。失敗分を含む安全側の予約で、実使用数ではない。
+
+
+## 今回の小規模実装の独立検証（2026-09-10）
+
+12独立processの同期開始、5操作の保存直後の応答喪失、100文書/1000RPC/5000readの共有予約、
+観測SAの実403確認を追加。IAM試験は送信前にUUID付き停止を永続化し、同じ試験の403確認時だけ解除する。
+通常例外・強制終了・予想外の書込み成功では停止が残る。製品コードは変更しない。
+独立SECはBLOCKER 0/WARN 0、関連テスト151成功/10skip（専用73件は内数）。
+品質指摘2件は通常費用根拠と小規模根拠の違い、解除不可・台帳再作成禁止をREADMEへ追記して解消。
+QAは12実processのIPC正常/不正準備/不正結果/準備前終了と、親・孫の停止を検証。
+停止試験は期限を0.5秒へ短縮した実process検証であり、実サービス60秒待ちの試験ではない。
+
+外部送信は秘密・顧客情報なしを検査した全文51,166文字。空白除去後39,851文字、
+SHA-256 `54caeb0504f38d6059a8a60120ae136dcbb67b42d74c03e3df0d0c95414f4768` を貼付後照合。
+Gemini ProはBLOCKER 0/WARN 0/INFO 3。直接子起動は既存環境ガードで拒否、CASは型捕捉、
+台帳update戻り値は不使用なので追加変更不要。静的レビューの賛辞を実サービス成功の証拠とは扱わない。
+Claude Opus 5・中の今回回答はBLOCKER 1/WARN 7/INFO 7（本文の番号で集計）。
+B1は送信前拒否でも不明停止を記録する点。汎用exceptでの追加停止を削除し、RPC直前markerだけを残す方式へ修正。
+W1の例外code・子returncodeからの証跡、W2の未回収PID保持→group停止→回収、W3のtimeout実引数、
+W4の終了期限分類を採用。競合例外をclaimなしへ握り潰す提案は、失敗を成功へ混ぜるため不採用。
+W5は製品がslots全体のmap更新と明示時刻を使い、ドット/transformを使わないことをソース照合。
+W6は明示limitを既存確認/claimにも使うため一律+1は不採用。全件observeはlimitなしで番兵あり。
+W7の台帳例外握り潰し・未承認属性委譲も不採用。欠測の成功化やガード緩和を避け、失敗で停止する。
+INFOの逐次合図・単一調整役・smoke先行・推定枠の実効的制御をREADMEへ補足。
+
+
+## 実Firestore接続で見つかった差異と改善
+
+- 起動4回は成功せず、書込み前に停止。run_query予約4回を保持し、元の台帳をリセットしていない。
+- このMacでは終了済みgroupへのkillpgがEPERMとなった。未回収PIDを保持し、EPERM時だけpsで
+  親PID=PGIDのゾンビ存在・非ゾンビ0を照合してから回収。psが拒否/失敗なら成功扱いしない。
+  通常sandboxではps自体が拒否。許可環境で正常終了・実孫timeout・親異常終了を検証した。
+- 元の接続例外はServiceUnavailable/DNS。公式[gRPC環境変数](https://github.com/grpc/grpc/blob/master/doc/environment_variables.md)
+  のnative resolverを子・孫の環境に固定し、他値をガードで拒否。変更後smokeは13.184秒で成功。
+- permission初回は保存eventをid直下と誤って期待してローカル拒否。製品はbody/headersを保存するため、
+  正本submission().eventと照合するよう試験と模擬入力を修正。書込み予約前の拒否でhaltなし。
+  再試験は1.912秒で合成読取りとサーバ403を確認。製品の保存形式を変更していない。
+
+成功・失敗を含むケースは[小規模実試験JSON](sync_capacity_small_trial_results.json)へ記録する。
+
+
+## 実試験の今回集計
+
+| ケース | 結果 | 実地照合 |
+|---|---|---|
+| smoke | 成功 | 合成1件completed、重複・内容競合拒否、全件再読1件 |
+| 観測SA | 成功 | 合成smoke読取り成功、固定createは実403 |
+| 応答喪失5操作 | 全5件成功 | 各commit1回、状態再読一致。claimのみ枠保持 |
+| 競合1 | 不合格 | child_failed。事後読取りは処理中3/待機9、3枠と所有者一致 |
+| 競合2 | 成功 | 12子正常終了、3取得・12保存、所有者/枠一致、38.118秒 |
+| 競合3 | 成功 | 12子正常終了、3取得・12保存、所有者/枠一致、32.110秒 |
+
+競合1の子stderrは破棄していたため原因型が欠測。3枠が守られた結果だけを取り出して合格にしない。
+診断改善として、全子の終了後に固定error_type/error_codeだけを台帳へ記録する。
+任意の例外本文は保存しない。子失敗が1件でもあれば試験は必ず失敗とする。
+12実プロセスの全失敗・秘密除去を含む最終独立SEC/QAは158成功/10skip、BLOCKER 0/WARN 0。
+実行環境と試験側の不備を除去した後も、製品の競合再試行上限や未確定のSDK原因を成功へ丸めない。
+
+
+競合4/5は未実行。累計865/1000 RPC、残135は直近成功1回210 RPCより少ないため、新規競合を開始しない。
+枠を増やす・新台帳へ移す・使用済scopeを再利用する方法で回避しない。競合1は不合格のまま、5回合格条件は未達。
+
+台帳の文書名予約51件（拒否されたpermission createを含む）、文書read予約1728、write予約242、
+累計実行時間予約2905秒、元Neon接続予約5/SQL24を保持。これらは実請求件数ではない。
+計算上限4 USDを拘束した小規模枠、実請求額は当日未反映で未確定。14日期限はJST2026-09-24 04:57のまま。
+資源・保存slotを残し、自動再開/回収/撤去/本番配備はしていない。
+
+次段階は第1回の失敗原因切り分け、元期限/累計を保った予算ガードの段階移行と残試験。
+100k全件走査・持続負荷・実worker強制終了/復旧・監視/復元・同期outbox実Neon組合せは未完了。
+実サービスで一部成功した結果を、本番容量保証や全隔離試験完了として扱わない。

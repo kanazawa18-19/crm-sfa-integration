@@ -30,7 +30,7 @@ JSON成功出力が揃わなければ未完了。終了コード0だけでは判
 
 接続先変更後の実Firestoreへの接続は、このコードのローカルテストでは未検証。実IAM・複合index・永続性・料金をローカルテストで確認済みとは扱わない。
 
-12独立process競合、5操作のcommit応答喪失、kill/recover、合成大量投入と9走査、監視受信口、バックアップ/復元は未実装。`scan` は投入機能を持たない。1,103＋10,000＋100,000を同時保存すると111,103件になるため、最大10万文書の条件ではそのまま同時投入できない。次段階では削除対象の合成scopeと順番を明示して同時保存数を制御する必要がある。
+kill/recover（実worker強制終了）、合成大量投入と9走査、監視受信口、バックアップ/復元は未実装。12独立process競合と5操作のcommit保存後応答喪失は下記コマンドを実装したが、実サービスの成否は別途試験記録で確認する。`scan` は投入機能を持たない。1,103＋10,000＋100,000を同時保存すると111,103件になるため、最大10万文書の条件ではそのまま同時投入できない。次段階では削除対象の合成scopeと順番を明示して同時保存数を制御する必要がある。
 
 Neonは `fragrant-silence-24771784` / `br-silent-king-avubki1s` / `ep-shiny-silence-avof39pi` を固定。`neon-probe --ledger ...` は2接続・SELECT・session排他のみ。キーチェーンservice=`capacity-trial-neon-dsn`、account=`neondb_owner`。接続文字列は標準入力で子へ渡し、exact host/DB/role/portを検証し、仮想環境の既存certifi CA bundleで証明書照合を強制する。bundleがなければ停止し、外部のPGSSLROOTCERT等は継承しない。任意SQLプローブを、既存同期の接続ピーク測定やoutbox試験と呼ばない。
 
@@ -45,4 +45,58 @@ Neonは `fragrant-silence-24771784` / `br-silent-king-avubki1s` / `ep-shiny-sile
 
 既存の試験台帳を作り直さず、`migrate-target --ledger /Users/cnctor/.local/state/crm-capacity-trial-260910/ledger.json` を明示実行する。旧project `cnctor-crm-cap-trial-260910`・旧既定DBだけが移行対象。Firestoreの読取り・書込み・削除予約がすべて0、RPC履歴と返却文書数も0の場合に限る。別接続先・使用済み台帳・移行済み台帳は変更せず拒否する。
 
-元の資源作成日時、Neonを含む累計予約、過去の費用証跡を保持して接続先を変更する。移行直後は費用を再照合待ちにして全実行を止める。移行後の時刻で、GCPを含む費用を `record-cost --cost-basis metered ...` により再照合するまで再開しない。旧Neon Freeの根拠で再開できず、14日の期限や累計値もリセットしない。この移行はローカル台帳だけを変更し、DB・認証・IAMを作成しない。
+元の資源作成日時、Neonを含む累計予約、過去の費用証跡を保持して接続先を変更する。移行直後は費用を再照合待ちにして全実行を止める。通常試験は、移行後の時刻でGCPを含む費用を `record-cost --cost-basis metered ...` により再照合するまで再開しない。請求反映前の小規模試験だけは、下記の別根拠による枠を明示有効化する。旧Neon Freeの根拠で再開できず、14日の期限や累計値もリセットしない。この移行はローカル台帳だけを変更し、DB・認証・IAMを作成しない。
+
+
+## 競合・応答喪失の段階試験
+
+`concurrency --ledger ... --scope trial-concurrency-1` を、末尾1〜5の各scopeで1回ずつ実行する。1試行につき12件の合成jobを作り、空HOMEの独立した12プロセスが準備完了したことを確認してからstdinの合図で開始する。短命tokenもstdinだけで渡す。各子は1回claimを試みて終了し、枠は解放しない。調整役が終了した子のPID12個・重複しないclaim3個・保存job12件（processing3件／pending9件）と枠の所有者を照合する。5回の成功を1回の結果から推定しない。
+
+`response-loss --ledger ... --scope trial-loss-initialize` は、末尾をinitialize／enqueue／claim／finish／recoverに替えて各1回実行する。接続ガード経由のcommitが成功した直後に、試験専用の応答喪失例外を返す。1回だけcommitされたこと、例外が呼出元まで届くこと、jobと枠の保存状態を再読して確認する。実ネットワーク障害の再現ではなく、保存後に応答が届かなかった場合の挙動試験。recoverの事前claimでは業務workerを起動せず、同期処理終了を確認して停止済みとして扱う。
+
+どちらもrunner専用・未使用scope限定で、途中失敗したscopeを再利用しない。競合の子は45秒以内に準備・終了を待ち、1子あたり50秒を予約する。外側の60秒制限に達したときは調整役と全子を同じプロセスグループごと停止する。失敗時の予約やprocessing枠は自動返却せず、部分結果を成功扱いしない。`claim-child` は競合調整役専用の内部コマンドで、通常環境の直接起動は環境ガードで拒否する。
+
+
+## 請求反映待ちの小規模推定上限
+
+実測の `metered` と別に、`activate-upper-bound --ledger ... --evidence 非秘密の照合証跡 --confirm-unused-database --confirm-neon-free --confirm-no-extra-resources` を明示実行できる。運用者が専用DB未使用、Neon Freeと残枠、試験対象に追加資源・PITR・バックアップ・TTLがないことを実地照合した証跡が必要。CLIのフラグ自体が外部照合を代行するわけではない。
+
+これは `basis=reserved-upper-bound` の推定上限で、実測費用0への置換ではない。元のcost証跡・期限・累計を保持し、別欄に4 USDを拘束する。固定料金式の3.61571285 USDと予備0.38428715 USDの合計。旧費用がある場合はそれも足して10 USDで停止する。20 USDの総管理予算は変更しない。初回だけ有効化でき、再実行・枠リセットを拒否する。14日を越える保存費は含まず、資源の生涯費用上限や自動撤去を意味しない。
+
+| 上限の要素 | 無料枠を引かない保守計算（USD） |
+|---|---:|
+| 保存 | 100文書 × 9 MiB（文書1＋index8）×336時間×0.000135616/GiB時 = 0.0400491 |
+| index読取り | 1,000 RPC × ceil(40,000 index entries×100文書÷1,000) ×0.033/10万 = 1.32 |
+| 文書読取り | 5,000件×0.033/10万 = 0.00165 |
+| 書込み | 1,000 RPC×8文書×0.099/10万 = 0.00792 |
+| 転送 | 5,000件×2 MiB×0.23/GiB = 2.24609375 |
+| 合計 | 3.61571285 |
+
+2 MiBは文書最大1 MiB＋応答の包み1 MiBの保守枠。予備は文書のないRPC応答などにも備える。この料金前提は外部の料金証跡と合わせて判断する。
+
+この方式ではsmoke／concurrency／response-loss／permission-probeと小規模の読取り専用inspect-stateを許可し、scan・Neon新実行は拒否する。全試験で文書名100件（scopeも含む）、RPC1,000回、読取り予約5,000件を共有台帳へ送信前に確保する。失敗・CAS競合も返却しない。既存の総読取り・総書込み・稼働時間上限も引き続き適用する。
+
+文書は更新後の全体4 KiB以下、commitは8文書・要求全体32 KiB以下。部分更新は既存文書をガード経由で追加読取りし、書込みの前提版と一致する場合だけ合成後の全体を検査する。追加読取りもRPC・読取り枠を使う。CAS不一致は製品側の既存の限定再試行へ戻す。全体書込みは新規createだけ。任意フィールド、transform、cursor、offset、collection groupを拒否し、既存確認・状態観測・claimの固定query形だけを許可する。limitなしの全件queryは101件を予約し、100件を超えたら部分結果を破棄する。
+
+`permission-probe --ledger ... --scope trial-permission --role observer` は既存の合成smoke jobを読取り、固定文書 `trial-permission/jobs/synthetic-write-denied` のcreateを1回だけ試みる。通常のobserver書込み拒否は維持し、この試験だけ同じ予算・文書サイズ・文書名予約ガードを通してサーバまで送る。サーバの403 PermissionDeniedだけを成功とし、書けてしまったら試験失敗と台帳の恒久停止を記録する。これは別DBへのアクセス検証ではない。
+
+小規模枠は有効化後に解除しない。metered費用を追加登録してもscan・Neonへの拡張は拒否する。大規模試験への移行は、元の期限・累計予約を保持する別途のガード変更とレビューが必要。台帳の作り直しで回避しない。
+
+
+実行は単一の調整役が順次行い、枠有効化と試験を並行起動しない。順番はsmoke → permission-probe → concurrency各回 → response-loss各種。
+12子への開始合図は全員の準備完了後に逐次送るもので、同一時刻を保証しない。
+失敗scopeの自動やり直しは行わない。結果不明の場合は保存状態を調査してから別途判断する。
+小規模枠の実効的な費用制御は文書数・RPC・読取り予約・期間の上限であり、未反映の実費を監視しているわけではない。
+
+
+`inspect-state --ledger ... --scope trial-concurrency-1 --role observer` は失敗した小規模scopeの保存状態を読取る。
+scopeと最大101件のjobsを同じ予算ガードで観測し、jobのID/状態/所有者/枠/試行回数/理由だけ返す。
+書込み・回復は行わない。100件超過は失敗し、観測成功を競合試験成功とは扱わない。
+
+
+このMacの実試験ではgRPCのDNS失敗を確認したため、子・孫の`GRPC_DNS_RESOLVER`を`native`に固定する。
+他の値・任意の接続環境変数は継承しない。終了監視はPIDを回収せずgroup停止→回収の順序。
+終了済groupのkillpgがEPERMの場合、psで親PID=PGIDのゾンビ存在・非ゾンビ0を確認する。
+ps起動/出力の確認に失敗した場合は試験成功を返さない。このためローカル実子テストもpsが許可される環境を要する。
+競合子のエラーは全員を待ってから型/固定コードのみ台帳claimant_failuresへ残す。1子でも失敗したら不合格。
+今回の実結果・予算残・未完了項目は`docs/sync_capacity_service_trial_results.md`を参照する。

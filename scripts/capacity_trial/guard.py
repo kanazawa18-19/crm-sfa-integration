@@ -19,7 +19,7 @@ SCOPES = frozenset(["trial-smoke", "trial-permission", "trial-invalid", "trial-s
     + [f"trial-loss-{name}" for name in ("initialize", "enqueue", "claim", "finish", "recover")]
     + [f"trial-scan-{n}" for n in (1103, 10000, 100000)])
 ALLOWED_ENV = frozenset({"HOME", "PATH", "LANG", "LC_ALL", "PYTHONNOUSERSITE",
-                         "CAPACITY_TRIAL_CHILD", "__CF_USER_TEXT_ENCODING"})
+                         "CAPACITY_TRIAL_CHILD", "__CF_USER_TEXT_ENCODING", "GRPC_DNS_RESOLVER"})
 LIMITS = {"reads": 3_000_000, "writes": 500_000, "deletes": 200_000,
           "runtime_seconds": 86_400, "sql_connections": 1000, "sql_statements": 10000}
 
@@ -59,7 +59,8 @@ class Refused(RuntimeError):
 
 def validate_environment(env=None):
     env = dict(os.environ if env is None else env)
-    if set(env) - ALLOWED_ENV or env.get("CAPACITY_TRIAL_CHILD") != "1":
+    if (set(env) - ALLOWED_ENV or env.get("CAPACITY_TRIAL_CHILD") != "1"
+            or env.get("GRPC_DNS_RESOLVER", "native") != "native"):
         raise Refused("許可外の環境変数または専用子プロセスでない起動")
     home = Path(env.get("HOME", ""))
     if not home.is_absolute() or not home.is_dir() or any(home.iterdir()):
@@ -191,15 +192,55 @@ class Ledger:
             data["cost_refresh_required"] = False
         self.transact(update)
 
-    def reserve(self, *, now=None, **amounts):
+    def activate_upper_bound(self, evidence, *, confirmed=False, now=None):
+        """未使用DB等の外部照合を受け、14日内の小規模推定上限を拘束する。"""
+        now = time.time() if now is None else now
+        if not confirmed or not evidence.strip():
+            raise Refused("未使用DB・Neon Free・追加資源なしの照合証跡が必要")
+        def update(data):
+            if (data.get("project") != PROJECT or data.get("database") != DATABASE
+                    or not 0 <= now-data["created_at"] < 14*86400
+                    or data.get("upper_bound") is not None
+                    or any(data["reserved"].get(kind) != 0 for kind in ("reads", "writes", "deletes"))
+                    or data.get("rpc_calls") != {} or data.get("returned_documents") != 0
+                    or (data.get("cost") or {}).get("usd", 0) + 4 >= 10):
+                raise Refused("小規模上限の初回有効化条件を満たしません")
+            data["upper_bound"] = {"basis": "reserved-upper-bound", "usd": 4,
+                "activated_at": now, "evidence": evidence, "document_names": [], "rpc_reserved": 0,
+                "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない"}
+        self.transact(update)
+
+    def upper_bound(self):
+        return self.transact(lambda data: data.get("upper_bound"))
+
+    def authorize_command(self, command):
+        upper = self.upper_bound()
+        if upper and command not in {"smoke", "concurrency", "claim-child", "response-loss", "permission-probe", "inspect-state"}:
+            raise Refused("推定上限では小規模Firestore試験だけを許可")
+
+    def reserve(self, *, now=None, rpc=False, document_names=(), **amounts):
         now = time.time() if now is None else now
         def update(data):
             cost = data.get("cost")
+            upper = data.get("upper_bound")
+            if upper:
+                cost_stopped = upper["usd"] + (cost or {}).get("usd", 0) >= 10
+            else:
+                cost_stopped = (data.get("cost_refresh_required") or not cost
+                    or not 0 <= now-cost["observed_at"] <= 3600
+                    or cost.get("basis") != "metered" or cost["usd"] >= 10)
             if (data.get("project") != PROJECT or data.get("database") != DATABASE
-                    or data.get("cost_refresh_required") or not 0 <= now-data["created_at"] < 14*86400
-                    or not cost or not 0 <= now-cost["observed_at"] <= 3600
-                    or cost.get("basis") != "metered" or cost["usd"] >= 10):
+                    or data.get("halted") or not 0 <= now-data["created_at"] < 14*86400 or cost_stopped):
                 raise Refused("期限・費用停止値・費用取得途絶のため新規実行停止")
+            if upper:
+                names = sorted(set(upper["document_names"]) | set(document_names))
+                if (len(names) > 100 or upper["rpc_reserved"] + int(rpc) > 1000
+                        or data["reserved"]["reads"] + amounts.get("reads", 0) > 5000
+                        or amounts.get("sql_connections", 0) or amounts.get("sql_statements", 0)
+                        or amounts.get("deletes", 0)):
+                    raise Refused("小規模推定上限の操作枠超過", code="limit_exceeded")
+                upper["document_names"] = names
+                upper["rpc_reserved"] += int(rpc)
             for kind, amount in amounts.items():
                 if (kind not in LIMITS or not isinstance(amount, (int, float))
                         or not math.isfinite(amount) or amount < 0

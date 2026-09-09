@@ -1,0 +1,25 @@
+{
+  "retrieved_at": "2026-09-09T20:59:48.258654+00:00",
+  "gcp": {
+    "billing_account": "01EA6F-556121-34B9A6",
+    "project": "actionpoint-autocalc",
+    "reported_currency": "JPY",
+    "reported_net_total": 0,
+    "covered_through": "2026-09-08",
+    "trial_cost": null,
+    "trial_cost_status": "unreported",
+    "trial_created_at": "2026-09-09T20:30:00.223688Z",
+    "source": "GCP Cloud Billing report UI, project filter actionpoint-autocalc",
+    "limitations": "当日資源は未反映。画面取得日時を費用データ日時へ読み替えない。"
+  },
+  "neon": {
+    "project": "fragrant-silence-24771784",
+    "plan": "Free",
+    "compute_cu_hours_display": "0 / 100",
+    "storage_gb_display": "0 / 0.5",
+    "transfer_gb_display": "0 / 5",
+    "compute_status": "Idle",
+    "limitations": "最大1時間の遅延、非稼働projectのusage更新なし。保存一覧31.65 MBと丸め表示0 GBを区別。"
+  },
+  "decision": "metered=0登録は行わない。後続で元台帳の小規模reserved-upper-bound 4 USDを有効化。実費欄は未確定のまま。"
+}

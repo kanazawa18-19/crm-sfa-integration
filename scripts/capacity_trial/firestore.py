@@ -5,8 +5,11 @@ from .guard import BASE, PROJECT, DATABASE, Refused, validate_resource, validate
 
 
 class GuardedAPI:
-    def __init__(self, api, ledger, *, role):
+    def __init__(self, api, ledger, *, role, before_commit=None):
         self.api, self.ledger, self.role = api, ledger, role
+        self.before_commit = before_commit
+        policy = ledger.upper_bound()
+        self.small = isinstance(policy, dict) and policy.get("basis") == "reserved-upper-bound"
 
     def __getattr__(self, method):
         if method not in {"batch_get_documents", "run_query", "commit"}:
@@ -16,12 +19,24 @@ class GuardedAPI:
             request = dict(request or {})
             validate_resource(request.get("database", BASE))
             reads, writes = 0, 0
+            document_names = []
+            if self.small:
+                from . import small_policy
+                request = {key: value for key, value in request.items() if value is not None}
+                allowed_keys = {"batch_get_documents": {"database", "documents"},
+                    "run_query": {"parent", "structured_query"}, "commit": {"database", "writes"}}
+                if set(request) - allowed_keys[method]:
+                    raise Refused("未承認の小規模RPCオプション")
             if method == "batch_get_documents":
                 refs = request.get("documents", [])
                 if not refs:
                     raise Refused("文書名がない読取り")
+                if self.small and len(refs) != 1:
+                    raise Refused("小規模文書読取りは1文書ずつ")
                 for ref in refs:
                     validate_resource(ref)
+                    if self.small:
+                        small_policy.resource(ref)
                 reads = len(refs)
             elif method == "run_query":
                 validate_resource(request.get("parent"))
@@ -33,6 +48,9 @@ class GuardedAPI:
                 # 中断時も全量を予約したままにする。返却文書数は別記録。
                 if query.offset:
                     raise Refused("offsetによる未計数の読取りは禁止")
+                if self.small:
+                    small_policy.resource(request["parent"])
+                    small_policy.query_shape(query)
                 reads = int(query.limit) if query.limit else 100_001
                 if not 1 <= reads <= 100_001:
                     raise Refused("走査読取り上限")
@@ -51,9 +69,24 @@ class GuardedAPI:
                     if change.delete or change.transform.document or not change.update.name:
                         raise Refused("削除・単独transformは未承認")
                     validate_resource(change.update.name)
+                if self.small:
+                    from google.cloud.firestore_v1.types import CommitRequest
+                    if len(changes) > 8 or len(CommitRequest.serialize(CommitRequest(request))) > 32768:
+                        raise Refused("小規模commitの8文書・32KiB上限を超過")
+                    def read_existing(name):
+                        responses = list(self.batch_get_documents(request={"database": BASE, "documents": [name]}))
+                        return next((response.found for response in responses if response.found.name), None)
+                    for change in changes:
+                        small_policy.full_document(change, read_existing)
+                        document_names.append(Write(change).update.name)
                 writes = len(changes)
-            self.ledger.reserve(reads=reads, writes=writes)
+            if self.small:
+                self.ledger.reserve(reads=reads, writes=writes, rpc=True, document_names=document_names)
+            else:
+                self.ledger.reserve(reads=reads, writes=writes)
             self.ledger.record(method)
+            if method == "commit" and self.before_commit is not None:
+                self.before_commit()
             kwargs.update(retry=None, timeout=10 if method == "commit" else 55)
             result = getattr(self.api, method)(request=request, **kwargs)
             if method == "commit":
@@ -64,8 +97,9 @@ class GuardedAPI:
                     for response in result:
                         present = bool(response.document.name) if method == "run_query" else bool(response.found.name)
                         count += int(present)
-                        if method == "run_query" and count > 100_000:
-                            raise Refused("10万文書超過。部分集計を破棄")
+                        if method == "run_query" and count > (100 if self.small else 100_000):
+                            raise Refused("100文書超過。部分集計を破棄" if self.small
+                                          else "10万文書超過。部分集計を破棄")
                         yield response
                 finally:
                     # 強制killでは最後の応答数は欠測。事前予約は残るので上限は減らない。
