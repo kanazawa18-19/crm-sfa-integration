@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from src.api.auth import verify_cron_secret
-from src.sync_capacity.domain import MAX_PAYLOAD_BYTES, PayloadConflict, submission
+from src.sync_capacity.domain import MAX_PAYLOAD_BYTES, PayloadConflict, PayloadTooLarge, submission
 from src.sync_capacity.firestore_store import enabled, get_store
 from src.sync_engine.webhook_handlers._common import (
     get_header, verify_notion_webhook_signature, verify_webhook_body_token,
@@ -28,9 +28,9 @@ router = APIRouter()
 
 def authenticate(source: str, request: Request, body: str, payload: dict) -> None:
     if source == "spreadsheet-outbox-drain":
-        verify_cron_secret(request.headers.get("authorization"),
-                           request.headers.get("x-cron-secret"),
-                           request.headers.get("x-cloud-scheduler"))
+        verify_cron_secret(authorization=request.headers.get("authorization"),
+                           x_cron_secret=request.headers.get("x-cron-secret"),
+                           x_cloud_scheduler=request.headers.get("x-cloud-scheduler"))
         return
     # 永続キューではローカル用の署名省略フラグも認めない。
     if not os.environ.get(f"{source.upper()}_WEBHOOK_SECRET"):
@@ -86,8 +86,13 @@ class CapacityMiddleware:
             if source == "spreadsheet-outbox-drain":
                 # 定期実行は同じbodyでも別の仕事。HTTP再送が重なっても共通枠内で処理する。
                 payload = {"invocation_id": uuid.uuid4().hex}
-            item = submission(source, payload, get_header(request.headers, "X-Sync-System-ID"),
-                              now, receipt_id=uuid.uuid4().hex)
+            try:
+                item = submission(source, payload, get_header(request.headers, "X-Sync-System-ID"),
+                                  now, receipt_id=uuid.uuid4().hex)
+            except PayloadTooLarge:
+                raise HTTPException(413, "payload too large") from None
+            except ValueError:
+                raise HTTPException(400, "invalid webhook payload") from None
             def save():
                 return get_store().enqueue(item, now)
             state = await run_in_threadpool(save)

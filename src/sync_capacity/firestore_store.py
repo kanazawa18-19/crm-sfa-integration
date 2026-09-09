@@ -1,4 +1,4 @@
-"""Firestoreの2文書transactionでジョブと固定実行枠を同時に確保する。"""
+"""Firestoreの比較更新付き単一commitでジョブと固定実行枠を同時に確保する。"""
 
 from __future__ import annotations
 
@@ -44,6 +44,58 @@ def enabled() -> bool:
     return value == "true"
 
 
+class _ComparedBatch:
+    """読み取った全版を前提にする。判断中はサーバーのロックを保持しない。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.reads = {}
+        self.changes = {}
+
+    def get(self, ref):
+        if ref.path not in self.reads:
+            self.reads[ref.path] = ref.get()
+        return self.reads[ref.path]
+
+    def create(self, ref, data):
+        if self.get(ref).exists:
+            raise ValueError("create requires a missing document")
+        self.changes[ref.path] = (ref, "create", data)
+
+    def update(self, ref, data):
+        if not self.get(ref).exists:
+            raise ValueError("update requires an existing document")
+        self.changes[ref.path] = (ref, "update", data)
+
+    def commit(self):
+        from google.cloud.firestore_v1 import LastUpdateOption
+        if not self.changes:
+            # dry-runと照会だけの処理は書き込まない。
+            return
+        batch = self.client.batch()
+        for path, snapshot in self.reads.items():
+            change = self.changes.get(path)
+            if change is None:
+                # scopeの検証だけをしたenqueueにも同じ版の前提を付ける。
+                # 値を変えない最小フィールド更新で、scope全体を上書きしない。
+                if not snapshot.exists:
+                    raise ValueError("missing read must be created in the same commit")
+                values = snapshot.to_dict()
+                if "version" not in values:
+                    raise ValueError("read-only precondition requires scope version")
+                batch.update(snapshot.reference, {"version": values["version"]},
+                             option=LastUpdateOption(snapshot.update_time))
+            else:
+                ref, kind, data = change
+                if kind == "create":
+                    # SDK createはexists=falseの前提を付ける。
+                    batch.create(ref, data)
+                else:
+                    batch.update(ref, data, option=LastUpdateOption(snapshot.update_time))
+        # 応答を失ったcommitをSDK内部で再送させない。
+        batch.commit(retry=None, timeout=10)
+
+
 class FirestoreJobStore:
     def __init__(self, settings: Settings, *, client: Any = None):
         from google.cloud import firestore
@@ -60,37 +112,39 @@ class FirestoreJobStore:
 
     def _atomic(self, operation):
         import grpc
-        from google.api_core.exceptions import Aborted
-        from google.cloud import firestore
+        from google.api_core.exceptions import Aborted, AlreadyExists, FailedPrecondition
+        conflicts = (Aborted, AlreadyExists, FailedPrecondition)
+        codes = {grpc.StatusCode.ABORTED, grpc.StatusCode.ALREADY_EXISTS,
+                 grpc.StatusCode.FAILED_PRECONDITION}
         deadline = time.monotonic() + 3.0
         for attempt in range(8):
             try:
-                return firestore.transactional(operation)(self.client.transaction(max_attempts=1))
-            except (Aborted, ValueError) as exc:
-                # SDKはcommitのABORTEDをValueErrorのcauseに包む。確実に取消済みの
-                # 場合だけずらして再試行する。Timeout/Unavailable等は絶対に含めない。
-                definite_abort = isinstance(exc, Aborted) or isinstance(exc.__cause__, Aborted)
-                # SDKのrollback例外が元のcommit応答不明を隠している場合も再試行禁止。
+                batch = _ComparedBatch(self.client)
+                result = operation(batch)
+                batch.commit()
+                return result
+            except conflicts as exc:
+                # 比較失敗が確定した場合だけ読み直す。通信結果不明を含む連鎖は除外。
+                definite_conflict = True
                 chain, seen = [exc], set()
                 while chain:
                     error = chain.pop()
                     if id(error) in seen:
                         continue
                     seen.add(id(error))
-                    # google-api-coreは元のgRPCエラーをcauseに残す。
-                    # 生のABORTEDも許すが、通信結果不明のcodeは許さない。
-                    grpc_abort = isinstance(error, grpc.RpcError) and error.code() == grpc.StatusCode.ABORTED
-                    if not (isinstance(error, Aborted) or grpc_abort
-                            or (isinstance(error, ValueError) and isinstance(error.__cause__, Aborted))):
-                        definite_abort = False
+                    grpc_conflict = (isinstance(error, grpc.RpcError)
+                                     and callable(getattr(error, "code", None))
+                                     and error.code() in codes)
+                    if not (isinstance(error, conflicts) or grpc_conflict):
+                        definite_conflict = False
                     chain.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
                 remaining = deadline - time.monotonic()
-                if not definite_abort or attempt == 7 or remaining <= 0:
+                if not definite_conflict or attempt == 7 or remaining <= 0:
                     raise
                 time.sleep(min(remaining, random.uniform(0.03, min(0.6, 0.08 * 2 ** attempt))))
 
     def _scope(self, transaction) -> dict:
-        snapshot = self.scope_ref.get(transaction=transaction)
+        snapshot = transaction.get(self.scope_ref)
         data = snapshot.to_dict() if snapshot.exists else None
         expected_keys = {str(n) for n in range(self.settings.slots)}
         if (not data or data.get("version") != 1
@@ -104,7 +158,7 @@ class FirestoreJobStore:
         desired = {"version": 1, "limit": self.settings.slots,
                    "slots": {str(n): None for n in range(self.settings.slots)}}
         def operation(tx):
-            snapshot = self.scope_ref.get(transaction=tx)
+            snapshot = tx.get(self.scope_ref)
             if snapshot.exists:
                 self._scope(tx)
                 return {"action": "already_initialized", "limit": self.settings.slots}
@@ -117,7 +171,7 @@ class FirestoreJobStore:
         ref = self.jobs.document(request.job_id)
         def operation(tx):
             self._scope(tx)
-            existing = ref.get(transaction=tx)
+            existing = tx.get(ref)
             if existing.exists:
                 data = existing.to_dict()
                 if data["payload_hash"] != request.payload_hash:
@@ -144,7 +198,7 @@ class FirestoreJobStore:
                 slot = next((key for key, value in scope["slots"].items() if value is None), None)
                 if slot is None:
                     return False
-                snap = ref.get(transaction=tx)
+                snap = tx.get(ref)
                 if not snap.exists:
                     return None
                 data = snap.to_dict()
@@ -170,7 +224,7 @@ class FirestoreJobStore:
         ref = self.jobs.document(claim.job_id)
         def operation(tx):
             scope = self._scope(tx)
-            snapshot = ref.get(transaction=tx)
+            snapshot = tx.get(ref)
             data = snapshot.to_dict() if snapshot.exists else {}
             if (data.get("state") != "processing" or data.get("owner") != claim.owner
                     or data.get("slot") != claim.slot
@@ -189,7 +243,7 @@ class FirestoreJobStore:
         ref = self.jobs.document(job_id)
         def operation(tx):
             scope = self._scope(tx)
-            snapshot = ref.get(transaction=tx)
+            snapshot = tx.get(ref)
             data = snapshot.to_dict() if snapshot.exists else {}
             slot = data.get("slot")
             if (data.get("state") != "processing" or not owner or data.get("owner") != owner

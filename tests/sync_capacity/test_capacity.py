@@ -265,86 +265,162 @@ def test_two_notion_updates_keep_delta_and_retain_second_stale(monkeypatch):
     assert states == ["completed", "needs_attention"]
 
 
-def test_only_definite_transaction_abort_is_retried(monkeypatch):
-    from google.api_core.exceptions import Aborted
+
+@pytest.fixture
+def compared_store(monkeypatch):
+    """実SDKのWriteBatchから送るcommitだけを捕捉する。ネット接続なし。"""
+    from datetime import datetime, timezone
+    from google.auth.credentials import AnonymousCredentials
     from google.cloud import firestore
-    from src.sync_capacity.firestore_store import FirestoreJobStore
-    store = object.__new__(FirestoreJobStore)
-    store.client = Mock()
-    wrapped = ValueError("SDK exhausted")
-    wrapped.__cause__ = Aborted("contention")
-    execute = Mock(side_effect=[wrapped, "ok"])
-    monkeypatch.setattr(firestore, "transactional", lambda _: execute)
+    from google.cloud.firestore_v1.services.firestore import FirestoreClient
+    from google.cloud.firestore_v1.types import CommitResponse
+    from src.sync_capacity.firestore_store import FirestoreJobStore, Settings
+    client = firestore.Client(project="demo-cas-unit", credentials=AnonymousCredentials())
+    store = FirestoreJobStore(Settings("demo-cas-unit", "(default)", "unit", 1), client=client)
+    stamp = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    scope = firestore.DocumentSnapshot(store.scope_ref, {"version": 1, "limit": 1, "slots": {"0": None}},
+                                       True, stamp, stamp, stamp)
+    monkeypatch.setattr(store.scope_ref, "get", Mock(return_value=scope))
+    commit = Mock(return_value=CommitResponse())
+    monkeypatch.setattr(FirestoreClient, "commit", commit)
+    return store, commit, stamp
+
+
+def test_real_sdk_batch_has_both_preconditions_and_no_rpc_retry(compared_store, monkeypatch):
+    from google.cloud import firestore
+    store, commit, stamp = compared_store
+    ref = store.jobs.document("new")
+    missing = firestore.DocumentSnapshot(ref, None, False, stamp, None, None)
+    monkeypatch.setattr(ref, "get", Mock(return_value=missing))
+    def operation(batch):
+        store._scope(batch)
+        batch.create(ref, {"state": "pending"})
+    store._atomic(operation)
+    kwargs = commit.call_args.kwargs
+    assert kwargs["retry"] is None
+    assert kwargs["timeout"] == 10
+    writes = kwargs["request"]["writes"]
+    assert len(writes) == 2
+    assert writes[0].current_document.update_time == stamp
+    assert writes[0].update_mask.field_paths == ["version"]
+    assert writes[1].current_document.exists is False
+
+
+@pytest.mark.parametrize("failure_name", ["Aborted", "FailedPrecondition", "AlreadyExists"])
+def test_confirmed_comparison_conflict_rereads(compared_store, monkeypatch, failure_name):
+    from google.api_core import exceptions
+    from google.cloud.firestore_v1.types import CommitResponse
+    store, commit, _ = compared_store
+    commit.side_effect = [getattr(exceptions, failure_name)("comparison failed"), CommitResponse()]
     monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", lambda _: None)
-    assert store._atomic(lambda _: None) == "ok"
-    assert execute.call_count == 2
-
-    for failure in (TimeoutError("unknown commit"), ValueError("not an abort")):
-        execute.reset_mock(side_effect=True)
-        execute.side_effect = failure
-        with pytest.raises(type(failure)):
-            store._atomic(lambda _: None)
-        assert execute.call_count == 1
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
+    store._atomic(operation)
+    assert commit.call_count == 2
+    assert store.scope_ref.get.call_count == 2
 
 
-def test_rollback_abort_does_not_hide_unknown_commit(monkeypatch):
-    from google.api_core.exceptions import Aborted
-    from google.cloud import firestore
-    from src.sync_capacity.firestore_store import FirestoreJobStore
-    store = object.__new__(FirestoreJobStore)
-    store.client = Mock()
-    rollback_error = Aborted("rollback failed")
-    rollback_error.__context__ = TimeoutError("commit unknown")
-    execute = Mock(side_effect=rollback_error)
-    monkeypatch.setattr(firestore, "transactional", lambda _: execute)
-    with pytest.raises(Aborted):
-        store._atomic(lambda _: None)
-    assert execute.call_count == 1
+@pytest.mark.parametrize("failure_name", ["DeadlineExceeded", "ServiceUnavailable", "Unknown"])
+def test_unknown_commit_does_not_retry(compared_store, failure_name):
+    from google.api_core import exceptions
+    store, commit, _ = compared_store
+    commit.side_effect = getattr(exceptions, failure_name)("unknown result")
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
+    with pytest.raises(getattr(exceptions, failure_name)):
+        store._atomic(operation)
+    assert commit.call_count == 1
 
 
-@pytest.mark.parametrize("code, retried", [
-    ("ABORTED", True), ("UNKNOWN", False), ("DEADLINE_EXCEEDED", False),
-    ("UNAVAILABLE", False),
+@pytest.mark.parametrize("code,retried", [
+    ("ABORTED", True), ("FAILED_PRECONDITION", True), ("ALREADY_EXISTS", True),
+    ("UNKNOWN", False), ("DEADLINE_EXCEEDED", False), ("UNAVAILABLE", False),
 ])
-def test_sdk_grpc_cause_only_retries_confirmed_abort(monkeypatch, code, retried):
-    """SDKの例外変換を通し、生gRPC原因を伴う実際の例外構造で検証する。"""
+def test_grpc_cause_must_also_be_confirmed_conflict(compared_store, monkeypatch, code, retried):
     import grpc
-    from google.api_core import grpc_helpers
     from google.api_core.exceptions import Aborted
-    from google.cloud import firestore
-    from src.sync_capacity.firestore_store import FirestoreJobStore
-
+    from google.cloud.firestore_v1.types import CommitResponse
+    store, commit, _ = compared_store
     class RpcFailure(grpc.RpcError):
         def code(self):
             return getattr(grpc.StatusCode, code)
-
-        def details(self):
-            return "合成通信エラー"
-
-        def trailing_metadata(self):
-            return None
-
-    def fail_rpc():
-        raise RpcFailure()
-
-    try:
-        grpc_helpers._wrap_unary_errors(fail_rpc)()
-    except Exception as sdk_error:
-        assert sdk_error.__cause__ is not None
-        assert isinstance(sdk_error.__cause__, grpc.RpcError)
-        wrapped = Aborted("rollback aborted")
-        # 実SDKのcommit失敗後、rollbackもABORTEDになる場合を含める。
-        wrapped.__context__ = sdk_error
-
-    store = object.__new__(FirestoreJobStore)
-    store.client = Mock()
-    execute = Mock(side_effect=[wrapped, "ok"])
-    monkeypatch.setattr(firestore, "transactional", lambda _: execute)
+    error = Aborted("outer failure")
+    error.__cause__ = RpcFailure()
+    commit.side_effect = [error, CommitResponse()]
     monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", lambda _: None)
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
     if retried:
-        assert store._atomic(lambda _: None) == "ok"
-        assert execute.call_count == 2
+        store._atomic(operation)
+        assert commit.call_count == 2
     else:
         with pytest.raises(Aborted):
-            store._atomic(lambda _: None)
-        assert execute.call_count == 1
+            store._atomic(operation)
+        assert commit.call_count == 1
+
+
+def test_conflict_context_cannot_hide_timeout(compared_store):
+    from google.api_core.exceptions import FailedPrecondition
+    store, commit, _ = compared_store
+    error = FailedPrecondition("outer error")
+    error.__context__ = TimeoutError("unknown commit")
+    commit.side_effect = error
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
+    with pytest.raises(FailedPrecondition):
+        store._atomic(operation)
+    assert commit.call_count == 1
+
+
+def test_dry_run_never_commits(compared_store):
+    store, commit, _ = compared_store
+    store.initialize()
+    commit.assert_not_called()
+
+
+def test_notion_attempt_number_is_not_content_but_data_is():
+    first = submission("notion", {"id": "event", "attempt_number": 1, "data": {"value": 1}}, None, 1)
+    retry = submission("notion", {"id": "event", "attempt_number": 2, "data": {"value": 1}}, None, 2)
+    changed = submission("notion", {"id": "event", "attempt_number": 2, "data": {"value": 2}}, None, 3)
+    assert first.job_id == retry.job_id == changed.job_id
+    assert first.payload_hash == retry.payload_hash != changed.payload_hash
+    assert json.loads(retry.event["body"])["attempt_number"] == 2
+
+
+def test_notion_unidentified_notification_requires_distinct_receipts():
+    with pytest.raises(ValueError):
+        submission("notion", {"data": {}}, None, 1)
+    a = submission("notion", {"data": {}}, None, 1, receipt_id="first")
+    b = submission("notion", {"data": {}}, None, 2, receipt_id="second")
+    assert a.job_id != b.job_id
+    a = submission("notion", {"timestamp": "2026-09-10", "attempt_number": 1}, None, 1)
+    b = submission("notion", {"timestamp": "2026-09-10", "attempt_number": 2}, None, 2)
+    assert a.job_id == b.job_id
+
+
+def test_canonical_size_overflow_returns_413_before_save(gate):
+    client, _, factory, db = gate
+    response = client.post("/api/webhooks/spreadsheet", json={}, headers={
+        "X-Webhook-Secret": "test-only-secret", "X-Sync-System-ID": "x" * (256 * 1024)})
+    assert response.status_code == 413
+    factory.assert_not_called()
+    db.assert_not_called()
+
+
+def test_submission_value_error_returns_400_but_store_value_error_is_503(gate, monkeypatch):
+    client, store, factory, _ = gate
+    original = submission
+    monkeypatch.setattr("src.sync_capacity.http.submission", Mock(side_effect=ValueError("private detail")))
+    response = client.post("/api/webhooks/spreadsheet", json={},
+                           headers={"X-Webhook-Secret": "test-only-secret"})
+    assert response.status_code == 400 and "private" not in response.text
+    factory.assert_not_called()
+    monkeypatch.setattr("src.sync_capacity.http.submission", original)
+    store.enqueue.side_effect = ValueError("storage config failure")
+    response = client.post("/api/webhooks/spreadsheet", json={},
+                           headers={"X-Webhook-Secret": "test-only-secret"})
+    assert response.status_code == 503

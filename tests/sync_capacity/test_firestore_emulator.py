@@ -90,3 +90,68 @@ def test_duplicate_preserves_first_receipt_and_conflict_is_rejected(stores):
     with pytest.raises(PayloadConflict):
         b.enqueue(changed, 30)
     assert a.jobs.document(item.job_id).get().to_dict()["created_at"] == 10
+
+
+def test_stale_scope_precondition_prevents_job_creation(stores):
+    from google.api_core.exceptions import FailedPrecondition
+    from src.sync_capacity.firestore_store import _ComparedBatch
+    a, b = stores
+    batch = _ComparedBatch(a.client)
+    a._scope(batch)
+    ref = a.jobs.document("must-not-exist")
+    batch.create(ref, {"state": "pending"})
+    b.scope_ref.update({"limit": 3})
+    with pytest.raises(FailedPrecondition):
+        batch.commit()
+    assert not ref.get().exists
+    assert b.scope_ref.get().to_dict()["limit"] == 3
+
+
+def test_stale_job_precondition_prevents_slot_assignment(stores):
+    from google.api_core.exceptions import FailedPrecondition
+    from src.sync_capacity.firestore_store import _ComparedBatch
+    a, b = stores
+    item = put(a, 1)
+    ref = a.jobs.document(item.job_id)
+    batch = _ComparedBatch(a.client)
+    scope = a._scope(batch)
+    batch.get(ref)
+    scope["slots"]["0"] = {"owner": "first", "job_id": item.job_id}
+    batch.update(a.scope_ref, {"slots": scope["slots"]})
+    batch.update(ref, {"state": "processing", "owner": "first"})
+    b.jobs.document(item.job_id).update({"state": "needs_attention"})
+    with pytest.raises(FailedPrecondition):
+        batch.commit()
+    assert all(value is None for value in a.scope_ref.get().to_dict()["slots"].values())
+    assert ref.get().to_dict()["state"] == "needs_attention"
+
+
+def test_committed_claim_response_loss_retains_job_and_slot(stores, monkeypatch):
+    from google.cloud.firestore_v1.batch import WriteBatch
+    a, b = stores
+    item = put(a, 1)
+    original = WriteBatch.commit
+    calls = []
+    def lost_response(self, **kwargs):
+        calls.append(kwargs)
+        original(self, **kwargs)
+        raise TimeoutError("response lost after commit")
+    monkeypatch.setattr(WriteBatch, "commit", lost_response)
+    with pytest.raises(TimeoutError):
+        a.claim("uncertain-owner", 10)
+    assert len(calls) == 1 and calls[0]["retry"] is None
+    data = b.jobs.document(item.job_id).get().to_dict()
+    assert data["state"] == "processing"
+    assert b.scope_ref.get().to_dict()["slots"][data["slot"]] == {
+        "owner": "uncertain-owner", "job_id": item.job_id}
+
+
+def test_notion_retry_attempt_is_deduplicated_but_changed_data_conflicts(stores):
+    a, b = stores
+    first = submission("notion", {"id": "attempt-event", "attempt_number": 1, "data": {"value": 1}}, None, 1)
+    retry = submission("notion", {"id": "attempt-event", "attempt_number": 2, "data": {"value": 1}}, None, 2)
+    changed = submission("notion", {"id": "attempt-event", "attempt_number": 2, "data": {"value": 2}}, None, 3)
+    assert a.enqueue(first, 1) == b.enqueue(retry, 2) == "pending"
+    with pytest.raises(PayloadConflict):
+        b.enqueue(changed, 3)
+    assert a.jobs.document(first.job_id).get().to_dict()["created_at"] == 1

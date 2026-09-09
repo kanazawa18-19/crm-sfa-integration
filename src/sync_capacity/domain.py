@@ -15,6 +15,10 @@ class CapacityUnavailable(Exception):
     """保存・実行枠の確実性を確認できない。DB経路に迂回しない。"""
 
 
+class PayloadTooLarge(ValueError):
+    """認証情報除去後の保管内容が受付上限を超えた。"""
+
+
 class PayloadConflict(Exception):
     """既存のイベントIDに異なる内容が届いた。"""
 
@@ -43,15 +47,22 @@ def submission(source: str, payload: dict[str, Any], sync_system_id: str | None,
     canonical = json.dumps({"payload": clean, "sync_system_id": sync_system_id},
                            sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     if len(canonical.encode("utf-8")) > MAX_PAYLOAD_BYTES:
-        raise ValueError("payload too large")
+        raise PayloadTooLarge("payload too large")
+    if source == "notion":
+        identity_payload = dict(clean)
+        # 再送回数だけの変化は別内容ではない。元の保存本文・署名対象は変えない。
+        identity_payload.pop("attempt_number", None)
+        canonical = json.dumps({"payload": identity_payload, "sync_system_id": sync_system_id},
+                               sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     # レコードIDは変更ごとに同じなので使わない。Notion/Kintoneの通知IDだけを採用。
     stable_id = clean.get("id") if source in {"notion", "kintone"} else None
     identity = str(stable_id) if stable_id else digest
-    if source == "zoho" and clean.get("server_time") is None:
+    undated_notion = source == "notion" and not clean.get("id") and not clean.get("timestamp")
+    if (source == "zoho" and clean.get("server_time") is None) or undated_notion:
         # 通知時刻が無い場合、同じ内容の将来の別編集を永久に重複扱いにしない。
         if not receipt_id:
-            raise ValueError("receipt ID required for undated Zoho notification")
+            raise ValueError("receipt ID required for unidentified notification")
         identity = receipt_id
     job_id = hashlib.sha256(f"{source}:{identity}".encode()).hexdigest()
     if source == "zoho" and clean.get("server_time") is None:
