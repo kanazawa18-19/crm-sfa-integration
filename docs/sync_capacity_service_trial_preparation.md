@@ -1,5 +1,9 @@
 # 実規模観測・隔離実サービス試験の準備票
 
+> 後続状況（2026-09-10）：本人が資源作成・14日/20 USD案を承認。
+> 専用Neonは作成済み、GCPはproject quota超過で未作成。
+> 以下は準備時点の記録。現在の到達点は[隔離試験記録](sync_capacity_service_trial_results.md)を参照。
+
 2026-09-10 主機CX。製品基準 `d1b4060`。今回の成果は準備文書であり、
 資源作成・API有効化・IAM変更・試験実行・監視登録・本番配備は未実施。
 [観測計画](sync_capacity_observation_plan.md)と

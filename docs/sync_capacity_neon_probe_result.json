@@ -1,0 +1,74 @@
+{
+  "base_git_sha": "c046f0b278fde0cfb191061056f726b566ade765",
+  "source_sha256": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "af68ecf1d15ba2d2190165e021c7cddb18bbac502f0a4887474c64929f2cb921",
+    "scripts/capacity_trial/firestore.py": "d0e9b6cc673555af645750a80472c91fd5eda39993894e3fbd2874785df1e191",
+    "scripts/capacity_trial/guard.py": "16eef854ceef14d625716bad305101dd477e4400639d99bb9026cb6a87b59451",
+    "scripts/capacity_trial/neon.py": "fafb8950de2965f98fb30df5077a759b159c0b803499bdfd7c19b6bf733d7798"
+  },
+  "exit_code": 0,
+  "result": {
+    "state": "passed",
+    "case": "neon-probe",
+    "started_at": 1788984952.4728131,
+    "result": {
+      "project": "fragrant-silence-24771784",
+      "branch": "br-silent-king-avubki1s",
+      "endpoint": "ep-shiny-silence-avof39pi",
+      "connection_count": 2,
+      "sql_count": 7,
+      "connections_closed": true,
+      "advisory_exclusion": true,
+      "events": [
+        {
+          "connection": 1,
+          "event": "opened",
+          "seconds": 2.1318273750075605
+        },
+        {
+          "connection": 2,
+          "event": "opened",
+          "seconds": 1.8055520000052638
+        },
+        {
+          "connection": 1,
+          "event": "query_finished",
+          "seconds": 0.29457845899742097
+        },
+        {
+          "connection": 2,
+          "event": "query_finished",
+          "seconds": 0.23322291698423214
+        },
+        {
+          "connection": 1,
+          "event": "query_finished",
+          "seconds": 0.24723454201011918
+        },
+        {
+          "connection": 2,
+          "event": "query_finished",
+          "seconds": 0.23851974998251535
+        },
+        {
+          "connection": 1,
+          "event": "query_finished",
+          "seconds": 0.25176195800304413
+        },
+        {
+          "connection": 2,
+          "event": "query_finished",
+          "seconds": 0.250236916996073
+        },
+        {
+          "connection": 2,
+          "event": "query_finished",
+          "seconds": 0.2454312080226373
+        }
+      ],
+      "limitations": "専用SQLプローブ。既存同期の接続ピーク・outbox・外部連携は未検証"
+    },
+    "finished_at": 1788984958.235618
+  }
+}
