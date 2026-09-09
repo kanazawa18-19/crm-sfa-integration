@@ -45,3 +45,36 @@ def test_exception_message_and_unknown_class_name_are_not_emitted():
     assert "synthetic" not in json.dumps(result)
     assert parse_failure(PREFIX + json.dumps(failure_record(ValueError("synthetic-secret"))))[
         "error_type"] == "ValueError"
+
+
+@pytest.mark.parametrize("internal", [False, True])
+def test_real_cli_failure_after_unterminated_sdk_log(internal):
+    """実CLIの例外出口を通し、改行なしログと本文非公開を確認する。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = dict(os.environ)
+    env.pop("CAPACITY_TRIAL_CHILD", None)
+    if internal:
+        env["CAPACITY_TRIAL_CHILD"] = "1"
+    code = """
+import argparse, runpy, sys
+def fail(*args, **kwargs):
+    sys.stderr.write('SDK synthetic-secret' if INTERNAL else '')
+    raise ValueError('synthetic-secret')
+argparse.ArgumentParser.parse_args = fail
+runpy.run_module('scripts.capacity_trial', run_name='__main__')
+""".replace("INTERNAL", repr(internal))
+    result = subprocess.run([sys.executable, "-s", "-c", code], env=env,
+                            cwd=Path(__file__).resolve().parents[2],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1 and result.stdout == ""
+    if internal:
+        assert parse_failure(result.stderr) == {
+            "error_type": "ValueError", "error_code": "unexpected_error",
+            "diagnostic_state": "classified"}
+    else:
+        assert json.loads(result.stderr) == failure_record(ValueError())
+        assert "synthetic-secret" not in result.stderr

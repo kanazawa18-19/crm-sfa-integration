@@ -26,14 +26,30 @@
 準備前終了のstderr個別原因はまだ欠測になる場合があり、既知WARNとして保持する。
 この改善はローカル検証のみで、失敗競合の原因復元や実再試験合格を意味しない。
 
-新しい診断レビュー資料のGemini/Claude添付はauto-reviewが拒否。
-理由は「stage-review.txtの承認は別payload・両宛先の承認を含まない」。
-送信待ち資料 `/Users/cnctor/.local/state/crm-capacity-trial-260910/diagnostic-review.txt`：
-15,183文字、SHA-256 `1693cbb62fcf92d61cb6f0c5431cfa81df36cd233f14ead4594bf3e71eae3eeb`。
-空白除去SHA-256 `10007424b6052ebbda5acbb1751b3346f195b7d265d9d89eba85653c10e59502`。
-秘密・顧客情報・非公開接続先IDを含まない診断コードとテストの資料。
-対象宛先は本人Gemini ProとClaude Opus 5・中。診断差分の他社レビューは未実施。
-次はこの資料の送信承認後、他社レビューを完了して未使用scope5の実試験を検討する。
+本人の具体的承認後、同じdiagnostic-review.txtを2社へ送信し回答を取得。
+SHA-256 `1693cbb62fcf92d61cb6f0c5431cfa81df36cd233f14ead4594bf3e71eae3eeb`。
+15,183文字。添付名を照合、添付後全文hashの再読照合は今回未実施。
+旧タブは画面取得が停止したが、新規タブで正常化。プラグイン再インストールは不要だった。
+
+- [Gemini Pro](https://gemini.google.com/app/00540e515b8c7417?hl=ja)：B0/W2。
+- [Claude Opus 5・中](https://claude.ai/chat/d08de97a-a3ff-4ffe-b75c-093620bc8f0a)：B2/W8。
+
+| 指摘 | 採否・限界 |
+|---|---|
+| Claude B1 有効型と未知コードの結合検証 | 不採用、独立SECも同意。Refusedコンストラクタでコードを許可リストへ正規化し、他例外はunexpected_error固定。通常生成経路では指摘の組合せを出さない |
+| Claude B2 内部子環境設定の欠落 | 不採用、独立SECも同意。既存__main__のenvにCAPACITY_TRIAL_CHILD=1がありisolated_runへ渡す。差分資料に既存行が無いことを実装欠落とは扱わない |
+| Claude W1 例外処理内import | 採用。最終例外出口の診断importを先頭へ移動。os/sysも先頭import済み |
+| Claude W2 改行なしSDKログ | 採用。内部診断の前に改行を置き、実CLI子プロセスで分類を検証。外側JSON維持も追加検証 |
+| Claude W3 大量stderrで待機 | 既知制約を保持。大量出力時は期限で不合格にする。競合4は非0終了でありtimeoutではなく、原因断定の根拠なし |
+| Claude W4 45秒期限と50秒予約 | 不採用。時間予約は上限であり実所要と同値ではない。親期限を予約に合わせて延長しない |
+| Claude W5/Gemini W2 unsupported分類 | 現状維持。未収録/未対応の分類として運用。型名や任意本文を保存しない |
+| Claude W6 親例外分類の小さい許可リスト | 既知制約を保持。子診断分類と実行段階の親例外分類は別。準備前の原因欠測を解決済みとはしない |
+| Claude W7 台帳記録失敗による例外置換 | 不採用。記録保存失敗を隠す提案は採らない。元原因が置き換わる限界は既記録 |
+| Claude W8 ready前終了/部分行 | 既知制約を保持。準備段階欠測の可能性、外側60秒による停止を維持。競合4はcollecting段階 |
+| Gemini W1/Claude I2 完全一致schema | 現状維持。V1固定形式であり追加項目は拒否する。将来は送受信の版を揃えて変更する |
+
+重大指摘の採否確定後、追加修正は独立SEC/品質B0W0、QA180成功10skip・既存警告1で確認。
+今回の外部回答は追加修正前の資料への評価。実サービスでの診断確認は未実施。
 5回成功の条件は未達。大規模/実worker復旧/監視/復元/outboxは未完了。
 
 ## 第2段階の承認反映・実移行（2026-09-10）

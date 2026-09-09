@@ -140,7 +140,9 @@ upper_boundのdocument_names/rpc_reservedが適用前と完全一致し、stage=
 
 ## SDKログと失敗診断の分離
 
-内部子は `CAPACITY_TRIAL_FAILURE_V1 ` に続けて固定4項目だけをstderrへ出す。
+内部子は改行を置いてから `CAPACITY_TRIAL_FAILURE_V1 ` に続けて固定4項目だけをstderrへ出す。
+直前のSDKログに末尾改行がなくても識別行を分離する。V1はキー完全一致で検証し、
+項目追加時は送受信の版を揃える。未対応の形式を推測して取り込まない。
 親は非0終了した子に限って識別行を解析する。成功stdoutの検査は緩和しない。
 外側CLIは従来のJSON形式を維持。任意の例外本文・SDKログは保存しない。
 
