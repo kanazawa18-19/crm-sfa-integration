@@ -120,13 +120,14 @@ def isolated_run(command, *, cwd, env, input, timeout=60):
 
 def main():
     parser = argparse.ArgumentParser(description="承認済み専用Firestore・Neonの隔離試験。本番同期は対象外")
-    parser.add_argument("command", choices=["init-ledger", "activate-upper-bound", "migrate-target", "record-cost", "smoke", "scan", "inspect-state", "neon-probe", "concurrency", "claim-child", "response-loss", "permission-probe"])
+    parser.add_argument("command", choices=["init-ledger", "activate-upper-bound", "advance-upper-bound", "migrate-target", "record-cost", "smoke", "scan", "inspect-state", "neon-probe", "concurrency", "claim-child", "response-loss", "permission-probe"])
     parser.add_argument("--ledger", required=True)
     parser.add_argument("--created-at", type=float)
     parser.add_argument("--usd", type=float)
     parser.add_argument("--observed-at", type=float)
     parser.add_argument("--evidence", default="")
     parser.add_argument("--cost-basis", choices=["metered", "free-plan-verified"], default="metered")
+    parser.add_argument("--confirm-stage-preflight", action="store_true")
     parser.add_argument("--confirm-unused-database", action="store_true")
     parser.add_argument("--confirm-neon-free", action="store_true")
     parser.add_argument("--confirm-no-extra-resources", action="store_true")
@@ -139,6 +140,9 @@ def main():
         Ledger.initialize(args.ledger, args.created_at)
         return {"state": "ledger_initialized", "cost": "未観測・実行禁止"}
     ledger = Ledger(args.ledger)
+    if args.command == "advance-upper-bound":
+        ledger.advance_upper_bound(args.evidence, confirmed=args.confirm_stage_preflight)
+        return {"state": "upper_bound_advanced", "stage": 2, "reserved_usd": 8}
     if args.command == "activate-upper-bound":
         ledger.activate_upper_bound(args.evidence, confirmed=(args.confirm_unused_database
             and args.confirm_neon_free and args.confirm_no_extra_resources))

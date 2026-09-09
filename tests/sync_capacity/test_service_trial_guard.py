@@ -778,3 +778,75 @@ def test_outer_early_exit_preserves_child_error(tmp_path):
         "import sys,json;sys.stdin.close();print(json.dumps({'error_code':'environment_rejected'}),file=sys.stderr);sys.exit(1)"],
         cwd=tmp_path, env=dict(os.environ), input="synthetic"*10000, timeout=2)
     assert result.returncode == 1 and json.loads(result.stderr)["error_code"] == "environment_rejected"
+
+
+def test_stage_transition_keeps_original_usage_and_deadline(upper_ledger):
+    upper_ledger.reserve(reads=1728, writes=242, runtime_seconds=2905, rpc=True,
+                         document_names=["synthetic-a"])
+    before = json.loads(upper_ledger.path.read_text())
+    upper_ledger.advance_upper_bound("合成の再照合証跡", confirmed=True)
+    after = json.loads(upper_ledger.path.read_text())
+    for key in ("created_at", "reserved", "rpc_calls", "returned_documents", "cost"):
+        assert after[key] == before[key]
+    assert after["upper_bound_transition"]["previous"] == before["upper_bound"]
+    assert after["upper_bound"]["rpc_reserved"] == 1
+    assert after["upper_bound"]["document_names"] == ["synthetic-a"]
+    assert after["upper_bound"]["usd"] == 8
+    with pytest.raises(Refused):
+        upper_ledger.advance_upper_bound("再実行", confirmed=True)
+    with pytest.raises(Refused):
+        upper_ledger.reserve(now=before["created_at"]+14*86400)
+    for command in ("scan", "neon-probe"):
+        with pytest.raises(Refused):
+            upper_ledger.authorize_command(command)
+
+
+@pytest.mark.parametrize("change", [
+    {"halted": "synthetic-halt"}, {"created_at": 0},
+    {"cost": {"usd": 2}}, {"upper_bound": None},
+])
+def test_stage_transition_refusal_does_not_mutate(upper_ledger, change):
+    upper_ledger.transact(lambda data: data.update(change))
+    before = upper_ledger.path.read_bytes()
+    with pytest.raises(Refused):
+        upper_ledger.advance_upper_bound("合成", confirmed=True)
+    assert upper_ledger.path.read_bytes() == before
+
+
+def test_stage_two_limits_still_fail_closed(upper_ledger):
+    upper_ledger.advance_upper_bound("合成", confirmed=True)
+    upper_ledger.reserve(reads=10000, document_names=[f"synthetic-{n}" for n in range(100)])
+    upper_ledger.transact(lambda data: data["upper_bound"].update(rpc_reserved=2000))
+    before = upper_ledger.path.read_bytes()
+    for args in ({"reads": 1}, {"rpc": True}, {"document_names": ["synthetic-extra"]},
+                 {"deletes": 1}, {"sql_connections": 1}):
+        with pytest.raises(Refused):
+            upper_ledger.reserve(**args)
+        assert upper_ledger.path.read_bytes() == before
+
+
+def test_concurrency_preparation_failure_leaves_fixed_phase(ledger, monkeypatch):
+    import subprocess, sys
+    from scripts.capacity_trial import concurrency as module
+    original = subprocess.Popen
+    def bad_ready(command, **kwargs):
+        return original([sys.executable, "-s", "-c",
+            "import sys;sys.stdin.readline();print('synthetic-secret',flush=True)"], **kwargs)
+    monkeypatch.setattr(module.subprocess, "Popen", bad_ready)
+    with pytest.raises(ValueError):
+        module.run_claimants("trial-concurrency-1", "synthetic-token", ledger)
+    raw = ledger.path.read_text()
+    entry = json.loads(raw)["claimant_run_errors"][0]
+    assert entry["phase"] == "preparing" and entry["error_type"] == "JSONDecodeError"
+    assert entry["children_stop_verified_at_error"] is False
+    assert "synthetic-secret" not in raw
+
+
+def test_stage_two_stops_when_recorded_cost_reaches_two(upper_ledger):
+    import time
+    upper_ledger.advance_upper_bound("合成", confirmed=True)
+    upper_ledger.cost(2, time.time(), "合成費用")
+    before = upper_ledger.path.read_bytes()
+    with pytest.raises(Refused):
+        upper_ledger.reserve(rpc=True)
+    assert upper_ledger.path.read_bytes() == before

@@ -1,0 +1,59 @@
+{
+  "checked_at": "2026-09-09T22:01:18.589019+00:00",
+  "ledger_sha256": "752f466f7666c363b79855e97e7821c4d5f93427118fa6420daf0a499f8be4a1",
+  "applied": false,
+  "created_at": 1788983820.0,
+  "reserved": {
+    "deletes": 0,
+    "reads": 1728,
+    "runtime_seconds": 2905,
+    "sql_connections": 5,
+    "sql_statements": 24,
+    "writes": 242
+  },
+  "rpc_calls": {
+    "batch_get_documents": 677,
+    "commit": 126,
+    "run_query": 62
+  },
+  "returned_documents": 1093,
+  "document_names_count": 51,
+  "rpc_reserved": 865,
+  "current_usd": 4,
+  "proposed_cumulative_usd": 8,
+  "proposed_cumulative_rpc_limit": 2000,
+  "proposed_cumulative_read_limit": 10000,
+  "calculated_upper_bound_usd": 7.1913766,
+  "gcp": {
+    "database": "crm-capacity-trial-260910",
+    "location": "us-east4",
+    "edition": "STANDARD",
+    "pitr": "DISABLED",
+    "delete_protection": "ENABLED",
+    "backup_schedules_count": 0,
+    "ttl_count": 0,
+    "price_rechecked": {
+      "source": "https://cloud.google.com/firestore/pricing",
+      "selected_region": "Northern Virginia (us-east4)",
+      "reads_per_100k_usd": 0.033,
+      "writes_per_100k_usd": 0.099,
+      "storage_gib_hour_usd": 0.000135616
+    }
+  },
+  "trial_python_process_count": 0,
+  "neon": {
+    "plan": "Free",
+    "connected_projects": 0,
+    "usage_rechecked": true,
+    "compute_cu_hours_display": "0 / 100",
+    "storage_gb_display": "0 / 0.5",
+    "transfer_gb_display": "0 / 5",
+    "compute_status": "Idle",
+    "limitations": "最大1時間遅延・非稼働中は更新されない表示。実測0と扱わない。"
+  },
+  "outstanding": [
+    "Gemini資料送信auto-review拒否、レビュー未取得",
+    "別経路文書投入なしの再照合未完"
+  ],
+  "limitations": "実台帳・文書に変更なし。実費は未確定。料金はus-east4を選択して再照合。別経路投入の検査とGeminiレビューは実移行前に必要。"
+}

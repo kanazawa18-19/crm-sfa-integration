@@ -210,6 +210,32 @@ class Ledger:
                 "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない"}
         self.transact(update)
 
+    def advance_upper_bound(self, evidence, *, confirmed=False, now=None):
+        """旧枠を履歴に保存し、期限・累計を保って第2段階へ一度だけ移行する。"""
+        from copy import deepcopy
+        now = time.time() if now is None else now
+        if not confirmed or not evidence.strip() or not math.isfinite(now):
+            raise Refused("第2段階の料金・資源・停止確認の証跡が必要")
+        def update(data):
+            upper = data.get("upper_bound")
+            if (data.get("project") != PROJECT or data.get("database") != DATABASE
+                    or data.get("halted") or not 0 <= now-data["created_at"] < 14*86400
+                    or not isinstance(upper, dict) or upper.get("basis") != "reserved-upper-bound"
+                    or upper.get("usd") != 4 or "upper_bound_transition" in data
+                    or upper.get("stage", 1) != 1
+                    or not isinstance(upper.get("rpc_reserved"), int)
+                    or not 0 <= upper["rpc_reserved"] <= 1000
+                    or not 0 <= data["reserved"]["reads"] <= 5000
+                    or len(set(upper["document_names"])) > 100
+                    or (data.get("cost") or {}).get("usd", 0) + 8 >= 10):
+                raise Refused("第2段階への移行条件を満たしません")
+            data["upper_bound_transition"] = {"at": now, "evidence": evidence,
+                "previous": deepcopy(upper), "reserved": deepcopy(data["reserved"]),
+                "rpc_calls": deepcopy(data["rpc_calls"]),
+                "returned_documents": data["returned_documents"], "created_at": data["created_at"]}
+            upper.update(stage=2, usd=8)
+        self.transact(update)
+
     def upper_bound(self):
         return self.transact(lambda data: data.get("upper_bound"))
 
@@ -224,6 +250,10 @@ class Ledger:
             cost = data.get("cost")
             upper = data.get("upper_bound")
             if upper:
+                stage = upper.get("stage", 1)
+                if (stage not in (1, 2) or upper.get("usd") != (8 if stage == 2 else 4)
+                        or (stage == 2 and not data.get("upper_bound_transition"))):
+                    raise Refused("推定上限の段階証跡が不正")
                 cost_stopped = upper["usd"] + (cost or {}).get("usd", 0) >= 10
             else:
                 cost_stopped = (data.get("cost_refresh_required") or not cost
@@ -234,8 +264,8 @@ class Ledger:
                 raise Refused("期限・費用停止値・費用取得途絶のため新規実行停止")
             if upper:
                 names = sorted(set(upper["document_names"]) | set(document_names))
-                if (len(names) > 100 or upper["rpc_reserved"] + int(rpc) > 1000
-                        or data["reserved"]["reads"] + amounts.get("reads", 0) > 5000
+                if (len(names) > 100 or upper["rpc_reserved"] + int(rpc) > (2000 if upper.get("stage") == 2 else 1000)
+                        or data["reserved"]["reads"] + amounts.get("reads", 0) > (10000 if upper.get("stage") == 2 else 5000)
                         or amounts.get("sql_connections", 0) or amounts.get("sql_statements", 0)
                         or amounts.get("deletes", 0)):
                     raise Refused("小規模推定上限の操作枠超過", code="limit_exceeded")

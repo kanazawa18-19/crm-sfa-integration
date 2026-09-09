@@ -80,7 +80,7 @@ Neonは `fragrant-silence-24771784` / `br-silent-king-avubki1s` / `ep-shiny-sile
 
 `permission-probe --ledger ... --scope trial-permission --role observer` は既存の合成smoke jobを読取り、固定文書 `trial-permission/jobs/synthetic-write-denied` のcreateを1回だけ試みる。通常のobserver書込み拒否は維持し、この試験だけ同じ予算・文書サイズ・文書名予約ガードを通してサーバまで送る。サーバの403 PermissionDeniedだけを成功とし、書けてしまったら試験失敗と台帳の恒久停止を記録する。これは別DBへのアクセス検証ではない。
 
-小規模枠は有効化後に解除しない。metered費用を追加登録してもscan・Neonへの拡張は拒否する。大規模試験への移行は、元の期限・累計予約を保持する別途のガード変更とレビューが必要。台帳の作り直しで回避しない。
+小規模枠は有効化後に解除しない。metered費用を追加登録してもscan・Neonへの拡張は拒否する。本ファイル末尾の第2段階も小規模限定であり、大規模試験への移行は、元の期限・累計予約を保持する別途のガード変更とレビューが必要。台帳の作り直しで回避しない。
 
 
 実行は単一の調整役が順次行い、枠有効化と試験を並行起動しない。順番はsmoke → permission-probe → concurrency各回 → response-loss各種。
@@ -105,3 +105,35 @@ ps起動/出力の確認に失敗した場合は試験成功を返さない。�
 停止確認自体が失敗した場合は、その失敗を優先して返すため元のtimeout分類を失う場合がある。
 固定error_codeだけで停止完了や原因を断定しない。競合子の大量stderrは準備待ちを詰まらせる可能性があり、
 45秒で失敗する。生stderrはファイルへ保存しない。`observer_write_pending:<UUID>`は送信結果未確認の停止記録であり、自動解除しない。
+
+
+## 第2段階への明示移行（小規模Firestore限定）
+
+`advance-upper-bound --ledger /Users/cnctor/.local/state/crm-capacity-trial-260910/ledger.json --evidence 非秘密の再照合証跡 --confirm-stage-preflight`。
+既存の解除禁止は維持し、このコマンドだけで第1段階から第2段階へ一度移行する。
+単一調整役が全試験processの停止を確認してから実行する。旧版processと並行して移行しない。
+
+再照合するもの：同じ専用DB・地域・Standard、料金単価、PITR無効・backup/TTLなし、
+Neon Freeと残枠、別経路の文書投入なし、元の期限内、停止記録なし。
+フラグは運用者による照合の宣言であり、API検証の代行ではない。根拠欠落時は適用しない。
+
+| 項目 | 第1段階 | 第2段階（すべて開始以来の累計） |
+|---|---:|---:|
+| RPC予約 | 1,000 | 2,000 |
+| 文書read予約 | 5,000 | 10,000 |
+| 文書名 | 100 | 100 |
+| 拘束USD | 4 | 8（旧4を内包。追加8ではない） |
+
+費用式は旧式と同じ単価・上限で、保存0.0400491、index read2.64、文書read0.0033、
+write0.01584、下り4.4921875、合計7.1913766 USD。残り0.8086234 USDを予備とする。
+旧段階の全RPC/read/writeが新累計に含まれるため二重に4+8とはしない。実請求額ではない。
+総20 USD・10 USD停止条件・元14日期限は維持。scan/Neon/削除/復元はこの段階でも禁止。
+文書4KiB・commit8文書32KiB・固定query・100文書名の制限も維持する。
+
+移行前snapshotをupper_bound_transitionへ保存し、旧upper_bound・一般予約・RPC記録・返却数・
+created_atを残す。適用後はcreated_at、reserved、rpc_calls、returned_documents、
+upper_boundのdocument_names/rpc_reservedが適用前と完全一致し、stage=2/usd=8だけ変わることを照合。
+再移行・台帳再作成・累計リセット・使用済scope再試行は許可しない。
+
+競合のclaimant_run_errorsは失敗時点の段階と固定分類。children_stop_verified_at_error=falseは
+その時点で停止確認前という意味で、finally後にも稼働中という意味ではない。終了は別途照合する。

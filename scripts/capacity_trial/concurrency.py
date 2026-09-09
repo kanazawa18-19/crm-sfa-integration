@@ -29,6 +29,7 @@ def run_claimants(scope, token, ledger):
     """秘密はstdinだけに流す。終了確認できない子があれば成功を返さない。"""
     deadline = time.monotonic() + 45
     processes, homes = [], []
+    phase = "starting"
     try:
         for _ in range(12):
             home = tempfile.TemporaryDirectory(prefix="capacity-claim-home-")
@@ -42,6 +43,7 @@ def run_claimants(scope, token, ledger):
             processes.append(process)
             process.stdin.write(token + "\n")
             process.stdin.flush()
+        phase = "preparing"
         with selectors.DefaultSelector() as selector:
             for process in processes:
                 selector.register(process.stdout, selectors.EVENT_READ, process)
@@ -54,10 +56,12 @@ def run_claimants(scope, token, ledger):
                     if ready != {"ready": key.data.pid}:
                         raise Refused("競合子の準備応答が不正")
                     selector.unregister(key.fileobj)
+        phase = "signaling"
         for process in processes:
             process.stdin.write("go\n")
             process.stdin.close()
             process.stdin = None
+        phase = "collecting"
         results, failures = [], []
         for process in processes:
             try:
@@ -88,6 +92,15 @@ def run_claimants(scope, token, ledger):
                 {"scope": scope, "failures": failures, "successful_children": len(results)}))
             raise Refused("競合子が失敗", code="child_failed")
         return results
+    except Exception as exc:
+        # 準備前終了や不正JSONでも、本文を捨てた固定の段階・型だけを残す。
+        kinds = {"Refused", "JSONDecodeError", "BrokenPipeError", "TimeoutExpired"}
+        ledger.transact(lambda data: data.setdefault("claimant_run_errors", []).append({
+            "scope": scope, "phase": phase, "started_children": len(processes),
+            "error_type": type(exc).__name__ if type(exc).__name__ in kinds else "unknown",
+            "error_code": exc.code if isinstance(exc, Refused) else "unexpected_error",
+            "children_stop_verified_at_error": False}))
+        raise
     finally:
         for process in processes:
             if process.poll() is None:
