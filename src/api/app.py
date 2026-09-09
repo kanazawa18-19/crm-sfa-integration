@@ -58,6 +58,7 @@ from src.reports.revenue_target_sheet import (
 from src.sync_engine.clients._http import ApiError
 from src.sync_engine.clients.notion_client import NotionApiError
 from src.api.dependencies import wiring_dependency
+from src.sync_capacity.http import CapacityMiddleware, router as capacity_router
 from src.api.routes.bulk_email import router as bulk_email_router
 from src.api.routes.cron import router as cron_router
 from src.api.routes.diagnostics import router as diagnostics_router
@@ -119,6 +120,8 @@ def _cors_allowed_origins() -> list[str]:
 
 
 app = FastAPI(title="CRM/SFA Dashboard API")
+app.add_middleware(CapacityMiddleware)
+app.include_router(capacity_router)
 
 app.add_middleware(
     CORSMiddleware,

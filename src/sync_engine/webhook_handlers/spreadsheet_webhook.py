@@ -74,7 +74,8 @@ def spreadsheet_payload_to_sync_event(
 
 
 def handler(
-    event: Mapping[str, Any], context: object, *, dispatcher: Dispatcher | None = None
+    event: Mapping[str, Any], context: object, *, dispatcher: Dispatcher | None = None,
+    trusted_queue: bool = False,
 ) -> dict[str, Any]:
     """Lambda/Cloud Functions エントリポイント（API Gateway形式のHTTPイベントを想定）。
 
@@ -82,7 +83,7 @@ def handler(
     変換後のSyncEventをそのままディスパッチする（未注入時は変換結果の検証のみ行う）。
     """
     headers = event.get("headers") or {}
-    if not verify_webhook_secret(headers, "SPREADSHEET_WEBHOOK_SECRET"):
+    if not trusted_queue and not verify_webhook_secret(headers, "SPREADSHEET_WEBHOOK_SECRET"):
         return unauthorized_response()
 
     try:

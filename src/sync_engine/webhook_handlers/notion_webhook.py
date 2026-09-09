@@ -429,6 +429,7 @@ def handler_with_proxy(
     *,
     notion_client: NotionPageClient,
     dispatcher: Dispatcher | None = None,
+    trusted_queue: bool = False,
     calendar_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
     lead_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
     project_mirror_sync: Callable[[Mapping[str, Any], str], Any] | None = None,
@@ -519,14 +520,14 @@ def handler_with_proxy(
     # しておくと、鍵をBearerトークンとして扱うのと同じになる。プロキシ・APM・
     # リクエストログ・curlの履歴のどこかから漏れれば、**以後その相手は正しい署名を
     # いくらでも作れる**（公開エンドポイントなので、偽イベントを自由に投げられる）。
-    if not verify_notion_webhook_signature(headers, body_text):
+    if not trusted_queue and not verify_notion_webhook_signature(headers, body_text):
         return unauthorized_response()
 
     # **再送を弾く。** Notionは配信に失敗すると最大8回・およそ24時間かけて再送する
     # （2026-09-01）。同じ書き込みを繰り返さないよう、イベントIDで重複を排除する。
     # 判定できないとき（DB未設定等）は処理を続ける（弾けないことで同期を止めない）。
     event_id = str(raw_payload.get("id") or "")
-    if not claim_event(event_id, "notion"):
+    if not trusted_queue and not claim_event(event_id, "notion"):
         logger.info(
             "notion webhook: 同じイベントを既に処理しています。再送とみなしてスキップします "
             "(event_id=%s)",
@@ -562,14 +563,16 @@ def handler_with_proxy(
             "notion api error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
         # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
-        release_event(event_id)
+        if not trusted_queue:
+            release_event(event_id)
         return internal_error_response()
     except Exception:
         logger.exception(
             "unexpected error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
         # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
-        release_event(event_id)
+        if not trusted_queue:
+            release_event(event_id)
         return internal_error_response()
 
     own_write = is_own_notion_write(raw_page, raw_payload)
@@ -605,14 +608,16 @@ def handler_with_proxy(
             "notion api error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
         # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
-        release_event(event_id)
+        if not trusted_queue:
+            release_event(event_id)
         return internal_error_response()
     except Exception:
         logger.exception(
             "unexpected error while fetching notion page for webhook proxy: page_id=%s", page_id
         )
         # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
-        release_event(event_id)
+        if not trusted_queue:
+            release_event(event_id)
         return internal_error_response()
 
     try:
@@ -622,7 +627,8 @@ def handler_with_proxy(
     except Exception:
         logger.exception("unexpected error while parsing notion webhook payload")
         # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
-        release_event(event_id)
+        if not trusted_queue:
+            release_event(event_id)
         return internal_error_response()
 
     try:
@@ -632,13 +638,16 @@ def handler_with_proxy(
     except Exception:
         logger.exception("unexpected error while dispatching notion sync event")
         # **失敗したら記録を消す。** 消さないと再送まで弾いてしまい、その変更が永久に失われる。
-        release_event(event_id)
+        if not trusted_queue:
+            release_event(event_id)
         return internal_error_response()
 
+    side_hook_failed = False
     if calendar_sync is not None and sync_event.db_key == "project":
         try:
             calendar_sync(sync_event.properties, sync_event.external_id)
         except Exception:
+            side_hook_failed = True
             logger.exception(
                 "unexpected error while syncing calendar event (non-fatal, "
                 "webhook still returns 200): page_id=%s",
@@ -649,6 +658,7 @@ def handler_with_proxy(
         try:
             project_mirror_sync(sync_event.properties, sync_event.external_id)
         except Exception:
+            side_hook_failed = True
             logger.exception(
                 "unexpected error while syncing project mirror (non-fatal, "
                 "webhook still returns 200): page_id=%s",
@@ -659,6 +669,7 @@ def handler_with_proxy(
         try:
             client_name_index_sync(sync_event.properties, sync_event.external_id)
         except Exception:
+            side_hook_failed = True
             logger.exception(
                 "unexpected error while syncing client name index (non-fatal, "
                 "webhook still returns 200): page_id=%s",
@@ -669,6 +680,7 @@ def handler_with_proxy(
         try:
             lead_sync(sync_event.properties, sync_event.external_id)
         except Exception as exc:
+            side_hook_failed = True
             # shirokuma-secレビューWARN対応（2026-08-13）: logger.exception()は例外メッセージ
             # 全文をログへ記録するが、LeadSyncApiError（`extract_error_message()`経由で
             # web-engagement-tool側のHTTPエラーレスポンス本文を最大200文字まで含みうる）の
@@ -691,6 +703,7 @@ def handler_with_proxy(
             )
 
     return {
+        **({"queue_needs_attention": True} if trusted_queue and side_hook_failed else {}),
         "statusCode": 200,
         "body": json.dumps({"skipped": result.skipped if result is not None else None}),
     }

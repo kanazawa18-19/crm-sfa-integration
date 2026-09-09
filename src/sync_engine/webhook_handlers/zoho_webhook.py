@@ -328,6 +328,7 @@ def handler(
     context: object,
     *,
     dispatcher: Dispatcher | None = None,
+    trusted_queue: bool = False,
     id_mapping_store: IdMappingStore | None = None,
     notion_client: NotionRelationLookupClient | None = None,
     zoho_client: ZohoActionRecordClient | None = None,
@@ -363,7 +364,7 @@ def handler(
     if not isinstance(payload, dict):
         return bad_request_response("request body must be a JSON object")
 
-    if not verify_webhook_body_token(payload, token_field="token", env_var="ZOHO_WEBHOOK_SECRET"):
+    if not trusted_queue and not verify_webhook_body_token(payload, token_field="token", env_var="ZOHO_WEBHOOK_SECRET"):
         return unauthorized_response()
 
     try:

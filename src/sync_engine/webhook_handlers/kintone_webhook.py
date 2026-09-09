@@ -245,6 +245,7 @@ def handler(
     context: object,
     *,
     dispatcher: Dispatcher | None = None,
+    trusted_queue: bool = False,
     id_mapping_store: IdMappingStore | None = None,
     notion_client: NotionRelationLookupClient | None = None,
 ) -> dict[str, Any]:
@@ -266,7 +267,7 @@ def handler(
     """
     headers = event.get("headers") or {}
     query_params = event.get("query_params") or {}
-    if not verify_webhook_query_param(
+    if not trusted_queue and not verify_webhook_query_param(
         query_params, param_name="secret", env_var="KINTONE_WEBHOOK_SECRET"
     ):
         return unauthorized_response()
