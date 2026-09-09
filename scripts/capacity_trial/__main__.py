@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 
-from .guard import ACCOUNTS, DATABASE, ERROR_CODES, Ledger, PROJECT, Refused, validate_environment, validate_target
+from .guard import ACCOUNTS, DATABASE, Ledger, PROJECT, Refused, validate_environment, validate_target
 
 
 def smoke(store):
@@ -198,14 +198,9 @@ def main():
             except subprocess.TimeoutExpired:
                 raise Refused("60秒で子を停止。結果不明の枠は自動回収しません") from None
             if child.returncode:
-                code = "child_failed"
-                try:
-                    error = json.loads(child.stderr)
-                    if (isinstance(error, dict) and error.get("state") == "failed"
-                            and error.get("error_code") in ERROR_CODES):
-                        code = error["error_code"]
-                except (ValueError, TypeError):
-                    pass
+                from .diagnostics import parse_failure
+                error = parse_failure(child.stderr)
+                code = error["error_code"] if error["diagnostic_state"] == "classified" else "child_failed"
                 raise Refused("隔離子プロセス失敗。部分結果は返しません", code=code)
             # 子のJSON以外を出さない。stderrの秘密混入を避ける。
             return json.loads(child.stdout)
@@ -241,8 +236,8 @@ if __name__ == "__main__":
     try:
         print(json.dumps(main(), ensure_ascii=False))
     except Exception as exc:
-        # SDK例外にrequest/tokenが含まれていても表示しない。
-        print(json.dumps({"state": "failed", "error_type": type(exc).__name__,
-                          "error_code": exc.code if isinstance(exc, Refused) else "unexpected_error",
-                          "partial_result": False}), file=sys.stderr)
+        # 内部の子は識別子を付け、SDKログが混ざっても固定分類だけを取り出せるようにする。
+        from .diagnostics import PREFIX, failure_record
+        prefix = PREFIX if os.environ.get("CAPACITY_TRIAL_CHILD") == "1" else ""
+        print(prefix + json.dumps(failure_record(exc)), file=sys.stderr)
         sys.exit(1)

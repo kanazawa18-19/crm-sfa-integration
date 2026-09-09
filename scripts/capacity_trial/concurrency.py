@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 
-from .guard import ERROR_CODES, Ledger, Refused, validate_environment
+from .guard import Ledger, Refused, validate_environment
 
 
 def claim_child(scope, ledger):
@@ -69,17 +69,9 @@ def run_claimants(scope, token, ledger):
             except subprocess.TimeoutExpired:
                 raise Refused("競合子の終了期限超過", code="trial_timeout") from None
             if process.returncode:
-                try:
-                    error = json.loads(error_output)
-                except (ValueError, TypeError):
-                    error = {}
-                if not isinstance(error, dict):
-                    error = {}
-                kinds = {"Refused", "FailedPrecondition", "Aborted", "AlreadyExists", "CapacityUnavailable",
-                         "ServiceUnavailable", "DeadlineExceeded", "PermissionDenied", "AssertionError"}
+                from .diagnostics import parse_failure
                 failures.append({"pid": process.pid, "return_code": process.returncode,
-                    "error_type": error.get("error_type") if error.get("error_type") in kinds else "unknown",
-                    "error_code": error.get("error_code") if error.get("error_code") in ERROR_CODES else "unexpected_error"})
+                                 **parse_failure(error_output)})
                 continue
             result = json.loads(output)
             if result.get("pid") != process.pid:

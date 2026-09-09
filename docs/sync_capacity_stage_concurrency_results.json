@@ -1,0 +1,1113 @@
+{
+  "runs": [
+    {
+      "scope": "trial-concurrency-4",
+      "before": {
+        "cost": {
+          "basis": "free-plan-verified",
+          "evidence": "2026-09-10 JST: Neon Free free_v3, 0/100 CUh, 0/0.5GB, 0/5GB transfer; GCP project creation failed, no billable trial GCP resources. Display may lag 1 hour.",
+          "observed_at": 1788984763.559802,
+          "usd": 0
+        },
+        "cost_refresh_required": true,
+        "created_at": 1788983820.0,
+        "database": "crm-capacity-trial-260910",
+        "project": "actionpoint-autocalc",
+        "reserved": {
+          "deletes": 0,
+          "reads": 2952,
+          "runtime_seconds": 3625,
+          "sql_connections": 5,
+          "sql_statements": 24,
+          "writes": 242
+        },
+        "returned_documents": 1143,
+        "rpc_calls": {
+          "batch_get_documents": 689,
+          "commit": 126,
+          "run_query": 74
+        },
+        "target_migration": {
+          "at": 1788986336.492353,
+          "from_database": "(default)",
+          "from_project": "cnctor-crm-cap-trial-260910"
+        },
+        "upper_bound": {
+          "activated_at": 1788988847.708948,
+          "basis": "reserved-upper-bound",
+          "document_names": [
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+          ],
+          "evidence": "docs/sync_capacity_service_trial_results.md",
+          "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+          "rpc_reserved": 889,
+          "stage": 2,
+          "usd": 8
+        },
+        "upper_bound_transition": {
+          "at": 1788992160.7262568,
+          "created_at": 1788983820.0,
+          "evidence": "docs/sync_capacity_stage_inventory.json; docs/sync_capacity_stage_preflight.json; Gemini be4bb308a193a06f B0; Claude 92d37fcc B採否整理済み",
+          "previous": {
+            "activated_at": 1788988847.708948,
+            "basis": "reserved-upper-bound",
+            "document_names": [
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+            ],
+            "evidence": "docs/sync_capacity_service_trial_results.md",
+            "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+            "rpc_reserved": 889,
+            "usd": 4
+          },
+          "reserved": {
+            "deletes": 0,
+            "reads": 2952,
+            "runtime_seconds": 3625,
+            "sql_connections": 5,
+            "sql_statements": 24,
+            "writes": 242
+          },
+          "returned_documents": 1143,
+          "rpc_calls": {
+            "batch_get_documents": 689,
+            "commit": 126,
+            "run_query": 74
+          }
+        }
+      },
+      "after": {
+        "claimant_failures": [
+          {
+            "failures": [
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77175,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77176,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77177,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77178,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77179,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77180,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77182,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77183,
+                "return_code": 1
+              },
+              {
+                "error_code": "unexpected_error",
+                "error_type": "unknown",
+                "pid": 77184,
+                "return_code": 1
+              }
+            ],
+            "scope": "trial-concurrency-4",
+            "successful_children": 3
+          }
+        ],
+        "claimant_run_errors": [
+          {
+            "children_stop_verified_at_error": false,
+            "error_code": "child_failed",
+            "error_type": "Refused",
+            "phase": "collecting",
+            "scope": "trial-concurrency-4",
+            "started_children": 12
+          }
+        ],
+        "cost": {
+          "basis": "free-plan-verified",
+          "evidence": "2026-09-10 JST: Neon Free free_v3, 0/100 CUh, 0/0.5GB, 0/5GB transfer; GCP project creation failed, no billable trial GCP resources. Display may lag 1 hour.",
+          "observed_at": 1788984763.559802,
+          "usd": 0
+        },
+        "cost_refresh_required": true,
+        "created_at": 1788983820.0,
+        "database": "crm-capacity-trial-260910",
+        "project": "actionpoint-autocalc",
+        "reserved": {
+          "deletes": 0,
+          "reads": 3351,
+          "runtime_seconds": 4285,
+          "sql_connections": 5,
+          "sql_statements": 24,
+          "writes": 315
+        },
+        "returned_documents": 1431,
+        "rpc_calls": {
+          "batch_get_documents": 847,
+          "commit": 163,
+          "run_query": 87
+        },
+        "target_migration": {
+          "at": 1788986336.492353,
+          "from_database": "(default)",
+          "from_project": "cnctor-crm-cap-trial-260910"
+        },
+        "upper_bound": {
+          "activated_at": 1788988847.708948,
+          "basis": "reserved-upper-bound",
+          "document_names": [
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+          ],
+          "evidence": "docs/sync_capacity_service_trial_results.md",
+          "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+          "rpc_reserved": 1097,
+          "stage": 2,
+          "usd": 8
+        },
+        "upper_bound_transition": {
+          "at": 1788992160.7262568,
+          "created_at": 1788983820.0,
+          "evidence": "docs/sync_capacity_stage_inventory.json; docs/sync_capacity_stage_preflight.json; Gemini be4bb308a193a06f B0; Claude 92d37fcc B採否整理済み",
+          "previous": {
+            "activated_at": 1788988847.708948,
+            "basis": "reserved-upper-bound",
+            "document_names": [
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+              "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+            ],
+            "evidence": "docs/sync_capacity_service_trial_results.md",
+            "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+            "rpc_reserved": 889,
+            "usd": 4
+          },
+          "reserved": {
+            "deletes": 0,
+            "reads": 2952,
+            "runtime_seconds": 3625,
+            "sql_connections": 5,
+            "sql_statements": 24,
+            "writes": 242
+          },
+          "returned_documents": 1143,
+          "rpc_calls": {
+            "batch_get_documents": 689,
+            "commit": 126,
+            "run_query": 74
+          }
+        }
+      },
+      "return_code": 1,
+      "stdout": {
+        "invalid_json": true,
+        "bytes": 0
+      },
+      "stderr": {
+        "state": "failed",
+        "error_type": "Refused",
+        "error_code": "child_failed",
+        "partial_result": false
+      },
+      "elapsed_seconds": 40.81476187705994
+    }
+  ],
+  "source_sha256": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "1141b59aaabff1e97d4505e34c6cd107c672d745e1c1d5a64da14ff825f38fde",
+    "scripts/capacity_trial/concurrency.py": "4a76ffb06ba46be77094b0e1af3e5a5666c8f22306ea9723e5c9d4b0bd6d113e",
+    "scripts/capacity_trial/firestore.py": "04c0708b546fdf1c8cf1619fa930e3249b9da506cb964246da612d0617a5a3ba",
+    "scripts/capacity_trial/guard.py": "2b7e60f4e4dc7ed26f96cadc0e8f677968e7e5fe2b8cbfffcf525aeaedf4629e",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "917a14d7e6bc74216f4b9d1d31ebaac3c968f95121259c5fbea3ac2f90fb7dd2"
+  },
+  "stop_check": {
+    "observed_at": 1788992268.74106,
+    "trial_python_count": 0
+  },
+  "inspection": {
+    "before": {
+      "claimant_failures": [
+        {
+          "failures": [
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77175,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77176,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77177,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77178,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77179,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77180,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77182,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77183,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77184,
+              "return_code": 1
+            }
+          ],
+          "scope": "trial-concurrency-4",
+          "successful_children": 3
+        }
+      ],
+      "claimant_run_errors": [
+        {
+          "children_stop_verified_at_error": false,
+          "error_code": "child_failed",
+          "error_type": "Refused",
+          "phase": "collecting",
+          "scope": "trial-concurrency-4",
+          "started_children": 12
+        }
+      ],
+      "cost": {
+        "basis": "free-plan-verified",
+        "evidence": "2026-09-10 JST: Neon Free free_v3, 0/100 CUh, 0/0.5GB, 0/5GB transfer; GCP project creation failed, no billable trial GCP resources. Display may lag 1 hour.",
+        "observed_at": 1788984763.559802,
+        "usd": 0
+      },
+      "cost_refresh_required": true,
+      "created_at": 1788983820.0,
+      "database": "crm-capacity-trial-260910",
+      "project": "actionpoint-autocalc",
+      "reserved": {
+        "deletes": 0,
+        "reads": 3351,
+        "runtime_seconds": 4285,
+        "sql_connections": 5,
+        "sql_statements": 24,
+        "writes": 315
+      },
+      "returned_documents": 1431,
+      "rpc_calls": {
+        "batch_get_documents": 847,
+        "commit": 163,
+        "run_query": 87
+      },
+      "target_migration": {
+        "at": 1788986336.492353,
+        "from_database": "(default)",
+        "from_project": "cnctor-crm-cap-trial-260910"
+      },
+      "upper_bound": {
+        "activated_at": 1788988847.708948,
+        "basis": "reserved-upper-bound",
+        "document_names": [
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+        ],
+        "evidence": "docs/sync_capacity_service_trial_results.md",
+        "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+        "rpc_reserved": 1097,
+        "stage": 2,
+        "usd": 8
+      },
+      "upper_bound_transition": {
+        "at": 1788992160.7262568,
+        "created_at": 1788983820.0,
+        "evidence": "docs/sync_capacity_stage_inventory.json; docs/sync_capacity_stage_preflight.json; Gemini be4bb308a193a06f B0; Claude 92d37fcc B採否整理済み",
+        "previous": {
+          "activated_at": 1788988847.708948,
+          "basis": "reserved-upper-bound",
+          "document_names": [
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+          ],
+          "evidence": "docs/sync_capacity_service_trial_results.md",
+          "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+          "rpc_reserved": 889,
+          "usd": 4
+        },
+        "reserved": {
+          "deletes": 0,
+          "reads": 2952,
+          "runtime_seconds": 3625,
+          "sql_connections": 5,
+          "sql_statements": 24,
+          "writes": 242
+        },
+        "returned_documents": 1143,
+        "rpc_calls": {
+          "batch_get_documents": 689,
+          "commit": 126,
+          "run_query": 74
+        }
+      }
+    },
+    "after": {
+      "claimant_failures": [
+        {
+          "failures": [
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77175,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77176,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77177,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77178,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77179,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77180,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77182,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77183,
+              "return_code": 1
+            },
+            {
+              "error_code": "unexpected_error",
+              "error_type": "unknown",
+              "pid": 77184,
+              "return_code": 1
+            }
+          ],
+          "scope": "trial-concurrency-4",
+          "successful_children": 3
+        }
+      ],
+      "claimant_run_errors": [
+        {
+          "children_stop_verified_at_error": false,
+          "error_code": "child_failed",
+          "error_type": "Refused",
+          "phase": "collecting",
+          "scope": "trial-concurrency-4",
+          "started_children": 12
+        }
+      ],
+      "cost": {
+        "basis": "free-plan-verified",
+        "evidence": "2026-09-10 JST: Neon Free free_v3, 0/100 CUh, 0/0.5GB, 0/5GB transfer; GCP project creation failed, no billable trial GCP resources. Display may lag 1 hour.",
+        "observed_at": 1788984763.559802,
+        "usd": 0
+      },
+      "cost_refresh_required": true,
+      "created_at": 1788983820.0,
+      "database": "crm-capacity-trial-260910",
+      "project": "actionpoint-autocalc",
+      "reserved": {
+        "deletes": 0,
+        "reads": 3453,
+        "runtime_seconds": 4345,
+        "sql_connections": 5,
+        "sql_statements": 24,
+        "writes": 315
+      },
+      "returned_documents": 1444,
+      "rpc_calls": {
+        "batch_get_documents": 848,
+        "commit": 163,
+        "run_query": 88
+      },
+      "target_migration": {
+        "at": 1788986336.492353,
+        "from_database": "(default)",
+        "from_project": "cnctor-crm-cap-trial-260910"
+      },
+      "upper_bound": {
+        "activated_at": 1788988847.708948,
+        "basis": "reserved-upper-bound",
+        "document_names": [
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-4/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+          "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+        ],
+        "evidence": "docs/sync_capacity_service_trial_results.md",
+        "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+        "rpc_reserved": 1099,
+        "stage": 2,
+        "usd": 8
+      },
+      "upper_bound_transition": {
+        "at": 1788992160.7262568,
+        "created_at": 1788983820.0,
+        "evidence": "docs/sync_capacity_stage_inventory.json; docs/sync_capacity_stage_preflight.json; Gemini be4bb308a193a06f B0; Claude 92d37fcc B採否整理済み",
+        "previous": {
+          "activated_at": 1788988847.708948,
+          "basis": "reserved-upper-bound",
+          "document_names": [
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-1/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-2/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-concurrency-3/jobs/f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-claim/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-enqueue/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-finish/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-initialize",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-loss-recover/jobs/a6ced4d823f18b3b098b50d5281543abe9736bfad6dd41b5fa515f60be0d0a14",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-permission/jobs/synthetic-write-denied",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke",
+            "projects/actionpoint-autocalc/databases/crm-capacity-trial-260910/documents/sync_capacity_scopes/trial-smoke/jobs/3bd636c5aea28efe8223b58a7fea06c41440185f42612029ed6f8a97e1bb8d12"
+          ],
+          "evidence": "docs/sync_capacity_service_trial_results.md",
+          "limitation": "元の14日期限内だけの推定上限。実測費用・生涯費用ではない",
+          "rpc_reserved": 889,
+          "usd": 4
+        },
+        "reserved": {
+          "deletes": 0,
+          "reads": 2952,
+          "runtime_seconds": 3625,
+          "sql_connections": 5,
+          "sql_statements": 24,
+          "writes": 242
+        },
+        "returned_documents": 1143,
+        "rpc_calls": {
+          "batch_get_documents": 689,
+          "commit": 126,
+          "run_query": 74
+        }
+      }
+    },
+    "return_code": 0,
+    "stdout": {
+      "state": "passed",
+      "case": "inspect-state",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-concurrency-4",
+      "started_at": 1788993057.855819,
+      "finished_at": 1788993061.8054411,
+      "result": {
+        "scope_exists": true,
+        "scope": {
+          "slots": {
+            "0": {
+              "job_id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+              "owner": "synthetic-process-77181"
+            },
+            "1": {
+              "job_id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+              "owner": "synthetic-process-77174"
+            },
+            "2": {
+              "job_id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+              "owner": "synthetic-process-77185"
+            }
+          },
+          "limit": 3,
+          "version": 1
+        },
+        "job_count": 12,
+        "jobs": [
+          {
+            "id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "attempts": 1,
+            "owner": "synthetic-process-77185",
+            "state": "processing",
+            "slot": "2"
+          },
+          {
+            "id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "attempts": 1,
+            "owner": "synthetic-process-77174",
+            "state": "processing",
+            "slot": "1"
+          },
+          {
+            "id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "attempts": 1,
+            "owner": "synthetic-process-77181",
+            "state": "processing",
+            "slot": "0"
+          },
+          {
+            "id": "417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          },
+          {
+            "id": "f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "attempts": 0,
+            "owner": null,
+            "state": "pending",
+            "slot": null
+          }
+        ]
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    "stderr": null,
+    "elapsed_seconds": 4.1740710735321045,
+    "independent_verification": {
+      "state_counts": {
+        "processing": 3,
+        "pending": 9
+      },
+      "owners_slots_attempts_match": true,
+      "write_reservation_delta": 0,
+      "original_concurrency_passed": false
+    }
+  }
+}

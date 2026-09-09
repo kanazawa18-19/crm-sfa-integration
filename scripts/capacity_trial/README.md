@@ -137,3 +137,20 @@ upper_boundのdocument_names/rpc_reservedが適用前と完全一致し、stage=
 
 競合のclaimant_run_errorsは失敗時点の段階と固定分類。children_stop_verified_at_error=falseは
 その時点で停止確認前という意味で、finally後にも稼働中という意味ではない。終了は別途照合する。
+
+## SDKログと失敗診断の分離
+
+内部子は `CAPACITY_TRIAL_FAILURE_V1 ` に続けて固定4項目だけをstderrへ出す。
+親は非0終了した子に限って識別行を解析する。成功stdoutの検査は緩和しない。
+外側CLIは従来のJSON形式を維持。任意の例外本文・SDKログは保存しない。
+
+| diagnostic_state | 意味 |
+|---|---|
+| classified | 許可一覧内の例外型・固定コードを取得 |
+| missing | 識別行を取得できなかった。例外がなかったという意味ではない |
+| invalid | 診断JSONの形式が不正 |
+| unsupported | 型・コードが未対応。任意型名は記録しない |
+| ambiguous | 識別行が複数あり、1件を選べない |
+
+これは今後の失敗を調べるための改善。過去の競合4の原因を復元するものではない。
+準備前終了は依然として実行段階の記録だけになる場合がある。

@@ -292,8 +292,8 @@ def test_launcher_only_propagates_known_child_error_codes(tmp_path, monkeypatch,
     monkeypatch.setattr(runner.Ledger, "authorize_command", lambda *a, **kw: None)
     responses = iter([
         subprocess.CompletedProcess([], 0, stdout="synthetic-secret", stderr=""),
-        subprocess.CompletedProcess([], 1, stdout="", stderr=json.dumps({
-            "state": "failed", "error_code": child_code, "message": "synthetic-secret"})),
+        subprocess.CompletedProcess([], 1, stdout="", stderr="SDK synthetic-secret\nCAPACITY_TRIAL_FAILURE_V1 " + json.dumps({
+            "state": "failed", "error_code": child_code, "error_type": "Refused", "partial_result": False})),
     ])
     monkeypatch.setattr(runner.subprocess, "run", lambda *a, **kw: next(responses))
     monkeypatch.setattr(runner, "isolated_run", lambda *a, **kw: next(responses))
@@ -758,7 +758,8 @@ def test_concurrency_failure_records_only_fixed_classification(ledger, monkeypat
     def failing_child(command, **kwargs):
         code = ('import json,os,sys;sys.stdin.readline();'
                 'print(json.dumps({"ready":os.getpid()}),flush=True);sys.stdin.readline();'
-                'print(json.dumps({"error_type":"FailedPrecondition","error_code":"unexpected_error","secret":"synthetic-not-for-ledger"}),file=sys.stderr);sys.exit(1)')
+                'print("SDK synthetic-not-for-ledger",file=sys.stderr);'
+                'print("CAPACITY_TRIAL_FAILURE_V1 "+json.dumps({"state":"failed","partial_result":False,"error_type":"FailedPrecondition","error_code":"unexpected_error"}),file=sys.stderr);sys.exit(1)')
         return original([sys.executable, "-s", "-c", code], **kwargs)
     monkeypatch.setattr(module.subprocess,"Popen",failing_child)
     with pytest.raises(Refused):

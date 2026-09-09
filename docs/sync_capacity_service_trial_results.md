@@ -4,6 +4,61 @@
 本人「いけ」により、準備票の専用GCP・Neon作成と14日・合計20 USD管理予算を承認。
 本番配備・監視登録・実Bot送信・資源撤去は対象外。
 
+## 競合4の失敗と診断改善（最新・2026-09-10）
+
+[独立実競合の証跡](sync_capacity_stage_concurrency_results.json)を保存。
+競合4は40.815秒で失敗。12子中3成功・9終了code1、全9件がunknown/unexpected_error。
+終了後の試験Python0。競合5は開始せず、競合4の同scope再試行・回復・自動枠返却をしない。
+実行前889→実行後1097RPC（+208）、read3351、write315、文書名64、runtime4285秒。
+元Neon接続5/SQL24、created_at/期限は保持。推定8 USD枠であり実費は未確定。
+事後の観測SAによる読取りは成功、保存12件（processing3/pending9）と3枠/所有者/試行回数の一致を独立照合。書込み増加0。観測後1099RPC（残901）、read3453。これは競合4を合格に変更する根拠ではない。
+
+診断欠測の原因候補は2つあり、従来の証跡では区別不能：
+1. stderr全体のJSON解析はSDKログが1行混ざると失敗する。
+2. JSON正常でも未収録の型名はunknownに変換される。
+初回/競合4がどちらだったかは断定しない。製品の比較更新再試行上限による失敗も未確定。
+
+新diagnostics.pyで内部子の固定prefix+4項目JSONを取り出すよう改善。
+非0終了だけを解析し、missing/invalid/unsupported/ambiguous/classifiedを分離。
+生stderr・任意の例外本文・未収録の型名は保存せず、外側CLIのJSON形式は維持。
+予算・接続先・成功判定・製品ロジックは変更しない。
+独立SEC/品質B0W0、QA178成功10skip、既存警告1。合成12processの混在ログ分類も成功。
+準備前終了のstderr個別原因はまだ欠測になる場合があり、既知WARNとして保持する。
+この改善はローカル検証のみで、失敗競合の原因復元や実再試験合格を意味しない。
+
+新しい診断レビュー資料のGemini/Claude添付はauto-reviewが拒否。
+理由は「stage-review.txtの承認は別payload・両宛先の承認を含まない」。
+送信待ち資料 `/Users/cnctor/.local/state/crm-capacity-trial-260910/diagnostic-review.txt`：
+15,183文字、SHA-256 `1693cbb62fcf92d61cb6f0c5431cfa81df36cd233f14ead4594bf3e71eae3eeb`。
+空白除去SHA-256 `10007424b6052ebbda5acbb1751b3346f195b7d265d9d89eba85653c10e59502`。
+秘密・顧客情報・非公開接続先IDを含まない診断コードとテストの資料。
+対象宛先は本人Gemini ProとClaude Opus 5・中。診断差分の他社レビューは未実施。
+次はこの資料の送信承認後、他社レビューを完了して未使用scope5の実試験を検討する。
+5回成功の条件は未達。大規模/実worker復旧/監視/復元/outboxは未完了。
+
+## 第2段階の承認反映・実移行（2026-09-10）
+
+本人がGeminiへの具体的資料送信を承認。同じstage-review.txt（SHA-256
+`4f03c0a7e40a8f428bed5feaf6fa904db9d7552bd4bba664bfb3026e30736628`）を添付し、
+[Gemini 3.1 Pro回答](https://gemini.google.com/app/be4bb308a193a06f?hl=ja)を取得。
+B0/W1。W1は費用記録2 USD以上で移行拒否する意図した停止線であり、既存境界試験で確認済み。
+添付前の元ファイルhash・添付名を照合。Geminiの添付カードは本文プレビューを開かず、
+アップロード後全文hashの再読照合は未実施（Claude添付では全文hash一致済み）。
+回答の安全性に関する評価は静的レビューであり、実サービスの動作保証とは扱わない。
+
+[固定12scopeの実読取り・移行証跡](sync_capacity_stage_inventory.json)：
+元台帳の第1段階枠で12回inspect-stateを実行し、24RPC/1224readを追加予約。
+9scope文書と41job（計50文書）が従来結果に一致し、競合4/5とpermission親scopeは不存在。
+台帳の文書名予約51は、403拒否済みpermission文書の名前1件を含む。
+これは固定scopeの照合であり、未知collectionの全件列挙ではない。監査ログ0件も外部書込みなしの
+証明には使わず、専用DB作成以来本試験以外の投入を行っていない作業履歴と合わせた確認。
+
+短期tokenを2 SA分更新し、キーチェーンへ標準入力で保存・読み戻し一致。秘密は証跡に残さない。
+単一調整役、試験Python0を再確認し、元台帳を第2段階へ一度だけ移行。
+created_at・reserved・rpc_calls・returned_documents・cost・cost_refresh_requiredが前後一致し、
+旧upper_bound全体と履歴snapshotも完全一致。期限9/24 04:57 JSTは不変。
+移行直後889RPC/2000、read2952/10000、文書名51/100、推定拘束8 USD。
+
 ## 第2段階の準備（2026-09-10・実適用前）
 
 実台帳は元の小規模枠のまま、865 RPC使用・残135、元期限2026-09-24 04:57 JSTを保持。
