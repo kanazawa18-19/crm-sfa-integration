@@ -15,6 +15,11 @@ _REQUEST_TIMEOUT_SECONDS = 3.0
 
 _STAGES = {"設定", "本人検索", "DM開始", "投稿", "その他"}
 _REASONS = {"未設定", "HTTP拒否", "JSON不正", "Slack拒否", "タイムアウト", "接続失敗", "応答不正", "対象無効", "その他"}
+_SOURCES = {
+    "project_mirror", "relation_sync", "refresh_all_projects",
+    "refresh_projects_incrementally", "refresh_all_client_names",
+    "refresh_client_names_incrementally", "その他",
+}
 _ENDPOINT_STAGES = {
     "users.lookupByEmail": "本人検索", "conversations.open": "DM開始", "chat.postMessage": "投稿",
 }
@@ -42,9 +47,15 @@ def safe_failure_message(error: Exception) -> str:
     return f"運用DM送信失敗（工程: {stage}、原因: {reason}）"
 
 
-def log_delivery_failure(logger: logging.Logger, error: Exception) -> None:
+def log_delivery_failure(
+    logger: logging.Logger, error: Exception, *, source: str | None = None
+) -> None:
     """例外本文や応答を出さず、固定分類だけで対処箇所を知らせる。"""
-    logger.warning("%s。本処理を継続します", safe_failure_message(error))
+    if source is None:
+        logger.warning("%s。本処理を継続します", safe_failure_message(error))
+    else:
+        logger.warning("%s: %s。本処理を継続します",
+                       _allowed(source, _SOURCES), safe_failure_message(error))
 
 
 def require_bot_token() -> str:

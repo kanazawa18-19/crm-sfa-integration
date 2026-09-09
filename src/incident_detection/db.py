@@ -3,8 +3,8 @@
 `src/gmail_sync/db.py`・`src/email_reminders/db.py`と同じ方針: このDBのスキーマ管理は
 dashboard(Next.js)側のPrisma(dashboard/prisma/schema.prisma)に一本化しており、ここでは
 raw SQLで読み書きするのみでマイグレーションは行わない。接続文字列はdashboard側と同じ
-DATABASE_URL環境変数を共有する想定。新規env変数は追加しない(SLACK_WEBHOOK_URL_ALERTは
-既存を流用)。
+DATABASE_URL環境変数を共有する想定。通知は既存のSLACK_BOT_TOKENでDMへ送り、
+新規env変数は追加しない。
 
 `find_manager_emails()`の実体は`src/notifications/manager_dm.py`へ移設した(2026-08-25、
 `src/sync_engine/slack_notifier.py`側でも同じ「isManager=true全員へDM」要件が発生したため、

@@ -158,3 +158,27 @@ def test_failure_log_does_not_trust_exception_attributes(caplog):
     dm.log_delivery_failure(logging.getLogger(__name__), RuntimeError("secret"))
     assert "secret" not in caplog.text
     assert "工程: その他、原因: その他" in caplog.text
+
+
+@pytest.mark.parametrize("module_name,source", [
+    ("src.project_mirror.sync", "refresh_all_projects"),
+    ("src.project_mirror.sync", "refresh_projects_incrementally"),
+    ("src.relation_sync.sync", "refresh_all_client_names"),
+    ("src.relation_sync.sync", "refresh_client_names_incrementally"),
+])
+def test_mirror_failure_logs_identify_full_or_incremental_source(monkeypatch, caplog, module_name, source):
+    import importlib
+    def fail(text):
+        raise dm.OperationsDMDeliveryError("投稿", "HTTP拒否")
+    monkeypatch.setattr(dm, "send_operations_dm", fail)
+    assert importlib.import_module(module_name)._notify_slack_alert("通知", source=source) is False
+    assert f"{source}: 運用DM送信失敗" in caplog.text
+    assert "工程: 投稿、原因: HTTP拒否" in caplog.text
+
+
+@pytest.mark.parametrize("source", ["secret-source", ["secret-source"]])
+def test_failure_log_rejects_unknown_source(caplog, source):
+    import logging
+    dm.log_delivery_failure(logging.getLogger(__name__), RuntimeError("secret-error"), source=source)
+    assert "secret" not in caplog.text
+    assert "その他: 運用DM送信失敗" in caplog.text

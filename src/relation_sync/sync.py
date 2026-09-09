@@ -378,7 +378,7 @@ def _notify_slack_alert(message: str, *, source: str = "relation_sync") -> bool:
         operations_dm.send_operations_dm(message)
         return True
     except Exception as exc:
-        operations_dm.log_delivery_failure(logger, exc)
+        operations_dm.log_delivery_failure(logger, exc, source=source)
         return False
 
 
