@@ -23,6 +23,8 @@ def main() -> int:
     recover.add_argument("--apply", action="store_true")
     recover.add_argument("--confirm-worker-stopped", action="store_true")
     sub.add_parser("drain")
+    sub.add_parser("observe", help="全件に比例する読取り費用。原子的な同一時点集計ではない",
+                   description="本文を除外して全件走査。費用は件数に比例し、複数時点が混在しうる。")
     args = parser.parse_args()
     try:
         store = get_store()
@@ -31,6 +33,8 @@ def main() -> int:
         elif args.command == "recover":
             result = store.recover(args.job_id, args.owner, now=time.time(), apply=args.apply,
                                    stopped=args.confirm_worker_stopped)
+        elif args.command == "observe":
+            result = store.observe()
         elif args.command == "inspect":
             from google.cloud.firestore_v1.base_query import FieldFilter
             if not 1 <= args.limit <= 500:

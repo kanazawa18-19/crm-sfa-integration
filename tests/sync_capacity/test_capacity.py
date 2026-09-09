@@ -424,3 +424,121 @@ def test_submission_value_error_returns_400_but_store_value_error_is_503(gate, m
     response = client.post("/api/webhooks/spreadsheet", json={},
                            headers={"X-Webhook-Secret": "test-only-secret"})
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize("existing_state", [None, "pending", "completed"])
+def test_enqueue_observation_separates_new_and_duplicate(compared_store, monkeypatch, caplog, existing_state):
+    from google.cloud import firestore
+    from src.sync_capacity.telemetry import logger
+    store, commit, stamp = compared_store
+    item = submission("kintone", {"id": "event", "private": "PRIVATE"}, None, 1)
+    ref = store.jobs.document(item.job_id)
+    snapshot = firestore.DocumentSnapshot(ref,
+        {"state": existing_state, "payload_hash": item.payload_hash} if existing_state else None,
+        existing_state is not None, stamp, stamp, stamp)
+    monkeypatch.setattr(store.jobs, "document", Mock(return_value=ref))
+    monkeypatch.setattr(ref, "get", Mock(return_value=snapshot))
+    logger.addHandler(caplog.handler)
+    try:
+        assert store.enqueue(item, 1) == (existing_state or "pending")
+    finally:
+        logger.removeHandler(caplog.handler)
+    event = caplog.records[-1].sync_capacity
+    assert event["event"] == "enqueue"
+    assert event["outcome"] == ("duplicate" if existing_state else "new")
+    assert "PRIVATE" not in caplog.text
+
+
+def test_observe_missing_scope_is_not_empty_queue(compared_store, monkeypatch):
+    from google.cloud import firestore
+    from src.sync_capacity.domain import CapacityUnavailable
+    store, commit, stamp = compared_store
+    monkeypatch.setattr(store.scope_ref, "get", Mock(return_value=firestore.DocumentSnapshot(
+        store.scope_ref, None, False, stamp, None, None)))
+    with pytest.raises(CapacityUnavailable):
+        store.observe()
+    commit.assert_not_called()
+
+
+@pytest.mark.parametrize("scenario,status,outcome,known_job", [
+    ("flag", 503, "rejected_before_save", False),
+    ("auth", 401, "rejected_before_save", False),
+    ("accepted", 200, "accepted", True),
+    ("factory", 503, "store_unavailable", True),
+    ("scope", 503, "scope_unavailable", True),
+    ("conflict", 409, "content_conflict", True),
+    ("timeout", 503, "save_unconfirmed", True),
+    ("value_error", 503, "save_unconfirmed", True),
+])
+def test_receipt_response_classifies_once_and_correlates(gate, monkeypatch, caplog,
+                                                         scenario, status, outcome, known_job):
+    import uuid
+    from src.sync_capacity.domain import CapacityUnavailable, PayloadConflict
+    from src.sync_capacity.telemetry import logger
+    client, store, factory, _ = gate
+    headers = {"X-Webhook-Secret": "test-only-secret"}
+    if scenario == "flag":
+        monkeypatch.setenv("SYNC_CAPACITY_ENABLED", "PRIVATE")
+    elif scenario == "auth":
+        headers = {}
+    elif scenario == "factory":
+        factory.side_effect = ValueError("PRIVATE")
+    elif scenario in {"scope", "conflict", "timeout", "value_error"}:
+        error = {"scope": CapacityUnavailable, "conflict": PayloadConflict,
+                 "timeout": TimeoutError, "value_error": ValueError}[scenario]
+        store.enqueue.side_effect = error("PRIVATE")
+    logger.addHandler(caplog.handler)
+    try:
+        response = client.post("/api/webhooks/spreadsheet", json={"field": "PRIVATE"}, headers=headers)
+    finally:
+        logger.removeHandler(caplog.handler)
+    assert response.status_code == status
+    records = [r.sync_capacity for r in caplog.records if hasattr(r, "sync_capacity")]
+    assert len(records) == 1
+    event = records[0]
+    assert event["event"] == "receipt_response"
+    assert event["outcome"] == outcome
+    assert event["status"] == status
+    assert (event["job_id"] is not None) == known_job
+    assert uuid.UUID(event["receipt_id"]).hex == event["receipt_id"]
+    if store.enqueue.called:
+        assert store.enqueue.call_args.kwargs["receipt_id"] == event["receipt_id"]
+    assert "PRIVATE" not in caplog.text
+    assert "test-only-secret" not in caplog.text
+
+
+def test_enqueue_scope_failure_is_before_commit_and_correlated(compared_store, monkeypatch, caplog):
+    from google.cloud import firestore
+    from src.sync_capacity.domain import CapacityUnavailable
+    from src.sync_capacity.telemetry import logger
+    store, commit, stamp = compared_store
+    monkeypatch.setattr(store.scope_ref, "get", Mock(return_value=firestore.DocumentSnapshot(
+        store.scope_ref, None, False, stamp, None, None)))
+    logger.addHandler(caplog.handler)
+    try:
+        with pytest.raises(CapacityUnavailable):
+            store.enqueue(submission("kintone", {"id": "event"}, None, 1), 1, receipt_id="receipt")
+    finally:
+        logger.removeHandler(caplog.handler)
+    commit.assert_not_called()
+    event = caplog.records[-1].sync_capacity
+    assert event["event"] == "enqueue_scope_unavailable"
+    assert event["receipt_id"] == "receipt"
+    assert event["severity"] == "WARNING"
+
+
+@pytest.mark.parametrize("error", [ValueError, TimeoutError])
+def test_enqueue_generic_failure_remains_unknown(compared_store, monkeypatch, caplog, error):
+    from src.sync_capacity.telemetry import logger
+    store, _, _ = compared_store
+    monkeypatch.setattr(store, "_atomic", Mock(side_effect=error("PRIVATE")))
+    logger.addHandler(caplog.handler)
+    try:
+        with pytest.raises(error):
+            store.enqueue(submission("kintone", {"id": "event"}, None, 1), 1, receipt_id="receipt")
+    finally:
+        logger.removeHandler(caplog.handler)
+    event = caplog.records[-1].sync_capacity
+    assert event["event"] == "enqueue_unconfirmed"
+    assert event["receipt_id"] == "receipt"
+    assert "PRIVATE" not in caplog.text

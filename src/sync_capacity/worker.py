@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 
+from src.sync_capacity.telemetry import emit
 from src.sync_capacity.application import drain_one
 from src.sync_capacity.domain import Claim, SAFE_SKIPS
 from src.sync_capacity.firestore_store import get_store
@@ -75,8 +77,14 @@ def prepare(claim: Claim):
 def run_worker():
     # ローカル待ち行列でHTTP実行枠を消費しない。次回の定期drainで拾う。
     if not _WORKER_LOCK.acquire(blocking=False):
+        emit("local_worker_busy")
         return {"state": "local_worker_busy"}
     try:
-        return drain_one(get_store(), prepare)
+        try:
+            store = get_store()
+        except Exception:
+            emit("worker_store_unavailable", level=logging.WARNING)
+            raise
+        return drain_one(store, prepare)
     finally:
         _WORKER_LOCK.release()

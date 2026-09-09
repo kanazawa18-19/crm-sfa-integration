@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import os
+import logging
 import random
 import time
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.sync_capacity.telemetry import emit
+
 from src.sync_capacity.domain import (
     CapacityUnavailable, Claim, OwnerMismatch, PayloadConflict, Submission,
 )
+
 
 
 @dataclass(frozen=True)
@@ -167,8 +171,9 @@ class FirestoreJobStore:
             return {"action": "create_scope", "apply": apply, "limit": self.settings.slots}
         return self._atomic(operation)
 
-    def enqueue(self, request: Submission, now: float) -> str:
+    def enqueue(self, request: Submission, now: float, *, receipt_id: str | None = None) -> str:
         ref = self.jobs.document(request.job_id)
+        correlation = {"receipt_id": receipt_id} if receipt_id is not None else {}
         def operation(tx):
             self._scope(tx)
             existing = tx.get(ref)
@@ -176,13 +181,30 @@ class FirestoreJobStore:
                 data = existing.to_dict()
                 if data["payload_hash"] != request.payload_hash:
                     raise PayloadConflict("same event ID with different content")
-                return data["state"]
+                return data["state"], "duplicate"
             tx.create(ref, {"source": request.source, "event": request.event,
                             "payload_hash": request.payload_hash, "state": "pending",
                             "created_at": now, "available_at": now, "updated_at": now,
                             "owner": None, "slot": None, "attempts": 0})
-            return "pending"
-        return self._atomic(operation)
+            return "pending", "new"
+        try:
+            state, outcome = self._atomic(operation)
+        except CapacityUnavailable:
+            # scope検証で停止。この呼出しはcommit前だが、既存jobの不存在は意味しない。
+            emit("enqueue_scope_unavailable", level=logging.WARNING,
+                 job_id=request.job_id, source=request.source, **correlation)
+            raise
+        except PayloadConflict:
+            emit("enqueue_conflict", level=logging.WARNING,
+                 job_id=request.job_id, source=request.source, **correlation)
+            raise
+        except Exception:
+            emit("enqueue_unconfirmed", level=logging.WARNING,
+                 job_id=request.job_id, source=request.source, **correlation)
+            raise
+        emit("enqueue", outcome=outcome, job_id=request.job_id,
+             source=request.source, state=state, **correlation)
+        return state
 
     def claim(self, owner: str, now: float) -> Claim | None:
         from google.cloud.firestore_v1.base_query import FieldFilter
@@ -236,6 +258,12 @@ class FirestoreJobStore:
             tx.update(ref, {"state": state, "reason": reason, "updated_at": now,
                             "available_at": now + 60 if state == "retry" else now})
         self._atomic(operation)
+
+    def observe(self) -> dict:
+        """scopeの存在を読み取りで確認。観測のためのcommitは行わない。"""
+        from src.sync_capacity.observation import observe_queue
+        self._scope(_ComparedBatch(self.client))
+        return observe_queue(self.jobs)
 
     def recover(self, job_id: str, owner: str, *, now: float, apply: bool = False,
                 stopped: bool = False) -> dict:

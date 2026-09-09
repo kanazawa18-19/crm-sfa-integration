@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -13,7 +14,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from src.api.auth import verify_cron_secret
-from src.sync_capacity.domain import MAX_PAYLOAD_BYTES, PayloadConflict, PayloadTooLarge, submission
+from src.sync_capacity.telemetry import emit
+from src.sync_capacity.domain import MAX_PAYLOAD_BYTES, CapacityUnavailable, PayloadConflict, PayloadTooLarge, submission
 from src.sync_capacity.firestore_store import enabled, get_store
 from src.sync_engine.webhook_handlers._common import (
     get_header, verify_notion_webhook_signature, verify_webhook_body_token,
@@ -58,9 +60,14 @@ class CapacityMiddleware:
                 or scope.get("method") != target[0]):
             await self.app(scope, receive, send)
             return
+        receipt_id = uuid.uuid4().hex
+        job_id = None
+        outcome = "rejected_before_save"
         try:
             active = enabled()
         except Exception:
+            emit("receipt_response", level=logging.WARNING, source=target[1], status=503,
+                 receipt_id=receipt_id, job_id=None, outcome="rejected_before_save")
             await JSONResponse({"error": "invalid queue flag"}, status_code=503)(scope, receive, send)
             return
         if not active:
@@ -88,22 +95,36 @@ class CapacityMiddleware:
                 payload = {"invocation_id": uuid.uuid4().hex}
             try:
                 item = submission(source, payload, get_header(request.headers, "X-Sync-System-ID"),
-                                  now, receipt_id=uuid.uuid4().hex)
+                                  now, receipt_id=receipt_id)
             except PayloadTooLarge:
                 raise HTTPException(413, "payload too large") from None
             except ValueError:
                 raise HTTPException(400, "invalid webhook payload") from None
+            job_id = item.job_id
             def save():
-                return get_store().enqueue(item, now)
+                nonlocal outcome
+                outcome = "store_unavailable"
+                store = get_store()
+                outcome = "save_unconfirmed"
+                try:
+                    return store.enqueue(item, now, receipt_id=receipt_id)
+                except CapacityUnavailable:
+                    outcome = "scope_unavailable"
+                    raise
             state = await run_in_threadpool(save)
+            outcome = "accepted"
             response = JSONResponse({"accepted": True, "job_id": item.job_id, "state": state})
         except HTTPException as exc:
             response = JSONResponse({"error": exc.detail}, status_code=exc.status_code)
         except PayloadConflict:
+            outcome = "content_conflict"
             response = JSONResponse({"error": "event ID content conflict"}, status_code=409)
         except Exception:
             # SDK例外に接続先・認証情報が混ざるため本文も例外も記録しない。
             response = JSONResponse({"error": "queue unavailable; request not acknowledged"}, status_code=503)
+        emit("receipt_response", level=logging.WARNING if response.status_code >= 400 else logging.INFO,
+             source=target[1], status=response.status_code, outcome=outcome,
+             receipt_id=receipt_id, job_id=job_id)
         await response(scope, receive, send)
 
 
