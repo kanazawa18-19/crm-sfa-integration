@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.sync_capacity.deadline import Deadline, using_deadline, STORE_SECONDS
+
 import json
 import logging
 import os
@@ -101,13 +103,17 @@ class CapacityMiddleware:
             except ValueError:
                 raise HTTPException(400, "invalid webhook payload") from None
             job_id = item.job_id
+            deadline = Deadline.after(STORE_SECONDS)
             def save():
                 nonlocal outcome
                 outcome = "store_unavailable"
                 store = get_store()
-                outcome = "save_unconfirmed"
+                outcome = "save_not_started"
                 try:
-                    return store.enqueue(item, now, receipt_id=receipt_id)
+                    with using_deadline(deadline) as active_deadline:
+                        active_deadline.require(active_deadline.attempt_minimum)
+                        outcome = "save_unconfirmed"
+                        return store.enqueue(item, now, receipt_id=receipt_id)
                 except CapacityUnavailable:
                     outcome = "scope_unavailable"
                     raise

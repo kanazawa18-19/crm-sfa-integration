@@ -1,6 +1,9 @@
 """Firestore SDKのRPC直前に資源・再試行・上限を検査する。"""
 from __future__ import annotations
 
+from src.sync_capacity.deadline import (current_deadline, Deadline, using_deadline,
+                                        CapacityDeadlineExceeded)
+
 from .guard import BASE, PROJECT, DATABASE, Refused, validate_resource, validate_target, validate_environment
 
 
@@ -20,7 +23,10 @@ class GuardedAPI:
             if isinstance(name, str) and name.startswith(prefix):
                 self.ledger.authorize_scope(name[len(prefix):].split("/")[0])
 
-        def call(request=None, **kwargs):
+        def guarded_call(request=None, **kwargs):
+            deadline = current_deadline.get()
+            if deadline:
+                deadline.require()
             request = dict(request or {})
             validate_resource(request.get("database", BASE))
             reads, writes = 0, 0
@@ -95,7 +101,11 @@ class GuardedAPI:
             self.ledger.record(method)
             if method == "commit" and self.before_commit is not None:
                 self.before_commit()
-            kwargs.update(retry=None, timeout=10 if method == "commit" else 55)
+            cap = 10 if method == "commit" else 55
+            supplied = kwargs.get("timeout")
+            if isinstance(supplied, (int, float)):
+                cap = min(cap, supplied)
+            kwargs.update(retry=None, timeout=deadline.timeout(cap) if deadline else cap)
             from google.api_core.exceptions import Aborted, AlreadyExists, FailedPrecondition
             try:
                 result = getattr(self.api, method)(request=request, **kwargs)
@@ -109,6 +119,8 @@ class GuardedAPI:
                 count = 0
                 try:
                     for response in result:
+                        if deadline:
+                            deadline.require()
                         present = bool(response.document.name) if method == "run_query" else bool(response.found.name)
                         count += int(present)
                         if method == "run_query" and count > (100 if self.small else 100_000):
@@ -121,9 +133,21 @@ class GuardedAPI:
                     raise
                 finally:
                     # 強制killでは最後の応答数は欠測。事前予約は残るので上限は減らない。
-                    self.ledger.transact(lambda data: data.update(
-                        returned_documents=data["returned_documents"]+count))
+                    try:
+                        with using_deadline(deadline):
+                            self.ledger.transact(lambda data: data.update(
+                                returned_documents=data["returned_documents"]+count))
+                    except CapacityDeadlineExceeded:
+                        # 予約を保持し、応答数の欠測で元の失敗を上書きしない。
+                        pass
             return stream()
+        def call(request=None, **kwargs):
+            cap = 10 if method == "commit" else 55
+            supplied = kwargs.get("timeout")
+            if isinstance(supplied, (int, float)):
+                cap = min(cap, supplied)
+            with using_deadline(Deadline.after(cap)):
+                return guarded_call(request=request, **kwargs)
         return call
 
 

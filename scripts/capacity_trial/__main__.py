@@ -13,7 +13,7 @@ import threading
 import time
 
 from .guard import ACCOUNTS, DATABASE, Ledger, PROJECT, Refused, validate_environment, validate_target
-from .diagnostics import PREFIX, failure_record
+from .diagnostics import serialize_failure
 
 
 def smoke(store):
@@ -240,6 +240,6 @@ if __name__ == "__main__":
     except Exception as exc:
         # 内部の子は識別子を付け、SDKログが混ざっても固定分類だけを取り出せるようにする。
         # SDKが改行せず書いた直後でも、内部診断を独立した行にする。
-        prefix = "\n" + PREFIX if os.environ.get("CAPACITY_TRIAL_CHILD") == "1" else ""
-        print(prefix + json.dumps(failure_record(exc)), file=sys.stderr)
+        print(serialize_failure(exc, child=os.environ.get("CAPACITY_TRIAL_CHILD") == "1"),
+              file=sys.stderr)
         sys.exit(1)

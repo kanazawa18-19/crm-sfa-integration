@@ -122,6 +122,24 @@ def validate_resource(value):
         raise Refused("許可外のscopeまたは文書パス")
 
 
+from src.sync_capacity.deadline import current_deadline
+
+
+def _lock_with_deadline(lock, mode):
+    deadline = current_deadline.get()
+    if deadline is None:
+        fcntl.flock(lock, mode)
+        return
+    while True:
+        deadline.require()
+        try:
+            fcntl.flock(lock, mode | fcntl.LOCK_NB)
+            deadline.require()
+            return
+        except BlockingIOError:
+            deadline.sleep(0.01)
+
+
 class Ledger:
     """実行前に上限を予約する。中断時の予約は戻さず、課金実績とは分ける。"""
     def __init__(self, path):
@@ -130,10 +148,13 @@ class Ledger:
     def transact(self, operation):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.with_suffix(".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            _lock_with_deadline(lock, fcntl.LOCK_EX)
             if not self.path.exists():
                 raise Refused("予算台帳が未初期化")
             data = json.loads(self.path.read_text())
+            deadline = current_deadline.get()
+            if deadline:
+                deadline.require()
             result = operation(data)
             tmp = self.path.with_suffix(".new")
             with tmp.open("w") as output:
@@ -260,7 +281,7 @@ class Ledger:
         # 予約更新と同じロックで最新状態を読み、確認だけでは台帳を書き直さない。
         try:
             with self.path.with_suffix(".lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_SH)
+                _lock_with_deadline(lock, fcntl.LOCK_SH)
                 check(json.loads(self.path.read_text()))
         except FileNotFoundError:
             raise Refused("予算台帳が未初期化") from None

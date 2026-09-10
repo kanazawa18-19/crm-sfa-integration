@@ -126,3 +126,31 @@ def test_all_comparison_conflicts_without_marker_have_unknown_origin(name):
     record = failure_record(getattr(exceptions, name)("synthetic-secret"))
     assert record["origin"] == "unknown"
     assert "synthetic-secret" not in json.dumps(record)
+
+
+@pytest.mark.parametrize("reason", ["total_deadline", "attempt_budget", "attempt_limit", "non_conflict_chain"])
+def test_v2_fixed_reasons_and_v1_separation(reason):
+    from scripts.capacity_trial.diagnostics import PREFIX_V2
+    atomic = dict(version=2, attempts=8 if reason == "attempt_limit" else 1,
+                  elapsed_ms=3181, phase="commit", stop_reason=reason)
+    message = encoded(atomic=atomic)
+    assert parse_failure(message)["diagnostic_state"] == "invalid"
+    message = message.replace(PREFIX, PREFIX_V2)
+    assert parse_failure(message)["atomic"] == atomic
+    assert parse_failure(message + "\n" + encoded())["diagnostic_state"] == "ambiguous"
+
+
+@pytest.mark.parametrize("atomic", [
+    dict(attempts=1, elapsed_ms=3125, phase="commit", non_conflict_chain=False,
+         attempt_limit=False, deadline=True),
+    dict(version=2, attempts=1, elapsed_ms=3125, phase="commit", stop_reason="attempt_budget"),
+])
+def test_serialize_failure_roundtrips_each_version(atomic):
+    from google.api_core.exceptions import FailedPrecondition
+    from scripts.capacity_trial.diagnostics import serialize_failure
+    error = FailedPrecondition("synthetic-private")
+    error.capacity_atomic = atomic
+    encoded_record = serialize_failure(error, child=True)
+    assert parse_failure(encoded_record)["atomic"] == atomic
+    assert "synthetic-private" not in encoded_record
+    assert json.loads(serialize_failure(error))["atomic"] == atomic

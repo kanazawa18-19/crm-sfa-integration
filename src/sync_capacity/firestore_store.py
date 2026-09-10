@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.sync_capacity.telemetry import emit
+from src.sync_capacity.deadline import Deadline, budgeted, current_deadline, CapacityDeadlineExceeded, STORE_SECONDS
 
 from src.sync_capacity.domain import (
     CapacityUnavailable, Claim, OwnerMismatch, PayloadConflict, Submission,
@@ -51,14 +52,16 @@ def enabled() -> bool:
 class _ComparedBatch:
     """読み取った全版を前提にする。判断中はサーバーのロックを保持しない。"""
 
-    def __init__(self, client):
+    def __init__(self, client, *, deadline=None):
+        self.deadline = deadline or current_deadline.get() or Deadline.after()
         self.client = client
         self.reads = {}
         self.changes = {}
 
     def get(self, ref):
         if ref.path not in self.reads:
-            self.reads[ref.path] = ref.get()
+            deadline = self.deadline
+            self.reads[ref.path] = ref.get(retry=None, timeout=deadline.timeout(10))
         return self.reads[ref.path]
 
     def create(self, ref, data):
@@ -97,23 +100,26 @@ class _ComparedBatch:
                 else:
                     batch.update(ref, data, option=LastUpdateOption(snapshot.update_time))
         # 応答を失ったcommitをSDK内部で再送させない。
-        batch.commit(retry=None, timeout=10)
+        batch.commit(retry=None, timeout=self.deadline.timeout(10))
 
 
 class FirestoreJobStore:
-    def __init__(self, settings: Settings, *, client: Any = None):
+    def __init__(self, settings: Settings, *, client: Any = None, total_seconds: float = STORE_SECONDS):
         from google.cloud import firestore
         emulator = os.environ.get("FIRESTORE_EMULATOR_HOST")
         if emulator and (os.environ.get("VERCEL") or os.environ.get("K_SERVICE")
                          or not settings.project.startswith("demo-")
                          or not re.fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]+", emulator)):
             raise CapacityUnavailable("emulator is restricted to local demo projects")
+        Deadline.after(total_seconds)
+        self.total_seconds = total_seconds
         self.settings = settings
         self.client = client if client is not None else firestore.Client(
             project=settings.project, database=settings.database)
         self.scope_ref = self.client.collection("sync_capacity_scopes").document(settings.scope)
         self.jobs = self.scope_ref.collection("jobs")
 
+    @budgeted
     def _atomic(self, operation):
         import grpc
         from google.api_core.exceptions import Aborted, AlreadyExists, FailedPrecondition
@@ -121,10 +127,11 @@ class FirestoreJobStore:
         codes = {grpc.StatusCode.ABORTED, grpc.StatusCode.ALREADY_EXISTS,
                  grpc.StatusCode.FAILED_PRECONDITION}
         started = time.monotonic()
-        deadline = started + 3.0
+        deadline = current_deadline.get()
         for attempt in range(8):
             try:
                 phase = "operation"
+                deadline.require(deadline.attempt_minimum)
                 batch = _ComparedBatch(self.client)
                 result = operation(batch)
                 phase = "commit"
@@ -145,19 +152,28 @@ class FirestoreJobStore:
                     if not (isinstance(error, conflicts) or grpc_conflict):
                         definite_conflict = False
                     chain.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
-                remaining = deadline - time.monotonic()
-                if not definite_conflict or attempt == 7 or remaining <= 0:
+                remaining = deadline.remaining()
+                delay = random.uniform(0.03, min(0.6, 0.08 * 2 ** attempt))
+                insufficient = remaining < delay + deadline.attempt_minimum
+                if not definite_conflict or attempt == 7 or insufficient:
                     # 診断は固定値だけを添え、元の例外・再試行判定を保つ。
                     exc.capacity_atomic = {
+                        "version": 2,
                         "attempts": attempt + 1,
-                        "elapsed_ms": min(86_400_000, max(0, int((3.0 - remaining) * 1000))),
+                        "elapsed_ms": min(86_400_000, max(0, int((time.monotonic() - started) * 1000))),
                         "phase": phase,
-                        "non_conflict_chain": not definite_conflict,
-                        "attempt_limit": attempt == 7,
-                        "deadline": remaining <= 0,
+                        "stop_reason": ("non_conflict_chain" if not definite_conflict else
+                                        "attempt_limit" if attempt == 7 else
+                                        "total_deadline" if remaining <= 0 else "attempt_budget"),
                     }
                     raise
-                time.sleep(min(remaining, random.uniform(0.03, min(0.6, 0.08 * 2 ** attempt))))
+                try:
+                    deadline.sleep(delay, reserve=deadline.attempt_minimum)
+                except CapacityDeadlineExceeded:
+                    exc.capacity_atomic = {"version": 2, "attempts": attempt + 1,
+                        "elapsed_ms": min(86_400_000, max(0, int((time.monotonic() - started) * 1000))),
+                        "phase": phase, "stop_reason": "total_deadline" if deadline.remaining() <= 0 else "attempt_budget"}
+                    raise exc from None
 
     def _scope(self, transaction) -> dict:
         snapshot = transaction.get(self.scope_ref)
@@ -169,6 +185,7 @@ class FirestoreJobStore:
             raise CapacityUnavailable("shared scope missing or mismatched")
         return data
 
+    @budgeted
     def initialize(self, *, apply: bool = False) -> dict:
         """運用者がDB容量を照合してから明示実行。既存scopeの上書きは禁止。"""
         desired = {"version": 1, "limit": self.settings.slots,
@@ -183,6 +200,7 @@ class FirestoreJobStore:
             return {"action": "create_scope", "apply": apply, "limit": self.settings.slots}
         return self._atomic(operation)
 
+    @budgeted
     def enqueue(self, request: Submission, now: float, *, receipt_id: str | None = None) -> str:
         ref = self.jobs.document(request.job_id)
         correlation = {"receipt_id": receipt_id} if receipt_id is not None else {}
@@ -218,13 +236,16 @@ class FirestoreJobStore:
              source=request.source, state=state, **correlation)
         return state
 
+    @budgeted
     def claim(self, owner: str, now: float) -> Claim | None:
         from google.cloud.firestore_v1.base_query import FieldFilter
         # 同時刻のScheduler呼出しが共通scopeを一斉に読む競合を分散する。
-        time.sleep(random.uniform(0.0, 0.5))
+        current_deadline.get().sleep(random.uniform(0.0, 0.5),
+                                     reserve=current_deadline.get().attempt_minimum)
         # 複合indexは配備準備に含める。query失敗時はDBへ進まない。
         candidates = list(self.jobs.where(filter=FieldFilter("state", "in", ["pending", "retry"]))
-                          .order_by("available_at").limit(20).stream())
+                          .order_by("available_at").limit(20).stream(
+                              retry=None, timeout=current_deadline.get().timeout(10)))
         for candidate in candidates:
             ref = candidate.reference
             def operation(tx):
@@ -252,6 +273,7 @@ class FirestoreJobStore:
         self._atomic(lambda tx: self._scope(tx))
         return None
 
+    @budgeted
     def finish(self, claim: Claim, state: str, reason: str, now: float) -> None:
         if state not in {"retry", "completed", "needs_attention"}:
             raise ValueError("invalid finish state")
@@ -271,12 +293,14 @@ class FirestoreJobStore:
                             "available_at": now + 60 if state == "retry" else now})
         self._atomic(operation)
 
+    @budgeted
     def observe(self) -> dict:
         """scopeの存在を読み取りで確認。観測のためのcommitは行わない。"""
         from src.sync_capacity.observation import observe_queue
         self._scope(_ComparedBatch(self.client))
         return observe_queue(self.jobs)
 
+    @budgeted
     def recover(self, job_id: str, owner: str, *, now: float, apply: bool = False,
                 stopped: bool = False) -> dict:
         """停止を外部で確認したprocessingを保全状態へ移す。自動再送しない。"""

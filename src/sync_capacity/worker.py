@@ -7,6 +7,7 @@ import logging
 import threading
 
 from src.sync_capacity.telemetry import emit
+from src.sync_capacity.deadline import Deadline, WORKER_SECONDS, current_deadline
 from src.sync_capacity.application import drain_one
 from src.sync_capacity.domain import Claim, SAFE_SKIPS
 from src.sync_capacity.firestore_store import get_store
@@ -32,9 +33,12 @@ class ObservedDispatcher:
 
 def prepare(claim: Claim):
     if claim.source == "spreadsheet-outbox-drain":
-        from src.sync_engine.spreadsheet_outbox_drain import drain_spreadsheet_outbox
+        from src.sync_engine.spreadsheet_outbox_drain import (
+            drain_spreadsheet_outbox, DEFAULT_BUDGET_SECONDS)
         def execute_outbox():
-            result = drain_spreadsheet_outbox()
+            deadline = current_deadline.get()
+            budget = min(DEFAULT_BUDGET_SECONDS, deadline.require()) if deadline else DEFAULT_BUDGET_SECONDS
+            result = drain_spreadsheet_outbox(budget_seconds=budget)
             partial = result.get("status") != "success" or bool(result.get("gave_up"))
             return {"statusCode": 200, "body": json.dumps({})}, partial
         return execute_outbox
@@ -75,6 +79,7 @@ def prepare(claim: Claim):
 
 
 def run_worker():
+    deadline = Deadline.after(WORKER_SECONDS)
     # ローカル待ち行列でHTTP実行枠を消費しない。次回の定期drainで拾う。
     if not _WORKER_LOCK.acquire(blocking=False):
         emit("local_worker_busy")
@@ -85,6 +90,6 @@ def run_worker():
         except Exception:
             emit("worker_store_unavailable", level=logging.WARNING)
             raise
-        return drain_one(store, prepare)
+        return drain_one(store, prepare, deadline=deadline)
     finally:
         _WORKER_LOCK.release()

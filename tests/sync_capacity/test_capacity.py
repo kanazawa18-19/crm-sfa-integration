@@ -544,93 +544,171 @@ def test_enqueue_generic_failure_remains_unknown(compared_store, monkeypatch, ca
     assert "PRIVATE" not in caplog.text
 
 
-@pytest.mark.parametrize("elapsed,chain,attempts,deadline,limit", [
-    (0.125, False, 8, False, True), (3.125, False, 1, True, False),
-    (0.125, True, 1, False, False), (3.125, True, 1, True, False),
+@pytest.mark.parametrize("elapsed,chain,attempts,reason", [
+    (0.125, False, 8, "attempt_limit"), (30.125, False, 1, "total_deadline"),
+    (0.125, True, 1, "non_conflict_chain"), (30.125, True, 1, "non_conflict_chain"),
+    (29.8, False, 1, "attempt_budget"),
 ])
-def test_atomic_failure_records_original_retry_exit(compared_store, monkeypatch,
-                                                    elapsed, chain, attempts, deadline, limit):
+def test_atomic_failure_records_v2_exit(compared_store, monkeypatch, elapsed, chain, attempts, reason):
     from google.api_core.exceptions import FailedPrecondition
     from scripts.capacity_trial.diagnostics import failure_record
     store, commit, _ = compared_store
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.sleep", lambda _: None)
     error = FailedPrecondition("synthetic-secret")
-    cause = TimeoutError("synthetic-secret") if chain else None
-    error.__cause__ = cause
-    commit.side_effect = error
-    clock = iter([100.0] + [100.0 + elapsed] * 8)
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic", lambda: next(clock))
-    sleep = Mock()
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", sleep)
+    error.__cause__ = TimeoutError() if chain else None
+    def fail(**kwargs):
+        clock.return_value = elapsed
+        raise error
+    commit.side_effect = fail
     def operation(batch):
         store._scope(batch)
         batch.update(store.scope_ref, {"version": 1})
     with pytest.raises(FailedPrecondition) as caught:
         store._atomic(operation)
-    assert caught.value is error and error.__cause__ is cause
-    assert commit.call_count == attempts and sleep.call_count == attempts - 1
-    assert failure_record(error)["atomic"] == dict(
-        attempts=attempts, elapsed_ms=int(elapsed * 1000), phase="commit",
-        non_conflict_chain=chain, attempt_limit=limit, deadline=deadline)
+    assert caught.value is error
+    assert commit.call_count == attempts
+    assert failure_record(error)["atomic"] == dict(version=2, attempts=attempts,
+        elapsed_ms=int(elapsed * 1000), phase="commit", stop_reason=reason)
 
 
-
-@pytest.mark.parametrize("elapsed,retries", [(2.999, 1), (3.0, 0), (3.181, 0)])
-def test_first_slow_conflict_retry_boundary(compared_store, monkeypatch, elapsed, retries):
-    """初回競合後なら成功できても、3秒以上で再読取りできない現行挙動を再現。"""
+@pytest.mark.parametrize("elapsed", [2.999, 3.0, 3.181])
+def test_first_slow_conflict_retry_boundary(compared_store, monkeypatch, elapsed):
+    """初回3秒超でも、総期限内なら新しい版を読み直す。"""
     from google.api_core.exceptions import FailedPrecondition
     from google.cloud.firestore_v1.types import CommitResponse
     store, commit, _ = compared_store
-    error = FailedPrecondition("synthetic comparison conflict")
-    commit.side_effect = [error, CommitResponse()]
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic",
-                        Mock(side_effect=[0.0, elapsed]))
-    sleep = Mock()
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", sleep)
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.sleep", lambda _: None)
+    def save(**kwargs):
+        clock.return_value = elapsed
+        if commit.call_count == 1:
+            raise FailedPrecondition("comparison")
+        return CommitResponse()
+    commit.side_effect = save
     def operation(batch):
         store._scope(batch)
         batch.update(store.scope_ref, {"version": 1})
         return "saved"
-    if retries:
-        assert store._atomic(operation) == "saved"
-    else:
-        with pytest.raises(FailedPrecondition) as caught:
-            store._atomic(operation)
-        assert caught.value is error
-        assert error.capacity_atomic["deadline"] is True
-        assert error.capacity_atomic["attempts"] == 1
-    assert commit.call_count == 1 + retries
-    assert store.scope_ref.get.call_count == 1 + retries
-    assert sleep.call_count == retries
+    assert store._atomic(operation) == "saved"
+    assert commit.call_count == store.scope_ref.get.call_count == 2
 
 
 def test_success_after_retry_deadline_is_still_returned(compared_store, monkeypatch):
-    """3秒が成功処理の打切り期限ではないことを仮想時計で確認する。"""
-    store, _, _ = compared_store
+    """保存成功応答後に期限を越えていても成功を保持する。"""
+    from google.cloud.firestore_v1.types import CommitResponse
+    store, commit, _ = compared_store
     clock = Mock(return_value=0.0)
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic", clock)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    def save(**kwargs):
+        clock.return_value = 31.0
+        return CommitResponse()
+    commit.side_effect = save
     def operation(batch):
         store._scope(batch)
         batch.update(store.scope_ref, {"version": 1})
-        clock.return_value = 30.0
         return "saved"
     assert store._atomic(operation) == "saved"
 
 
-def test_atomic_eighth_failure_can_also_exceed_deadline(compared_store, monkeypatch):
+def test_backoff_expiry_stops_before_next_rpc(compared_store, monkeypatch):
     from google.api_core.exceptions import FailedPrecondition
-    from scripts.capacity_trial.diagnostics import failure_record
     store, commit, _ = compared_store
-    error = FailedPrecondition("synthetic-secret")
-    error.capacity_failure_origin = "guard_version_check"
-    operation = Mock(side_effect=error)
-    clock = iter([100.0] + [100.125] * 7 + [103.125])
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic", lambda: next(clock))
-    monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", lambda _: None)
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.sleep", lambda _: setattr(clock, "return_value", 31))
+    commit.side_effect = FailedPrecondition("comparison")
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
     with pytest.raises(FailedPrecondition) as caught:
         store._atomic(operation)
-    assert caught.value is error and operation.call_count == 8
+    assert caught.value.capacity_atomic["stop_reason"] == "total_deadline"
+    assert commit.call_count == store.scope_ref.get.call_count == 1
+
+
+def test_no_rpc_when_attempt_budget_missing(compared_store):
+    from src.sync_capacity.deadline import Deadline, CapacityDeadlineExceeded
+    store, commit, _ = compared_store
+    with pytest.raises(CapacityDeadlineExceeded):
+        store._atomic(lambda batch: store._scope(batch), deadline=Deadline.after(0.1))
+    store.scope_ref.get.assert_not_called()
     commit.assert_not_called()
-    record = failure_record(error)
-    assert record["origin"] == "guard_version_check"
-    assert record["atomic"] == dict(attempts=8, elapsed_ms=3125, phase="operation",
-                                   non_conflict_chain=False, attempt_limit=True, deadline=True)
+
+
+@pytest.mark.parametrize("elapsed", [41.0, 240.0])
+def test_existing_worker_execution_budget_can_finish(monkeypatch, elapsed):
+    from src.sync_capacity.deadline import current_deadline
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    store = Mock()
+    store.claim.return_value = Claim("job", "owner", "0", "notion", {})
+    def execute():
+        assert current_deadline.get().expires_at == 290
+        clock.return_value = elapsed
+        return {"statusCode": 200, "body": "{}"}, False
+    assert drain_one(store, lambda _: execute)["state"] == "completed"
+    store.finish.assert_called_once()
+
+
+def test_execution_budget_shortage_is_safe_unstarted_retry(monkeypatch):
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    store = Mock()
+    store.claim.return_value = Claim("job", "owner", "0", "notion", {})
+    execute = Mock()
+    def prepare(_):
+        clock.return_value = 51.0
+        return execute
+    assert drain_one(store, prepare)["state"] == "retry"
+    execute.assert_not_called()
+    assert store.finish.call_args.args[1:3] == ("retry", "execution_not_started")
+
+
+def test_nested_deadline_preserves_stricter_minimums():
+    from src.sync_capacity.deadline import Deadline, using_deadline
+    with using_deadline(Deadline(100, rpc_minimum=1, attempt_minimum=6)):
+        with using_deadline(Deadline(90)) as child:
+            assert child.expires_at == 90
+            assert child.rpc_minimum == 1
+            assert child.attempt_minimum == 6
+
+
+def test_outbox_receives_remaining_execution_budget(monkeypatch):
+    from src.sync_capacity.deadline import Deadline, using_deadline
+    from src.sync_capacity.worker import prepare
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.deadline.time.monotonic", clock)
+    drain = Mock(return_value={"status": "success"})
+    monkeypatch.setattr("src.sync_engine.spreadsheet_outbox_drain.drain_spreadsheet_outbox", drain)
+    execute = prepare(Claim("job", "owner", "0", "spreadsheet-outbox-drain", {}))
+    with using_deadline(Deadline(123)):
+        execute()
+    assert drain.call_args.kwargs["budget_seconds"] == 123
+
+
+def test_http_deadline_before_enqueue_is_not_started(gate, monkeypatch):
+    from src.sync_capacity.deadline import Deadline
+    client, store, _, _ = gate
+    events = Mock()
+    monkeypatch.setattr("src.sync_capacity.http.emit", events)
+    monkeypatch.setattr("src.sync_capacity.http.Deadline.after",
+                        lambda *_: Deadline(0.0))
+    response = client.post("/api/webhooks/zoho", json={"token": "test-only-secret", "id": "event"})
+    assert response.status_code == 503
+    store.enqueue.assert_not_called()
+    assert events.call_args.kwargs["outcome"] == "save_not_started"
+
+
+def test_http_store_deadline_error_remains_unconfirmed(gate, monkeypatch):
+    from src.sync_capacity.deadline import CapacityDeadlineExceeded
+    client, store, _, _ = gate
+    events = Mock()
+    monkeypatch.setattr("src.sync_capacity.http.emit", events)
+    store.enqueue.side_effect = CapacityDeadlineExceeded("synthetic")
+    response = client.post("/api/webhooks/zoho", json={"token": "test-only-secret", "id": "event"})
+    assert response.status_code == 503
+    store.enqueue.assert_called_once()
+    assert events.call_args.kwargs["outcome"] == "save_unconfirmed"

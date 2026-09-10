@@ -2,6 +2,7 @@
 
 import math
 import time
+from src.sync_capacity.deadline import current_deadline
 
 STATES = ("pending", "retry", "processing", "completed", "needs_attention")
 
@@ -13,7 +14,11 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
     invalid_waiting_timestamps = 0
     oldest = None
     # order_by(created_at)は時刻欠落文書を除外するので使わない。
-    for snapshot in jobs.select(["state", "created_at"]).stream():
+    deadline = current_deadline.get()
+    options = {"retry": None, "timeout": deadline.timeout(10)} if deadline else {}
+    for snapshot in jobs.select(["state", "created_at"]).stream(**options):
+        if deadline:
+            deadline.require()
         data = snapshot.to_dict()
         state = data.get("state")
         if state not in counts:

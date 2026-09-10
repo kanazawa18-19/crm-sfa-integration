@@ -107,7 +107,7 @@ def test_rpc_forces_no_retry_and_records_stream():
     assert len(list(api.batch_get_documents(request={"database": BASE, "documents": [name]},
                                            retry=object(), timeout=999))) == 1
     assert raw.batch_get_documents.call_args.kwargs["retry"] is None
-    assert raw.batch_get_documents.call_args.kwargs["timeout"] == 55
+    assert 0 < raw.batch_get_documents.call_args.kwargs["timeout"] <= 55
     budget.reserve.assert_called_once_with(reads=1, writes=0)
 
 
