@@ -1,0 +1,292 @@
+{
+  "started_at": 1789005097.8606908,
+  "scope": "trial-concurrency-6",
+  "code_commit": "acaaa24fe4f9934ecc0d5971286f8e3e1510173b",
+  "ledger_before_sha256": "ae5b4be83728e00c71ade997d653bf78df4946f604329446cd6ad39107675cfb",
+  "before": {
+    "created_at": 1788983820.0,
+    "reserved": {
+      "deletes": 0,
+      "reads": 3887,
+      "runtime_seconds": 5065,
+      "sql_connections": 5,
+      "sql_statements": 24,
+      "writes": 358
+    },
+    "rpc_calls": {
+      "batch_get_documents": 940,
+      "commit": 185,
+      "run_query": 102
+    },
+    "returned_documents": 1678,
+    "halted": null,
+    "stage": 2,
+    "rpc_reserved": 1227,
+    "document_names_count": 77,
+    "upper_usd": 8
+  },
+  "pre_trial_python_count": 0,
+  "source_sha256": {
+    "scripts/capacity_trial/__init__.py": "cb39951c3b6018b22225731874d6434b654dc7e7461bd4a8cfde166c545f879c",
+    "scripts/capacity_trial/__main__.py": "c5a94b64c10d77b7a23ff8ca1cbfd8eebd349ae2f33cd0f18fecfe55f36874ce",
+    "scripts/capacity_trial/concurrency.py": "eb36e80abf0a4af60e65c5c55bd7d3c13d866d5fadfab7f116b0bc74ea37e2ee",
+    "scripts/capacity_trial/diagnostics.py": "47007ebb153bee0c6d46dc6ed282657d16d11d3a097204e904cf41ca244a58bf",
+    "scripts/capacity_trial/firestore.py": "c5a67372586d2f189dc07c04354334a955292d6d2c486143f751cb8e2be414b3",
+    "scripts/capacity_trial/guard.py": "7cd14b83751017b33a8d37a09b3aacd74606566cce950de68e75a58255cd4ad9",
+    "scripts/capacity_trial/neon.py": "626c34ea5e174671f4ab89947fc16df5cfb519603ce0538112c150fef9664303",
+    "scripts/capacity_trial/permission.py": "67013ff532f413d767a844e515082d9abd2c073ef8a3894f4cfd06a6f54423bb",
+    "scripts/capacity_trial/response_loss.py": "52390f5c319f49c4f8afb8889ccdcc8e660b80eb4bb662e74eee70a5755b44c0",
+    "scripts/capacity_trial/small_policy.py": "68a3687e3d6fd1097d3f232eb00b3b2fce6c36b5db6f2f86a1c565726fc6dc1c",
+    "src/sync_capacity/firestore_store.py": "ebb47cf728dded8978b9b344fee8c06c84951e51b22bbe39ac898f48109c5a4c"
+  },
+  "sdk_versions": {
+    "google-cloud-firestore": "2.30.0",
+    "google-api-core": "2.36.0",
+    "grpcio": "1.83.1"
+  },
+  "token_refresh": {
+    "runner": {
+      "updated_at": 1789005101.809066,
+      "requested_lifetime_seconds": 1800,
+      "keychain_match": true
+    },
+    "observer": {
+      "updated_at": 1789005102.591279,
+      "requested_lifetime_seconds": 1800,
+      "keychain_match": true
+    }
+  },
+  "trial": {
+    "return_code": 1,
+    "stdout": {
+      "invalid_json": true,
+      "bytes": 0
+    },
+    "stderr": {
+      "state": "failed",
+      "error_type": "Refused",
+      "error_code": "child_failed",
+      "partial_result": false
+    },
+    "elapsed_seconds": 26.977141000010306
+  },
+  "after": {
+    "created_at": 1788983820.0,
+    "reserved": {
+      "deletes": 0,
+      "reads": 4336,
+      "runtime_seconds": 5725,
+      "sql_connections": 5,
+      "sql_statements": 24,
+      "writes": 423
+    },
+    "rpc_calls": {
+      "batch_get_documents": 1148,
+      "commit": 218,
+      "run_query": 115
+    },
+    "returned_documents": 2016,
+    "halted": null,
+    "stage": 2,
+    "rpc_reserved": 1481,
+    "document_names_count": 90,
+    "upper_usd": 8
+  },
+  "post_trial_python_count": 0,
+  "claimant_failures": [
+    {
+      "failures": [
+        {
+          "atomic": {
+            "attempt_limit": false,
+            "attempts": 1,
+            "deadline": true,
+            "elapsed_ms": 3181,
+            "non_conflict_chain": false,
+            "phase": "commit"
+          },
+          "diagnostic_state": "classified",
+          "error_code": "unexpected_error",
+          "error_type": "FailedPrecondition",
+          "origin": "rpc_commit",
+          "pid": 30303,
+          "return_code": 1
+        }
+      ],
+      "scope": "trial-concurrency-6",
+      "successful_children": 11
+    }
+  ],
+  "claimant_run_errors": [
+    {
+      "children_stop_verified_at_error": false,
+      "error_code": "child_failed",
+      "error_type": "Refused",
+      "phase": "collecting",
+      "scope": "trial-concurrency-6",
+      "started_children": 12
+    }
+  ],
+  "inspection": {
+    "return_code": 0,
+    "stdout": {
+      "state": "passed",
+      "case": "inspect-state",
+      "project": "actionpoint-autocalc",
+      "database": "crm-capacity-trial-260910",
+      "scope": "trial-concurrency-6",
+      "started_at": 1789005129.710412,
+      "finished_at": 1789005131.24617,
+      "result": {
+        "scope_exists": true,
+        "scope": {
+          "version": 1,
+          "limit": 3,
+          "slots": {
+            "1": {
+              "owner": "synthetic-process-30306",
+              "job_id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c"
+            },
+            "0": {
+              "owner": "synthetic-process-30302",
+              "job_id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85"
+            },
+            "2": {
+              "owner": "synthetic-process-30312",
+              "job_id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144"
+            }
+          }
+        },
+        "job_count": 12,
+        "jobs": [
+          {
+            "id": "0b6b7318b32ad92cc1c9abdf35367f54e7c50d13a18f0daa2c88994b88978b85",
+            "owner": "synthetic-process-30302",
+            "state": "processing",
+            "slot": "0",
+            "attempts": 1
+          },
+          {
+            "id": "0e0cf50fda19ad98279cf860af72b855537c38bf04e07365039b51359ae4701c",
+            "owner": "synthetic-process-30306",
+            "state": "processing",
+            "slot": "1",
+            "attempts": 1
+          },
+          {
+            "id": "3ca2fc03c758285d6cbc5ba7dd6d4e7334254ffd3d290f05bf96ec12fbf6d144",
+            "owner": "synthetic-process-30312",
+            "state": "processing",
+            "slot": "2",
+            "attempts": 1
+          },
+          {
+            "id": "417e1ea5957bef7b31211c35bfaa8273c001a4c30e230ad5b2a402637b725dc0",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "47996acc8f0b09fbace2e1c784c649d7e52f771790bf7cc9879e6099c60f8503",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "54c6786270cd4691c4f4d00bc0bdc07b7963e8c6bb9c6d22cdee967400c268ce",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "687c9cc5ac9a7b6c03c21eeda76a4bef7222cb4e5e49edb2cc3b6c374777a159",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "9f17c186f7d4420ab6de9b68f5901cc764ce61dc581b62229487f659f8e4e8f1",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "ad7e40de0da0980e7984933bedcd29a1550f4394bf43333e05274e1c7e45acfd",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "b1fbc1e075e5636866c4d389fbe16850dde7ba7e8c8073b4f29c6bb0bf2272fa",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "da85b833850117f2668df15b121612e4cbd6bb9628213287a4f814c95e5dcda5",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          },
+          {
+            "id": "f70bdaff2c5916abccd10c145c45cb82ccb3eddd316b3ddb65f299b2bdfeb19d",
+            "owner": null,
+            "state": "pending",
+            "slot": null,
+            "attempts": 0
+          }
+        ]
+      },
+      "limitations": "合成Firestoreのみ。請求読取り回数は未確定"
+    },
+    "stderr": null,
+    "elapsed_seconds": 1.775558916007867,
+    "after": {
+      "created_at": 1788983820.0,
+      "reserved": {
+        "deletes": 0,
+        "reads": 4438,
+        "runtime_seconds": 5785,
+        "sql_connections": 5,
+        "sql_statements": 24,
+        "writes": 423
+      },
+      "rpc_calls": {
+        "batch_get_documents": 1149,
+        "commit": 218,
+        "run_query": 116
+      },
+      "returned_documents": 2029,
+      "halted": null,
+      "stage": 2,
+      "rpc_reserved": 1483,
+      "document_names_count": 90,
+      "upper_usd": 8
+    },
+    "trial_python_count": 0,
+    "independent_verification": {
+      "counts": {
+        "pending": 9,
+        "processing": 3
+      },
+      "job_count": 12,
+      "slot_count": 3,
+      "limit": 3,
+      "owners_slots_attempts_match": true,
+      "pending_unclaimed": true,
+      "write_reservation_delta": 0,
+      "rpc_reservation_delta": 2,
+      "original_trial_passed": false,
+      "occupied_slot_count": 3
+    }
+  },
+  "finished_at": 1789005131.4082549
+}
