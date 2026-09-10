@@ -1,7 +1,7 @@
 """推定上限が成立する小規模Firestore要求だけを許可する。"""
 from .guard import BASE, Refused
 
-SMALL_SCOPES = {"trial-smoke", "trial-permission"} | {f"trial-concurrency-{n}" for n in range(1, 6)} | {
+SMALL_SCOPES = {"trial-smoke", "trial-permission"} | {f"trial-concurrency-{n}" for n in range(1, 7)} | {
     f"trial-loss-{name}" for name in ("initialize", "enqueue", "claim", "finish", "recover")}
 
 
@@ -46,7 +46,9 @@ def full_document(write, read_existing):
         existing = read_existing(write.update.name)
         if existing is None or existing.update_time != write.current_document.update_time:
             from google.api_core.exceptions import FailedPrecondition
-            raise FailedPrecondition("小規模試験の更新前版が変わりました")
+            error = FailedPrecondition("小規模試験の更新前版が変わりました")
+            error.capacity_failure_origin = "guard_version_check"
+            raise error
         result = Document(existing)
         result.create_time = None
         result.update_time = None

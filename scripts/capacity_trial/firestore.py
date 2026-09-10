@@ -15,6 +15,11 @@ class GuardedAPI:
         if method not in {"batch_get_documents", "run_query", "commit"}:
             raise Refused("未承認のFirestore RPC")
 
+        def authorize_resource(name):
+            prefix = BASE + "/documents/sync_capacity_scopes/"
+            if isinstance(name, str) and name.startswith(prefix):
+                self.ledger.authorize_scope(name[len(prefix):].split("/")[0])
+
         def call(request=None, **kwargs):
             request = dict(request or {})
             validate_resource(request.get("database", BASE))
@@ -35,11 +40,13 @@ class GuardedAPI:
                     raise Refused("小規模文書読取りは1文書ずつ")
                 for ref in refs:
                     validate_resource(ref)
+                    authorize_resource(ref)
                     if self.small:
                         small_policy.resource(ref)
                 reads = len(refs)
             elif method == "run_query":
                 validate_resource(request.get("parent"))
+                authorize_resource(request.get("parent"))
                 query = request.get("structured_query")
                 from google.cloud.firestore_v1.types import StructuredQuery
                 query = StructuredQuery(query)
@@ -69,6 +76,7 @@ class GuardedAPI:
                     if change.delete or change.transform.document or not change.update.name:
                         raise Refused("削除・単独transformは未承認")
                     validate_resource(change.update.name)
+                    authorize_resource(change.update.name)
                 if self.small:
                     from google.cloud.firestore_v1.types import CommitRequest
                     if len(changes) > 8 or len(CommitRequest.serialize(CommitRequest(request))) > 32768:
@@ -88,7 +96,13 @@ class GuardedAPI:
             if method == "commit" and self.before_commit is not None:
                 self.before_commit()
             kwargs.update(retry=None, timeout=10 if method == "commit" else 55)
-            result = getattr(self.api, method)(request=request, **kwargs)
+            from google.api_core.exceptions import FailedPrecondition
+            try:
+                result = getattr(self.api, method)(request=request, **kwargs)
+            except FailedPrecondition as exc:
+                if not hasattr(exc, "capacity_failure_origin"):
+                    exc.capacity_failure_origin = "rpc_" + method
+                raise
             if method == "commit":
                 return result
             def stream():
@@ -101,6 +115,10 @@ class GuardedAPI:
                             raise Refused("100文書超過。部分集計を破棄" if self.small
                                           else "10万文書超過。部分集計を破棄")
                         yield response
+                except FailedPrecondition as exc:
+                    if not hasattr(exc, "capacity_failure_origin"):
+                        exc.capacity_failure_origin = "rpc_" + method
+                    raise
                 finally:
                     # 強制killでは最後の応答数は欠測。事前予約は残るので上限は減らない。
                     self.ledger.transact(lambda data: data.update(
@@ -112,6 +130,7 @@ class GuardedAPI:
 def make_store(scope, token, ledger, *, role="runner"):
     validate_environment()
     validate_target(PROJECT, DATABASE, scope, role=role)
+    ledger.authorize_scope(scope)
     if not token or any(c.isspace() for c in token):
         raise Refused("短命SA tokenが未設定または不正")
     from google.cloud import firestore

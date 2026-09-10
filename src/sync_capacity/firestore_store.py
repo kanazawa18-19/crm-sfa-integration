@@ -120,11 +120,14 @@ class FirestoreJobStore:
         conflicts = (Aborted, AlreadyExists, FailedPrecondition)
         codes = {grpc.StatusCode.ABORTED, grpc.StatusCode.ALREADY_EXISTS,
                  grpc.StatusCode.FAILED_PRECONDITION}
-        deadline = time.monotonic() + 3.0
+        started = time.monotonic()
+        deadline = started + 3.0
         for attempt in range(8):
             try:
+                phase = "operation"
                 batch = _ComparedBatch(self.client)
                 result = operation(batch)
+                phase = "commit"
                 batch.commit()
                 return result
             except conflicts as exc:
@@ -144,6 +147,15 @@ class FirestoreJobStore:
                     chain.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
                 remaining = deadline - time.monotonic()
                 if not definite_conflict or attempt == 7 or remaining <= 0:
+                    # 診断は固定値だけを添え、元の例外・再試行判定を保つ。
+                    exc.capacity_atomic = {
+                        "attempts": attempt + 1,
+                        "elapsed_ms": min(86_400_000, max(0, int((3.0 - remaining) * 1000))),
+                        "phase": phase,
+                        "non_conflict_chain": not definite_conflict,
+                        "attempt_limit": attempt == 7,
+                        "deadline": remaining <= 0,
+                    }
                     raise
                 time.sleep(min(remaining, random.uniform(0.03, min(0.6, 0.08 * 2 ** attempt))))
 

@@ -851,3 +851,123 @@ def test_stage_two_stops_when_recorded_cost_reaches_two(upper_ledger):
     with pytest.raises(Refused):
         upper_ledger.reserve(rpc=True)
     assert upper_ledger.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("method", ["batch_get_documents", "run_query", "commit"])
+@pytest.mark.parametrize("in_stream", [False, True])
+def test_rpc_failure_origin_in_call_and_stream(method, in_stream):
+    from google.api_core.exceptions import FailedPrecondition
+    from google.cloud.firestore_v1.types import Write, Document
+    if method == "commit" and in_stream:
+        pytest.skip("commitはstreamを返さない")
+    name = BASE + "/documents/sync_capacity_scopes/trial-smoke/jobs/a"
+    requests = {
+        "batch_get_documents": {"database": BASE, "documents": [name]},
+        "run_query": {"parent": name.rsplit("/jobs/", 1)[0],
+                      "structured_query": {"from_": [{"collection_id": "jobs"}], "limit": 1}},
+        "commit": {"database": BASE, "writes": [Write(update=Document(name=name))]},
+    }
+    error = FailedPrecondition("synthetic-secret")
+    raw = Mock()
+    def failed_stream():
+        raise error
+        yield
+    if in_stream:
+        getattr(raw, method).return_value = failed_stream()
+    else:
+        getattr(raw, method).side_effect = error
+    api = GuardedAPI(raw, Mock(), role="runner")
+    with pytest.raises(FailedPrecondition) as caught:
+        result = getattr(api, method)(request=requests[method])
+        if in_stream:
+            list(result)
+    assert caught.value is error and error.capacity_failure_origin == "rpc_" + method
+    getattr(raw, method).assert_called_once()
+
+
+def test_guard_version_origin_and_nested_read_origin_are_distinct():
+    from google.api_core.exceptions import FailedPrecondition
+    from google.cloud.firestore_v1.types import Write, Document
+    from google.protobuf.timestamp_pb2 import Timestamp
+    from scripts.capacity_trial.small_policy import full_document
+    name = BASE + "/documents/sync_capacity_scopes/trial-smoke/jobs/a"
+    write = Write(update=Document(name=name), update_mask={"field_paths": ["state"]},
+                  current_document={"update_time": Timestamp(seconds=1000)})
+    with pytest.raises(FailedPrecondition) as caught:
+        full_document(write, lambda _: None)
+    assert caught.value.capacity_failure_origin == "guard_version_check"
+    error = FailedPrecondition("synthetic-secret")
+    error.capacity_failure_origin = "rpc_batch_get_documents"
+    with pytest.raises(FailedPrecondition) as caught:
+        full_document(write, Mock(side_effect=error))
+    assert caught.value is error and error.capacity_failure_origin == "rpc_batch_get_documents"
+
+
+@pytest.fixture
+def diagnostic_ledger(upper_ledger):
+    upper_ledger.advance_upper_bound("合成の移行証跡", confirmed=True)
+    def baseline(data):
+        data["created_at"] = 1788983820.0
+        data["upper_bound_transition"]["created_at"] = data["created_at"]
+        data["reserved"].update(reads=3887, writes=358, runtime_seconds=5065)
+        data["upper_bound"].update(rpc_reserved=1227,
+            document_names=[f"synthetic-{index}" for index in range(77)])
+    upper_ledger.transact(baseline)
+    return upper_ledger
+
+
+def test_diagnostic_scope_only_extends_allowlist_by_one(diagnostic_ledger):
+    from scripts.capacity_trial.small_policy import resource
+    validate_target(PROJECT, DATABASE, "trial-concurrency-6")
+    resource(BASE + "/documents/sync_capacity_scopes/trial-concurrency-6/jobs/a")
+    before = diagnostic_ledger.path.read_bytes()
+    diagnostic_ledger.authorize_scope("trial-concurrency-6")
+    assert diagnostic_ledger.path.read_bytes() == before
+    with pytest.raises(Refused):
+        validate_target(PROJECT, DATABASE, "trial-concurrency-7")
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d.update(created_at=1788983821.0),
+    lambda d: d.pop("upper_bound_transition"),
+    lambda d: d["upper_bound"].update(stage=1),
+    lambda d: d["upper_bound"].update(rpc_reserved=1226),
+    lambda d: d["reserved"].update(reads=3886),
+    lambda d: d["reserved"].update(writes=357),
+    lambda d: d["reserved"].update(runtime_seconds=5064),
+    lambda d: d["upper_bound"].update(document_names=[]),
+])
+def test_diagnostic_scope_rejects_replacement_or_rewound_ledger(diagnostic_ledger, change):
+    diagnostic_ledger.transact(change)
+    before = diagnostic_ledger.path.read_bytes()
+    with pytest.raises(Refused):
+        diagnostic_ledger.authorize_scope("trial-concurrency-6")
+    assert diagnostic_ledger.path.read_bytes() == before
+
+
+def test_new_and_stage_one_ledgers_cannot_access_diagnostic_scope(ledger, upper_ledger):
+    for item in (ledger, upper_ledger):
+        raw = Mock()
+        api = GuardedAPI(raw, item, role="observer")
+        with pytest.raises(Refused):
+            list(api.batch_get_documents(request={"database": BASE, "documents": [
+                BASE + "/documents/sync_capacity_scopes/trial-concurrency-6"]}))
+        raw.batch_get_documents.assert_not_called()
+
+
+def test_diagnostic_scope_keeps_remaining_rpc_and_deadline(diagnostic_ledger):
+    diagnostic_ledger.authorize_scope("trial-concurrency-6")
+    diagnostic_ledger.transact(lambda d: d["upper_bound"].update(rpc_reserved=2000))
+    with pytest.raises(Refused):
+        diagnostic_ledger.reserve(rpc=True)
+    with pytest.raises(Refused):
+        diagnostic_ledger.reserve(now=1788983820.0 + 14 * 86400)
+
+
+def test_diagnostic_used_scope_still_refuses_before_initialization(diagnostic_ledger):
+    from scripts.capacity_trial.concurrency import concurrency
+    store = Mock()
+    store.scope_ref.get.return_value.exists = True
+    with pytest.raises(Refused, match="使用済み"):
+        concurrency(store, "unused-synthetic-token", diagnostic_ledger)
+    store.initialize.assert_not_called()

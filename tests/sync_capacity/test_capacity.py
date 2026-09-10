@@ -542,3 +542,53 @@ def test_enqueue_generic_failure_remains_unknown(compared_store, monkeypatch, ca
     assert event["event"] == "enqueue_unconfirmed"
     assert event["receipt_id"] == "receipt"
     assert "PRIVATE" not in caplog.text
+
+
+@pytest.mark.parametrize("elapsed,chain,attempts,deadline,limit", [
+    (0.125, False, 8, False, True), (3.125, False, 1, True, False),
+    (0.125, True, 1, False, False), (3.125, True, 1, True, False),
+])
+def test_atomic_failure_records_original_retry_exit(compared_store, monkeypatch,
+                                                    elapsed, chain, attempts, deadline, limit):
+    from google.api_core.exceptions import FailedPrecondition
+    from scripts.capacity_trial.diagnostics import failure_record
+    store, commit, _ = compared_store
+    error = FailedPrecondition("synthetic-secret")
+    cause = TimeoutError("synthetic-secret") if chain else None
+    error.__cause__ = cause
+    commit.side_effect = error
+    clock = iter([100.0] + [100.0 + elapsed] * 8)
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic", lambda: next(clock))
+    sleep = Mock()
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", sleep)
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
+    with pytest.raises(FailedPrecondition) as caught:
+        store._atomic(operation)
+    assert caught.value is error and error.__cause__ is cause
+    assert commit.call_count == attempts and sleep.call_count == attempts - 1
+    assert failure_record(error)["atomic"] == dict(
+        attempts=attempts, elapsed_ms=int(elapsed * 1000), phase="commit",
+        non_conflict_chain=chain, attempt_limit=limit, deadline=deadline)
+
+
+
+def test_atomic_eighth_failure_can_also_exceed_deadline(compared_store, monkeypatch):
+    from google.api_core.exceptions import FailedPrecondition
+    from scripts.capacity_trial.diagnostics import failure_record
+    store, commit, _ = compared_store
+    error = FailedPrecondition("synthetic-secret")
+    error.capacity_failure_origin = "guard_version_check"
+    operation = Mock(side_effect=error)
+    clock = iter([100.0] + [100.125] * 7 + [103.125])
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", lambda _: None)
+    with pytest.raises(FailedPrecondition) as caught:
+        store._atomic(operation)
+    assert caught.value is error and operation.call_count == 8
+    commit.assert_not_called()
+    record = failure_record(error)
+    assert record["origin"] == "guard_version_check"
+    assert record["atomic"] == dict(attempts=8, elapsed_ms=3125, phase="operation",
+                                   non_conflict_chain=False, attempt_limit=True, deadline=True)

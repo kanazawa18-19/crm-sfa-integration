@@ -78,3 +78,43 @@ runpy.run_module('scripts.capacity_trial', run_name='__main__')
     else:
         assert json.loads(result.stderr) == failure_record(ValueError())
         assert "synthetic-secret" not in result.stderr
+
+
+def atomic_record(**changes):
+    value = dict(attempts=8, elapsed_ms=200, phase="commit", non_conflict_chain=False,
+                 attempt_limit=True, deadline=False)
+    value.update(changes)
+    return value
+
+
+def test_optional_diagnostics_roundtrip_without_exception_body():
+    from google.api_core.exceptions import FailedPrecondition
+    error = FailedPrecondition("synthetic-secret")
+    error.capacity_failure_origin = "rpc_commit"
+    error.capacity_atomic = atomic_record()
+    result = parse_failure(PREFIX + json.dumps(failure_record(error)))
+    assert result["origin"] == "rpc_commit" and result["atomic"] == atomic_record()
+    assert "synthetic-secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("fields", [
+    {"origin": "synthetic-secret"}, {"origin": []},
+    {"atomic": atomic_record(attempts=True)}, {"atomic": atomic_record(attempts=9)},
+    {"atomic": atomic_record(elapsed_ms=-1)}, {"atomic": atomic_record(elapsed_ms=86400001)},
+    {"atomic": atomic_record(phase="synthetic-secret")},
+    {"atomic": atomic_record(attempt_limit=False)},
+    {"atomic": atomic_record(deadline=True)}, {"atomic": atomic_record(secret="synthetic-secret")},
+])
+def test_invalid_optional_diagnostics_never_classify(fields):
+    result = parse_failure(encoded(**fields))
+    assert result["diagnostic_state"] == "invalid" and result["error_type"] == "unknown"
+    assert "synthetic-secret" not in json.dumps(result)
+
+
+
+def test_invalid_internal_atomic_metadata_is_not_silently_dropped():
+    error = ValueError("synthetic-secret")
+    error.capacity_atomic = {"secret": "synthetic-secret"}
+    record = failure_record(error)
+    assert "synthetic-secret" not in json.dumps(record)
+    assert parse_failure(PREFIX + json.dumps(record))["diagnostic_state"] == "invalid"

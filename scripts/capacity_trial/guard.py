@@ -15,7 +15,7 @@ BASE = f"projects/{PROJECT}/databases/{DATABASE}"
 ACCOUNTS = {role: f"capacity-trial-{role}@{PROJECT}.iam.gserviceaccount.com"
             for role in ("runner", "observer")}
 SCOPES = frozenset(["trial-smoke", "trial-permission", "trial-invalid", "trial-stop"]
-    + [f"trial-concurrency-{n}" for n in range(1, 6)]
+    + [f"trial-concurrency-{n}" for n in range(1, 7)]
     + [f"trial-loss-{name}" for name in ("initialize", "enqueue", "claim", "finish", "recover")]
     + [f"trial-scan-{n}" for n in (1103, 10000, 100000)])
 ALLOWED_ENV = frozenset({"HOME", "PATH", "LANG", "LC_ALL", "PYTHONNOUSERSITE",
@@ -238,6 +238,26 @@ class Ledger:
 
     def upper_bound(self):
         return self.transact(lambda data: data.get("upper_bound"))
+
+    def authorize_scope(self, scope):
+        """追加診断scopeは、累計を引き継いだ元の第2段階台帳だけに許可する。"""
+        if scope != "trial-concurrency-6":
+            return
+        def check(data):
+            # 競合5終了時点の固定証跡。予算を増やすために変更しない。
+            upper = data.get("upper_bound") or {}
+            transition = data.get("upper_bound_transition") or {}
+            reserved = data.get("reserved") or {}
+            if (data.get("created_at") != 1788983820.0
+                    or transition.get("created_at") != data.get("created_at")
+                    or upper.get("basis") != "reserved-upper-bound"
+                    or upper.get("stage") != 2 or upper.get("usd") != 8
+                    or upper.get("rpc_reserved", 0) < 1227
+                    or reserved.get("reads", 0) < 3887 or reserved.get("writes", 0) < 358
+                    or reserved.get("runtime_seconds", 0) < 5065
+                    or len(set(upper.get("document_names", []))) < 77):
+                raise Refused("追加診断scopeには元台帳の第2段階と既存累計が必要")
+        self.transact(check)
 
     def authorize_command(self, command):
         upper = self.upper_bound()

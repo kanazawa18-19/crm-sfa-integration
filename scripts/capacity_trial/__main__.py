@@ -168,13 +168,14 @@ def main():
     if args.command == "scan" and args.role != "observer":
         raise Refused("scanは観測用roleのみ")
     if args.command in {"concurrency", "claim-child"} and (
-            args.role != "runner" or args.scope not in {f"trial-concurrency-{n}" for n in range(1, 6)}):
+            args.role != "runner" or args.scope not in {f"trial-concurrency-{n}" for n in range(1, 7)}):
         raise Refused("競合試験は専用scopeとrunnerのみ")
     if args.command == "response-loss" and (args.role != "runner" or args.scope not in {
             f"trial-loss-{name}" for name in ("initialize", "enqueue", "claim", "finish", "recover")}):
         raise Refused("応答喪失試験は専用scopeとrunnerのみ")
     if args.command == "permission-probe" and (args.role != "observer" or args.scope != "trial-permission"):
         raise Refused("IAM試験はtrial-permissionとobserverのみ")
+    ledger.authorize_scope(args.scope)
     ledger.authorize_command(args.command)
     if args.command == "claim-child":
         from .concurrency import claim_child
