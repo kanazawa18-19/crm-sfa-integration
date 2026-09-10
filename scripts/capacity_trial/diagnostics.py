@@ -37,7 +37,7 @@ def failure_record(exc):
             "error_code": exc.code if isinstance(exc, Refused) else "unexpected_error",
             "partial_result": False}
     origin = getattr(exc, "capacity_failure_origin", None)
-    if origin is not None or name == "FailedPrecondition":
+    if origin is not None or name in {"FailedPrecondition", "Aborted", "AlreadyExists"}:
         record["origin"] = origin if isinstance(origin, str) and origin in ORIGINS else "unknown"
     atomic = getattr(exc, "capacity_atomic", None)
     if atomic is not None:

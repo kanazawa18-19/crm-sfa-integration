@@ -96,10 +96,10 @@ class GuardedAPI:
             if method == "commit" and self.before_commit is not None:
                 self.before_commit()
             kwargs.update(retry=None, timeout=10 if method == "commit" else 55)
-            from google.api_core.exceptions import FailedPrecondition
+            from google.api_core.exceptions import Aborted, AlreadyExists, FailedPrecondition
             try:
                 result = getattr(self.api, method)(request=request, **kwargs)
-            except FailedPrecondition as exc:
+            except (FailedPrecondition, Aborted, AlreadyExists) as exc:
                 if not hasattr(exc, "capacity_failure_origin"):
                     exc.capacity_failure_origin = "rpc_" + method
                 raise
@@ -115,7 +115,7 @@ class GuardedAPI:
                             raise Refused("100文書超過。部分集計を破棄" if self.small
                                           else "10万文書超過。部分集計を破棄")
                         yield response
-                except FailedPrecondition as exc:
+                except (FailedPrecondition, Aborted, AlreadyExists) as exc:
                     if not hasattr(exc, "capacity_failure_origin"):
                         exc.capacity_failure_origin = "rpc_" + method
                     raise

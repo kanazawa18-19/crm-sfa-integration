@@ -118,3 +118,11 @@ def test_invalid_internal_atomic_metadata_is_not_silently_dropped():
     record = failure_record(error)
     assert "synthetic-secret" not in json.dumps(record)
     assert parse_failure(PREFIX + json.dumps(record))["diagnostic_state"] == "invalid"
+
+
+@pytest.mark.parametrize("name", ["FailedPrecondition", "Aborted", "AlreadyExists"])
+def test_all_comparison_conflicts_without_marker_have_unknown_origin(name):
+    from google.api_core import exceptions
+    record = failure_record(getattr(exceptions, name)("synthetic-secret"))
+    assert record["origin"] == "unknown"
+    assert "synthetic-secret" not in json.dumps(record)

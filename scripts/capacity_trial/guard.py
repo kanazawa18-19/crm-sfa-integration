@@ -257,7 +257,13 @@ class Ledger:
                     or reserved.get("runtime_seconds", 0) < 5065
                     or len(set(upper.get("document_names", []))) < 77):
                 raise Refused("追加診断scopeには元台帳の第2段階と既存累計が必要")
-        self.transact(check)
+        # 予約更新と同じロックで最新状態を読み、確認だけでは台帳を書き直さない。
+        try:
+            with self.path.with_suffix(".lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_SH)
+                check(json.loads(self.path.read_text()))
+        except FileNotFoundError:
+            raise Refused("予算台帳が未初期化") from None
 
     def authorize_command(self, command):
         upper = self.upper_bound()

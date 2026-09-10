@@ -971,3 +971,122 @@ def test_diagnostic_used_scope_still_refuses_before_initialization(diagnostic_le
     with pytest.raises(Refused, match="使用済み"):
         concurrency(store, "unused-synthetic-token", diagnostic_ledger)
     store.initialize.assert_not_called()
+
+
+
+def test_diagnostic_authorization_does_not_rewrite_and_reads_latest(diagnostic_ledger, monkeypatch):
+    from scripts.capacity_trial import guard
+    before = diagnostic_ledger.path.read_bytes()
+    stat = diagnostic_ledger.path.stat()
+    with monkeypatch.context() as patch:
+        patch.setattr(guard.os, "fsync", Mock(side_effect=AssertionError("確認時の書込み")))
+        patch.setattr(guard.os, "replace", Mock(side_effect=AssertionError("確認時の置換")))
+        diagnostic_ledger.authorize_scope("trial-concurrency-6")
+        diagnostic_ledger.authorize_scope("trial-concurrency-6")
+    assert diagnostic_ledger.path.read_bytes() == before
+    assert diagnostic_ledger.path.stat().st_mtime_ns == stat.st_mtime_ns
+    assert diagnostic_ledger.path.stat().st_ino == stat.st_ino
+    diagnostic_ledger.transact(lambda data: data["upper_bound"].update(stage=1))
+    with pytest.raises(Refused):
+        diagnostic_ledger.authorize_scope("trial-concurrency-6")
+
+
+def test_diagnostic_authorization_waits_for_writer_and_checks_committed_state(diagnostic_ledger, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+    from threading import Event
+    from scripts.capacity_trial import guard
+    locked, reading, release = Event(), Event(), Event()
+    original_flock = guard.fcntl.flock
+    def observed_flock(file, mode):
+        if mode == guard.fcntl.LOCK_SH:
+            reading.set()
+        return original_flock(file, mode)
+    monkeypatch.setattr(guard.fcntl, "flock", observed_flock)
+    def write(data):
+        locked.set()
+        if not release.wait(5):
+            raise AssertionError("書込み解放の待機期限超過")
+        data["upper_bound"]["stage"] = 1
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(diagnostic_ledger.transact, write)
+        try:
+            assert locked.wait(2)
+            reader = executor.submit(diagnostic_ledger.authorize_scope, "trial-concurrency-6")
+            assert reading.wait(2)
+            with pytest.raises(FutureTimeout):
+                reader.result(timeout=0.05)
+        finally:
+            release.set()
+        writer.result(timeout=2)
+        with pytest.raises(Refused):
+            reader.result(timeout=2)
+
+
+@pytest.mark.parametrize("failure_name", ["FailedPrecondition", "Aborted", "AlreadyExists"])
+@pytest.mark.parametrize("location,expected,rpc_calls", [
+    ("guard", "guard_version_check", 1),
+    ("read_call", "rpc_batch_get_documents", 1),
+    ("read_stream", "rpc_batch_get_documents", 1),
+    ("commit", "rpc_commit", 2),
+    ("query_call", "rpc_run_query", 1),
+    ("query_stream", "rpc_run_query", 1),
+])
+def test_small_policy_failure_origins(upper_ledger, failure_name, location, expected, rpc_calls):
+    from google.api_core import exceptions
+    from google.cloud.firestore_v1 import _helpers
+    from google.cloud.firestore_v1.types import BatchGetDocumentsResponse, Document, Write
+    from google.protobuf.timestamp_pb2 import Timestamp
+    from scripts.capacity_trial.diagnostics import failure_record, parse_failure, PREFIX
+    error_type = getattr(exceptions, failure_name)
+    error = error_type("synthetic-secret")
+    name = BASE + "/documents/sync_capacity_scopes/trial-smoke"
+    stamp = Timestamp(seconds=1000)
+    raw = Mock()
+    raw.batch_get_documents.return_value = iter([BatchGetDocumentsResponse(found=Document(
+        name=name, fields=_helpers.encode_dict({"version": 1}),
+        update_time=Timestamp(seconds=1001) if location == "guard" else stamp))])
+    def failed_stream():
+        raise error
+        yield
+    if location == "read_call":
+        raw.batch_get_documents.side_effect = error
+    elif location == "read_stream":
+        raw.batch_get_documents.return_value = failed_stream()
+    elif location == "commit":
+        raw.commit.side_effect = error
+    elif location == "query_call":
+        raw.run_query.side_effect = error
+    elif location == "query_stream":
+        raw.run_query.return_value = failed_stream()
+    api = GuardedAPI(raw, upper_ledger, role="runner")
+    assert api.small is True
+    with pytest.raises(exceptions.FailedPrecondition if location == "guard" else error_type) as caught:
+        if location.startswith("query"):
+            list(api.run_query(request={"parent": name,
+                "structured_query": {"from_": [{"collection_id": "jobs"}], "limit": 1}}))
+        else:
+            api.commit(request={"database": BASE, "writes": [Write(
+                update=Document(name=name, fields=_helpers.encode_dict({"version": 1})),
+                update_mask={"field_paths": ["version"]}, current_document={"update_time": stamp})]})
+    if location != "guard":
+        assert caught.value is error
+    record = failure_record(caught.value)
+    assert record["origin"] == expected
+    assert parse_failure(PREFIX + json.dumps(record))["origin"] == expected
+    assert "synthetic-secret" not in json.dumps(record)
+    data = json.loads(upper_ledger.path.read_text())
+    assert data["upper_bound"]["rpc_reserved"] == rpc_calls
+    if location != "commit":
+        raw.commit.assert_not_called()
+
+
+def test_small_local_refusal_never_gets_rpc_origin(upper_ledger):
+    from google.cloud.firestore_v1.types import Document, Write
+    from scripts.capacity_trial.diagnostics import failure_record
+    raw = Mock()
+    api = GuardedAPI(raw, upper_ledger, role="runner")
+    with pytest.raises(Refused) as caught:
+        api.commit(request={"database": BASE, "writes": [Write(update=Document(
+            name=BASE + "/documents/sync_capacity_scopes/trial-smoke"))]})
+    assert "origin" not in failure_record(caught.value)
+    assert not raw.mock_calls
