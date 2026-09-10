@@ -1,5 +1,6 @@
 """認証より前に開始を消費する、固定4job試験専用の隔離起動。"""
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -50,6 +51,42 @@ def verify_observation(result):
             raise Refused("待機jobが未取得状態ではありません")
 
 
+def validate_child_result(value, args):
+    """終了記録へ渡す前に、成功JSONの必須構造と試験対象を検査する。"""
+    try:
+        if (not isinstance(value, dict)
+                or set(value) != {"state", "case", "project", "database", "scope", "started_at", "finished_at", "result"}
+                or value["case"] != args.command or value["project"] != PROJECT
+                or value["database"] != DATABASE or value["scope"] != policy.SCOPE
+                or not isinstance(value["result"], dict)
+                or any(type(value[key]) not in (int, float) or not math.isfinite(value[key])
+                       for key in ("started_at", "finished_at"))
+                or value["finished_at"] < value["started_at"]):
+            raise Refused("限定試験の子JSONが不正")
+        result = value["result"]
+        if args.command == "retry-deadline":
+            retained = result["retained_state"]
+            if (value["state"] != "passed" or result["process_count"] != 12
+                    or result["claimed_count"] != 3 or result["documents"] != 4
+                    or result["children_stopped"] is not True or result["slots_retained"] is not True
+                    or not isinstance(result["pids"], list) or len(result["pids"]) != 12
+                    or any(type(pid) is not int or pid <= 0 for pid in result["pids"])
+                    or len(set(result["pids"])) != 12
+                    or not isinstance(retained, dict) or set(retained) != {"slots", "jobs"}
+                    or not isinstance(retained["jobs"], dict)):
+                raise Refused("限定試験の成功結果が不正")
+            verify_observation({"scope_exists": True, "job_count": len(retained["jobs"]),
+                "scope": {"limit": 3, "slots": retained["slots"]},
+                "jobs": [{"id": key, **job} for key, job in retained["jobs"].items()]})
+        else:
+            expected_state = {"matched": "passed", "runner_result_unavailable": "observed"}
+            if value["state"] != expected_state[result["trial_comparison"]]:
+                raise Refused("事後観測の成功分類が不正")
+            verify_observation(result)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise Refused("限定試験の子JSONが不正") from None
+
+
 def main(args, ledger):
     from .__main__ import isolated_run, inspect_state
     from .concurrency import claim_child, retry_concurrency
@@ -65,6 +102,7 @@ def main(args, ledger):
         result = None
         failure = None
         try:
+            # 予約数を増やさず、認証前に既存の期限・停止条件も検査する。
             ledger.reserve()
             token = subprocess.run(["/usr/bin/security", "find-generic-password", "-s",
                 "capacity-trial-token-" + role, "-a", ACCOUNTS[role], "-w"],
@@ -87,7 +125,9 @@ def main(args, ledger):
                     from .diagnostics import parse_failure
                     failure = parse_failure(child.stderr)
                     raise Refused("限定試験子が失敗", code=failure["error_code"])
-                result = json.loads(child.stdout)
+                candidate = json.loads(child.stdout)
+                validate_child_result(candidate, args)
+                result = candidate
                 return result
         except Exception as exc:
             if failure is None:

@@ -303,6 +303,7 @@ def test_claim_whole_duration_over_thirty_is_trial_failure(monkeypatch):
     import io
     from scripts.capacity_trial import concurrency, firestore
     clock = [0.0]
+    # 同期Mockだけの試験で製品と試験側の経過時計を揃える。SDKや実子は起動しない。
     monkeypatch.setattr(concurrency.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(concurrency, "validate_environment", lambda: None)
     monkeypatch.setattr("sys.stdin", io.StringIO("go\n"))
@@ -317,6 +318,7 @@ def test_preparation_keeps_product_thirty_under_coordinator_fortyfive(monkeypatc
     from scripts.capacity_trial import concurrency
     from src.sync_capacity.deadline import CapacityDeadlineExceeded
     clock = [0.0]
+    # 同期Mockだけの試験で製品と試験側の経過時計を揃える。SDKや実子は起動しない。
     monkeypatch.setattr(concurrency.time, "monotonic", lambda: clock[0])
     store = Mock()
     store.settings.scope = policy.SCOPE
@@ -329,3 +331,95 @@ def test_preparation_keeps_product_thirty_under_coordinator_fortyfive(monkeypatc
     with pytest.raises(CapacityDeadlineExceeded):
         concurrency.retry_concurrency(store, "synthetic", Mock())
     store.enqueue.assert_not_called()
+
+
+@pytest.fixture
+def stop_probe_timeout(monkeypatch):
+    import io
+    import subprocess
+    from unittest.mock import MagicMock
+    from scripts.capacity_trial import __main__ as runner
+    process = MagicMock(pid=12345)
+    process.__enter__.return_value = process
+    process.stdin, process.stdout, process.stderr = io.StringIO(), io.StringIO(), io.StringIO()
+    monkeypatch.setattr(runner.subprocess, "Popen", Mock(return_value=process))
+    monkeypatch.setattr(runner.os, "waitid", Mock(return_value=SimpleNamespace(si_pid=12345)))
+    monkeypatch.setattr(runner.os, "killpg", Mock(side_effect=PermissionError()))
+    def run(command, **kwargs):
+        if command[0] == "/bin/ps":
+            raise subprocess.TimeoutExpired(command, 5)
+        assert command[0] == "/usr/bin/security"
+        return SimpleNamespace(returncode=0, stdout="synthetic-token")
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    return runner
+
+
+def test_stop_probe_timeout_is_not_execution_timeout(stop_probe_timeout, tmp_path):
+    runner = stop_probe_timeout
+    with pytest.raises(Refused, match="停止を確認できません"):
+        runner.isolated_run(["synthetic"], cwd=tmp_path, env={}, input="", timeout=60)
+
+
+def test_stop_probe_timeout_keeps_observer_blocked(retry_ledger, stop_probe_timeout, monkeypatch):
+    from scripts.capacity_trial import retry_trial
+    monkeypatch.delenv("CAPACITY_TRIAL_CHILD", raising=False)
+    args = SimpleNamespace(command="retry-deadline", role="runner", scope=policy.SCOPE)
+    with pytest.raises(Refused, match="停止を確認できません"):
+        retry_trial.main(args, retry_ledger)
+    data = json.loads(retry_ledger.path.read_text())
+    assert data["retry_trial"]["children_stopped"] is False
+    assert data["retry_trial"]["runner"]["passed"] is False
+    with pytest.raises(Refused, match="停止未確認"):
+        policy.begin(retry_ledger, "observer")
+
+
+@pytest.mark.parametrize("payload", [
+    {}, [], None,
+    {"state": "passed"},
+    {"state": "passed", "case": "retry-deadline", "project": PROJECT, "database": DATABASE,
+     "scope": policy.SCOPE, "started_at": 1, "finished_at": 2, "result": {}},
+    {"state": "observed", "case": "retry-deadline", "project": PROJECT, "database": DATABASE,
+     "scope": policy.SCOPE, "started_at": 1, "finished_at": 2, "result": {"retained_state": {}}},
+])
+def test_invalid_success_json_keeps_failure_and_stop_record(retry_ledger, monkeypatch, payload):
+    from scripts.capacity_trial import __main__ as runner, retry_trial
+    monkeypatch.delenv("CAPACITY_TRIAL_CHILD", raising=False)
+    monkeypatch.setattr(retry_trial.subprocess, "run", Mock(return_value=SimpleNamespace(
+        returncode=0, stdout="synthetic-token")))
+    monkeypatch.setattr(runner, "isolated_run", Mock(return_value=SimpleNamespace(
+        returncode=0, stdout=json.dumps(payload), stderr="")))
+    args = SimpleNamespace(command="retry-deadline", role="runner", scope=policy.SCOPE)
+    with pytest.raises(Refused):
+        retry_trial.main(args, retry_ledger)
+    record = json.loads(retry_ledger.path.read_text())["retry_trial"]
+    assert record["children_stopped"] is True
+    assert record["runner"]["passed"] is False
+    assert record["runner"]["finished_at"] > 0
+    assert record["runner"]["failure"]["error_type"] == "Refused"
+    assert "retained_state" not in record["runner"]
+    with pytest.raises(Refused):
+        policy.begin(retry_ledger, "runner")
+
+
+def test_valid_success_json_is_recorded_after_validation(retry_ledger, monkeypatch):
+    from scripts.capacity_trial import __main__ as runner, retry_trial
+    monkeypatch.delenv("CAPACITY_TRIAL_CHILD", raising=False)
+    monkeypatch.setattr(retry_trial.subprocess, "run", Mock(return_value=SimpleNamespace(
+        returncode=0, stdout="synthetic-token")))
+    jobs = {str(index): {"state": "processing", "attempts": 1, "slot": str(index),
+                       "owner": f"synthetic-process-{index + 1}"} for index in range(3)}
+    jobs["3"] = {"state": "pending", "attempts": 0, "slot": None, "owner": None}
+    retained = {"jobs": jobs, "slots": {str(index): {"job_id": str(index),
+                "owner": f"synthetic-process-{index + 1}"} for index in range(3)}}
+    payload = {"state": "passed", "case": "retry-deadline", "project": PROJECT, "database": DATABASE,
+        "scope": policy.SCOPE, "started_at": 1, "finished_at": 2, "result": {
+            "retained_state": retained, "process_count": 12, "claimed_count": 3, "documents": 4,
+            "children_stopped": True, "slots_retained": True, "pids": list(range(1, 13))}}
+    monkeypatch.setattr(runner, "isolated_run", Mock(return_value=SimpleNamespace(
+        returncode=0, stdout=json.dumps(payload), stderr="")))
+    args = SimpleNamespace(command="retry-deadline", role="runner", scope=policy.SCOPE)
+    assert retry_trial.main(args, retry_ledger) == payload
+    record = json.loads(retry_ledger.path.read_text())["retry_trial"]
+    assert record["runner"]["passed"] is True
+    assert record["runner"]["retained_state"] == retained
+    assert record["children_stopped"] is True

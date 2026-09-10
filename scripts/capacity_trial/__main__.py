@@ -103,8 +103,12 @@ def isolated_run(command, *, cwd, env, input, timeout=60):
                 pass
             except PermissionError:
                 # このMacでは終了済みのみのgroupへのkillpgがEPERMとなった。
-                states = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,stat="],
-                                        capture_output=True, text=True, timeout=5, check=True)
+                try:
+                    states = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,stat="],
+                                            capture_output=True, text=True, timeout=5, check=True)
+                except (subprocess.SubprocessError, OSError):
+                    # 停止確認の失敗を、停止済みの通常監視timeoutとして返さない。
+                    raise Refused("試験プロセスグループの停止を確認できません") from None
                 members = [line.split() for line in states.stdout.splitlines() if line.strip()]
                 if (not any(int(row[0]) == process.pid and int(row[1]) == process.pid
                             and row[2].startswith("Z") for row in members)
