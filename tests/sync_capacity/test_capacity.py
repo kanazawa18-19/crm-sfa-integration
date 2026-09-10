@@ -574,6 +574,48 @@ def test_atomic_failure_records_original_retry_exit(compared_store, monkeypatch,
 
 
 
+@pytest.mark.parametrize("elapsed,retries", [(2.999, 1), (3.0, 0), (3.181, 0)])
+def test_first_slow_conflict_retry_boundary(compared_store, monkeypatch, elapsed, retries):
+    """初回競合後なら成功できても、3秒以上で再読取りできない現行挙動を再現。"""
+    from google.api_core.exceptions import FailedPrecondition
+    from google.cloud.firestore_v1.types import CommitResponse
+    store, commit, _ = compared_store
+    error = FailedPrecondition("synthetic comparison conflict")
+    commit.side_effect = [error, CommitResponse()]
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic",
+                        Mock(side_effect=[0.0, elapsed]))
+    sleep = Mock()
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.sleep", sleep)
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
+        return "saved"
+    if retries:
+        assert store._atomic(operation) == "saved"
+    else:
+        with pytest.raises(FailedPrecondition) as caught:
+            store._atomic(operation)
+        assert caught.value is error
+        assert error.capacity_atomic["deadline"] is True
+        assert error.capacity_atomic["attempts"] == 1
+    assert commit.call_count == 1 + retries
+    assert store.scope_ref.get.call_count == 1 + retries
+    assert sleep.call_count == retries
+
+
+def test_success_after_retry_deadline_is_still_returned(compared_store, monkeypatch):
+    """3秒が成功処理の打切り期限ではないことを仮想時計で確認する。"""
+    store, _, _ = compared_store
+    clock = Mock(return_value=0.0)
+    monkeypatch.setattr("src.sync_capacity.firestore_store.time.monotonic", clock)
+    def operation(batch):
+        store._scope(batch)
+        batch.update(store.scope_ref, {"version": 1})
+        clock.return_value = 30.0
+        return "saved"
+    assert store._atomic(operation) == "saved"
+
+
 def test_atomic_eighth_failure_can_also_exceed_deadline(compared_store, monkeypatch):
     from google.api_core.exceptions import FailedPrecondition
     from scripts.capacity_trial.diagnostics import failure_record
