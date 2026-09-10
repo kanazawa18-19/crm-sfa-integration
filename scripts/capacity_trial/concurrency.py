@@ -11,23 +11,33 @@ import time
 from .guard import Ledger, Refused, validate_environment
 
 
-def claim_child(scope, ledger):
+def claim_child(scope, ledger, token=None):
     from dataclasses import asdict
     from .firestore import make_store
     validate_environment()
-    token = sys.stdin.readline().strip()
+    token = sys.stdin.readline().strip() if token is None else token
     store = make_store(scope, token, ledger)
     ledger.reserve(runtime_seconds=50)
     print(json.dumps({"ready": os.getpid()}), flush=True)
     if sys.stdin.readline() != "go\n":
         raise Refused("競合開始合図が不正")
+    if scope == "trial-retry-deadline-1":
+        store.atomic_diagnostics = []
+    claim_started = time.monotonic()
     claim = store.claim(f"synthetic-process-{os.getpid()}", time.time())
-    return {"pid": os.getpid(), "claim": asdict(claim) if claim else None}
+    if scope == "trial-retry-deadline-1" and time.monotonic() - claim_started >= 30:
+        raise Refused("限定試験の製品30秒期限超過", code="trial_timeout")
+    result = {"pid": os.getpid(), "claim": asdict(claim) if claim else None}
+    if scope == "trial-retry-deadline-1":
+        result["diagnostics"] = store.atomic_diagnostics
+    return result
 
 
 def run_claimants(scope, token, ledger):
     """秘密はstdinだけに流す。終了確認できない子があれば成功を返さない。"""
-    deadline = time.monotonic() + 45
+    from src.sync_capacity.deadline import current_deadline
+    active = current_deadline.get()
+    deadline = min(time.monotonic() + 45, active.expires_at if active else float("inf"))
     processes, homes = [], []
     phase = "starting"
     try:
@@ -41,7 +51,9 @@ def run_claimants(scope, token, ledger):
                 cwd=Path(__file__).resolve().parents[2], env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             processes.append(process)
-            process.stdin.write(token + "\n")
+            payload = (json.dumps({"token": token, "ticket": ledger.retry_ticket})
+                       if scope == "trial-retry-deadline-1" else token)
+            process.stdin.write(payload + "\n")
             process.stdin.flush()
         phase = "preparing"
         with selectors.DefaultSelector() as selector:
@@ -77,12 +89,17 @@ def run_claimants(scope, token, ledger):
             if result.get("pid") != process.pid:
                 raise Refused("競合子のPID照合失敗")
             result["return_code"] = process.returncode
+            if scope == "trial-retry-deadline-1":
+                from .retry_trial import validate_diagnostics
+                validate_diagnostics(result.get("diagnostics"))
             results.append(result)
         if failures:
             # 例外本文を残さず、全子を待ち終えた固定分類だけを台帳へ保存する。
             ledger.transact(lambda data: data.setdefault("claimant_failures", []).append(
                 {"scope": scope, "failures": failures, "successful_children": len(results)}))
             raise Refused("競合子が失敗", code="child_failed")
+        if time.monotonic() >= deadline:
+            raise Refused("競合子の終了期限超過", code="trial_timeout")
         return results
     except Exception as exc:
         # 準備前終了や不正JSONでも、本文を捨てた固定の段階・型だけを残す。
@@ -104,14 +121,40 @@ def run_claimants(scope, token, ledger):
 
 
 def concurrency(store, token, ledger):
+    return _concurrency(store, token, ledger, 12)
+
+
+def retry_concurrency(store, token, ledger):
+    if store.settings.scope != "trial-retry-deadline-1":
+        raise Refused("固定4job試験のscopeが不正")
+    from src.sync_capacity.deadline import Deadline, using_deadline
+    deadline = Deadline.after(45)
+    with using_deadline(deadline):
+        result = _concurrency(store, token, ledger, 4)
+        deadline.require()
+        return result
+
+
+def _concurrency(store, token, ledger, job_count):
     from src.sync_capacity.domain import submission
     # 使用済みscopeを再利用すると過去の結果を今回の成果に混ぜるため拒否する。
     if store.scope_ref.get().exists or list(store.jobs.limit(1).stream()):
         raise Refused("競合scopeは使用済み")
-    store.initialize(apply=True)
+    def product_call(operation, *args, **kwargs):
+        if job_count == 12:
+            return operation(*args, **kwargs)
+        from src.sync_capacity.deadline import Deadline, using_deadline
+        with using_deadline(Deadline.after(30)) as deadline:
+            result = operation(*args, **kwargs, deadline=deadline)
+            deadline.require()
+            return result
+    product_call(store.initialize, apply=True)
     now = time.time()
-    for index in range(12):
-        store.enqueue(submission("notion", {"id": f"synthetic-concurrency-{index}"}, None, now), now)
+    expected_ids = []
+    for index in range(job_count):
+        request = submission("notion", {"id": f"synthetic-concurrency-{index}"}, None, now)
+        expected_ids.append(request.job_id)
+        product_call(store.enqueue, request, now)
     results = run_claimants(store.settings.scope, token, ledger)
     claims = [item["claim"] for item in results if item["claim"] is not None]
     if (len(results) != 12 or len({item["pid"] for item in results}) != 12
@@ -120,16 +163,33 @@ def concurrency(store, token, ledger):
         raise AssertionError("12独立process・3枠・重複なしの照合失敗")
     scope = store.scope_ref.get().to_dict()
     jobs = {doc.id: doc.to_dict() for doc in store.jobs.limit(13).stream()}
-    if (len(jobs) != 12 or sum(job["state"] == "processing" for job in jobs.values()) != 3
-            or sum(job["state"] == "pending" for job in jobs.values()) != 9
+    if (set(jobs) != set(expected_ids) or len(jobs) != job_count or sum(job["state"] == "processing" for job in jobs.values()) != 3
+            or sum(job["state"] == "pending" for job in jobs.values()) != job_count - 3
             or scope["limit"] != 3 or set(scope["slots"]) != {"0", "1", "2"}):
-        raise AssertionError("保存された12件・処理中3件の照合失敗")
+        raise AssertionError("保存件数・処理中3件の照合失敗")
     for claim in claims:
+        if claim["owner"] not in {f"synthetic-process-{item['pid']}" for item in results if item["claim"] == claim}:
+            raise AssertionError("子PIDと所有者が不一致")
         job = jobs[claim["job_id"]]
         if (job["state"] != "processing" or job["attempts"] != 1
                 or job["owner"] != claim["owner"] or job["slot"] != claim["slot"]
                 or scope["slots"][claim["slot"]] != {"job_id": claim["job_id"], "owner": claim["owner"]}):
             raise AssertionError("jobと枠の所有者照合失敗")
-    return {"process_count": len(results), "claimed_count": len(claims), "claims": claims,
+    if any(job.get("attempts") != 0 or job.get("owner") or job.get("slot")
+           for job in jobs.values() if job["state"] == "pending"):
+        raise AssertionError("待機jobの所有者・試行回数が不正")
+    result = {"process_count": len(results), "claimed_count": len(claims), "claims": claims,
             "pids": [item["pid"] for item in results], "documents": len(jobs),
             "children_stopped": all(item["return_code"] == 0 for item in results), "slots_retained": True}
+
+    if job_count == 4:
+        result["retained_state"] = {"slots": scope["slots"], "jobs": {
+            job_id: {key: job.get(key) for key in ("state", "owner", "slot", "attempts")}
+            for job_id, job in jobs.items()}}
+        result["diagnostics"] = [{"pid": item["pid"], "operations": item["diagnostics"]} for item in results]
+        result["retry_observation"] = ("observed" if any(
+            operation["outcome"] == "success" and operation["retries"] >= 1
+            and any(event["attempt"] == 1 and event["definite"] and event["elapsed_ms"] > 3000
+                    for event in operation["conflicts"])
+            for item in results for operation in item["diagnostics"]) else "not_observed")
+    return result

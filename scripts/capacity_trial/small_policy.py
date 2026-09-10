@@ -1,7 +1,7 @@
 """推定上限が成立する小規模Firestore要求だけを許可する。"""
 from .guard import BASE, Refused
 
-SMALL_SCOPES = {"trial-smoke", "trial-permission"} | {f"trial-concurrency-{n}" for n in range(1, 7)} | {
+SMALL_SCOPES = {"trial-smoke", "trial-permission", "trial-retry-deadline-1"} | {f"trial-concurrency-{n}" for n in range(1, 7)} | {
     f"trial-loss-{name}" for name in ("initialize", "enqueue", "claim", "finish", "recover")}
 
 

@@ -121,7 +121,7 @@ def isolated_run(command, *, cwd, env, input, timeout=60):
 
 def main():
     parser = argparse.ArgumentParser(description="承認済み専用Firestore・Neonの隔離試験。本番同期は対象外")
-    parser.add_argument("command", choices=["init-ledger", "activate-upper-bound", "advance-upper-bound", "migrate-target", "record-cost", "smoke", "scan", "inspect-state", "neon-probe", "concurrency", "claim-child", "response-loss", "permission-probe"])
+    parser.add_argument("command", choices=["init-ledger", "activate-upper-bound", "advance-upper-bound", "migrate-target", "record-cost", "smoke", "scan", "inspect-state", "neon-probe", "concurrency", "retry-deadline", "retry-observe", "claim-child", "response-loss", "permission-probe"])
     parser.add_argument("--ledger", required=True)
     parser.add_argument("--created-at", type=float)
     parser.add_argument("--usd", type=float)
@@ -158,6 +158,10 @@ def main():
             raise Refused("費用実測・観測時刻が必要。未観測を0と登録しない")
         ledger.cost(args.usd, args.observed_at, args.evidence, basis=args.cost_basis)
         return {"state": "cost_recorded"}
+    from .retry_policy import SCOPE
+    if args.scope == SCOPE or args.command in {"retry-deadline", "retry-observe"}:
+        from .retry_trial import main as retry_main
+        return retry_main(args, ledger)
     validate_target(PROJECT, DATABASE, args.scope, role=args.role)
     if args.command == "smoke" and (args.scope != "trial-smoke" or args.role != "runner"):
         raise Refused("smokeは専用scopeとrunnerのみ")

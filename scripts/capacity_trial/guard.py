@@ -14,7 +14,7 @@ DATABASE = "crm-capacity-trial-260910"
 BASE = f"projects/{PROJECT}/databases/{DATABASE}"
 ACCOUNTS = {role: f"capacity-trial-{role}@{PROJECT}.iam.gserviceaccount.com"
             for role in ("runner", "observer")}
-SCOPES = frozenset(["trial-smoke", "trial-permission", "trial-invalid", "trial-stop"]
+SCOPES = frozenset(["trial-smoke", "trial-permission", "trial-invalid", "trial-stop", "trial-retry-deadline-1"]
     + [f"trial-concurrency-{n}" for n in range(1, 7)]
     + [f"trial-loss-{name}" for name in ("initialize", "enqueue", "claim", "finish", "recover")]
     + [f"trial-scan-{n}" for n in (1103, 10000, 100000)])
@@ -262,6 +262,12 @@ class Ledger:
 
     def authorize_scope(self, scope):
         """追加診断scopeは、累計を引き継いだ元の第2段階台帳だけに許可する。"""
+        if scope == "trial-retry-deadline-1":
+            from .retry_policy import context
+            self.transact(lambda data: context(self, data))
+            return
+        if getattr(self, "retry_role", None):
+            raise Refused("限定試験から他scopeへ接続できません")
         if scope != "trial-concurrency-6":
             return
         def check(data):
@@ -288,12 +294,18 @@ class Ledger:
 
     def authorize_command(self, command):
         upper = self.upper_bound()
-        if upper and command not in {"smoke", "concurrency", "claim-child", "response-loss", "permission-probe", "inspect-state"}:
+        if upper and command not in {"smoke", "concurrency", "claim-child", "response-loss", "permission-probe", "inspect-state", "retry-deadline", "retry-observe"}:
             raise Refused("推定上限では小規模Firestore試験だけを許可")
 
     def reserve(self, *, now=None, rpc=False, document_names=(), **amounts):
+        if now is None and getattr(self, "retry_role", None):
+            from .retry_policy import wall_time
+            now = wall_time()
         now = time.time() if now is None else now
         def update(data):
+            if data.get("retry_trial") is not None:
+                from .retry_policy import reserve
+                reserve(self, data, rpc, document_names, amounts, now)
             cost = data.get("cost")
             upper = data.get("upper_bound")
             if upper:

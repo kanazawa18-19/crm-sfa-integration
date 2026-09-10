@@ -104,7 +104,8 @@ class _ComparedBatch:
 
 
 class FirestoreJobStore:
-    def __init__(self, settings: Settings, *, client: Any = None, total_seconds: float = STORE_SECONDS):
+    def __init__(self, settings: Settings, *, client: Any = None, total_seconds: float = STORE_SECONDS,
+                 atomic_diagnostics: list | None = None):
         from google.cloud import firestore
         emulator = os.environ.get("FIRESTORE_EMULATOR_HOST")
         if emulator and (os.environ.get("VERCEL") or os.environ.get("K_SERVICE")
@@ -112,6 +113,7 @@ class FirestoreJobStore:
                          or not re.fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]+", emulator)):
             raise CapacityUnavailable("emulator is restricted to local demo projects")
         Deadline.after(total_seconds)
+        self.atomic_diagnostics = atomic_diagnostics
         self.total_seconds = total_seconds
         self.settings = settings
         self.client = client if client is not None else firestore.Client(
@@ -128,7 +130,14 @@ class FirestoreJobStore:
                  grpc.StatusCode.FAILED_PRECONDITION}
         started = time.monotonic()
         deadline = current_deadline.get()
+        events = []
+        def diagnose(outcome, attempt, phase):
+            if self.atomic_diagnostics is not None:
+                self.atomic_diagnostics.append({"attempts": attempt + 1, "retries": attempt,
+                    "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+                    "outcome": outcome, "phase": phase, "conflicts": list(events)})
         for attempt in range(8):
+            attempt_started = time.monotonic()
             try:
                 phase = "operation"
                 deadline.require(deadline.attempt_minimum)
@@ -136,6 +145,7 @@ class FirestoreJobStore:
                 result = operation(batch)
                 phase = "commit"
                 batch.commit()
+                diagnose("success", attempt, phase)
                 return result
             except conflicts as exc:
                 # 比較失敗が確定した場合だけ読み直す。通信結果不明を含む連鎖は除外。
@@ -152,6 +162,12 @@ class FirestoreJobStore:
                     if not (isinstance(error, conflicts) or grpc_conflict):
                         definite_conflict = False
                     chain.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
+                origin = getattr(exc, "capacity_failure_origin", "unknown")
+                events.append({"attempt": attempt + 1,
+                    "elapsed_ms": max(0, int((time.monotonic() - attempt_started) * 1000)),
+                    "phase": phase, "definite": definite_conflict,
+                    "origin": origin if origin in {"guard_version_check", "rpc_commit",
+                        "rpc_run_query", "rpc_batch_get_documents"} else "unknown"})
                 remaining = deadline.remaining()
                 delay = random.uniform(0.03, min(0.6, 0.08 * 2 ** attempt))
                 insufficient = remaining < delay + deadline.attempt_minimum
@@ -166,6 +182,7 @@ class FirestoreJobStore:
                                         "attempt_limit" if attempt == 7 else
                                         "total_deadline" if remaining <= 0 else "attempt_budget"),
                     }
+                    diagnose("failed", attempt, phase)
                     raise
                 try:
                     deadline.sleep(delay, reserve=deadline.attempt_minimum)
@@ -173,7 +190,11 @@ class FirestoreJobStore:
                     exc.capacity_atomic = {"version": 2, "attempts": attempt + 1,
                         "elapsed_ms": min(86_400_000, max(0, int((time.monotonic() - started) * 1000))),
                         "phase": phase, "stop_reason": "total_deadline" if deadline.remaining() <= 0 else "attempt_budget"}
+                    diagnose("failed", attempt, phase)
                     raise exc from None
+            except Exception:
+                diagnose("failed", attempt, phase)
+                raise
 
     def _scope(self, transaction) -> dict:
         snapshot = transaction.get(self.scope_ref)
