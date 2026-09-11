@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -359,3 +361,43 @@ def record_list_run(
         logger.exception("リスト作成の履歴を残せなかった: userId=%s", user_id)
         return None
     return run_id
+
+
+@dataclass(frozen=True)
+class ClientNameIndexHealth:
+    """`ClientNameIndex`(CRM取引先名のローカルミラー)の状態。
+
+    新規開拓リストは「名前で当たらなかった」ことを根拠にする。ミラーが空だったり
+    古かったりすると、**正常に検索できてしまうので例外にもならず**、既存顧客が
+    丸ごと新規リストに載る(ChatGPTレビュー指摘、2026-09-12)。
+    書き出しの前にここを見て、怪しければ止める。
+    """
+
+    row_count: int
+    last_synced_at: datetime | None
+
+    def is_fresh(self, *, max_age_hours: float = 48.0, min_rows: int = 1000) -> bool:
+        if self.row_count < min_rows:
+            return False
+        if self.last_synced_at is None:
+            return False
+        age = datetime.now(timezone.utc) - self.last_synced_at
+        return age <= timedelta(hours=max_age_hours)
+
+    def describe(self) -> str:
+        when = self.last_synced_at.strftime("%Y-%m-%d %H:%M UTC") if self.last_synced_at else "不明"
+        return f"取引先名インデックス {self.row_count}件 / 最終同期 {when}"
+
+
+def client_name_index_health() -> ClientNameIndexHealth:
+    """`ClientNameIndex`の件数と最終同期日時を読む。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT COUNT(*) AS n, MAX("syncedAt") AS last FROM "ClientNameIndex"'
+            )
+            row = cur.fetchone() or {}
+    last = row.get("last")
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return ClientNameIndexHealth(row_count=int(row.get("n") or 0), last_synced_at=last)

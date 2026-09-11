@@ -50,7 +50,12 @@ class ListResult:
 
     @property
     def new_count(self) -> int:
-        return sum(1 for r in self.rows if r.crm.state is CrmMatchState.NOT_FOUND)
+        """名前照合で当たらなかった件数。
+
+        **「未取引の件数」ではない。** CRMには運営会社名で載っていることが多く、
+        施設名だけでは既存顧客でも当たらない(他社レビュー指摘、2026-09-12)。
+        """
+        return sum(1 for r in self.rows if r.crm.state is CrmMatchState.NO_NAME_MATCH)
 
     @property
     def ambiguous_count(self) -> int:
@@ -109,6 +114,15 @@ def build_list(
     primary = [f for f in source if matches_criteria(f, criteria, crm_match=None)]
     result = ListResult(total_before_crm=len(primary))
     logger.info("一次抽出: %d件 / 母集団%d件", len(primary), len(source))
+
+    # `limit`が指定されていて、CRMの状態で絞らないなら、突合の前に切ってしまう。
+    # 後で捨てる行のためにNotionを読むのは無駄(Geminiレビュー指摘、2026-09-12)。
+    # CRM条件があるときは、絞った結果が`limit`に届かなくなるので切らない。
+    uses_crm_filter = (
+        criteria.crm_filter is not CrmFilter.ANY or bool(criteria.exclude_proposed_services)
+    )
+    if criteria.limit is not None and not uses_crm_filter:
+        primary = primary[: criteria.limit]
 
     # 担当者連絡先を付けるため、matcherがあるときは常に突合する。
     matches: dict[int, CrmMatch] = {}

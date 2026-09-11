@@ -44,7 +44,7 @@ class _StubMatcher:
         self._matches = matches
 
     def match_all(self, facilities):  # noqa: ANN001
-        return {f.hotel_no: self._matches.get(f.hotel_no, CrmMatch(CrmMatchState.NOT_FOUND))
+        return {f.hotel_no: self._matches.get(f.hotel_no, CrmMatch(CrmMatchState.NO_NAME_MATCH))
                 for f in facilities}
 
 
@@ -77,7 +77,7 @@ class TestBuildList:
         matcher = _StubMatcher(
             {
                 1: CrmMatch(state=CrmMatchState.MATCHED, client_name="株式会社華水亭"),
-                2: CrmMatch(state=CrmMatchState.NOT_FOUND),
+                2: CrmMatch(state=CrmMatchState.NO_NAME_MATCH),
             }
         )
         result = build_list(

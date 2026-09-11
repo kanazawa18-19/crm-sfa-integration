@@ -22,11 +22,13 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import requests
 
 from src.facility_list.infrastructure.rakuten_page_parser import (
     AreaListEntry,
+    count_area_list_blocks,
     parse_area_list_page,
 )
 
@@ -46,6 +48,10 @@ USER_AGENT = (
 DEFAULT_INTERVAL_SECONDS = 1.0
 DEFAULT_MAX_WORKERS = 3
 DEFAULT_TIMEOUT_SECONDS = 20
+# 429の `Retry-After` に従って待つ上限。これを超える指定は「今日は諦める」。
+MAX_RETRY_AFTER_SECONDS = 120.0
+# robots.txt のグループ選択に使う自分のbot名(`USER_AGENT`の先頭と揃えること)。
+BOT_NAME = "CnctorFacilityListBot"
 
 # 都道府県 → エリア一覧ページのURLスラッグ(2026-09-11に一覧ページの「地域変更」から実取得)。
 PREFECTURE_SLUGS: dict[str, str] = {
@@ -76,12 +82,29 @@ class RakutenFetchError(RuntimeError):
     """
 
 
+class RakutenRateLimitedError(RakutenFetchError):
+    """429。相手が明示的に待てと言っている。`Retry-After`を持つ。"""
+
+    def __init__(self, message: str, *, retry_after_seconds: float = 0.0) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class RobotsDisallowedError(RuntimeError):
-    """robots.txt で禁止されている施設。取得してはならない。"""
+    """robots.txt で禁止されているURL。取得してはならない。"""
 
 
 class _RateLimiter:
-    """プロセス内で共有する最小間隔の番人。スレッド間で直列化する。"""
+    """プロセス内で共有する最小間隔の番人。スレッド間で直列化する。
+
+    **`time.sleep()`をロックの外で行う。** 中で寝るとスリープ中もロックを握り続け、
+    他のスレッドがロック待ちの列に並ぶ(Geminiレビュー指摘、2026-09-12)。
+    ロックの中では「自分の順番(いつ投げてよいか)」を決めるだけにして、待つのは外。
+
+    なおこの制御は**このプロセスの中だけ**に効く。同じバッチを複数のプロセスや
+    Vercelの別インスタンスで同時に走らせると、楽天から見た間隔はその分だけ詰まる
+    (ChatGPTレビュー指摘)。取り込みバッチを多重起動しないこと。
+    """
 
     def __init__(self, interval_seconds: float) -> None:
         self._interval = interval_seconds
@@ -91,60 +114,114 @@ class _RateLimiter:
     def wait(self) -> None:
         with self._lock:
             now = time.monotonic()
-            if now < self._next_allowed_at:
-                time.sleep(self._next_allowed_at - now)
-                now = time.monotonic()
-            self._next_allowed_at = now + self._interval
+            slot = max(now, self._next_allowed_at)
+            self._next_allowed_at = slot + self._interval
+        delay = slot - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
 
 
 @dataclass(frozen=True)
 class RobotsRules:
-    """robots.txt のうち、施設ページに関係する禁止ルール。"""
+    """robots.txt のうち、自分たちに適用される規則。
 
-    disallowed_hotel_nos: frozenset[int]
-    # `Disallow: /HOTEL/` のように施設ページ全体が禁止されているか。
-    # 今のrobots.txtは施設番号を名指しする形だが、楽天が将来まとめて禁止に
-    # 変えたときに「数字が続かない行は無視」で全部許可に倒れると事故になる
-    # (shirokuma-secレビュー指摘、2026-09-11)。
-    hotel_pages_disallowed: bool = False
-
-    def is_allowed(self, hotel_no: int) -> bool:
-        if self.hotel_pages_disallowed:
-            return False
-        return hotel_no not in self.disallowed_hotel_nos
-
-
-def parse_robots(text: str) -> RobotsRules:
-    """robots.txt から `Disallow: /HOTEL/{番号}/*` の施設番号を集める。
-
-    `User-Agent: *` のブロックだけを見る(他のUAブロックは自分たちには適用されない)。
+    **施設番号ではなくURLパスで判定する。** 以前は `Disallow: /HOTEL/{数字}/` から
+    番号だけを抜き出していたため、`Disallow: /HOTEL/` のような広い禁止や
+    `Disallow: /HOTEL/*/foo` のようなワイルドカードを取りこぼしていた
+    (ChatGPT/Gemini の他社レビュー指摘、2026-09-12)。
     """
-    disallowed: set[int] = set()
-    hotel_pages_disallowed = False
-    in_wildcard_block = False
+
+    disallow: tuple[re.Pattern[str], ...] = ()
+    allow: tuple[re.Pattern[str], ...] = ()
+
+    def is_path_allowed(self, path: str) -> bool:
+        """パス(クエリ含む)が許可されているか。
+
+        robots.txt の慣習どおり、`Allow` と `Disallow` が両方当たったら
+        **より長く一致した方**を優先する(同じ長さなら Allow を優先)。
+        """
+        best_allow = max((len(m.group(0)) for p in self.allow if (m := p.match(path))), default=-1)
+        best_disallow = max(
+            (len(m.group(0)) for p in self.disallow if (m := p.match(path))), default=-1
+        )
+        if best_disallow < 0:
+            return True
+        return best_allow >= best_disallow
+
+
+def _rule_to_pattern(value: str) -> re.Pattern[str] | None:
+    """robots.txt のパス指定を正規表現にする。`*`(任意) と `$`(終端) を解釈する。"""
+    if not value:
+        return None
+    anchored_end = value.endswith("$")
+    body = value[:-1] if anchored_end else value
+    escaped = "".join(".*" if ch == "*" else re.escape(ch) for ch in body)
+    return re.compile("^" + escaped + ("$" if anchored_end else ""))
+
+
+def parse_robots(text: str, *, user_agent: str = "CnctorFacilityListBot") -> RobotsRules:
+    """robots.txt から、自分たちに適用される規則だけを取り出す。
+
+    - `User-agent:` が連続して並ぶ場合は**1つのグループ**として扱う
+      (`User-agent: *` の次の行に別のUAが来ると、以前は `*` のルールを読み落としていた)
+    - 自分のUA名を名指ししたグループがあればそれを優先し、無ければ `*` のグループを使う
+    - `Allow` も読む(`Disallow` だけ見ると、例外的に許可された経路を誤って禁止する)
+    """
+    groups: list[tuple[set[str], list[str], list[str]]] = []
+    current_agents: set[str] = set()
+    current_disallow: list[str] = []
+    current_allow: list[str] = []
+    expecting_agents = False
+
+    def flush() -> None:
+        if current_agents:
+            groups.append((set(current_agents), list(current_disallow), list(current_allow)))
+
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
+        line = raw.split("#", 1)[0].strip()
+        if not line or ":" not in line:
             continue
         key, _, value = line.partition(":")
         key = key.strip().lower()
         value = value.strip()
+
         if key in ("user-agent", "user agent"):
-            in_wildcard_block = value == "*"
+            if not expecting_agents:
+                # 直前のグループを閉じてから新しいグループを始める。
+                flush()
+                current_agents = set()
+                current_disallow = []
+                current_allow = []
+                expecting_agents = True
+            current_agents.add(value.lower())
             continue
-        if key == "disallow" and in_wildcard_block:
-            m = re.match(r"^/HOTEL/(\d+)/", value, re.I)
-            if m:
-                disallowed.add(int(m.group(1)))
-                continue
-            # `/HOTEL/` `/HOTEL/*` `/` のように、施設ページをまとめて禁止する指定。
-            if re.match(r"^/(HOTEL/?\*?)?$", value, re.I):
-                hotel_pages_disallowed = True
+
+        expecting_agents = False
+        if key == "disallow":
+            current_disallow.append(value)
+        elif key == "allow":
+            current_allow.append(value)
+
+    flush()
+
+    target = user_agent.lower()
+    selected: tuple[list[str], list[str]] | None = None
+    for agents, disallow, allow in groups:
+        if any(target.startswith(a) for a in agents if a and a != "*"):
+            selected = (disallow, allow)
+            break
+    if selected is None:
+        for agents, disallow, allow in groups:
+            if "*" in agents:
+                selected = (disallow, allow)
+                break
+    if selected is None:
+        return RobotsRules()
+
+    disallow_rules, allow_rules = selected
     return RobotsRules(
-        disallowed_hotel_nos=frozenset(disallowed),
-        hotel_pages_disallowed=hotel_pages_disallowed,
+        disallow=tuple(p for v in disallow_rules if (p := _rule_to_pattern(v))),
+        allow=tuple(p for v in allow_rules if (p := _rule_to_pattern(v))),
     )
 
 
@@ -156,33 +233,58 @@ class RakutenTravelClient:
         *,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        max_workers: int = DEFAULT_MAX_WORKERS,
         session: requests.Session | None = None,
     ) -> None:
         self._session = session or requests.Session()
         self._session.headers.update({"User-Agent": USER_AGENT})
         self._timeout = timeout_seconds
         self._limiter = _RateLimiter(interval_seconds)
-        self._robots: RobotsRules | None = None
+        # **同時接続数を実際に抑える。** 定数を置くだけでは保証にならない。
+        # 応答に時間がかかると、1秒間隔でも4本以上が同時に飛びうる
+        # (ChatGPTレビュー指摘、2026-09-12)。
+        self._slots = threading.Semaphore(max(1, max_workers))
+        # robots.txt はホストごとに違う(travel と hotel.travel で内容が別)。
+        self._robots_by_host: dict[str, RobotsRules] = {}
+        self._robots_lock = threading.Lock()
+        # エリア一覧で「カードはあるのに読み取れなかった」ページの数。
+        # 0でなければ取り込み結果を信用しない。
+        self.area_list_parse_warnings = 0
 
     # -- robots ------------------------------------------------------------
-    def load_robots(self) -> RobotsRules:
-        """robots.txt を取得して覚える。取得できなければ**中止する**。
+    def load_robots(self, host: str = "travel.rakuten.co.jp") -> RobotsRules:
+        """そのホストの robots.txt を取得して覚える。取得できなければ**中止する**。
 
         「読めなかったから全部許可」は最悪の選択なので、ここでは例外を上げて
         取り込みごと止める。
         """
-        if self._robots is not None:
-            return self._robots
-        text = self._get_text(_ROBOTS_URL)
-        self._robots = parse_robots(text)
-        if self._robots.hotel_pages_disallowed:
-            logger.error("robots.txtが施設ページ全体を禁止している。取得してはならない")
-        else:
-            logger.info(
-                "robots.txtを読み込んだ: 取得禁止の施設番号=%d件",
-                len(self._robots.disallowed_hotel_nos),
-            )
-        return self._robots
+        with self._robots_lock:
+            cached = self._robots_by_host.get(host)
+        if cached is not None:
+            return cached
+
+        text = self._fetch_without_robots_check(f"https://{host}/robots.txt")
+        rules = parse_robots(text, user_agent=BOT_NAME)
+        with self._robots_lock:
+            self._robots_by_host[host] = rules
+        logger.info(
+            "%s の robots.txt を読み込んだ: Disallow %d件 / Allow %d件",
+            host,
+            len(rules.disallow),
+            len(rules.allow),
+        )
+        return rules
+
+    def is_url_allowed(self, url: str) -> bool:
+        """そのURLを取得してよいか。robots.txt をホストごとに見る。"""
+        parts = urlsplit(url)
+        if parts.path.rstrip("/") == "/robots.txt".rstrip("/"):
+            return True
+        rules = self.load_robots(parts.netloc)
+        path = parts.path or "/"
+        if parts.query:
+            path = f"{path}?{parts.query}"
+        return rules.is_path_allowed(path)
 
     # -- サイトマップ ------------------------------------------------------
     def fetch_all_hotel_numbers(self) -> tuple[int, ...]:
@@ -226,6 +328,22 @@ class RakutenTravelClient:
                 url = f"{url}?f_page={page}"
             html = self._get_text(url)
             entries = parse_area_list_page(html)
+            blocks = count_area_list_blocks(html)
+
+            # **カードはあるのに読み取れていない**＝パーサが部分的に壊れている。
+            # このまま進むと、件数が減ったことを「最終ページ」と読み違えて
+            # 母集団が静かに欠ける(ChatGPTレビュー指摘、2026-09-12)。
+            if blocks > len(entries):
+                self.area_list_parse_warnings += 1
+                logger.error(
+                    "%s %dページ目: 施設カード%d件のうち%d件しか読み取れなかった。"
+                    "楽天側のHTML変更を疑うこと",
+                    prefecture,
+                    page,
+                    blocks,
+                    len(entries),
+                )
+
             if not entries:
                 break
             fresh = [e for e in entries if e.hotel_no not in seen]
@@ -234,24 +352,29 @@ class RakutenTravelClient:
             for entry in fresh:
                 seen.add(entry.hotel_no)
                 yield entry
-            if len(entries) < AREA_LIST_PAGE_SIZE:
+            # 打ち切り判定は**読み取れた件数ではなくカードの数**で行う。
+            if blocks < AREA_LIST_PAGE_SIZE:
                 break
             page += 1
 
     # -- 施設ページ --------------------------------------------------------
     def fetch_top_page(self, hotel_no: int) -> str:
-        self._ensure_allowed(hotel_no)
         return self._get_text(f"{_BASE}/HOTEL/{hotel_no}/{hotel_no}.html")
 
     def fetch_detail_page(self, hotel_no: int) -> str:
-        self._ensure_allowed(hotel_no)
         return self._get_text(f"{_BASE}/HOTEL/{hotel_no}/{hotel_no}_std.html")
 
     # -- 内部 --------------------------------------------------------------
-    def _ensure_allowed(self, hotel_no: int) -> None:
-        robots = self.load_robots()
-        if not robots.is_allowed(hotel_no):
-            raise RobotsDisallowedError(f"robots.txtで取得が禁止されている施設: {hotel_no}")
+    def _ensure_url_allowed(self, url: str) -> None:
+        if not self.is_url_allowed(url):
+            raise RobotsDisallowedError(f"robots.txtで取得が禁止されている: {url}")
+
+    def _fetch_without_robots_check(self, url: str) -> str:
+        """robots.txt 自身を取りに行くための経路(それ自体は常に許可)。"""
+        response = self._request(url, check_robots=False)
+        if not response.encoding or response.encoding.lower() in ("iso-8859-1", "ascii"):
+            response.encoding = response.apparent_encoding or "utf-8"
+        return response.text
 
     def _get_text(self, url: str) -> str:
         response = self._request(url)
@@ -268,17 +391,43 @@ class RakutenTravelClient:
     def _get_bytes(self, url: str) -> bytes:
         return self._request(url).content
 
-    def _request(self, url: str) -> requests.Response:
-        self._limiter.wait()
-        try:
-            response = self._session.get(url, timeout=self._timeout, allow_redirects=True)
-        except requests.RequestException as exc:
-            raise RakutenFetchError(f"取得に失敗した: {url}") from exc
+    def _request(self, url: str, *, check_robots: bool = True) -> requests.Response:
+        # **すべての取得で robots を見る。** 施設ページだけ見ていた頃は、
+        # サイトマップとエリア一覧が評価されていなかった
+        # (ChatGPTレビュー指摘、2026-09-12)。
+        if check_robots:
+            self._ensure_url_allowed(url)
+
+        with self._slots:
+            self._limiter.wait()
+            try:
+                response = self._session.get(url, timeout=self._timeout, allow_redirects=True)
+            except requests.RequestException as exc:
+                raise RakutenFetchError(f"取得に失敗した: {url}") from exc
+
+        # リダイレクト先が許可されているとは限らない。最終URLで確かめ直す
+        # (ChatGPTレビュー指摘)。
+        if check_robots and response.url and response.url != url:
+            final = urlsplit(response.url)
+            if not final.netloc.endswith("rakuten.co.jp"):
+                raise RakutenFetchError(f"想定外のホストへ転送された: {response.url}")
+            if not self.is_url_allowed(response.url):
+                raise RobotsDisallowedError(f"転送先が robots.txt で禁止されている: {response.url}")
+
         if response.status_code == 404:
             # 掲載終了・欠番。`_get_text()`がここを見て空文字に変える。
             return response
         if response.status_code == 429:
-            raise RakutenFetchError(f"レート制限(429)に当たった。間隔を広げること: {url}")
+            # 相手が明示的に「待て」と言っている。1度だけ素直に待ってから諦める。
+            # 何度も指数バックオフで粘るより、止めて人が判断する方がよい。
+            retry_after = response.headers.get("Retry-After", "")
+            wait_seconds = 0.0
+            if retry_after.strip().isdigit():
+                wait_seconds = min(float(retry_after.strip()), MAX_RETRY_AFTER_SECONDS)
+            raise RakutenRateLimitedError(
+                f"レート制限(429)に当たった。間隔を広げること: {url}",
+                retry_after_seconds=wait_seconds,
+            )
         if response.status_code >= 400:
             raise RakutenFetchError(f"HTTP {response.status_code}: {url}")
         return response

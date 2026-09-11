@@ -24,6 +24,11 @@ User-Agent: meta-webindexer
 Disallow: /HOTEL/777/*
 """
 
+# hotel.travel.rakuten.co.jp 側は別内容(実物も別)。エリア一覧・サイトマップ用。
+HOTEL_ROBOTS = """User-agent: *
+Disallow: /hotelinfo/calendar
+"""
+
 
 def _list_page(hotel_nos: list[int]) -> str:
     blocks = "".join(
@@ -41,15 +46,40 @@ def client() -> RakutenTravelClient:
 
 
 class TestParseRobots:
-    def test_ワイルドカードのブロックだけ見る(self) -> None:
+    def test_自分に適用されるグループを選ぶ(self) -> None:
         rules = parse_robots(ROBOTS)
-        assert not rules.is_allowed(5)
-        assert not rules.is_allowed(146329)
+        assert rules.is_path_allowed("/HOTEL/1234/1234.html") is True
+        assert rules.is_path_allowed("/HOTEL/5/5.html") is False
+        assert rules.is_path_allowed("/HOTEL/146329/x.html") is False
         # 他のUA向けの禁止は自分たちには適用されない。
-        assert rules.is_allowed(777)
+        assert rules.is_path_allowed("/HOTEL/777/777.html") is True
+
+    def test_User_agentが連続していても1つのグループとして読む(self) -> None:
+        # 「*」の次の行に別のUAが来ると、以前は「*」のルールを読み落としていた
+        # (ChatGPTレビュー指摘、2026-09-12)。
+        rules = parse_robots("User-agent: *\nUser-agent: OtherBot\nDisallow: /HOTEL/\n")
+        assert rules.is_path_allowed("/HOTEL/1234/1234.html") is False
+
+    def test_ワイルドカードを解釈する(self) -> None:
+        rules = parse_robots("User-agent: *\nDisallow: /HOTEL/*/secret\n")
+        assert rules.is_path_allowed("/HOTEL/999/secret") is False
+        assert rules.is_path_allowed("/HOTEL/999/999.html") is True
+
+    def test_Allowが長く一致すればDisallowに優先する(self) -> None:
+        rules = parse_robots(
+            "User-agent: *\nDisallow: /HOTEL/5/\nAllow: /HOTEL/5/public\n"
+        )
+        assert rules.is_path_allowed("/HOTEL/5/public") is True
+        assert rules.is_path_allowed("/HOTEL/5/private") is False
+
+    def test_自分のUAを名指ししたグループを優先する(self) -> None:
+        rules = parse_robots(
+            "User-agent: CnctorFacilityListBot\nDisallow: /\n\nUser-agent: *\nDisallow:\n"
+        )
+        assert rules.is_path_allowed("/HOTEL/1234/1234.html") is False
 
     def test_空なら何も禁止されない(self) -> None:
-        assert parse_robots("").disallowed_hotel_nos == frozenset()
+        assert parse_robots("").is_path_allowed("/HOTEL/1/1.html") is True
 
 
 class TestRobotsEnforcement:
@@ -60,6 +90,27 @@ class TestRobotsEnforcement:
                 client.fetch_top_page(5)
             # robots.txt以外へのリクエストは1本も出ていないこと。
             assert [r.path for r in mock.request_history] == ["/robots.txt"]
+
+    def test_エリア一覧もrobotsを見る(self, client: RakutenTravelClient) -> None:
+        # 施設ページだけ見ていた頃は、サイトマップとエリア一覧が素通りだった
+        # (ChatGPTレビュー指摘、2026-09-12)。
+        with requests_mock.Mocker() as mock:
+            mock.get(
+                "https://hotel.travel.rakuten.co.jp/robots.txt",
+                text="User-agent: *\nDisallow: /hotellist/\n",
+            )
+            with pytest.raises(RobotsDisallowedError):
+                list(client.iter_area_list("鳥取県"))
+            assert [r.path for r in mock.request_history] == ["/robots.txt"]
+
+    def test_ホストごとに別のrobotsを読む(self, client: RakutenTravelClient) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get("https://travel.rakuten.co.jp/robots.txt", text=ROBOTS)
+            mock.get("https://hotel.travel.rakuten.co.jp/robots.txt", text=HOTEL_ROBOTS)
+            assert client.is_url_allowed("https://travel.rakuten.co.jp/HOTEL/5/5.html") is False
+            assert (
+                client.is_url_allowed("https://hotel.travel.rakuten.co.jp/HOTEL/5/5.html") is True
+            )
 
     def test_robotsが読めなければ取り込みごと止める(self, client: RakutenTravelClient) -> None:
         # 「読めなかったから全部許可」にしない。
@@ -72,6 +123,7 @@ class TestRobotsEnforcement:
 class TestIterAreaList:
     def _mock_robots(self, mock: requests_mock.Mocker) -> None:
         mock.get("https://travel.rakuten.co.jp/robots.txt", text=ROBOTS)
+        mock.get("https://hotel.travel.rakuten.co.jp/robots.txt", text=HOTEL_ROBOTS)
 
     def test_ページを辿って重複なく返す(self, client: RakutenTravelClient) -> None:
         with requests_mock.Mocker() as mock:
@@ -146,22 +198,42 @@ class TestSitemap:
             b"</urlset>"
         )
         with requests_mock.Mocker() as mock:
+            mock.get("https://hotel.travel.rakuten.co.jp/robots.txt", text=HOTEL_ROBOTS)
             mock.get("https://hotel.travel.rakuten.co.jp/sitemap_index.xml", text=index)
             mock.get("https://hotel.travel.rakuten.co.jp/sitemap_a.xml.gz", content=body)
             numbers = client.fetch_all_hotel_numbers()
         assert numbers == (103, 9219)
 
 
-class TestRobotsWideDisallow:
-    """施設ページをまとめて禁止されたときに「全部許可」へ倒れないこと。"""
+class TestRateLimiterAndSlots:
+    """レート制御と同時接続数(他社レビューで指摘された2点)。"""
 
-    @pytest.mark.parametrize("line", ["/HOTEL/", "/HOTEL/*", "/"])
-    def test_広い禁止指定を見落とさない(self, line: str) -> None:
-        rules = parse_robots(f"User-Agent: *\nDisallow: {line}\n")
-        assert rules.hotel_pages_disallowed is True
-        assert rules.is_allowed(1234) is False
+    def test_スリープ中にロックを握り続けない(self) -> None:
+        # ロックの中で寝ると、他スレッドがロック待ちの列に並ぶ
+        # (Geminiレビュー指摘、2026-09-12)。ロック内では順番を決めるだけにする。
+        import threading
+        import time as _time
 
-    def test_無関係なパスの禁止は施設ページに影響しない(self) -> None:
-        rules = parse_robots("User-Agent: *\nDisallow: /cgi-bin/\nDisallow: /B2B/\n")
-        assert rules.hotel_pages_disallowed is False
-        assert rules.is_allowed(1234) is True
+        from src.facility_list.infrastructure.rakuten_client import _RateLimiter
+
+        limiter = _RateLimiter(0.2)
+        started = threading.Event()
+
+        def first() -> None:
+            limiter.wait()  # 1本目は待たずに通る
+            started.set()
+            limiter.wait()  # 2本目は0.2秒待つ
+
+        thread = threading.Thread(target=first)
+        thread.start()
+        assert started.wait(timeout=1.0)
+        # 別スレッドが待っている間でも、ロック自体は空いている。
+        acquired = limiter._lock.acquire(timeout=0.1)
+        assert acquired is True
+        limiter._lock.release()
+        thread.join(timeout=2.0)
+
+    def test_同時接続数を実際に絞る(self) -> None:
+        # 定数を置くだけでは保証にならない(ChatGPTレビュー指摘、2026-09-12)。
+        client = RakutenTravelClient(interval_seconds=0.0, max_workers=2)
+        assert client._slots._value == 2

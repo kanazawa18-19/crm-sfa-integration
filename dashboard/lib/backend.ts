@@ -647,8 +647,12 @@ export interface FacilityListExport {
   matched_count: number;
   new_count: number;
   ambiguous_count: number;
+  // 時間予算を使い切って突合を打ち切った件数。0でなければ、そのぶんは
+  // 「未突合」として扱われ、新規リストには載っていない。
+  unchecked_count: number;
   csv: string;
   crm_checked: boolean;
+  run_id: string;
   // Notionを読めたか。falseなら取引先名までは出るが、提案済みサービスと
   // 連絡先の列は空になる。
   contacts_available: boolean;

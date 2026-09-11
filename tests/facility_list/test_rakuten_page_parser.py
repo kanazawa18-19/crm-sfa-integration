@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from src.facility_list.infrastructure.rakuten_page_parser import (
+    count_area_list_blocks,
     parse_area_list_page,
     parse_detail_page,
     parse_top_page,
@@ -174,3 +175,19 @@ class TestParseAreaListPage:
     def test_空なら空を返す(self) -> None:
         assert parse_area_list_page("") == ()
         assert parse_area_list_page("<html><body>該当なし</body></html>") == ()
+
+
+class TestCountAreaListBlocks:
+    """カードの数と読み取れた件数がズレたら気づけるようにする。"""
+
+    def test_カードの数を数える(self) -> None:
+        assert count_area_list_blocks(AREA_LIST_PAGE) == 2
+
+    def test_読み取れない壊れたカードも1件として数える(self) -> None:
+        # 「カードは30あるのに2件しか読めない」を検知するための数え方。
+        broken = AREA_LIST_PAGE + '<div class="hotelBox"><p>読めない</p></div>'
+        assert count_area_list_blocks(broken) == 3
+        assert len(parse_area_list_page(broken)) == 2
+
+    def test_空なら0(self) -> None:
+        assert count_area_list_blocks("") == 0

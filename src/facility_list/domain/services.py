@@ -189,9 +189,15 @@ def matches_criteria(
 
     if crm_match is not None:
         if criteria.crm_filter is CrmFilter.NEW_ONLY:
-            # AMBIGUOUS(候補が複数)とNOT_CHECKED(未突合)を「未取引」に混ぜない。
-            # 既存顧客へ新規営業をかける事故が起きるため、確実に見つからなかったものだけ通す。
-            if crm_match.state is not CrmMatchState.NOT_FOUND:
+            # 通すのは`NO_NAME_MATCH`（名前照合で当たらなかった）だけ。
+            # AMBIGUOUS(候補が複数)とNOT_CHECKED(突合できず)は絶対に通さない。
+            # 既存顧客へ新規営業をかける事故が起きるため。
+            #
+            # **ただし`NO_NAME_MATCH`も「未取引」の証明ではない。** CRMに運営会社名で
+            # 載っている既存顧客は施設名では当たらないので、このリストには混ざりうる
+            # (他社レビュー指摘、2026-09-12)。住所・電話での二次照合は未実装。
+            # CSVの「CRM状態」列は「未取引の可能性（名前照合のみ）」と出している。
+            if crm_match.state is not CrmMatchState.NO_NAME_MATCH:
                 return False
         elif criteria.crm_filter is CrmFilter.EXISTING_ONLY:
             if crm_match.state is not CrmMatchState.MATCHED:

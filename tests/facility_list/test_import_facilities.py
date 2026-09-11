@@ -41,11 +41,10 @@ DETAIL_HTML = """
 
 
 class _FakeRobots:
-    def __init__(self, disallowed: set[int]) -> None:
-        self._disallowed = disallowed
+    """`RobotsRules`の代わり。施設番号で禁止を表現する(テストの読みやすさ優先)。"""
 
-    def is_allowed(self, hotel_no: int) -> bool:
-        return hotel_no not in self._disallowed
+    def __init__(self, disallowed: set[int]) -> None:
+        self.disallowed = disallowed
 
 
 class _FakeClient:
@@ -67,8 +66,14 @@ class _FakeClient:
         self._raise_for = raise_for or {}
         self.fetched: list[int] = []
 
-    def load_robots(self) -> _FakeRobots:
+    def load_robots(self, host: str = "travel.rakuten.co.jp") -> _FakeRobots:
         return self._robots
+
+    def is_url_allowed(self, url: str) -> bool:
+        import re as _re
+
+        m = _re.search(r"/HOTEL/(\d+)/", url)
+        return not (m and int(m.group(1)) in self._robots.disallowed)
 
     def iter_area_list(self, prefecture: str, *, max_pages=None):  # noqa: ANN001, ANN202
         yield from self._entries

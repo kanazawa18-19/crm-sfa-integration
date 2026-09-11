@@ -173,7 +173,7 @@ class TestMatchesCriteria:
     def test_新規のみでは未突合も候補複数も通さない(self) -> None:
         f = self._facility()
         criteria = ListCriteria(crm_filter=CrmFilter.NEW_ONLY)
-        assert matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.NOT_FOUND))
+        assert matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.NO_NAME_MATCH))
         assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.AMBIGUOUS))
         assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.NOT_CHECKED))
         assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.MATCHED))
@@ -278,7 +278,7 @@ class TestMatchesCriteriaRemaining:
         assert matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.MATCHED))
         assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.AMBIGUOUS))
         assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.NOT_CHECKED))
-        assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.NOT_FOUND))
+        assert not matches_criteria(f, criteria, CrmMatch(state=CrmMatchState.NO_NAME_MATCH))
 
     def test_取引中サービスも提案済み除外の対象にする(self) -> None:
         f = self._facility()

@@ -238,3 +238,40 @@ class TestFetchFacilities:
         _patch_connect(monkeypatch, cursor)
         counts = db.count_facilities()
         assert counts == {"total": 10, "listed": 9, "missing_room_count": 1, "with_warning": 0}
+
+
+class TestClientNameIndexHealth:
+    """CRMミラーが空・古いときに新規リストを作らせないための確認。"""
+
+    def test_件数と最終同期日時を読む(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import datetime, timezone
+
+        stamp = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc)
+        cursor = _FakeCursor(fetch_one_rows=[{"n": 9914, "last": stamp}])
+        _patch_connect(monkeypatch, cursor)
+        health = db.client_name_index_health()
+        assert health.row_count == 9914
+        assert health.last_synced_at == stamp
+        sql, _ = cursor.executed[0]
+        assert "ClientNameIndex" in sql
+
+    def test_空なら使えないと判定する(self) -> None:
+        from datetime import datetime, timezone
+
+        health = db.ClientNameIndexHealth(row_count=0, last_synced_at=datetime.now(timezone.utc))
+        assert health.is_fresh() is False
+
+    def test_古ければ使えないと判定する(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        old = datetime.now(timezone.utc) - timedelta(days=3)
+        health = db.ClientNameIndexHealth(row_count=9914, last_synced_at=old)
+        assert health.is_fresh() is False
+
+    def test_新しくて件数が十分なら使える(self) -> None:
+        from datetime import datetime, timezone
+
+        health = db.ClientNameIndexHealth(
+            row_count=9914, last_synced_at=datetime.now(timezone.utc)
+        )
+        assert health.is_fresh() is True

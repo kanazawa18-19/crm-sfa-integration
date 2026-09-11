@@ -86,11 +86,13 @@ export default function FacilityListPageClient() {
   const [previewing, setPreviewing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
 
   const update = <K extends keyof Criteria>(key: K, value: Criteria[K]) => {
     setCriteria((current) => ({ ...current, [key]: value }));
     // 条件を変えたら前回の件数は無効。出したままにすると古い件数で判断させてしまう。
     setPreview(null);
+    setExportNote(null);
   };
 
   const usesCrmCondition =
@@ -128,6 +130,7 @@ export default function FacilityListPageClient() {
 
   async function handleExport() {
     setError(null);
+    setExportNote(null);
     setExporting(true);
     try {
       const result = await call<FacilityListExport>("/api/facility-list/export");
@@ -141,6 +144,24 @@ export default function FacilityListPageClient() {
       anchor.download = `営業リスト_${stamp}.csv`;
       anchor.click();
       URL.revokeObjectURL(url);
+
+      // 何件がどういう状態だったかを必ず伝える。特に「突合を打ち切った件数」を
+      // 黙っていると、その行が新規リストに入っていないことに気づけない。
+      const notes = [`${result.total}件を書き出しました`];
+      notes.push(`既存取引先 ${result.matched_count}件`);
+      notes.push(`未取引の可能性 ${result.new_count}件`);
+      if (result.ambiguous_count > 0) {
+        notes.push(`要確認（候補が複数） ${result.ambiguous_count}件`);
+      }
+      if (result.unchecked_count > 0) {
+        notes.push(
+          `時間切れでCRM突合できなかった ${result.unchecked_count}件（この行は新規リストに入っていません）`
+        );
+      }
+      if (!result.contacts_available) {
+        notes.push("CRMに接続できなかったため、担当者の連絡先は空欄です");
+      }
+      setExportNote(notes.join(" / "));
     } finally {
       setExporting(false);
     }
@@ -381,9 +402,13 @@ export default function FacilityListPageClient() {
             onChange={(e) => update("crm_filter", e.target.value)}
           >
             <option value="any">問わない</option>
-            <option value="new_only">未取引のみ（新規開拓）</option>
+            <option value="new_only">未取引の可能性のみ（新規開拓）</option>
             <option value="existing_only">既存取引先のみ（アップセル）</option>
           </select>
+          <span className="text-xs text-(--color-foreground)/60">
+            突合は<strong>施設名だけ</strong>で行います。CRMに運営会社名で登録されている
+            既存顧客は「未取引の可能性」に混ざります。架電前に取引先名を確認してください。
+          </span>
         </label>
 
         <div className="mt-4">
@@ -439,6 +464,10 @@ export default function FacilityListPageClient() {
             </span>
           )}
         </div>
+
+        {exportNote && (
+          <p className="mt-4 text-sm text-(--color-foreground)/80">{exportNote}</p>
+        )}
 
         {preview && (
           <div className="mt-5">

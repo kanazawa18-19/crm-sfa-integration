@@ -43,9 +43,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 1回のエクスポートで扱う上限。CRM突合はNotionを1件ずつ読むため、Vercelの
-# maxDuration(300秒)に収まる範囲に抑える。超えたら条件を絞ってもらう。
-MAX_EXPORT_ROWS = 500
+# 1回のエクスポートで扱う上限。**これは時間の保証ではなく、応答が巨大になりすぎない
+# ようにするための上限。** 「N件までなら300秒に収まる」という関係は成り立たない
+# (他社レビュー2社が独立に指摘、2026-09-12)。Notionの個別ページ取得は既存顧客の数だけ
+# 発生するので、同じ件数でも全件新規なら数秒、全件既存なら数分かかる。
+# 実際の時間制御は`CrmMatcher`の時間予算(DEFAULT_TIME_BUDGET_SECONDS)が行い、
+# 使い切った分は`NOT_CHECKED`として正直に返す。
+MAX_EXPORT_ROWS = 1000
 # プレビューで返す行数。件数だけ分かれば条件は詰められる。
 PREVIEW_ROWS = 30
 
@@ -143,14 +147,39 @@ def preview_facility_list(request: ListCriteriaRequest) -> dict:
 class ExportRequest(ListCriteriaRequest):
     created_by: str = Field(default="", max_length=100)
     # 履歴(FacilityListRun)を誰の実行として残すか。ダッシュボード側が
-    # ログイン中のユーザーから埋める(クライアントの申告は使わない)。
-    user_id: str = Field(default="", max_length=64)
+    # ログイン中のユーザーから埋める。
+    #
+    # **必須にしてある。** 空でも通していた頃は、APIを直接叩けば監査ログを残さずに
+    # 担当者名・メール・電話入りのCSVを取り出せた(ChatGPTレビューのBLOCKER、
+    # 2026-09-12)。このAPIは共有トークンで守られているだけなので、
+    # 「誰が出したか」を必ず残す。
+    user_id: str = Field(min_length=1, max_length=64)
 
 
 @router.post("/api/facility-list/export", dependencies=[Depends(verify_dashboard_api_token)])
 def export_facility_list(request: ExportRequest) -> dict:
     """CRMと突合した完全なリストをCSV文字列で返す。"""
     criteria = request.to_criteria()
+
+    # CRMの状態で絞るなら、その根拠になるローカルミラーが使える状態か先に確かめる。
+    # 空・古いミラーでも検索は「正常に0件」を返すので、例外では気づけない
+    # (ChatGPTレビュー指摘、2026-09-12)。
+    if criteria.crm_filter is not CrmFilter.ANY:
+        try:
+            health = facility_db.client_name_index_health()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("取引先名インデックスの状態を確認できなかった")
+            raise HTTPException(
+                status_code=503, detail=f"CRM照合の準備状態を確認できませんでした: {exc}"
+            ) from exc
+        if not health.is_fresh():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "CRM取引先名の同期が古いため、取引状態での絞り込みは使えません"
+                    f"（{health.describe()}）"
+                ),
+            )
 
     # 件数を先に数える。CRM突合の前に上限を超えていれば、Notionを読まずに断る。
     # **`build_list()`ではなく`count_candidates()`を使う。** 前者はCRM条件を
@@ -179,25 +208,36 @@ def export_facility_list(request: ExportRequest) -> dict:
     result = build_list(criteria, matcher=matcher)
 
     # 「先週と同じ条件でもう1回」が現場で必ず起きるので、条件と件数を残す。
-    # 失敗しても書き出しは止めない(db.record_list_run内で握る)。
-    if request.user_id:
-        facility_db.record_list_run(
-            user_id=request.user_id,
-            criteria=request.model_dump(exclude={"user_id", "created_by"}),
-            total_count=result.total,
-            matched_count=result.matched_count,
-            new_count=result.new_count,
-            ambiguous_count=result.ambiguous_count,
+    # **個人情報を含むCSVを出す操作なので、記録に失敗したら書き出しごと断る。**
+    # 「記録は無いがCSVは出た」を許すと、監査ログの意味が無くなる
+    # (ChatGPTレビュー指摘、2026-09-12)。
+    run_id = facility_db.record_list_run(
+        user_id=request.user_id,
+        criteria=request.model_dump(exclude={"user_id", "created_by"}),
+        total_count=result.total,
+        matched_count=result.matched_count,
+        new_count=result.new_count,
+        ambiguous_count=result.ambiguous_count,
+    )
+    if run_id is None:
+        raise HTTPException(
+            status_code=503,
+            detail="実行履歴を記録できなかったため書き出しを中止しました",
         )
 
     return {
         "total": result.total,
         "matched_count": result.matched_count,
+        # 「名前照合で当たらなかった」件数。未取引の件数ではない。
         "new_count": result.new_count,
         "ambiguous_count": result.ambiguous_count,
+        # 時間予算を使い切って突合を打ち切った件数。0でないなら、そのぶんの行は
+        # 「未突合」であり、新規リストには載っていない。
+        "unchecked_count": matcher.skipped_by_budget,
         "csv": to_csv(result, created_by=request.created_by),
         "crm_checked": True,
         # Notionを読めていない場合、取引先名までは分かっても提案済みサービスや
         # 連絡先は空になる。画面がそれを伝えられるよう返す。
         "contacts_available": matcher.has_notion_access,
+        "run_id": run_id,
     }

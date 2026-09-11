@@ -253,6 +253,19 @@ class AreaListEntry:
     min_charge: int | None = None
 
 
+def count_area_list_blocks(html: str) -> int:
+    """エリア一覧ページに施設カードがいくつ並んでいるかを数える。
+
+    `parse_area_list_page()`が取り出せた件数と突き合わせるために使う。
+    楽天のHTML変更でカード内の項目名だけ変わると、カードは30個あるのに
+    取り出せるのは数件、という**部分的な壊れ方**をする。これを「最終ページ」と
+    読み違えると、母集団が静かに欠ける(ChatGPTレビュー指摘、2026-09-12)。
+    """
+    if not html:
+        return 0
+    return len(re.findall(r'<div[^>]*class="hotelBox"', html))
+
+
 def parse_area_list_page(html: str) -> tuple[AreaListEntry, ...]:
     """エリア一覧ページから施設を取り出す。
 

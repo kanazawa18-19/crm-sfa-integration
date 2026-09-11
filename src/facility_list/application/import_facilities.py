@@ -128,13 +128,16 @@ def import_prefecture_shallow(
 ) -> ImportResult:
     """第1段階。エリア一覧だけを辿って施設の骨格を作る。"""
     result = ImportResult(prefecture=prefecture)
-    robots = client.load_robots()
 
     for entry in client.iter_area_list(prefecture, max_pages=max_pages):
-        if not robots.is_allowed(entry.hotel_no):
+        facility = _entry_to_facility(entry)
+        # 施設ページを取りに行く前に、robots.txt で禁止されていないか見ておく
+        # (取得の直前でも`RakutenTravelClient`が見るが、対象から先に外しておけば
+        #  無駄なリクエストが1本も出ない)。
+        if not client.is_url_allowed(facility.page_url):
             result.skipped_by_robots += 1
             continue
-        result.facilities.append(_entry_to_facility(entry))
+        result.facilities.append(facility)
         result.listed_count += 1
 
     logger.info(

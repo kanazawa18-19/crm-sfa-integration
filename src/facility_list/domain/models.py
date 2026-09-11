@@ -179,15 +179,36 @@ class Facility:
 class CrmMatchState(str, Enum):
     """CRM(Notion取引先マスター)との突合結果。
 
-    **`NOT_CHECKED`と`NOT_FOUND`を必ず分ける。** 突合していないものを「未取引」として
-    営業に渡すと、既存顧客へ新規営業をかける事故になる(§1「確認した事実と推測を
-    混ぜない」)。
+    **4つを混ぜない。** 突合していないものを「未取引」として営業に渡すと、既存顧客へ
+    新規営業をかける事故になる(§1「確認した事実と推測を混ぜない」)。
+
+    `NO_NAME_MATCH`は**「名前照合で当たらなかった」以上の意味を持たない**。
+    CRMには運営会社名で登録されていることが多く(「株式会社◯◯」が「ホテル△△」を
+    運営している)、施設名だけでは既存顧客でも当たらない。これを「未取引」と呼ぶと、
+    名前が違うだけの既存顧客に新規営業をかけることになる
+    (ChatGPT/Gemini の他社レビュー指摘、2026-09-12)。
+
+    住所や電話での二次照合は**未実装**なので、この状態は「未取引の可能性がある」
+    までしか言えない。画面とCSVでもその通りに表示する。
     """
 
     MATCHED = "matched"  # 1件に確定
     AMBIGUOUS = "ambiguous"  # 候補が複数。人の確認が要る
-    NOT_FOUND = "not_found"  # CRMに無い＝未取引の見込み
+    NO_NAME_MATCH = "no_name_match"  # 名前照合では当たらなかった(未取引とは言い切れない)
     NOT_CHECKED = "not_checked"  # まだ突合していない
+
+
+class NameMatchStrength(str, Enum):
+    """施設名のどの候補で当たったか。
+
+    弱い候補(空白区切りの最後の塊)だけで確定させると、「ホテルABC 大阪」の「大阪」が
+    別会社に1件だけ当たって、**その会社の担当者名・メール・電話が別施設の行に出る**
+    (ChatGPTレビューのBLOCKER、2026-09-12)。弱い候補は住所の一致を必須にする。
+    """
+
+    EXACT = "exact"  # 施設名そのまま(空白の有無だけ違う)
+    STRIPPED = "stripped"  # 先頭の修飾語(「天然温泉」等)を落としたもの
+    WEAK = "weak"  # 空白区切りの最後の塊。単独では確定させない
 
 
 @dataclass(frozen=True)
@@ -215,6 +236,8 @@ class CrmMatch:
     contracted_services: tuple[str, ...] = ()  # 取引中サービス
     contacts: tuple[CrmContact, ...] = ()
     candidate_names: tuple[str, ...] = ()  # AMBIGUOUSのときの候補
+    # どの強さの名前候補で当たったか。MATCHEDのときだけ入る。
+    matched_by: "NameMatchStrength | None" = None
 
 
 class CrmFilter(str, Enum):

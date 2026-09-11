@@ -61,6 +61,22 @@ def _base_payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+def _fresh_health():  # noqa: ANN202
+    """CRMミラーが新しい状態のダミー。"""
+    from datetime import datetime, timezone
+
+    from src.facility_list.infrastructure.db import ClientNameIndexHealth
+
+    return ClientNameIndexHealth(row_count=9914, last_synced_at=datetime.now(timezone.utc))
+
+
+def _export_payload(**overrides: Any) -> dict[str, Any]:
+    """書き出しは`user_id`必須(監査ログを必ず残すため)。"""
+    payload = _base_payload(user_id="user-1", created_by="金沢")
+    payload.update(overrides)
+    return payload
+
+
 class TestAuth:
     def test_トークンが無ければ401(self, client: TestClient) -> None:
         assert client.post("/api/facility-list/preview", json=_base_payload()).status_code == 401
@@ -117,11 +133,12 @@ class TestPreview:
 
 
 class _StubMatcher:
-    def __init__(self, *, has_notion_access: bool = True) -> None:
+    def __init__(self, *, has_notion_access: bool = True, skipped: int = 0) -> None:
         self.has_notion_access = has_notion_access
+        self.skipped_by_budget = skipped
 
     def match_all(self, facilities):  # noqa: ANN001
-        return {f.hotel_no: CrmMatch(state=CrmMatchState.NOT_FOUND) for f in facilities}
+        return {f.hotel_no: CrmMatch(state=CrmMatchState.NO_NAME_MATCH) for f in facilities}
 
 
 class TestExport:
@@ -131,17 +148,13 @@ class TestExport:
             route,
             "build_list",
             lambda criteria, matcher=None: _result(
-                [_row(1, CrmMatchState.NOT_FOUND), _row(2, CrmMatchState.MATCHED)]
+                [_row(1, CrmMatchState.NO_NAME_MATCH), _row(2, CrmMatchState.MATCHED)]
             ),
         )
         monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher())
         monkeypatch.setattr(route.facility_db, "record_list_run", lambda **kwargs: "run-1")
 
-        response = client.post(
-            "/api/facility-list/export",
-            json=_base_payload(created_by="金沢", user_id="user-1"),
-            headers=AUTH,
-        )
+        response = client.post("/api/facility-list/export", json=_export_payload(), headers=AUTH)
         assert response.status_code == 200
         body = response.json()
         assert body["total"] == 2
@@ -157,14 +170,45 @@ class TestExport:
             route, "build_list", lambda criteria, matcher=None: _result([_row(1)])
         )
         monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher())
-        monkeypatch.setattr(route.facility_db, "record_list_run", lambda **kwargs: None)
+        monkeypatch.setattr(route.facility_db, "record_list_run", lambda **kwargs: "run-1")
+        monkeypatch.setattr(route.facility_db, "client_name_index_health", _fresh_health)
 
         response = client.post(
             "/api/facility-list/export",
-            json=_base_payload(crm_filter="new_only"),
+            json=_export_payload(crm_filter="new_only"),
             headers=AUTH,
         )
         assert response.status_code == 200
+
+    def test_CRMミラーが古ければ取引状態での絞り込みを断る(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        # 空・古いミラーでも検索は「正常に0件」を返すので、例外では気づけない
+        # (ChatGPTレビュー指摘、2026-09-12)。既存顧客が丸ごと新規リストに載る。
+        from datetime import datetime, timedelta, timezone
+
+        from src.facility_list.infrastructure.db import ClientNameIndexHealth
+
+        monkeypatch.setattr(
+            route.facility_db,
+            "client_name_index_health",
+            lambda: ClientNameIndexHealth(
+                row_count=9914,
+                last_synced_at=datetime.now(timezone.utc) - timedelta(days=5),
+            ),
+        )
+
+        def _should_not_be_called():  # noqa: ANN202
+            raise AssertionError("ミラーが古いのに突合を始めた")
+
+        monkeypatch.setattr(route, "CrmMatcher", _should_not_be_called)
+        response = client.post(
+            "/api/facility-list/export",
+            json=_export_payload(crm_filter="new_only"),
+            headers=AUTH,
+        )
+        assert response.status_code == 503
+        assert "同期が古い" in response.json()["detail"]
 
     def test_多すぎたらNotionを読む前に断る(self, client: TestClient, monkeypatch) -> None:
         monkeypatch.setattr(route, "count_candidates", lambda criteria: route.MAX_EXPORT_ROWS + 1)
@@ -173,7 +217,7 @@ class TestExport:
             raise AssertionError("上限を超えているのにCRM突合を始めた")
 
         monkeypatch.setattr(route, "CrmMatcher", _should_not_be_called)
-        response = client.post("/api/facility-list/export", json=_base_payload(), headers=AUTH)
+        response = client.post("/api/facility-list/export", json=_export_payload(), headers=AUTH)
         assert response.status_code == 422
         assert "上限" in response.json()["detail"]
 
@@ -185,7 +229,7 @@ class TestExport:
         monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher(has_notion_access=False))
         response = client.post(
             "/api/facility-list/export",
-            json=_base_payload(exclude_proposed_services=["フルスコ"]),
+            json=_export_payload(exclude_proposed_services=["フルスコ"]),
             headers=AUTH,
         )
         assert response.status_code == 503
@@ -198,29 +242,47 @@ class TestExport:
         )
         monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher())
         monkeypatch.setattr(
-            route.facility_db, "record_list_run", lambda **kwargs: recorded.update(kwargs)
+            route.facility_db,
+            "record_list_run",
+            lambda **kwargs: (recorded.update(kwargs), "run-1")[1],
         )
 
-        client.post(
-            "/api/facility-list/export",
-            json=_base_payload(user_id="user-1", created_by="金沢"),
-            headers=AUTH,
-        )
+        client.post("/api/facility-list/export", json=_export_payload(), headers=AUTH)
         assert recorded["user_id"] == "user-1"
         assert recorded["criteria"]["prefectures"] == ["鳥取県"]
         # 実行者の情報を条件として保存し直さない（二重に持たない）。
         assert "user_id" not in recorded["criteria"]
 
-    def test_user_idが無ければ履歴を残さない(self, client: TestClient, monkeypatch) -> None:
-        monkeypatch.setattr(route, "count_candidates", lambda criteria: 1)
-        monkeypatch.setattr(
-            route, "build_list", lambda criteria, matcher=None: _result([_row(1)])
-        )
-        monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher())
-
+    def test_user_idが無ければ書き出さない(self, client: TestClient, monkeypatch) -> None:
+        # 空を通していた頃は、APIを直接叩けば監査ログ無しで個人情報CSVを出せた
+        # (ChatGPTレビューのBLOCKER、2026-09-12)。
         def _should_not_be_called(**kwargs):  # noqa: ANN003, ANN202
             raise AssertionError("user_idが無いのに履歴を書こうとした")
 
         monkeypatch.setattr(route.facility_db, "record_list_run", _should_not_be_called)
         response = client.post("/api/facility-list/export", json=_base_payload(), headers=AUTH)
-        assert response.status_code == 200
+        assert response.status_code == 422
+
+    def test_履歴を残せなければ書き出しごと断る(self, client: TestClient, monkeypatch) -> None:
+        # 「記録は無いがCSVは出た」を許すと監査ログの意味が無くなる。
+        monkeypatch.setattr(route, "count_candidates", lambda criteria: 1)
+        monkeypatch.setattr(
+            route, "build_list", lambda criteria, matcher=None: _result([_row(1)])
+        )
+        monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher())
+        monkeypatch.setattr(route.facility_db, "record_list_run", lambda **kwargs: None)
+        response = client.post("/api/facility-list/export", json=_export_payload(), headers=AUTH)
+        assert response.status_code == 503
+
+    def test_打ち切った件数を返す(self, client: TestClient, monkeypatch) -> None:
+        # 時間予算を使い切って突合できなかった分を黙って隠さない。
+        monkeypatch.setattr(route, "count_candidates", lambda criteria: 1)
+        monkeypatch.setattr(
+            route, "build_list", lambda criteria, matcher=None: _result([_row(1)])
+        )
+        monkeypatch.setattr(route, "CrmMatcher", lambda: _StubMatcher(skipped=7))
+        monkeypatch.setattr(route.facility_db, "record_list_run", lambda **kwargs: "run-1")
+        body = client.post(
+            "/api/facility-list/export", json=_export_payload(), headers=AUTH
+        ).json()
+        assert body["unchecked_count"] == 7
