@@ -605,3 +605,69 @@ export function getIntegrationDiagnostic(target: string): Promise<unknown> {
     redirect: "error",
   });
 }
+
+// ── リスト作成マシーン(2026-09-11) ──────────────────────────────────
+// 楽天トラベルの公開ページから取り込んだ施設を条件で絞り、CRMと突合して営業リストにする。
+// 判定ロジックはすべてバックエンド(src/facility_list/)にあり、ここは受け渡すだけ。
+
+export interface FacilityListCriteria {
+  prefectures: string[];
+  room_count_min: number;
+  room_count_max: number | null;
+  review_min: number | null;
+  review_max: number | null;
+  include_unrated: boolean;
+  categories: string[];
+  custom_page: string | null;
+  check_in_machine: string | null;
+  has_onsen: boolean | null;
+  min_review_count: number | null;
+  max_photo_count: number | null;
+  crm_filter: string;
+  exclude_proposed_services: string[];
+  exclude_chains: boolean;
+  limit: number | null;
+}
+
+export interface FacilityListPreview {
+  total: number;
+  // プレビュー表に出す列名。どの列を出すかはバックエンドが決める
+  // (画面側が何番目かを数えると、列の並びを変えたときに静かにズレる)。
+  headers: string[];
+  // CSVに出る全列。参考情報。
+  all_headers: string[];
+  rows: string[][];
+  truncated: boolean;
+  // プレビューではCRM突合をしない。画面は「未突合」と出すこと(未取引と混ぜない)。
+  crm_checked: boolean;
+}
+
+export interface FacilityListExport {
+  total: number;
+  matched_count: number;
+  new_count: number;
+  ambiguous_count: number;
+  csv: string;
+  crm_checked: boolean;
+  // Notionを読めたか。falseなら取引先名までは出るが、提案済みサービスと
+  // 連絡先の列は空になる。
+  contacts_available: boolean;
+}
+
+export function previewFacilityList(
+  payload: FacilityListCriteria
+): Promise<FacilityListPreview> {
+  return fetchBackend<FacilityListPreview>("/api/facility-list/preview", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function exportFacilityList(
+  payload: FacilityListCriteria & { created_by: string; user_id: string }
+): Promise<FacilityListExport> {
+  return fetchBackend<FacilityListExport>("/api/facility-list/export", {
+    method: "POST",
+    body: payload,
+  });
+}

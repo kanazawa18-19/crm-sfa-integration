@@ -63,6 +63,10 @@ _EXPECTED_ROUTES = {
     # （改行を含む長文）を送るためPOST。送信のエンドポイントはまだ無い。
     ("POST", "/api/bulk-email/preview"),
     ("POST", "/api/bulk-email/consent-overview"),
+    # リスト作成マシーン(2026-09-11)。外部から叩かれる宛先ではないが、
+    # 画面(dashboard/app/api/facility-list/)が固定のパスで呼ぶ。
+    ("POST", "/api/facility-list/preview"),
+    ("POST", "/api/facility-list/export"),
     ("GET", "/api/reports/daily"),
     ("GET", "/api/members/performance"),
     ("GET", "/api/alerts/manager"),

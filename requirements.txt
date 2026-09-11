@@ -13,3 +13,8 @@ pydantic>=2.6
 fastapi>=0.115
 uvicorn[standard]>=0.30
 google-cloud-firestore>=2.21,<3
+
+# リスト作成マシーンのチェックイン機WEB検索(2026-09-11、src/facility_list/infrastructure/
+# check_in_machine_search.py)。ANTHROPIC_API_KEYが無ければ検索せず「未実行」を返すだけで、
+# この依存が無くても他の機能は動く（import自体を関数内で行っている）。
+anthropic>=0.69

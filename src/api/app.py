@@ -60,6 +60,7 @@ from src.sync_engine.clients.notion_client import NotionApiError
 from src.api.dependencies import wiring_dependency
 from src.sync_capacity.http import CapacityMiddleware, router as capacity_router
 from src.api.routes.bulk_email import router as bulk_email_router
+from src.api.routes.facility_list import router as facility_list_router
 from src.api.routes.cron import router as cron_router
 from src.api.routes.diagnostics import router as diagnostics_router
 from src.api.routes.webhooks import router as webhooks_router
@@ -181,6 +182,10 @@ app.include_router(diagnostics_router)
 # 一斉配信（2026-09-03）。今はプレビューのみで、送信のエンドポイントは無い
 # （src/api/routes/bulk_email.pyのdocstring参照）。
 app.include_router(bulk_email_router)
+
+# リスト作成マシーン（2026-09-11）。楽天トラベルの公開ページから取り込んだ施設を
+# 条件で絞り、CRMと突合して営業リストにする。楽天へのアクセスはここでは発生しない。
+app.include_router(facility_list_router)
 
 
 @app.get("/api/dashboard/summary", dependencies=[Depends(verify_dashboard_api_token)])

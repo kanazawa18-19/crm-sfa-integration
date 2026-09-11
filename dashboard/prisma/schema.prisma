@@ -28,8 +28,8 @@ enum UserRole {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String  @id @default(cuid())
+  email        String  @unique
   // Null while an invited user hasn't set their password yet.
   passwordHash String?
 
@@ -38,9 +38,9 @@ model User {
   // emailだけで紐付けると別人が旧ユーザーとしてログインできてしまう(ChatGPTのレビュー指摘)。
   // 初回のGoogleログイン時に束縛し(trust on first use)、以降はこちらを優先して照合する。
   // 一度も使っていないユーザーはNullのまま。
-  googleSubject String? @unique
-  role         UserRole @default(viewer)
-  createdAt    DateTime @default(now())
+  googleSubject String?  @unique
+  role          UserRole @default(viewer)
+  createdAt     DateTime @default(now())
 
   // アクセス権限用のroleとは別軸(2026-08-16、src/incident_detection/)。高優先度インシデント
   // 検知の即時Slack DM通知先を、ハードコード/env変数ではなく動的にDBから解決するために追加。
@@ -76,6 +76,8 @@ model User {
 
   resetTokens       PasswordResetToken[]
   emailChangeTokens EmailChangeToken[]
+  // リスト作成マシーンの実行履歴(2026-09-11)。
+  facilityListRuns  FacilityListRun[]
 }
 
 // One-time code issued for email-based 2FA login. Old/expired rows aren't
@@ -305,16 +307,16 @@ model ProjectMirror {
 // このテーブルもProjectMirror等と同様、書き込みはPython側(psycopg直接アクセス、
 // src/relation_sync/db.py)が行う。
 model ClientNameIndex {
-  id           String @id @default(cuid())
-  notionPageId String @unique
+  id             String   @id @default(cuid())
+  notionPageId   String   @unique
   // src/migration/notion_dedupe.pyのnormalize_company_name_strong()と同じロジックで正規化した
   // 取引先名(完全一致検索用、find_by_normalized_name()参照)。同じ正規化キーを持つ取引先が
   // 複数存在しうる(表記ゆれではなく実在する別会社が同名寄せされるケース)ため@uniqueにはせず
   // @@indexのみ張る。
   normalizedName String
   // 元の取引先名(デバッグ用)。
-  rawName  String
-  syncedAt DateTime @default(now())
+  rawName        String
+  syncedAt       DateTime @default(now())
 
   @@index([normalizedName])
 }
@@ -342,14 +344,14 @@ enum RelationReviewStatus {
 // (schema.prismaとmigration.sqlの間の意図的な乖離。今後このモデルへ`prisma migrate dev`等で
 // 新規マイグレーションを生成する場合、この部分インデックスを消してしまわないよう注意)。
 model RelationReviewQueue {
-  id             String @id @default(cuid())
+  id                     String               @id @default(cuid())
   // "kintone" | "zoho" 等、解決を試みたレコードの出所ツール。
-  sourceTool     String
-  sourceRecordId String
+  sourceTool             String
+  sourceRecordId         String
   // 解決先DBのスキーマキー(例: "client_master"、src/db_schema/registry.py参照)。
-  targetDbKey    String
+  targetDbKey            String
   // 解決を試みた元の文字列(例: kintoneのclient_name列に入っていた会社名)。
-  rawValue       String
+  rawValue               String
   // 複数候補があった場合の候補Notion page ID一覧(候補なしの場合は空配列)。
   candidateNotionPageIds Json
   // candidateNotionPageIdsと同じ順序・同じ件数で対になる、各候補の取引先名(ClientNameIndex.
@@ -468,9 +470,9 @@ model WebhookEvent {
 /// 書き込みはPython側（src/sync_engine/sync_cursor.py）から行う。
 model SyncCursor {
   /// 対象の識別子（例: "client_name_index" / "project_mirror"）。
-  name String @id
+  name          String   @id
   /// 最後に取り込んだページの created_time。ここから先を次回取り直す。
-  watermark String?
+  watermark     String?
   /// この「一巡」を始めた時刻。一巡し終えたときだけ、これより古い行を掃除する。
   passStartedAt DateTime
   updatedAt     DateTime @updatedAt
@@ -489,23 +491,23 @@ model SyncCursor {
 // 複数の連絡先レコードに登録されている場合に、片方だけ止まって片方から送られる事故を
 // 防ぐため（実データでは同一アドレスの重複登録が起こりうる）。
 model ContactMailPreference {
-  id String @id @default(cuid())
+  id             String   @id @default(cuid())
   // Notion連絡先DBのpage_id。**ハイフン無し・小文字に正規化した形**で保存する
   // （配信停止URLのcパラメータをそのまま入れるため。src/bulk_email/ids.pyと
   // dashboard/lib/bulkEmailUnsubscribe.tsが同じ正規化を実装している）。
   // マイグレーションで CHECK ("contactPageId" ~ '^[0-9a-f]{32}$') を張ってあり、
   // 正規化していない値はDBが受け付けない（Prismaのスキーマには表現できないため、
   // ここのコメントとmigration.sqlが正本）。
-  contactPageId  String    @unique
+  contactPageId  String   @unique
   // 申し出があった時点のメールアドレス（小文字）。連絡先レコードが後から作り直されて
   // page_idが変わっても、アドレスで除外し続けられるようにするため保存する。
   contactEmail   String
-  unsubscribed   Boolean   @default(true)
-  unsubscribedAt DateTime  @default(now())
+  unsubscribed   Boolean  @default(true)
+  unsubscribedAt DateTime @default(now())
   // "self"（本人がリンクから停止）| "manual"（社内で手入力）。今は"self"のみ。
-  source         String    @default("self")
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  source         String   @default("self")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   @@index([contactEmail])
 }
@@ -521,10 +523,10 @@ model ContactMailPreference {
 // バックエンド(src/bulk_email/db.py)は読み取り専用。
 // 種類(basis)の定義と判定は src/bulk_email/consent.py が正本。
 model ContactMailConsent {
-  id String @id @default(cuid())
+  id            String    @id @default(cuid())
   // Notion連絡先DBのpage_id。ContactMailPreference と同じく**ハイフン無し・小文字**で保存し、
   // マイグレーションで CHECK ("contactPageId" ~ '^[0-9a-f]{32}$') を張ってある。
-  contactPageId String @unique
+  contactPageId String    @unique
   // 記録した時点のメールアドレス(小文字)。連絡先レコードが作り直されてpage_idが
   // 変わっても、アドレス側で根拠を引き継げるようにするため保存する。
   contactEmail  String
@@ -565,28 +567,28 @@ model ContactMailConsent {
 /// 書き込みはPython側（src/sync_engine/spreadsheet_outbox.py）から行う。
 model SpreadsheetOutbox {
   /// 対象のDB（client_master / chain / contact / project / product / action）。
-  dbKey     String
+  dbKey         String
   /// Notionのpage_id。シートの同期キー列に書かれる値でもある。
-  notionKey String
+  notionKey     String
   /// pending（未処理）/ done（解決済み）/ failed（諦めた。人の対処が要る）。
-  status    String @default("pending")
+  status        String    @default("pending")
   /// 積まれた理由（new_record_row_write_failed 等）。src/sync_engine/spreadsheet_outbox.py 参照。
-  reason    String
+  reason        String
   /// 取り出した回数。取り出しの時点で増やすので、処理中に落ちても数え漏れない。
-  attempts  Int    @default(0)
+  attempts      Int       @default(0)
   /// 次に取り出してよい時刻（失敗するほど後ろへ下げる）。
-  nextAttemptAt DateTime @default(now())
+  nextAttemptAt DateTime  @default(now())
   /// 直近の失敗の種類。**例外の全文は入れない**（接続先やユーザー名が載るため）。
-  lastError String?
+  lastError     String?
   /// どう決着したか。created（行を作れた）/ already_present（もう行があった）/
   /// not_applicable（作る先が無い・書ける項目が無い）/ gave_up（諦めた）/
   /// recovered_manually（人がbackfillで作ったのを後から検知した）。
   /// status だけだと「効いているのか」を数えられないため分けて持つ。
-  resolution String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now())
+  resolution    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now())
   /// done / failed になった時刻。古い done はここを見て掃除する。
-  resolvedAt DateTime?
+  resolvedAt    DateTime?
 
   @@id([dbKey, notionKey])
   @@index([status, nextAttemptAt])
@@ -597,8 +599,161 @@ model SpreadsheetOutbox {
 model RecordSyncWatermark {
   dbKey       String
   notionKey   String
-  acceptedAt  DateTime @db.Timestamptz(6)
+  acceptedAt  DateTime  @db.Timestamptz(6)
   completedAt DateTime? @db.Timestamptz(6)
 
   @@id([dbKey, notionKey])
+}
+
+// ---------------------------------------------------------------------------
+// リスト作成マシーン(2026-09-11)
+//
+// 楽天トラベルの**公開ページ**から集めた宿泊施設の母集団。楽天ウェブサービス(API)は
+// 利用規約第10条(4)「楽天アフィリエイト以外の方法で収入を得ること」の禁止に触れうる
+// ため使わない、という本人判断(2026-09-11)に基づく。
+//
+// 書き込みはPython側(src/facility_list/infrastructure/db.py、psycopg直接)が行う。
+// ProjectMirror等と同じく、スキーマ管理はこのPrismaに一本化する。
+//
+// **mark-and-sweepは使わない。** 楽天から消えた施設も行は残し`isListed`をfalseにする
+// (ProjectMirror全消失インシデントの教訓。母集団は消すより残す方が安い)。
+// ---------------------------------------------------------------------------
+
+/// 施設カテゴリ。楽天の公開ページにこの分類の項目は無く、施設名と設備からの**推定**。
+enum FacilityCategory {
+  hotel
+  ryokan
+  pension
+  villa
+  other
+  unknown
+}
+
+/// カテゴリ推定の確からしさ。unknown と「弱い推定」を画面で区別するために持つ。
+enum FacilityCategoryConfidence {
+  high
+  medium
+  low
+  none
+}
+
+/// 楽天カスタマイズページの公開状態。施設ページに `GW{施設番号}{連番}.html` への
+/// リンクがあれば published(2026-09-11、大阪市30施設で実測)。
+/// not_published は「公開ページが1つも無い」であって「1ページも作っていない」の証明ではない。
+enum CustomPageStatus {
+  published
+  not_published
+  unknown
+}
+
+/// チェックイン機の導入有無。**no と unknown を必ず分ける**。
+/// 楽天のページに記載が無いことは「導入していない」ことの証明にならないため、
+/// 見つからなければ unknown に倒す。
+enum CheckInMachineStatus {
+  yes
+  no
+  unknown
+}
+
+/// チェックイン機の判定根拠。どこで分かったかを必ず残す。
+enum CheckInMachineSource {
+  facility_page
+  web_search
+  crm
+  none
+}
+
+model RakutenFacility {
+  id      String @id @default(cuid())
+  /// 楽天トラベルの施設番号。公開ページのURLに出る値で、これが自然キー。
+  hotelNo Int    @unique
+
+  name       String
+  postalCode String?
+  prefecture String?
+  city       String?
+  address    String?
+
+  /// 総部屋数。詳細情報ページ(`{no}_std.html`)の「総部屋数」から取る。
+  /// 読み取れなければ null のままにする(推測で埋めない)。
+  roomCount Int?
+
+  /// クチコミ総合点(1.00〜5.00)。施設トップの `property="ratingValue"` から取る。
+  reviewAverage Decimal? @db.Decimal(3, 2)
+  reviewCount   Int?
+  /// 楽天トラベルに掲載されている写真・動画の枚数。少ない＝撮影提案の根拠になる。
+  photoCount    Int?
+  /// エリア一覧に出ている最安料金(円)。価格帯の目安。
+  minCharge     Int?
+
+  category           FacilityCategory           @default(unknown)
+  categoryConfidence FacilityCategoryConfidence @default(none)
+
+  hasOnsen         Boolean          @default(false)
+  customPageStatus CustomPageStatus @default(unknown)
+  customPageCount  Int              @default(0)
+
+  /// 館内設備・部屋設備の文字列配列(例: ["レストラン", "大浴場"])。
+  facilities     Json?
+  roomFacilities Json?
+
+  /// 楽天トラベルに掲載中か。掲載終了しても行は消さずここを false にする。
+  isListed Boolean @default(true)
+
+  /// このページを最後に取りに行って成功した時刻。再取得の優先順位に使う。
+  fetchedAt    DateTime?
+  /// 取得は成功したが主要項目が読めなかった場合の理由(楽天側のHTML変更の検知用)。
+  parseWarning String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  checkInMachine FacilityCheckInMachine?
+
+  @@index([prefecture, roomCount])
+  @@index([customPageStatus])
+  @@index([reviewAverage])
+  @@index([fetchedAt])
+}
+
+/// チェックイン機の判定結果。施設マスタとは更新の周期もコストも違う
+/// (WEB検索は1件ずつ課金される)ため別テーブルにし、施設マスタを取り込み直しても
+/// 消えないようにする。
+model FacilityCheckInMachine {
+  hotelNo     Int                  @id
+  status      CheckInMachineStatus @default(unknown)
+  source      CheckInMachineSource @default(none)
+  /// そう判断した根拠のテキスト(ページの該当文・検索で当たった記事の要約)。
+  /// 営業が「なぜこの施設が候補なのか」を確かめられるようにするため必ず残す。
+  evidence    String?
+  /// 根拠として参照したURL。
+  evidenceUrl String?
+  checkedAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  facility RakutenFacility @relation(fields: [hotelNo], references: [hotelNo], onDelete: Cascade)
+
+  @@index([status])
+}
+
+/// 作成したリスト1本の履歴。誰がいつどの条件で何件出したかを残す
+/// (同じ条件で作り直したい、というのが現場で必ず起きるため)。
+model FacilityListRun {
+  id             String   @id @default(cuid())
+  /// 実行した社内ユーザー。
+  userId         String
+  /// 画面で選んだ抽出条件をそのまま保存する(再実行・監査用)。
+  criteria       Json
+  /// 抽出件数。CRM突合の内訳も持つ。
+  totalCount     Int      @default(0)
+  matchedCount   Int      @default(0)
+  newCount       Int      @default(0)
+  ambiguousCount Int      @default(0)
+  /// 出力先(スプレッドシートのURL等)。CSVダウンロードのみなら null。
+  outputUrl      String?
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }

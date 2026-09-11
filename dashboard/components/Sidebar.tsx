@@ -49,6 +49,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 一斉配信(2026-09-03)。今はプレビューのみで1通も送らないが、閲覧者(viewer)は
       // 画面自体に入れない(page.tsxのrequireRole("editor"))ため、リンクも出さない。
       { href: "/bulk-email", label: "一斉配信", minRole: "editor" },
+      // リスト作成マシーン(2026-09-11)。書き出したリストに取引先の連絡先が並ぶため、
+      // 一斉配信と同じく閲覧者(viewer)には出さない。
+      { href: "/facility-list", label: "リスト作成", minRole: "editor" },
     ],
   },
   {
