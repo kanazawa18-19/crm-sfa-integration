@@ -233,17 +233,80 @@ ChatGPT（GPT-5.6 Sol・思考量中）と Gemini（3.1 Pro）に主要4ファ�
 
 テストは 126件 → **158件**（全体 3,318件）。
 
-## 11. 未解決・保留
+## 11. 本番へ出す手順（2026-09-12 調査）
+
+**Vercelのプロジェクトは2つあり、順番を間違えると壊れる。**
+
+```
+   crm-sfa-integration            ルート。FastAPI(api/index.py)。APIエンドポイント
+   crm-sfa-integration-dashboard  dashboard/。Next.jsの画面
+                                  ★ build に `prisma migrate deploy` が入っている
+                                  ＝ここをデプロイするとマイグレーションが自動で当たる
+```
+
+どちらも**Git連携が無い**ので、`git push` だけでは本番は変わらない
+（[[feedback_vercel_no_git_integration_manual_deploy]]）。毎回 `vercel --prod` が要る。
+
+```
+   ① cd dashboard && vercel --prod
+        → マイグレーション 20260911000000_add_facility_list が本番Neonへ当たる
+        → RakutenFacility / FacilityCheckInMachine / FacilityListRun が作られる
+        → 画面 /facility-list とサイドバーの「リスト作成」も出る
+        ※ この時点ではAPIが無いので、画面で操作すると失敗する（数分の不整合）
+
+   ② cd .. && vercel --prod
+        → /api/facility-list/{preview,export} が公開される
+        → ここで初めて画面が動く
+
+   ③ 母集団を入れる（画面から操作しても何も出ない。先に取り込みが要る）
+        DATABASE_URL=<本番> python scripts/import_rakuten_facilities.py --prefecture 鳥取県
+```
+
+**①を先にやる。** 逆にすると、APIがまだ存在しないテーブルを触りに行く。
+
+### マイグレーションの事前検証（2026-09-12 実施済み）
+
+手書きのマイグレーションSQLを、使い捨てのローカルPostgres(17)へ実際に流して確かめた。
+
+```
+   initdb → pg_ctl start → createdb → prisma migrate deploy
+   → All migrations have been successfully applied.
+
+   prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma
+   → No difference detected.
+```
+
+**手書きSQLとPrismaスキーマの一致をツールで確認できた**（社内レビューで「目視のみ・
+ツール照合は未実行」として残っていた点）。
+
+### ローカル実Postgresでのエンドツーエンド検証（2026-09-12 実施）
+
+使い捨てのPostgres 17を立てて、本番に一切触らずに通した。
+
+| 確かめたこと | 結果 |
+|---|---|
+| 全マイグレーション適用 | 成功（手書きSQLを含む） |
+| Prismaスキーマとの一致 | `No difference detected.` |
+| 鳥取県30施設の取り込み | 30件書き込み。客室数の欠損0・警告0・失敗0 |
+| 実DBからの読み出し | 30件。客室数・点数・最安料金・温泉・カスタムページすべて復元 |
+| 条件で絞る | カスタマイズページ未作成 × 30室以上 × チェーン除外 → **10件** |
+| CSV生成 | BOM付き11行。「顕在課題」も自動で入る |
+| API `/preview` | HTTP 200、10件、16列 |
+| 認可（トークン無し） | HTTP 401 |
+| 認可（`user_id`無しの書き出し） | HTTP 422 |
+| **CRMミラーが空のまま「未取引のみ」** | **HTTP 503**「同期が古いため使えません」＝他社レビューで入れた安全装置が実際に効いた |
+
+## 12. 未解決・保留
 
 | | 状況 |
 |---|---|
-| **本番未配備** | マイグレーション `20260911000000_add_facility_list` は未適用。実Postgresでの検証も未実施 |
+| **本番未配備** | マイグレーションは本番へ未適用。`vercel --prod` は未実行（§11の手順）。**ローカルの使い捨てPostgresでの検証は2026-09-12に完了**（下記） |
 | **CRM突合の精度** | 施設名と取引先名がどれくらい一致するかは**未計測**。住所・電話での二次照合は**未実装**で、名前照合だけでは既存顧客を取りこぼす。「未取引の可能性」と表示してはいるが、**新規リストに既存顧客が混ざりうる**（他社レビュー最大の指摘）。架電前に取引先名の確認が要る |
 | 時間予算の実測 | 既定180秒が妥当かは**未検証**。Notionの実応答時間を測っていない |
 | チェックイン機のWEB検索 | 一次判定（ページ記述）だけ実装済み。二次判定（WEB検索で確認）は**未実装** |
 | カテゴリー推定の精度 | 「皆生グランドホテル天水」（実態は旅館）が hotel 判定になるなど誤りが残る。確からしさ「中」で出している |
 | スプレッドシート出力 | 2次元配列を作るところまで。既存の `spreadsheet_client.py` への接続は未実装（今はCSVのみ） |
-| 画面の手動確認 | ブラウザでの動作確認は未実施 |
+| 画面の手動確認 | **ブラウザでの操作は未実施。** ログイン(2FA)の壁があるため、ローカルでは本番と同じ `npm run build` が通ることまでを確認した |
 | チェックイン機のWEB検索 | 実装済みだが**実APIでの実行は未検証**（`ANTHROPIC_API_KEY`が未設定）。精度とコストは実測していない |
 | 抽出条件の定義が4箇所 | `ListCriteria`(Python) / `ListCriteriaRequest`(Pydantic) / `normalizeCriteria`(TS) / 画面の`Criteria`型。条件を1つ足すと4ファイルを触る（obasan-quality指摘）。既存画面と同じ構成なので今回は踏襲したが、条件が増え続けるなら共通化を検討する |
-| マイグレーションのツール照合 | `prisma migrate diff`はシャドウDBが要るため未実行。目視照合のみ（shirokuma-secが列・型・index・外部キーを1つずつ突き合わせ、不一致なしを確認） |
+| ~~マイグレーションのツール照合~~ | **2026-09-12に完了。`No difference detected.`**（§11） |
