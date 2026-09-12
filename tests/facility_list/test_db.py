@@ -243,35 +243,57 @@ class TestFetchFacilities:
 class TestClientNameIndexHealth:
     """CRMミラーが空・古いときに新規リストを作らせないための確認。"""
 
-    def test_件数と最終同期日時を読む(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_件数と同期実行時刻を読む(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from datetime import datetime, timezone
 
-        stamp = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc)
-        cursor = _FakeCursor(fetch_one_rows=[{"n": 9914, "last": stamp}])
+        changed = datetime(2026, 9, 7, 19, 1, tzinfo=timezone.utc)
+        ran = datetime(2026, 9, 11, 19, 4, tzinfo=timezone.utc)
+        cursor = _FakeCursor(
+            fetch_one_rows=[{"n": 102813, "changed": changed}, {"updatedAt": ran}]
+        )
         _patch_connect(monkeypatch, cursor)
         health = db.client_name_index_health()
-        assert health.row_count == 9914
-        assert health.last_synced_at == stamp
-        sql, _ = cursor.executed[0]
-        assert "ClientNameIndex" in sql
+        assert health.row_count == 102813
+        assert health.last_run_at == ran
+        assert health.last_changed_at == changed
+        assert "ClientNameIndex" in cursor.executed[0][0]
+        assert "SyncCursor" in cursor.executed[1][0]
+
+    def test_中身が変わっていなくても同期が走っていれば使える(self) -> None:
+        # 取引先に変更が無ければ1行も更新されないので、`syncedAt`は古いままになる。
+        # それを「同期が止まっている」と読むと、正常なのに新規リストが作れなくなる。
+        # **本番で実際に起きていた**(2026-09-12、配備前の確認で発見)。
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        health = db.ClientNameIndexHealth(
+            row_count=102813,
+            last_run_at=now - timedelta(hours=12),
+            last_changed_at=now - timedelta(days=5),
+        )
+        assert health.is_fresh() is True
 
     def test_空なら使えないと判定する(self) -> None:
         from datetime import datetime, timezone
 
-        health = db.ClientNameIndexHealth(row_count=0, last_synced_at=datetime.now(timezone.utc))
+        health = db.ClientNameIndexHealth(row_count=0, last_run_at=datetime.now(timezone.utc))
         assert health.is_fresh() is False
 
-    def test_古ければ使えないと判定する(self) -> None:
+    def test_同期が止まっていれば使えないと判定する(self) -> None:
         from datetime import datetime, timedelta, timezone
 
-        old = datetime.now(timezone.utc) - timedelta(days=3)
-        health = db.ClientNameIndexHealth(row_count=9914, last_synced_at=old)
+        stale = datetime.now(timezone.utc) - timedelta(days=3)
+        health = db.ClientNameIndexHealth(row_count=102813, last_run_at=stale)
+        assert health.is_fresh() is False
+
+    def test_一度も走っていなければ使えない(self) -> None:
+        health = db.ClientNameIndexHealth(row_count=102813, last_run_at=None)
         assert health.is_fresh() is False
 
     def test_新しくて件数が十分なら使える(self) -> None:
         from datetime import datetime, timezone
 
         health = db.ClientNameIndexHealth(
-            row_count=9914, last_synced_at=datetime.now(timezone.utc)
+            row_count=102813, last_run_at=datetime.now(timezone.utc)
         )
         assert health.is_fresh() is True

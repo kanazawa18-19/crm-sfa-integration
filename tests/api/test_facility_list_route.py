@@ -67,7 +67,7 @@ def _fresh_health():  # noqa: ANN202
 
     from src.facility_list.infrastructure.db import ClientNameIndexHealth
 
-    return ClientNameIndexHealth(row_count=9914, last_synced_at=datetime.now(timezone.utc))
+    return ClientNameIndexHealth(row_count=9914, last_run_at=datetime.now(timezone.utc))
 
 
 def _export_payload(**overrides: Any) -> dict[str, Any]:
@@ -194,7 +194,7 @@ class TestExport:
             "client_name_index_health",
             lambda: ClientNameIndexHealth(
                 row_count=9914,
-                last_synced_at=datetime.now(timezone.utc) - timedelta(days=5),
+                last_run_at=datetime.now(timezone.utc) - timedelta(days=5),
             ),
         )
 

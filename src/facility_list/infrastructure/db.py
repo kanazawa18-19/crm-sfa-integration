@@ -371,33 +371,76 @@ class ClientNameIndexHealth:
     古かったりすると、**正常に検索できてしまうので例外にもならず**、既存顧客が
     丸ごと新規リストに載る(ChatGPTレビュー指摘、2026-09-12)。
     書き出しの前にここを見て、怪しければ止める。
+
+    ■ 「最後に同期が走った時刻」と「最後に中身が変わった時刻」は別物
+
+    判定に使うのは`SyncCursor`の`updatedAt`（**同期処理が最後に走った時刻**）。
+    `ClientNameIndex.syncedAt`の最大値ではない。
+
+    取引先マスターの同期は差分方式で、`watermark`より後に更新されたページだけを
+    取りに行く。**取引先に変更が無ければ1行も更新されない**ので、`syncedAt`は
+    そのまま古くなる。それを「同期が止まっている」と読むと、ただ変更が無かった
+    だけの正常な状態で新規リストが作れなくなる。
+
+    本番で実際にこれが起きていた(2026-09-12、配備前の確認で発見):
+
+        ClientNameIndex.syncedAt の最大値 = 9/7（5日前）
+        SyncCursor.updatedAt              = 9/11（前日・cronは動いている）
+
+    最初の実装は前者を見ていたため、正常なのに503を返す状態だった。
     """
 
     row_count: int
-    last_synced_at: datetime | None
+    # 同期処理が最後に走った時刻(`SyncCursor.updatedAt`)。これが判定の本体。
+    last_run_at: datetime | None
+    # 中身が最後に変わった時刻(`ClientNameIndex.syncedAt`の最大値)。表示用。
+    last_changed_at: datetime | None = None
 
     def is_fresh(self, *, max_age_hours: float = 48.0, min_rows: int = 1000) -> bool:
         if self.row_count < min_rows:
             return False
-        if self.last_synced_at is None:
+        if self.last_run_at is None:
             return False
-        age = datetime.now(timezone.utc) - self.last_synced_at
+        age = datetime.now(timezone.utc) - self.last_run_at
         return age <= timedelta(hours=max_age_hours)
 
     def describe(self) -> str:
-        when = self.last_synced_at.strftime("%Y-%m-%d %H:%M UTC") if self.last_synced_at else "不明"
-        return f"取引先名インデックス {self.row_count}件 / 最終同期 {when}"
+        run = self.last_run_at.strftime("%Y-%m-%d %H:%M UTC") if self.last_run_at else "不明"
+        changed = (
+            self.last_changed_at.strftime("%Y-%m-%d %H:%M UTC")
+            if self.last_changed_at
+            else "不明"
+        )
+        return (
+            f"取引先名インデックス {self.row_count}件 / "
+            f"最終同期実行 {run} / 最終更新 {changed}"
+        )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def client_name_index_health() -> ClientNameIndexHealth:
-    """`ClientNameIndex`の件数と最終同期日時を読む。"""
+    """`ClientNameIndex`の件数と、同期処理が最後に走った時刻を読む。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                'SELECT COUNT(*) AS n, MAX("syncedAt") AS last FROM "ClientNameIndex"'
+                'SELECT COUNT(*) AS n, MAX("syncedAt") AS changed FROM "ClientNameIndex"'
             )
-            row = cur.fetchone() or {}
-    last = row.get("last")
-    if last is not None and last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    return ClientNameIndexHealth(row_count=int(row.get("n") or 0), last_synced_at=last)
+            index_row = cur.fetchone() or {}
+            # 同期処理そのものが走った時刻は`SyncCursor`にある。
+            # 行が無ければ「一度も走っていない」とみなす(Noneのまま)。
+            cur.execute(
+                'SELECT "updatedAt" FROM "SyncCursor" WHERE "name" = %s',
+                ("client_name_index",),
+            )
+            cursor_row = cur.fetchone() or {}
+
+    return ClientNameIndexHealth(
+        row_count=int(index_row.get("n") or 0),
+        last_run_at=_as_utc(cursor_row.get("updatedAt")),
+        last_changed_at=_as_utc(index_row.get("changed")),
+    )
