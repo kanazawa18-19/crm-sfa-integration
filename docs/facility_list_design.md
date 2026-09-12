@@ -395,5 +395,8 @@ WHERE name IN ('client_name_index', 'client_name_index_completed');
 - 予算切れ後の名前検索、単独候補の表示、除外した要確認件数、会社別の照合根拠を修正。
 - 独立QAが使い捨てPostgres17へ全30マイグレーションを適用し、Prismaスキーマとの違い0を確認。合成506行で保存・検索・未取得ガード・電話削除・バッチ境界を確認し、同期完了時刻の追加検証を含め計24シナリオ成功。Notion・通知は代替応答。
 - Python全件は3,355成功・12スキップ・環境制約2失敗。macOSプロセス検査の2失敗は権限付きで再実行して2成功（計3,357件の成功確認）。関連261件成功、TypeScript型検査成功、Vitest289件成功。独立SEC/品質/QAは最終BLOCKER 0・WARN 0。
-- **Gemini Pro / Claude Opus・中のレビューは未実施。送信は本人が「いいよ」と承認済み。** 再開時にChrome接続が切れており、利用可能ブラウザは0。指定Profile 18の拡張有効・接続設定正常は診断済み。本人が復旧用ウィンドウ起動も承認し、Profile 18に新規ウィンドウを開く処理は成功した。ただしChrome再選択は利用不能・ブラウザ一覧0件のままで再接続できない。Chromeプラグインの再接続/再インストール待ち。差分は添付・送信とも未実施。送信・ウィンドウ起動の許可を改めて聞く必要はない。
+- **Gemini Pro / Claude Opus・中のレビューは未実施。資料送信は本人承認済み。** Chrome再起動・Profile 18ウィンドウ起動・Codex側Chromeプラグイン再インストールは実施済みだが、2026-09-12の再開時も公式操作は `Browser is not available: chrome`。再起動や再インストールを反復しない。
+- Browser Useによる最初のタブ確認は、自動承認レビューが「公式手順の禁止する代替経路であり、ログイン済みタブの私的情報へ意図せずアクセスするおそれ」を理由に拒否。その後、本人が「承認するよ」と明示。本人のGemini新規チャットだけを開く呼び出しは承認審査を通ったが、接続用プログラムの起動に失敗した。ログは `DevToolsActivePort not found`。タブ作成・資料添付・送信は未実施。
+- Browser Use提供元の[接続手順](https://github.com/browser-use/browser-harness/blob/main/install.md)では、Chromeの `chrome://inspect/#remote-debugging` → `Allow remote debugging for this browser instance` の初回チェックは本人による操作が必要とされる。設定画面の実状態は未確認。本人の設定完了後に既承認の新規チャット接続を再試行する。資料送信・Browser Useの使用承認を聞き直さない。Chrome／ChatGPTの再起動・プラグイン再インストールは今回行っていない。
+- 承認済み資料 `/tmp/crm-secondary-review.txt` は57,322文字、SHA256 `e0059fd00cc0ecc14a724daccda0834a1b353c96743d2a5feff3044842b49a52`。実装 `d5b16c2` の `src tests dashboard` 差分と完全一致し、認証情報パターンの検出は0件。接続できるまではレビュー済みと扱わない。
 - 本番の一致率、Notionの実応答、ブラウザでの施設リスト操作は未検証。
