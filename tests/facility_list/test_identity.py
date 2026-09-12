@@ -115,7 +115,12 @@ def test_同じ住所の複数社は電話が片方でも保留する(setup):
 def test_名前と住所が違う会社を指したら保留する(setup):
     matcher, facility, state = setup
     state["names"] = [{"notion_page_id": "page-b", "raw_name": "別の架空会社"}]
-    assert matcher.match(facility).state is CrmMatchState.AMBIGUOUS
+    result = matcher.match(facility)
+    assert result.state is CrmMatchState.AMBIGUOUS
+    assert "別の架空会社：名前一致" in result.evidence
+    assert "架空運営株式会社：住所一致" in result.evidence
+    assert "架空運営株式会社：電話一致" in result.evidence
+    assert result.contacts == () and result.client_phone is None
 
 
 def test_住所が同じでも電話矛盾なら名前候補があっても保留する(setup):

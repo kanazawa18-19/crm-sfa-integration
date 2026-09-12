@@ -329,7 +329,8 @@ class CrmMatcher:
                            (phone and hit["phone"] and phone != hit["phone"]))
             if len(all_hits) != 1 or not self._identity_index.complete or conflicting:
                 reasons = tuple(sorted(
-                    {f"{r['raw_name']}：{label}" for r in secondary
+                    {f"{r['raw_name']}：名前一致" for r in candidates}
+                    | {f"{r['raw_name']}：{label}" for r in secondary
                      for key, value, label in (("address", address, "住所一致"), ("phone", phone, "電話一致"))
                      if value and r[key] == value}
                 ))
