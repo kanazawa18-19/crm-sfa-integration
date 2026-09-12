@@ -87,6 +87,8 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     )
     monkeypatch.setattr(sync_module, "save_cursor", lambda c: state.update(cursor=c))
     monkeypatch.setattr(sync_module, "clear_cursor", lambda name: state.update(cursor=None))
+    monkeypatch.setattr(sync_module, "record_client_name_refresh_success",
+                        lambda: state.update(completed_recorded=True))
 
     def _upsert(rows: list[dict[str, Any]], *, synced_at: datetime) -> None:
         for r in rows:
@@ -126,6 +128,7 @@ def test_one_run_stops_within_the_budget_and_leaves_a_bookmark(store) -> None:
     assert result["completed"] is False
     assert store["cursor"] is not None, "しおりが残っていない"
     assert store["swept"] is None, "**一巡の途中で掃除してはいけない**"
+    assert not store.get("completed_recorded")
     assert 0 < len(store["upserted"]) < 25_000
 
 
@@ -144,6 +147,7 @@ def test_repeated_runs_eventually_cover_everything(store) -> None:
     assert len(store["upserted"]) == 25_000
     assert store["swept"] == NOW, "一巡し終えたら掃除する"
     assert store["cursor"] is None, "一巡し終えたらしおりを捨てる"
+    assert store["completed_recorded"] is True, "完了時刻は再開用しおりと別に残す"
 
 
 def test_sweep_uses_the_time_the_pass_started(store) -> None:

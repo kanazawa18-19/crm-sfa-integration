@@ -154,9 +154,9 @@ def test_upsert_client_names_and_sweep_batches_upserts_and_deletes_stale_rows(
     upsert_calls = fake_cursor.executed[:3]
     delete_call = fake_cursor.executed[3]
 
-    assert "VALUES (%s, %s, %s, %s, %s), (%s, %s, %s, %s, %s)" in upsert_calls[0][0]
-    assert len(upsert_calls[0][1]) == 2 * 5  # 2行 x 5カラム
-    assert len(upsert_calls[2][1]) == 1 * 5  # 端数バッチは1行分のみ
+    assert "VALUES (%s, %s, %s, %s, %s, %s, %s, %s), (%s, %s, %s, %s, %s, %s, %s, %s)" in upsert_calls[0][0]
+    assert len(upsert_calls[0][1]) == 2 * 8  # 2行 x 8カラム
+    assert len(upsert_calls[2][1]) == 1 * 8  # 端数バッチは1行分のみ
 
     delete_sql, delete_params = delete_call
     assert 'DELETE FROM "ClientNameIndex"' in delete_sql

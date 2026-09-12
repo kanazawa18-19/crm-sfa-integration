@@ -82,6 +82,17 @@ def release_refresh_lock(conn: psycopg.Connection[dict[str, Any]]) -> None:
         conn.close()
 
 
+def record_client_name_refresh_success() -> None:
+    """一巡の成功時刻を保存する。再開用のしおりとは分けて消さずに残す。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute('''
+            INSERT INTO "SyncCursor" (name, watermark, "passStartedAt", "updatedAt")
+            VALUES ('client_name_index_completed', NULL, now(), now())
+            ON CONFLICT (name) DO UPDATE SET "updatedAt" = now(), "passStartedAt" = now()
+        ''')
+        conn.commit()
+
+
 def upsert_client_name(record: dict[str, Any]) -> None:
     """1件のClientNameIndexをUPSERTする(Notion Webhookからのリアルタイム更新用)。
 
@@ -90,18 +101,25 @@ def upsert_client_name(record: dict[str, Any]) -> None:
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO "ClientNameIndex" (id, "notionPageId", "normalizedName", "rawName", "syncedAt")
-            VALUES (%s, %s, %s, %s, now())
+            INSERT INTO "ClientNameIndex" (id, "notionPageId", "normalizedName", "rawName", "syncedAt",
+                "normalizedAddress", "normalizedPhone", "identitySyncedAt")
+            VALUES (%s, %s, %s, %s, now(), %s, %s, %s)
             ON CONFLICT ("notionPageId") DO UPDATE SET
                 "normalizedName" = EXCLUDED."normalizedName",
                 "rawName" = EXCLUDED."rawName",
-                "syncedAt" = now()
+                "syncedAt" = now(),
+                "normalizedAddress" = EXCLUDED."normalizedAddress",
+                "normalizedPhone" = EXCLUDED."normalizedPhone",
+                "identitySyncedAt" = EXCLUDED."identitySyncedAt"
             """,
             (
                 uuid.uuid4().hex,
                 record["notion_page_id"],
                 record["normalized_name"],
                 record["raw_name"],
+                record.get("normalized_address"),
+                record.get("normalized_phone"),
+                db_truncated_utcnow() if record.get("identity_checked") else None,
             ),
         )
         conn.commit()
@@ -178,7 +196,7 @@ def upsert_client_names_and_sweep(records: list[dict[str, Any]]) -> int:
 def _upsert_batch(
     cur: psycopg.Cursor[dict[str, Any]], batch: list[dict[str, Any]], *, synced_at: datetime
 ) -> None:
-    values_sql = ", ".join(["(%s, %s, %s, %s, %s)"] * len(batch))
+    values_sql = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * len(batch))
     params: list[Any] = []
     for record in batch:
         params.extend(
@@ -188,16 +206,23 @@ def _upsert_batch(
                 record["normalized_name"],
                 record["raw_name"],
                 synced_at,
+                record.get("normalized_address"),
+                record.get("normalized_phone"),
+                db_truncated_utcnow() if record.get("identity_checked") else None,
             ]
         )
     cur.execute(
         f"""
-        INSERT INTO "ClientNameIndex" (id, "notionPageId", "normalizedName", "rawName", "syncedAt")
+        INSERT INTO "ClientNameIndex" (id, "notionPageId", "normalizedName", "rawName", "syncedAt",
+            "normalizedAddress", "normalizedPhone", "identitySyncedAt")
         VALUES {values_sql}
         ON CONFLICT ("notionPageId") DO UPDATE SET
             "normalizedName" = EXCLUDED."normalizedName",
             "rawName" = EXCLUDED."rawName",
-            "syncedAt" = EXCLUDED."syncedAt"
+            "syncedAt" = EXCLUDED."syncedAt",
+            "normalizedAddress" = EXCLUDED."normalizedAddress",
+            "normalizedPhone" = EXCLUDED."normalizedPhone",
+            "identitySyncedAt" = EXCLUDED."identitySyncedAt"
         """,
         params,
     )

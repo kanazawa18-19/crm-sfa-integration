@@ -317,8 +317,14 @@ model ClientNameIndex {
   // 元の取引先名(デバッグ用)。
   rawName        String
   syncedAt       DateTime @default(now())
+  // 施設リストの二次照合用。NULLの取得日時は未取り込みを表す。
+  normalizedAddress String?
+  normalizedPhone   String?
+  identitySyncedAt  DateTime?
 
   @@index([normalizedName])
+  @@index([normalizedAddress])
+  @@index([normalizedPhone])
 }
 
 enum RelationReviewStatus {

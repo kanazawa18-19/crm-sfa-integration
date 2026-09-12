@@ -1,20 +1,7 @@
-"""楽天トラベルの施設をCRM(Notion取引先マスターDB)と突合する(2026-09-11)。
+"""施設とCRMを名前・住所・電話で照合する。
 
-照合の材料は**施設名と住所だけ**である。CRMに登録されているのは運営会社名のことが
-多く(「株式会社◯◯」が「ホテル△△」を運営している)、施設名だけでは結び付かない例が
-必ず残る。取りこぼしを「未取引」と言い切らないため、結果は3値で返す:
-
-    MATCHED        1件に確定した
-    AMBIGUOUS      候補が複数ある(人の確認が要る)。**新規リストには載せない**
-    NO_NAME_MATCH  名前照合では当たらなかった。**「未取引」とは言い切れない**
-    NOT_CHECKED    突合そのものができなかった(DB障害等)
-
-**`NO_NAME_MATCH`を「未取引」と読み替えないこと。** CRMには運営会社名で登録されて
-いることが多く、施設名だけでは既存顧客でも当たらない。住所・電話での二次照合は
-未実装(他社レビュー指摘、2026-09-12)。
-
-名前の一次照合は`ClientNameIndex`(Notion取引先マスターのローカルミラー)への完全一致で
-行う。`src/relation_sync/resolve.py`と同じ正規化関数を使い、二重実装を避ける。
+住所/電話だけの候補は新規リストから除外するが、連絡先は自動開示しない。
+二次項目の取り込み途中・取得失敗・時間切れはNOT_CHECKEDとして返す。
 """
 
 from __future__ import annotations
@@ -35,8 +22,10 @@ from src.facility_list.domain.models import (
     NameMatchStrength,
 )
 from src.migration.zoho_client_master import normalize_company_name_strong
-from src.facility_list.infrastructure.db import find_client_pages_by_normalized_names
-from src.relation_sync.db import find_by_normalized_name
+from src.facility_list.domain.identity import normalize_address, normalize_phone
+from src.facility_list.infrastructure.db import (
+    ClientIdentityIndex, find_client_identity_candidates, find_client_pages_by_normalized_names,
+)
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 logger = logging.getLogger(__name__)
@@ -154,11 +143,20 @@ def _multi_values(prop: dict[str, Any] | None) -> tuple[str, ...]:
 DEFAULT_TIME_BUDGET_SECONDS = 180.0
 
 
+def find_by_normalized_name(name: str) -> list[dict[str, Any]]:
+    """単発照合も時間制限のある検索を通す。"""
+    return find_client_pages_by_normalized_names([name]).get(name, [])
+
+
+class _BudgetExpired(Exception):
+    """共有の照合時間を使い切った。"""
+
+
 class CrmMatcher:
     """施設とCRMの突合。Notionの読み取りは必要な分だけ行う。
 
-    連絡先は毎回1件ずつ引くと遅いので、最初に連絡先DBを1度だけ読み込んで
-    取引先ごとにまとめておく(`NOTION_API_KEY`が無い環境では連絡先を付けずに動く)。
+    住所・電話は同期済みミラーを一括検索し、連絡先は確定した取引先だけ取得する。
+    同じ取引先の再取得を避けるため、キャッシュは1回の突合内で共有する。
 
     **時間予算を持つ。** 予算を使い切ったら、残りの施設は`NOT_CHECKED`にして
     打ち切る。黙って遅延させて504にするより、「ここまでは調べた」と正直に返す方がよい。
@@ -175,10 +173,13 @@ class CrmMatcher:
         self._deadline: float | None = None
         # 予算切れで突合を打ち切った施設数。呼び出し元が画面に出す。
         self.skipped_by_budget = 0
+        self.unchecked_count = 0
         self._client_cache: dict[str, dict[str, Any]] = {}
-        self._contacts_by_client: dict[str, list[CrmContact]] | None = None
+        self._contacts_by_client: dict[str, tuple[CrmContact, ...]] = {}
         # `match_all()`が先にまとめて引いた結果。Noneなら1件ずつ引く(単発の`match()`用)。
         self._name_index: dict[str, list[dict[str, str]]] | None = None
+        self._identity_index: ClientIdentityIndex | None = None
+        self._batch = False
 
     @property
     def has_notion_access(self) -> bool:
@@ -194,41 +195,56 @@ class CrmMatcher:
     # -- Notion読み取り ----------------------------------------------------
     def _client_master(self) -> HttpNotionClient:
         return HttpNotionClient(
-            "client_master", CLIENT_MASTER_SCHEMA.notion_database_id, api_key=self._api_key
+            "client_master", CLIENT_MASTER_SCHEMA.notion_database_id, api_key=self._api_key,
+            **self._request_limits(),
         )
 
     def _contact_db(self) -> HttpNotionClient:
-        return HttpNotionClient("contact", CONTACT_SCHEMA.notion_database_id, api_key=self._api_key)
+        return HttpNotionClient("contact", CONTACT_SCHEMA.notion_database_id,
+                                api_key=self._api_key, **self._request_limits())
 
-    def _load_contacts(self) -> dict[str, list[CrmContact]]:
-        """連絡先DBを1度だけ読み込み、取引先ページIDごとにまとめる。"""
-        if self._contacts_by_client is not None:
-            return self._contacts_by_client
-        grouped: dict[str, list[CrmContact]] = {}
+    def _request_limits(self) -> dict[str, Any]:
+        self._check_budget()
+        remaining = (self._deadline - time.monotonic()) if self._deadline is not None else 10.0
+        if remaining <= 0:
+            raise _BudgetExpired
+        # 再試行の待機が時間予算を超えないよう、この用途に限り自動再試行しない。
+        return {"timeout": min(10.0, remaining), "max_retries": 0, "max_rate_limit_retries": 0}
+
+    def _check_budget(self) -> None:
+        if self._budget_exhausted():
+            raise _BudgetExpired
+
+    def _load_contacts(self, page_id: str) -> tuple[CrmContact, ...]:
+        """確定した取引先だけ取得する。全連絡先の読み込みで予算を消費しない。"""
         if not self._api_key:
-            logger.warning("NOTION_API_KEYが無いため連絡先は取得しない")
-            self._contacts_by_client = grouped
-            return grouped
-
-        pages = self._contact_db().query_all_pages()
-        for page in pages:
-            props = page.get("properties") or {}
-            relation = props.get("取引先マスター") or {}
-            related_ids = [r.get("id") for r in relation.get("relation") or [] if r.get("id")]
-            if not related_ids:
-                continue
-            contact = CrmContact(
-                contact_page_id=page.get("id", ""),
-                name=_plain_text(props.get("名前")),
-                email=_plain_text(props.get("メールアドレス")),
-                phone=_plain_text(props.get("直通TEL")) or _plain_text(props.get("携帯番号")),
-                title=_plain_text(props.get("役職")),
-            )
-            for client_id in related_ids:
-                grouped.setdefault(client_id, []).append(contact)
-        logger.info("連絡先を%d取引先分読み込んだ", len(grouped))
-        self._contacts_by_client = grouped
-        return grouped
+            return ()
+        if page_id in self._contacts_by_client:
+            return self._contacts_by_client[page_id]
+        contacts: list[CrmContact] = []
+        body: dict[str, Any] = {"page_size": 100, "filter": {
+            "property": "取引先マスター", "relation": {"contains": page_id}}}
+        seen: set[str] = set()
+        while True:
+            self._check_budget()
+            data = self._contact_db().query_raw(body)
+            self._check_budget()
+            for page in data["results"]:
+                props = page.get("properties") or {}
+                contacts.append(CrmContact(
+                    contact_page_id=page["id"], name=_plain_text(props.get("名前")),
+                    email=_plain_text(props.get("メールアドレス")),
+                    phone=_plain_text(props.get("直通TEL")) or _plain_text(props.get("携帯番号")),
+                    title=_plain_text(props.get("役職")),
+                ))
+            if data.get("has_more") is False:
+                self._contacts_by_client[page_id] = tuple(contacts)
+                return tuple(contacts)
+            cursor = data.get("next_cursor")
+            if not cursor or cursor in seen or len(contacts) >= 10000:
+                raise ValueError("連絡先の全件取得を確認できない")
+            seen.add(cursor)
+            body["start_cursor"] = cursor
 
     def _load_client_page(self, page_id: str) -> dict[str, Any]:
         if page_id in self._client_cache:
@@ -236,16 +252,55 @@ class CrmMatcher:
         if not self._api_key:
             self._client_cache[page_id] = {}
             return {}
-        page = self._client_master().get_raw_page(page_id) or {}
+        self._check_budget()
+        page = self._client_master().get_raw_page(page_id)
+        self._check_budget()
+        if not page or page.get("archived") or page.get("in_trash") or not page.get("properties"):
+            raise ValueError("取引先の現行ページを確認できない")
         self._client_cache[page_id] = page
         return page
 
     # -- 突合 --------------------------------------------------------------
     def match(self, facility: Facility) -> CrmMatch:
-        """施設1軒をCRMと突合する。"""
+        """単発でも一括と同じ時間予算・取得失敗の扱いを使う。"""
+        if not self._batch:
+            self._deadline = time.monotonic() + self._time_budget
+            self._identity_index = None
+            self._name_index = None
+            self._client_cache.clear()
+            self._contacts_by_client.clear()
+            self.skipped_by_budget = 0
+        try:
+            result = self._match(facility)
+            self._check_budget()
+            return result
+        except _BudgetExpired:
+            self.skipped_by_budget += 1
+            return CrmMatch(state=CrmMatchState.NOT_CHECKED)
+        except Exception:  # 取得失敗は営業対象にしない。個人情報やレスポンス本文はログに残さない。
+            logger.warning("CRM突合を完了できなかった: hotelNo=%s", facility.hotel_no)
+            return CrmMatch(state=CrmMatchState.NOT_CHECKED)
+
+    def _prepare_identity(self, facilities: list[Facility]) -> None:
+        self._check_budget()
+        try:
+            self._identity_index = find_client_identity_candidates(
+                [key for f in facilities if (key := normalize_address(f.address, f.prefecture))],
+                [key for f in facilities if (key := normalize_phone(f.telephone))],
+            )
+        except Exception:
+            logger.warning("住所・電話の照合用ミラーを読み取れなかった")
+            self._identity_index = ClientIdentityIndex()
+        self._check_budget()
+
+    def _match(self, facility: Facility) -> CrmMatch:
+        self._check_budget()
+        if self._identity_index is None:
+            self._prepare_identity([facility])
         candidates: list[dict[str, Any]] = []
         strength = NameMatchStrength.EXACT
         for variant, variant_strength in facility_name_variants(facility.name):
+            self._check_budget()
             normalized = normalize_company_name_strong(variant)
             if not normalized:
                 continue
@@ -253,15 +308,65 @@ class CrmMatcher:
                 hits = self._name_index.get(normalized, [])
             else:
                 hits = find_by_normalized_name(normalized)
+            self._check_budget()
             if hits:
                 candidates = hits
                 strength = variant_strength
                 break
 
-        if not candidates:
-            # **NOT_FOUND(未取引)ではない。** 名前で当たらなかっただけ。
-            return CrmMatch(state=CrmMatchState.NO_NAME_MATCH)
+        address = normalize_address(facility.address, facility.prefecture)
+        phone = normalize_phone(facility.telephone)
+        secondary = [row for row in self._identity_index.rows if
+                     (address and row["address"] == address) or (phone and row["phone"] == phone)]
+        if secondary:
+            # 別々の根拠が別会社を指すときは交差を都合よく選ばない。
+            all_hits = {h["notion_page_id"]: h for h in [*candidates, *secondary]}
+            hit = secondary[0]
+            evidence = tuple(label for key, value, label in
+                             (("address", address, "住所一致"), ("phone", phone, "電話一致"))
+                             if value and hit[key] == value)
+            conflicting = ((address and hit["address"] and address != hit["address"]) or
+                           (phone and hit["phone"] and phone != hit["phone"]))
+            if len(all_hits) != 1 or not self._identity_index.complete or conflicting:
+                reasons = tuple(sorted(
+                    {f"{r['raw_name']}：{label}" for r in secondary
+                     for key, value, label in (("address", address, "住所一致"), ("phone", phone, "電話一致"))
+                     if value and r[key] == value}
+                ))
+                return CrmMatch(state=CrmMatchState.AMBIGUOUS,
+                                candidate_names=tuple(h["raw_name"] for h in all_hits.values()),
+                                evidence=reasons + (("候補間または登録値に矛盾",) if len(all_hits) > 1 or conflicting else ("二次項目の同期未完了",)))
+            # 名前の裏付けがない住所単独・電話単独は同居会社や代表電話の可能性が残る。
+            if len(evidence) < 2 and not candidates:
+                return CrmMatch(state=CrmMatchState.AMBIGUOUS,
+                                candidate_names=(hit["raw_name"],), evidence=evidence)
+            # 二次キーが一致していても、Notion上の現行値を確かめる。
+            if not self._api_key:
+                return CrmMatch(state=CrmMatchState.NOT_CHECKED)
+            page = self._load_client_page(hit["notion_page_id"])
+            props = page.get("properties") or {}
+            current_address = normalize_address(_plain_text(props.get("住所")), _plain_text(props.get("都道府県")))
+            current_phone = normalize_phone(_plain_text(props.get("TEL")))
+            if (("住所一致" in evidence and current_address != address) or
+                    ("電話一致" in evidence and current_phone != phone) or
+                    (address and current_address and address != current_address) or
+                    (phone and current_phone and phone != current_phone)):
+                return CrmMatch(state=CrmMatchState.AMBIGUOUS,
+                                candidate_names=(hit["raw_name"],), evidence=("CRM更新差異・要確認",))
+            # WEAKの都道府県照合はこの後も必ず通す。
+            return self._resolved_match(facility, [hit], strength if candidates else None, evidence)
 
+        if not candidates:
+            # 追加項目が未取り込み・古い・施設側の照合材料なしなら不一致と断定しない。
+            state = (CrmMatchState.NO_NAME_MATCH if self._identity_index.complete and (address or phone)
+                     else CrmMatchState.NOT_CHECKED)
+            return CrmMatch(state=state, evidence=("名前・登録済み住所/電話で一致なし",) if state is CrmMatchState.NO_NAME_MATCH else ())
+        return self._resolved_match(facility, candidates, strength, ("名前一致",))
+
+    def _resolved_match(
+        self, facility: Facility, candidates: list[dict[str, Any]],
+        strength: NameMatchStrength | None, evidence: tuple[str, ...],
+    ) -> CrmMatch:
         # 弱い候補(空白区切りの最後の塊)は、1件しか当たらなくても確定させない。
         # 住所が一致して初めて同じ相手とみなす(ChatGPTレビューのBLOCKER、2026-09-12)。
         needs_address_proof = strength is NameMatchStrength.WEAK
@@ -285,8 +390,9 @@ class CrmMatcher:
             if len(narrowed) == 1:
                 candidates = narrowed
             elif not narrowed and needs_address_proof:
-                # 弱い候補しか無く、住所でも裏が取れなかった。当たらなかった扱いにする。
-                return CrmMatch(state=CrmMatchState.NO_NAME_MATCH)
+                # 弱い候補を住所で裏付けられない。新規には戻さず人の確認へ回す。
+                return CrmMatch(state=CrmMatchState.AMBIGUOUS,
+                                candidate_names=tuple(h["raw_name"] for h in candidates))
             else:
                 return CrmMatch(
                     state=CrmMatchState.AMBIGUOUS,
@@ -298,11 +404,12 @@ class CrmMatcher:
         page = self._load_client_page(page_id)
         props = page.get("properties") or {}
 
-        contacts = tuple(self._load_contacts().get(page_id, ()))
+        contacts = self._load_contacts(page_id)
 
         return CrmMatch(
             state=CrmMatchState.MATCHED,
             matched_by=strength,
+            evidence=evidence,
             client_page_id=page_id,
             client_name=hit["raw_name"],
             owner_name=_plain_text(props.get("担当者")),
@@ -324,6 +431,15 @@ class CrmMatcher:
         """
         self._deadline = time.monotonic() + self._time_budget
         self.skipped_by_budget = 0
+        self.unchecked_count = 0
+        self._batch = True
+        self._client_cache.clear()
+        self._contacts_by_client.clear()
+        self._identity_index = None
+        try:
+            self._prepare_identity(facilities)
+        except _BudgetExpired:
+            self._identity_index = ClientIdentityIndex()
         # 名前の候補は先に全部分かるので、1回のクエリでまとめて引く
         # (1件ずつ新しい接続を開くと500施設で最大1,500接続になる)。
         all_names = [
@@ -332,10 +448,17 @@ class CrmMatcher:
             for variant, _ in facility_name_variants(facility.name)
         ]
         try:
+            self._check_budget()
             self._name_index = find_client_pages_by_normalized_names(all_names)
-        except Exception:  # noqa: BLE001 - 引けなければ1件ずつに戻すだけ
-            logger.exception("取引先名インデックスの一括取得に失敗した。1件ずつ引く")
-            self._name_index = None
+            self._check_budget()
+        except Exception:
+            # 失敗したDBへ件数分の再接続をしない。0件という正常結果にも置き換えない。
+            self.unchecked_count = len(facilities)
+            if self._budget_exhausted():
+                self.skipped_by_budget = len(facilities)
+            self._batch = False
+            logger.warning("名前の一括照合を完了できなかった: %d施設", len(facilities))
+            return {f.hotel_no: CrmMatch(state=CrmMatchState.NOT_CHECKED) for f in facilities}
 
         results: dict[int, CrmMatch] = {}
         for facility in facilities:
@@ -356,7 +479,7 @@ class CrmMatcher:
         failed = sum(1 for m in results.values() if m.state is CrmMatchState.NOT_CHECKED)
         no_name = sum(1 for m in results.values() if m.state is CrmMatchState.NO_NAME_MATCH)
         logger.info(
-            "CRM突合: 一致%d件 / 候補が複数%d件 / 名前で当たらず%d件 / 突合できず%d件",
+            "CRM突合: 一致%d件 / 要確認%d件 / 登録情報で一致なし%d件 / 突合できず%d件",
             matched,
             ambiguous,
             no_name,
@@ -371,4 +494,6 @@ class CrmMatcher:
                 self._time_budget,
                 self.skipped_by_budget,
             )
+        self.unchecked_count = failed
+        self._batch = False
         return results

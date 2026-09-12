@@ -231,9 +231,10 @@ def export_facility_list(request: ExportRequest) -> dict:
         # 「名前照合で当たらなかった」件数。未取引の件数ではない。
         "new_count": result.new_count,
         "ambiguous_count": result.ambiguous_count,
-        # 時間予算を使い切って突合を打ち切った件数。0でないなら、そのぶんの行は
+        "excluded_ambiguous_count": result.excluded_ambiguous_count,
+        # 取得失敗・取り込み途中・材料不足・時間切れを含む未突合件数。そのぶんの行は
         # 「未突合」であり、新規リストには載っていない。
-        "unchecked_count": matcher.skipped_by_budget,
+        "unchecked_count": matcher.unchecked_count,
         "csv": to_csv(result, created_by=request.created_by),
         "crm_checked": True,
         # Notionを読めていない場合、取引先名までは分かっても提案済みサービスや

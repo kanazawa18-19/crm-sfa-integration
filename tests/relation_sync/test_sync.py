@@ -58,6 +58,7 @@ def _bypass_refresh_lock(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     monkeypatch.setattr(sync, "try_acquire_refresh_lock", lambda: lock_conn)
     monkeypatch.setattr(sync, "release_refresh_lock", lambda conn: released.append(conn))
     monkeypatch.setattr(sync, "get_client_name_count", lambda: 0)
+    monkeypatch.setattr(sync, "record_client_name_refresh_success", lambda: None)
     return released
 
 

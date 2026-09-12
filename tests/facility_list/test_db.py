@@ -297,3 +297,19 @@ class TestClientNameIndexHealth:
             row_count=102813, last_run_at=datetime.now(timezone.utc)
         )
         assert health.is_fresh() is True
+
+
+@pytest.mark.parametrize("total,checked,age,expected", [
+    (0, 0, 1, False), (3, 2, 1, False), (3, 3, 1, True),
+    (3, 3, 49, False), (3, 3, -1, False),
+])
+def test_二次項目の完全取得と同期実行の鮮度で利用を判定する(
+    monkeypatch, total, checked, age, expected,
+):
+    from datetime import datetime, timedelta, timezone
+    cursor = _FakeCursor(fetch_rows=[], fetch_one_rows=[{
+        "total": total, "checked": checked,
+        "ran": datetime.now(timezone.utc) - timedelta(hours=age),
+    }])
+    _patch_connect(monkeypatch, cursor)
+    assert db.find_client_identity_candidates([], []).complete is expected

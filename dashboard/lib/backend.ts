@@ -647,6 +647,7 @@ export interface FacilityListExport {
   matched_count: number;
   new_count: number;
   ambiguous_count: number;
+  excluded_ambiguous_count?: number;
   // 時間予算を使い切って突合を打ち切った件数。0でなければ、そのぶんは
   // 「未突合」として扱われ、新規リストには載っていない。
   unchecked_count: number;

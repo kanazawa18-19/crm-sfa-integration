@@ -136,6 +136,7 @@ class _StubMatcher:
     def __init__(self, *, has_notion_access: bool = True, skipped: int = 0) -> None:
         self.has_notion_access = has_notion_access
         self.skipped_by_budget = skipped
+        self.unchecked_count = skipped
 
     def match_all(self, facilities):  # noqa: ANN001
         return {f.hotel_no: CrmMatch(state=CrmMatchState.NO_NAME_MATCH) for f in facilities}

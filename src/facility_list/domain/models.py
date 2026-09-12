@@ -182,19 +182,14 @@ class CrmMatchState(str, Enum):
     **4つを混ぜない。** 突合していないものを「未取引」として営業に渡すと、既存顧客へ
     新規営業をかける事故になる(§1「確認した事実と推測を混ぜない」)。
 
-    `NO_NAME_MATCH`は**「名前照合で当たらなかった」以上の意味を持たない**。
-    CRMには運営会社名で登録されていることが多く(「株式会社◯◯」が「ホテル△△」を
-    運営している)、施設名だけでは既存顧客でも当たらない。これを「未取引」と呼ぶと、
-    名前が違うだけの既存顧客に新規営業をかけることになる
-    (ChatGPT/Gemini の他社レビュー指摘、2026-09-12)。
-
-    住所や電話での二次照合は**未実装**なので、この状態は「未取引の可能性がある」
-    までしか言えない。画面とCSVでもその通りに表示する。
+    `NO_NAME_MATCH`の値名は互換性のため維持する。現在は、同期済みの名前・住所・電話に
+    一致しなかった状態。二次項目の取得が全行で終わり、施設側にも照合材料がある場合のみ
+    返す。CRMに施設の所在地が未登録の運営会社は取りこぼすため、未取引の証明ではない。
     """
 
     MATCHED = "matched"  # 1件に確定
-    AMBIGUOUS = "ambiguous"  # 候補が複数。人の確認が要る
-    NO_NAME_MATCH = "no_name_match"  # 名前照合では当たらなかった(未取引とは言い切れない)
+    AMBIGUOUS = "ambiguous"  # 候補あり。単独候補でも根拠不足なら人が確認する
+    NO_NAME_MATCH = "no_name_match"  # 登録情報で一致なし。値名は旧APIとの互換用
     NOT_CHECKED = "not_checked"  # まだ突合していない
 
 
@@ -238,6 +233,7 @@ class CrmMatch:
     candidate_names: tuple[str, ...] = ()  # AMBIGUOUSのときの候補
     # どの強さの名前候補で当たったか。MATCHEDのときだけ入る。
     matched_by: "NameMatchStrength | None" = None
+    evidence: tuple[str, ...] = ()  # 照合根拠。住所だけ・電話だけの候補もここに残す。
 
 
 class CrmFilter(str, Enum):

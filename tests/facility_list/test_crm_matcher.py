@@ -13,9 +13,15 @@ from src.facility_list.infrastructure import crm_matcher as module
 from src.facility_list.infrastructure.crm_matcher import CrmMatcher, facility_name_variants
 
 
+@pytest.fixture(autouse=True)
+def identity_index(monkeypatch):
+    monkeypatch.setattr(module, "find_client_identity_candidates",
+                        lambda addresses, phones: module.ClientIdentityIndex(complete=True))
+
+
 @pytest.fixture
 def facility() -> Facility:
-    return Facility(hotel_no=1, name="皆生温泉　華水亭", prefecture="鳥取県", city="米子市")
+    return Facility(hotel_no=1, name="皆生温泉　華水亭", prefecture="鳥取県", city="米子市", address="鳥取県米子市架空町1-2-3")
 
 
 class TestFacilityNameVariants:
@@ -79,7 +85,7 @@ class TestMatch:
             else [],
         )
         result = CrmMatcher(notion_api_key=None).match(facility)
-        assert result.state is CrmMatchState.NO_NAME_MATCH
+        assert result.state is CrmMatchState.AMBIGUOUS
 
     def test_強い候補なら住所を確認しなくても確定する(self, facility, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -115,24 +121,28 @@ class TestMatchAll:
         def _boom(name: str):  # noqa: ANN202
             raise RuntimeError("Postgresに接続できない")
 
-        monkeypatch.setattr(module, "find_by_normalized_name", _boom)
+        monkeypatch.setattr(module, "find_client_pages_by_normalized_names", _boom)
         results = CrmMatcher(notion_api_key=None).match_all([facility])
         assert results[facility.hotel_no].state is CrmMatchState.NOT_CHECKED
         assert results[facility.hotel_no].state is not CrmMatchState.NO_NAME_MATCH
 
     def test_1件の失敗で全体を止めない(self, monkeypatch) -> None:
-        good = Facility(hotel_no=1, name="華水亭", prefecture="鳥取県")
-        bad = Facility(hotel_no=2, name="壊れる宿", prefecture="鳥取県")
+        good = Facility(hotel_no=1, name="架空の宿", address="鳥取県米子市架空町1-2-3")
+        bad = Facility(hotel_no=2, name="壊れる宿")
+        monkeypatch.setattr(module, "find_client_pages_by_normalized_names", lambda names: {})
+        matcher = CrmMatcher(notion_api_key="")
+        original = matcher._match
 
-        def _sometimes(name: str):  # noqa: ANN202
-            if "壊れる" in name:
+        def sometimes(facility):
+            if facility.hotel_no == 2:
                 raise RuntimeError("失敗")
-            return []
+            return original(facility)
 
-        monkeypatch.setattr(module, "find_by_normalized_name", _sometimes)
-        results = CrmMatcher(notion_api_key=None).match_all([good, bad])
+        monkeypatch.setattr(matcher, "_match", sometimes)
+        results = matcher.match_all([good, bad])
         assert results[1].state is CrmMatchState.NO_NAME_MATCH
         assert results[2].state is CrmMatchState.NOT_CHECKED
+        assert matcher.unchecked_count == 1
 
 
 def test_APIキーが無ければNotionを読まないと自己申告する() -> None:
@@ -164,5 +174,5 @@ class TestTimeBudget:
         )
         matcher = CrmMatcher(notion_api_key=None, time_budget_seconds=60.0)
         results = matcher.match_all([Facility(hotel_no=1, name="テスト旅館")])
-        assert results[1].state is CrmMatchState.NO_NAME_MATCH
+        assert results[1].state is CrmMatchState.NOT_CHECKED
         assert matcher.skipped_by_budget == 0

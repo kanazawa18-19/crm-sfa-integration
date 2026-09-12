@@ -151,11 +151,14 @@ export default function FacilityListPageClient() {
       notes.push(`既存取引先 ${result.matched_count}件`);
       notes.push(`未取引の可能性 ${result.new_count}件`);
       if (result.ambiguous_count > 0) {
-        notes.push(`要確認（候補が複数） ${result.ambiguous_count}件`);
+        notes.push(`要確認（照合候補あり） ${result.ambiguous_count}件`);
+      }
+      if ((result.excluded_ambiguous_count ?? 0) > 0) {
+        notes.push(`要確認のため除外 ${result.excluded_ambiguous_count}件`);
       }
       if (result.unchecked_count > 0) {
         notes.push(
-          `時間切れでCRM突合できなかった ${result.unchecked_count}件（この行は新規リストに入っていません）`
+          `CRM突合を完了できなかった ${result.unchecked_count}件（この行は新規リストに入っていません）`
         );
       }
       if (!result.contacts_available) {
@@ -406,8 +409,10 @@ export default function FacilityListPageClient() {
             <option value="existing_only">既存取引先のみ（アップセル）</option>
           </select>
           <span className="text-xs text-(--color-foreground)/60">
-            突合は<strong>施設名だけ</strong>で行います。CRMに運営会社名で登録されている
-            既存顧客は「未取引の可能性」に混ざります。架電前に取引先名を確認してください。
+            施設名・住所・電話（取得できた場合）で照合します。住所だけ・電話だけの候補は
+            「要確認」とし、新規開拓リストから除きます。CRMに施設の所在地が未登録の
+            既存顧客は残るため、架電前に取引先を確認してください。
+            同期途中・取得失敗・時間切れで照合できない施設も、新規リストには含めません。
           </span>
         </label>
 

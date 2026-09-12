@@ -22,6 +22,7 @@ import os
 from typing import Any, Mapping, Protocol
 
 from src.notifications import operations_dm
+from src.facility_list.domain.identity import normalize_address, normalize_phone
 
 from src.migration.zoho_client_master import normalize_company_name_strong
 import dataclasses
@@ -36,6 +37,7 @@ from src.relation_sync.db import (
     sweep_client_names,
     upsert_client_names,
     upsert_client_names_and_sweep,
+    record_client_name_refresh_success,
 )
 from src.sync_engine.clients.notion_client import parse_notion_property_value
 
@@ -82,11 +84,22 @@ def _page_to_index_row(page: Mapping[str, Any]) -> dict[str, Any] | None:
             page.get("id"),
         )
         return None
-    return {
+    row = {
         "notion_page_id": page["id"],
         "normalized_name": normalize_company_name_strong(title),
         "raw_name": title,
     }
+    # 全ページ取得時に既に届いている値を保存する。欠落/型変更は取得済みにしない。
+    expected = {"住所": "rich_text", "都道府県": "select", "TEL": "phone_number"}
+    if all(isinstance(props.get(k), dict) and props[k].get("type") == t
+           for k, t in expected.items()):
+        values = {k: parse_notion_property_value(props[k]) for k in expected}
+        row.update(
+            normalized_address=normalize_address(values["住所"], values["都道府県"]),
+            normalized_phone=normalize_phone(values["TEL"]),
+            identity_checked=True,
+        )
+    return row
 
 
 def sync_client_name_to_index(
@@ -155,6 +168,8 @@ def refresh_all_client_names(
             }
 
         deleted_count = upsert_client_names_and_sweep(rows)
+        if rows:
+            record_client_name_refresh_success()
         return {"synced_count": len(rows), "deleted_count": deleted_count}
     finally:
         release_refresh_lock(lock_conn)
@@ -361,6 +376,7 @@ def refresh_client_names_incrementally(
             }
 
         deleted_count = sweep_client_names(before=cursor.pass_started_at)
+        record_client_name_refresh_success()
         clear_cursor(CURSOR_NAME)
         logger.info(
             "refresh_client_names_incrementally: 一巡し終えました（今回%d件 / 掃除%d件）",

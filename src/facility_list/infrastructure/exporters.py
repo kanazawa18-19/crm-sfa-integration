@@ -57,6 +57,7 @@ HEADERS: tuple[str, ...] = (
     "担当者名",
     "役職",
     "提案候補商材",
+    "CRM照合根拠",
 )
 
 # 画面のプレビュー表に出す列。`HEADERS`の並びを変えても壊れないよう**名前で**持つ。
@@ -84,10 +85,10 @@ PREVIEW_COLUMNS: tuple[str, ...] = (
 
 _CRM_STATE_LABELS = {
     CrmMatchState.MATCHED: "既存取引先",
-    CrmMatchState.AMBIGUOUS: "要確認(候補が複数)",
+    CrmMatchState.AMBIGUOUS: "要確認（照合候補あり）",
     # **「未取引」と言い切らない。** 名前照合で当たらなかっただけで、運営会社名で
     # 登録されている既存顧客の可能性が残る(他社レビュー指摘、2026-09-12)。
-    CrmMatchState.NO_NAME_MATCH: "未取引の可能性（名前照合のみ）",
+    CrmMatchState.NO_NAME_MATCH: "未取引の可能性（登録情報で一致なし）",
     CrmMatchState.NOT_CHECKED: "未突合",
 }
 
@@ -180,6 +181,7 @@ def row_to_values(
         contact.name if contact and contact.name else "",
         contact.title if contact and contact.title else "",
         " / ".join(row.products),
+        " / ".join(crm.evidence),
     ]
 
 

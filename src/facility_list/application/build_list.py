@@ -39,6 +39,7 @@ class ListRow:
 class ListResult:
     rows: list[ListRow] = field(default_factory=list)
     total_before_crm: int = 0  # CRM突合の前に条件を満たした件数
+    excluded_ambiguous_count: int = 0  # 要確認のためCRM条件から除外した件数
 
     @property
     def total(self) -> int:
@@ -50,10 +51,10 @@ class ListResult:
 
     @property
     def new_count(self) -> int:
-        """名前照合で当たらなかった件数。
+        """登録情報で当たらなかった件数。
 
         **「未取引の件数」ではない。** CRMには運営会社名で載っていることが多く、
-        施設名だけでは既存顧客でも当たらない(他社レビュー指摘、2026-09-12)。
+        施設の住所・電話が未登録なら二次照合でも当たらない。
         """
         return sum(1 for r in self.rows if r.crm.state is CrmMatchState.NO_NAME_MATCH)
 
@@ -128,6 +129,12 @@ def build_list(
     matches: dict[int, CrmMatch] = {}
     if matcher is not None:
         matches = matcher.match_all(primary)
+        result.excluded_ambiguous_count = sum(
+            1 for f in primary
+            if (m := matches.get(f.hotel_no)) is not None
+            and m.state is CrmMatchState.AMBIGUOUS
+            and not matches_criteria(f, criteria, crm_match=m)
+        )
 
     unchecked = CrmMatch(state=CrmMatchState.NOT_CHECKED)
     for facility in primary:

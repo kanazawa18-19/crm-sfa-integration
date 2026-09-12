@@ -299,6 +299,7 @@ def find_client_pages_by_normalized_names(
 
     with _connect() as conn:
         with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
             cur.execute(
                 """
                 SELECT "normalizedName", "notionPageId", "rawName"
@@ -377,10 +378,10 @@ class ClientNameIndexHealth:
     判定に使うのは`SyncCursor`の`updatedAt`（**同期処理が最後に走った時刻**）。
     `ClientNameIndex.syncedAt`の最大値ではない。
 
-    取引先マスターの同期は差分方式で、`watermark`より後に更新されたページだけを
-    取りに行く。**取引先に変更が無ければ1行も更新されない**ので、`syncedAt`は
-    そのまま古くなる。それを「同期が止まっている」と読むと、ただ変更が無かった
-    だけの正常な状態で新規リストが作れなくなる。
+    `syncedAt`は一巡の基準時刻を全行へ付けるため、最後の実行時刻ではない。
+    2026-09-12にコードを再確認すると、watermarkは更新時刻でなく作成時刻であり、
+    分割して全件を巡回する方式だった。一巡が終わると再開用行を消すので、
+    `client_name_index_completed`のupdatedAtに成功時刻を残し、両方の最新値を見る。
 
     本番で実際にこれが起きていた(2026-09-12、配備前の確認で発見):
 
@@ -434,8 +435,8 @@ def client_name_index_health() -> ClientNameIndexHealth:
             # 同期処理そのものが走った時刻は`SyncCursor`にある。
             # 行が無ければ「一度も走っていない」とみなす(Noneのまま)。
             cur.execute(
-                'SELECT "updatedAt" FROM "SyncCursor" WHERE "name" = %s',
-                ("client_name_index",),
+                'SELECT MAX("updatedAt") AS "updatedAt" FROM "SyncCursor" WHERE "name" = ANY(%s)',
+                (["client_name_index", "client_name_index_completed"],),
             )
             cursor_row = cur.fetchone() or {}
 
@@ -444,3 +445,40 @@ def client_name_index_health() -> ClientNameIndexHealth:
         last_run_at=_as_utc(cursor_row.get("updatedAt")),
         last_changed_at=_as_utc(index_row.get("changed")),
     )
+
+
+@dataclass(frozen=True)
+class ClientIdentityIndex:
+    """二次照合の候補と取得範囲。未取り込みが残れば不一致を確定しない。"""
+
+    rows: tuple[dict[str, Any], ...] = ()
+    complete: bool = False
+
+
+def find_client_identity_candidates(
+    addresses: list[str], phones: list[str],
+) -> ClientIdentityIndex:
+    """照合キーを一括検索する。件数と候補を同じDB時点で読み、部分移行を検知する。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        cur.execute("SET LOCAL statement_timeout = '5s'")
+        cur.execute('''
+            SELECT COUNT(*) AS total, COUNT("identitySyncedAt") AS checked,
+                   (SELECT MAX("updatedAt") FROM "SyncCursor"
+                     WHERE name IN ('client_name_index', 'client_name_index_completed')) AS ran
+              FROM "ClientNameIndex"
+        ''')
+        health = cur.fetchone() or {}
+        ran = _as_utc(health.get("ran"))
+        fresh = ran is not None and timedelta(0) <= datetime.now(timezone.utc) - ran <= timedelta(hours=48)
+        complete = bool(health.get("total")) and health.get("total") == health.get("checked") and fresh
+        cur.execute('''
+            SELECT "notionPageId" AS notion_page_id, "rawName" AS raw_name,
+                   "normalizedAddress" AS address, "normalizedPhone" AS phone
+              FROM "ClientNameIndex"
+             WHERE "identitySyncedAt" IS NOT NULL AND
+                   ("normalizedAddress" = ANY(%s) OR "normalizedPhone" = ANY(%s))
+        ''', (list(set(addresses)), list(set(phones))))
+        rows = tuple(cur.fetchall())
+    # 古いデータから他社の連絡先を確定させない。
+    return ClientIdentityIndex(rows=rows if fresh else (), complete=complete)
