@@ -1,6 +1,7 @@
 import prisma from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import { changeUserRole, deleteUser, toggleUserIsManager } from "@/app/actions";
+import { isActivatedUser } from "@/lib/loginPolicy";
 import SubmitButton from "@/components/SubmitButton";
 import SwitchButton from "@/components/SwitchButton";
 import InviteUserForm from "./InviteUserForm";
@@ -37,7 +38,7 @@ export default async function UsersPage() {
       <section className="surface-card mt-6 p-5">
         <h2 className="text-sm font-semibold text-(--color-foreground)/70">ユーザーを招待</h2>
         <p className="mt-1 text-xs text-(--color-foreground)/50">
-          招待メールが送信され、本人がパスワードを設定して初回ログインします(SMTP未設定の場合はサーバーログにリンクが出力されます)。
+          cnctor.jp のメールアドレスだけ招待できます。招待メールが届いた本人が、会社の Google アカウントで「Googleでログイン」すると有効になります(パスワードの設定は不要。SMTP未設定の場合はメールの内容がサーバーログに出力されます)。
         </p>
         <InviteUserForm />
       </section>
@@ -77,7 +78,7 @@ export default async function UsersPage() {
                     </form>
                   </td>
                   <td>
-                    {u.passwordHash ? (
+                    {isActivatedUser(u) ? (
                       <span className="badge-green">有効</span>
                     ) : (
                       <span className="badge-muted">招待中</span>
@@ -109,16 +110,18 @@ export default async function UsersPage() {
                     )}
                   </td>
                   <td>
-                    {/* 有効なmasterアカウントは削除不可。招待中(passwordHash未設定)のmaster招待は
-                        キャンセルできる — app/actions.tsのdeleteUser()と同じ条件。 */}
-                    {u.id !== currentUser.id && (u.role !== "master" || !u.passwordHash) && (
+                    {/* 有効なmasterアカウントは削除不可。招待中(まだ一度もログインしていない)のmaster招待は
+                        キャンセルできる — app/actions.tsのdeleteUser()と同じ条件。
+                        「有効」は isActivatedUser(passwordHash / lastLoginAt / googleSubject)。
+                        Google だけのログインでは passwordHash が立たないため(2026-09-16)。 */}
+                    {u.id !== currentUser.id && (u.role !== "master" || !isActivatedUser(u)) && (
                       <form action={deleteUser}>
                         <input type="hidden" name="id" value={u.id} />
                         <SubmitButton
-                          pendingLabel={u.passwordHash ? "削除中..." : "キャンセル中..."}
+                          pendingLabel={isActivatedUser(u) ? "削除中..." : "キャンセル中..."}
                           className="text-xs text-(--brand-danger) underline disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          {u.passwordHash ? "削除" : "招待をキャンセル"}
+                          {isActivatedUser(u) ? "削除" : "招待をキャンセル"}
                         </SubmitButton>
                       </form>
                     )}

@@ -15,7 +15,7 @@ import {
   PENDING_2FA_COOKIE_NAME,
 } from "@/lib/adminSession";
 import { requireRole } from "@/lib/auth";
-import { GOOGLE_ONLY_LOGIN_MESSAGE, INVITE_DOMAIN_REJECTED_MESSAGE, isAllowedLoginEmail } from "@/lib/loginPolicy";
+import { GOOGLE_ONLY_LOGIN_MESSAGE, INVITE_DOMAIN_REJECTED_MESSAGE, isActivatedUser, isAllowedLoginEmail } from "@/lib/loginPolicy";
 // ログインセッションの確立は lib/loginSession.ts に置いている。
 // このファイルは "use server" なので、ここから export するとクライアントから
 // 任意のuserIdで呼べる公開Server Functionになってしまうため（2026-08-31）。
@@ -264,7 +264,9 @@ export async function deleteUser(formData: FormData) {
   // isn't an active account though — it's just a stuck invitation — so it
   // stays cancelable like any other pending invite (web-engagement-tool側の
   // 同じ修正をここでも最初から反映、2026-08-15)。
-  if (target.role === "master" && target.passwordHash !== null) return;
+  // 「有効」の判定は isActivatedUser（passwordHash / lastLoginAt / googleSubject）。
+  // Google だけのログインでは passwordHash が立たないため（2026-09-16）。
+  if (target.role === "master" && isActivatedUser(target)) return;
 
   await prisma.user.delete({ where: { id } }).catch(() => null);
   redirect("/users");

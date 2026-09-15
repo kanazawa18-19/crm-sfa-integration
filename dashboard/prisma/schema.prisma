@@ -40,6 +40,12 @@ model User {
   // 一度も使っていないユーザーはNullのまま。
   googleSubject String?  @unique
   role          UserRole @default(viewer)
+  // 最後にログインが成立した日時（2026-09-16）。ログインを Google だけにしたので、
+  // 「招待を承諾して有効になった」の印を passwordHash に頼れなくなった。
+  // 「招待中」表示と管理者の削除保護は passwordHash / lastLoginAt / googleSubject の
+  // いずれかで判定する（lib/loginPolicy.ts の isActivatedUser）。ログイン成立時に
+  // 生 SQL で更新する（毎回のログインを監査ログに積まないため）。
+  lastLoginAt   DateTime?
   createdAt     DateTime @default(now())
 
   // アクセス権限用のroleとは別軸(2026-08-16、src/incident_detection/)。高優先度インシデント

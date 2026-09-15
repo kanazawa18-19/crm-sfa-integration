@@ -5,6 +5,7 @@ import {
   HOSTED_DOMAIN_REJECTED_MESSAGE,
   checkGoogleAccountDomain,
   emailDomainOf,
+  isActivatedUser,
   isAllowedLoginEmail,
 } from "@/lib/loginPolicy";
 
@@ -57,5 +58,21 @@ describe("ログインを許すドメインの判定（cnctor.jp の Google ア�
       ok: false,
       reason: HOSTED_DOMAIN_REJECTED_MESSAGE,
     });
+  });
+});
+
+describe("招待を承諾して有効になったユーザーの判定（削除保護・招待中表示が使う）", () => {
+  it("一度もログインしておらずパスワードも無ければ「招待中」", () => {
+    expect(isActivatedUser({ passwordHash: null, lastLoginAt: null })).toBe(false);
+    expect(isActivatedUser({ passwordHash: null, lastLoginAt: null, googleSubject: null })).toBe(false);
+  });
+
+  it("Google でログインしたことがあれば、パスワードが無くても有効", () => {
+    expect(isActivatedUser({ passwordHash: null, lastLoginAt: new Date("2026-09-16T00:00:00Z") })).toBe(true);
+  });
+
+  it("旧いパスワード持ち・Google 束縛済みも有効のまま（既存ユーザーの扱いを変えない）", () => {
+    expect(isActivatedUser({ passwordHash: "salt:hash", lastLoginAt: null })).toBe(true);
+    expect(isActivatedUser({ passwordHash: null, lastLoginAt: null, googleSubject: "sub-1" })).toBe(true);
   });
 });

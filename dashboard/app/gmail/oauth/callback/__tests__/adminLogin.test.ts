@@ -170,6 +170,7 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
 
     const response = await GET(makeRequest());
 
+    expect(findUserMock).not.toHaveBeenCalled();
     expect(establishSessionMock).not.toHaveBeenCalled();
     expect(errorOf(response)).toContain("Workspace アカウントとして確認できません");
   });

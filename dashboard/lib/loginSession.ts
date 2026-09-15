@@ -26,6 +26,9 @@ import { sendEmail } from "@/lib/email";
 import { EMAIL_OTP_TTL_MS, generateEmailOtpPlaintext } from "@/lib/twoFactor";
 
 export async function establishSession(userId: string): Promise<void> {
+  // ログイン成立の印（isActivatedUser が見る）。毎回のログインを監査ログに積まないよう、
+  // Prisma の拡張を通らない生 SQL で更新する。
+  await prisma.$executeRaw`UPDATE "User" SET "lastLoginAt" = NOW() WHERE "id" = ${userId}`;
   const cookieStore = await cookies();
   cookieStore.set(COOKIE_NAME, createSessionToken(userId), {
     httpOnly: true,

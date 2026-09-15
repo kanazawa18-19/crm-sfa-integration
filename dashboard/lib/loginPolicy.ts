@@ -59,3 +59,17 @@ export function checkGoogleAccountDomain(account: GoogleAccountForLogin): Google
   }
   return { ok: true };
 }
+
+/**
+ * 招待を承諾して「有効になった」ユーザーか。
+ * 以前は passwordHash の有無で見ていたが、Google だけのログインでは passwordHash が
+ * 永遠に null のままなので、ログイン成立日時（lastLoginAt）も有効の印にする。
+ * 「招待中」表示と、有効な管理者を削除させない保護がこれを使う（2026-09-16）。
+ */
+export function isActivatedUser(user: {
+  passwordHash: string | null;
+  lastLoginAt: Date | null;
+  googleSubject?: string | null;
+}): boolean {
+  return user.passwordHash !== null || user.lastLoginAt !== null || !!user.googleSubject;
+}
