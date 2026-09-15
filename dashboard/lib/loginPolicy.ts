@@ -12,6 +12,11 @@
 
 export const ALLOWED_LOGIN_DOMAIN = "cnctor.jp";
 
+/** Google ログインの nonce を入れる cookie。連携フロー（カレンダー等）とは別名にする。 */
+export const LOGIN_STATE_COOKIE = "admin_login_oauth_state";
+/** cookie の path。削除するときも同じ path を渡さないと消えない。 */
+export const LOGIN_STATE_COOKIE_PATH = "/gmail/oauth";
+
 export const GOOGLE_ONLY_LOGIN_MESSAGE =
   `パスワードでのログインは廃止しました。${ALLOWED_LOGIN_DOMAIN} の Google アカウントで「Googleでログイン」を押してください`;
 
@@ -24,6 +29,12 @@ export const HOSTED_DOMAIN_REJECTED_MESSAGE =
 export const INVITE_DOMAIN_REJECTED_MESSAGE =
   `招待できるのは ${ALLOWED_LOGIN_DOMAIN} のメールアドレスだけです`;
 
+export const EMAIL_CHANGE_DISABLED_MESSAGE =
+  `メールアドレスの変更は受け付けていません。ログインは ${ALLOWED_LOGIN_DOMAIN} の Google アカウントで行うため、変えたいときは管理者に新しいアドレスで招待し直してもらってください`;
+
+export const GOOGLE_ACCOUNT_MISMATCH_MESSAGE =
+  "このGoogleアカウントは、同じメールアドレスの管理者アカウントに紐づいていません。管理者にユーザー管理から招待し直してもらってください";
+
 /** メールアドレスの @ より後ろ（小文字）。形が崩れていれば null。 */
 export function emailDomainOf(email: string): string | null {
   const normalized = email.trim().toLowerCase();
@@ -32,9 +43,15 @@ export function emailDomainOf(email: string): string | null {
   return normalized.slice(at + 1);
 }
 
-/** 招待できるアドレスか（ログインできない人を招待しないための入口の判定）。 */
+/**
+ * 招待できるアドレスか（ログインできない人を招待しないための入口の判定）。
+ * 形は「空白なしのローカル部 @ ドメイン」に限る。`a@evil@cnctor.jp` のように @ が 2 つある
+ * 文字列は最後の @ だけ見ると通ってしまう（ChatGPT レビュー INFO）ので、ここで弾く。
+ */
 export function isAllowedLoginEmail(email: string): boolean {
-  return emailDomainOf(email) === ALLOWED_LOGIN_DOMAIN;
+  const normalized = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+$/.test(normalized)) return false;
+  return emailDomainOf(normalized) === ALLOWED_LOGIN_DOMAIN;
 }
 
 export type GoogleAccountForLogin = {

@@ -38,7 +38,7 @@ export default async function UsersPage() {
       <section className="surface-card mt-6 p-5">
         <h2 className="text-sm font-semibold text-(--color-foreground)/70">ユーザーを招待</h2>
         <p className="mt-1 text-xs text-(--color-foreground)/50">
-          cnctor.jp のメールアドレスだけ招待できます。招待メールが届いた本人が、会社の Google アカウントで「Googleでログイン」すると有効になります(パスワードの設定は不要。SMTP未設定の場合はメールの内容がサーバーログに出力されます)。
+          cnctor.jp のメールアドレスだけ招待できます。招待メールが届いた本人が、会社の Google アカウントで「Googleでログイン」すると有効になります(パスワードの設定は不要。SMTP未設定の場合はメールの内容がサーバーログに出力されます)。登録済みの人を招待し直すと、Google アカウントの紐付けがやり直しになります(アカウントを作り直した人の復旧用)。
         </p>
         <InviteUserForm />
       </section>

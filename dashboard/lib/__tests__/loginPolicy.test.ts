@@ -29,6 +29,13 @@ describe("ログインを許すドメインの判定（cnctor.jp の Google ア�
     expect(isAllowedLoginEmail("taro@sub.cnctor.jp")).toBe(false);
   });
 
+  it("形が崩れたアドレスは、ドメインが cnctor.jp でも招待できない（@ が 2 つ・空白・ローカル部なし）", () => {
+    expect(isAllowedLoginEmail("a@evil@cnctor.jp")).toBe(false);
+    expect(isAllowedLoginEmail("taro tanaka@cnctor.jp")).toBe(false);
+    expect(isAllowedLoginEmail("@cnctor.jp")).toBe(false);
+    expect(isAllowedLoginEmail(" Taro@CNCTOR.jp ")).toBe(true);
+  });
+
   it("メールも Workspace の所属ドメインも cnctor.jp なら通す", () => {
     expect(checkGoogleAccountDomain({ email: "taro@cnctor.jp", hostedDomain: "cnctor.jp" })).toEqual({ ok: true });
     expect(checkGoogleAccountDomain({ email: "Taro@Cnctor.JP", hostedDomain: "CNCTOR.JP" })).toEqual({ ok: true });

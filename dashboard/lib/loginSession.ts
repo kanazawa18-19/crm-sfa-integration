@@ -28,7 +28,9 @@ import { EMAIL_OTP_TTL_MS, generateEmailOtpPlaintext } from "@/lib/twoFactor";
 export async function establishSession(userId: string): Promise<void> {
   // ログイン成立の印（isActivatedUser が見る）。毎回のログインを監査ログに積まないよう、
   // Prisma の拡張を通らない生 SQL で更新する。
-  await prisma.$executeRaw`UPDATE "User" SET "lastLoginAt" = NOW() WHERE "id" = ${userId}`;
+  // 時刻は DB の NOW() ではなくアプリ側で作る（Gemini レビュー：NOW() は DB セッションの
+  // タイムゾーンに依存し、Prisma が UTC で扱う他の列とずれうる）。
+  await prisma.$executeRaw`UPDATE "User" SET "lastLoginAt" = ${new Date()} WHERE "id" = ${userId}`;
   const cookieStore = await cookies();
   cookieStore.set(COOKIE_NAME, createSessionToken(userId), {
     httpOnly: true,

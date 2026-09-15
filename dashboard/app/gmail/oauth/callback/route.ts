@@ -11,7 +11,7 @@ import {
   exchangeCodeForGoogleIdentity,
 } from "@/lib/googleLoginOauth";
 import { establishSessionForUser } from "@/lib/loginSession";
-import { checkGoogleAccountDomain } from "@/lib/loginPolicy";
+import { GOOGLE_ACCOUNT_MISMATCH_MESSAGE, checkGoogleAccountDomain } from "@/lib/loginPolicy";
 
 const STATE_COOKIE = "gmail_oauth_state";
 
@@ -138,10 +138,8 @@ async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
   if (user === "mismatch") {
     // このアドレスのCRMユーザーは、別のGoogleアカウントに束縛済み。
     // Workspaceでアドレスを作り直した場合にここへ来る。管理者が意図的に付け替える
-    // 手段（googleSubjectのクリア）を用意するまでは、黙って通さない。
-    return failLogin(
-      "このGoogleアカウントは、同じメールアドレスの管理者アカウントに紐づいていません。管理者に連絡してください"
-    );
+    // 管理者がユーザー管理から招待し直すと googleSubject が解除される（2026-09-16）。
+    return failLogin(GOOGLE_ACCOUNT_MISMATCH_MESSAGE);
   }
   if (!user) {
     // どのアドレスが登録済みかを推測させないため、理由は共通の文言にする。

@@ -15,7 +15,7 @@ import {
   PENDING_2FA_COOKIE_NAME,
 } from "@/lib/adminSession";
 import { requireRole } from "@/lib/auth";
-import { GOOGLE_ONLY_LOGIN_MESSAGE, INVITE_DOMAIN_REJECTED_MESSAGE, isActivatedUser, isAllowedLoginEmail } from "@/lib/loginPolicy";
+import { EMAIL_CHANGE_DISABLED_MESSAGE, GOOGLE_ONLY_LOGIN_MESSAGE, INVITE_DOMAIN_REJECTED_MESSAGE, isActivatedUser, isAllowedLoginEmail } from "@/lib/loginPolicy";
 // ログインセッションの確立は lib/loginSession.ts に置いている。
 // このファイルは "use server" なので、ここから export するとクライアントから
 // 任意のuserIdで呼べる公開Server Functionになってしまうため（2026-08-31）。
@@ -201,9 +201,12 @@ export async function inviteUser(_prevState: string | undefined, formData: FormD
   if (!isAllowedLoginEmail(email)) return INVITE_DOMAIN_REJECTED_MESSAGE;
 
   const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
+  // 招待し直しは「Google の紐付けをやり直す」操作でもある（googleSubject を解除）。
+  // Google アカウントを作り直した人は、これが無いと永久にログインできない
+  // （ChatGPT レビュー BLOCKER：mismatch で拒否されるのに解除経路が無かった）。
   await prisma.user.upsert({
     where: { email },
-    update: { role },
+    update: { role, googleSubject: null },
     create: { email, role, passwordHash: null },
   });
 
@@ -349,120 +352,30 @@ export async function updateOwnProfile(
 const EMAIL_CHANGE_TOKEN_TTL_MS = 1000 * 60 * 60; // 1 hour、パスワード再設定と同じ有効期限
 
 /**
- * メールアドレス変更はパスワード再設定/招待と同じワンタイムトークン方式。即時上書きは
- * せず、新しいメールアドレス宛に確認リンクを送り、confirmEmailChange()でクリックされて
- * 初めて確定する(乗っ取られたセッションから他人のメールを乗っ取られるのを防ぐ)。
+ * メールアドレス変更・パスワード変更は廃止した（2026-09-16、ログインを cnctor.jp の Google
+ * アカウントだけにしたため）。画面から外しただけでは "use server" の公開 Server Action が
+ * 残り、直接呼べばメールを別アドレスに変えられる（ChatGPT レビュー BLOCKER）。
+ * 入力を読まず DB にも触らず拒否する。アドレスを変えたいときは、管理者がユーザー管理から
+ * 新しいアドレスで招待し直す。
  */
 export async function requestOwnEmailChange(
   _prevState: ProfileActionState | undefined,
-  formData: FormData
+  _formData: FormData
 ): Promise<ProfileActionState> {
-  const user = await requireRole("viewer");
-  const newEmail = String(formData.get("newEmail") ?? "").trim().toLowerCase();
-
-  if (!newEmail || !newEmail.includes("@")) {
-    return { error: "有効なメールアドレスを入力してください" };
-  }
-  if (newEmail === user.email) {
-    return { error: "現在と同じメールアドレスです" };
-  }
-
-  // requestPasswordResetと同じ方針: 入力されたメールアドレスが既に別アカウントで
-  // 使われているかどうかをレスポンスの文言から判別できないよう、常に同じ成功
-  // メッセージを返す(そのアドレスが既に使われている場合はメールを送らないだけで、
-  // 呼び出し側にはエラーとして伝えない — shirokuma-secレビュー指摘、2026-08-16)。
-  const successMessage = `${newEmail} が未登録であれば、確認メールを送信しました。メール内のリンクを開いて変更を確定してください。`;
-
-  const existing = await prisma.user.findUnique({ where: { email: newEmail } });
-  if (existing) {
-    return { success: successMessage };
-  }
-
-  // 同一ユーザーの未使用トークンを無効化してから新しく発行する。古いリクエストの
-  // リンクが宛先を変えて有効なまま残り続けるのを防ぐ(shirokuma-secレビュー指摘、
-  // 2026-08-16)。
-  await prisma.emailChangeToken.updateMany({
-    where: { userId: user.id, usedAt: null },
-    data: { usedAt: new Date() },
-  });
-
-  const token = randomBytes(32).toString("hex");
-  await prisma.emailChangeToken.create({
-    data: {
-      userId: user.id,
-      newEmail,
-      token,
-      expiresAt: new Date(Date.now() + EMAIL_CHANGE_TOKEN_TTL_MS),
-    },
-  });
-
-  const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
-  await sendEmail({
-    to: newEmail,
-    subject: "【営業管理ダッシュボード】メールアドレス変更の確認",
-    text: `メールアドレスを変更するには以下のリンクを開いてください(1時間有効)。\n\n${baseUrl}/confirm-email-change?token=${token}\n\n心当たりがない場合はこのメールを無視してください。`,
-  });
-
-  return { success: successMessage };
+  return { error: EMAIL_CHANGE_DISABLED_MESSAGE };
 }
 
-export async function confirmEmailChange(_prevState: string | undefined, formData: FormData) {
-  const token = String(formData.get("token") ?? "");
-  if (!token) return "リンクが不正です";
-
-  const changeToken = await prisma.emailChangeToken.findUnique({ where: { token } });
-  if (!changeToken || changeToken.usedAt || changeToken.expiresAt < new Date()) {
-    return "リンクの有効期限が切れています。もう一度お試しください。";
-  }
-
-  // 発行後、確定前に他ユーザーがそのメールアドレスを取得している可能性もゼロではない
-  // ため、確定直前にもう一度重複チェックする。
-  const existing = await prisma.user.findUnique({ where: { email: changeToken.newEmail } });
-  if (existing && existing.id !== changeToken.userId) {
-    return "このメールアドレスは既に使用されています";
-  }
-
-  const targetUser = await prisma.user.findUnique({ where: { id: changeToken.userId } });
-  const oldEmail = targetUser?.email;
-
-  await prisma.$transaction([
-    prisma.user.update({ where: { id: changeToken.userId }, data: { email: changeToken.newEmail } }),
-    prisma.emailChangeToken.update({ where: { id: changeToken.id }, data: { usedAt: new Date() } }),
-  ]);
-
-  // 変更前のメールアドレス宛に通知する — 自分がリクエストしていない変更(乗っ取り)
-  // に本人が気づける最後の砦(shirokuma-secレビュー指摘、2026-08-16)。
-  if (oldEmail) {
-    await sendEmail({
-      to: oldEmail,
-      subject: "【営業管理ダッシュボード】メールアドレスが変更されました",
-      text: `このアカウントのメールアドレスが ${changeToken.newEmail} に変更されました。\n\n心当たりがない場合は至急管理者にご連絡ください。`,
-    });
-  }
-
-  redirect("/settings/profile?emailChanged=1");
+/** 同上。旧い確認リンクを踏んでも何も更新しない。 */
+export async function confirmEmailChange(_prevState: string | undefined, _formData: FormData) {
+  return EMAIL_CHANGE_DISABLED_MESSAGE;
 }
 
-/** 現在のパスワード入力を必須にすることで、乗っ取られたセッションからの変更を防ぐ。 */
+/** 同上。パスワードはログインに使えないので変更も受け付けない。 */
 export async function changeOwnPassword(
   _prevState: ProfileActionState | undefined,
-  formData: FormData
+  _formData: FormData
 ): Promise<ProfileActionState> {
-  const user = await requireRole("viewer");
-  const currentPassword = String(formData.get("currentPassword") ?? "");
-  const newPassword = String(formData.get("newPassword") ?? "");
-
-  if (newPassword.length < 8) {
-    return { error: "新しいパスワードは8文字以上で入力してください" };
-  }
-
-  const freshUser = await prisma.user.findUnique({ where: { id: user.id } });
-  if (!freshUser || !verifyPassword(currentPassword, freshUser.passwordHash)) {
-    return { error: "現在のパスワードが正しくありません" };
-  }
-
-  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: hashPassword(newPassword) } });
-  return { success: "パスワードを変更しました" };
+  return { error: GOOGLE_ONLY_LOGIN_MESSAGE };
 }
 
 export async function updateOwnAvatar(
