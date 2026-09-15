@@ -10,7 +10,7 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 export default function InviteUserForm() {
-  const [, formAction, pending] = useActionState(inviteUser, undefined);
+  const [message, formAction, pending] = useActionState(inviteUser, undefined);
 
   return (
     <form action={formAction} className="mt-3 flex flex-wrap gap-2">
@@ -25,6 +25,7 @@ export default function InviteUserForm() {
       <button type="submit" disabled={pending} className="btn-primary">
         {pending ? "送信中..." : "招待を送信"}
       </button>
+      {message && <p className="w-full text-xs text-(--brand-danger)">{message}</p>}
     </form>
   );
 }

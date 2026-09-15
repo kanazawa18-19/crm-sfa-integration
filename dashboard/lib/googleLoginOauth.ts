@@ -15,6 +15,7 @@
 //    こちらはログインする手段そのもの。コールバック側でこの分岐だけは
 //    `getCurrentUser()` の前に処理する必要がある。
 import { redirectUri } from "@/lib/gmailOauth";
+import { ALLOWED_LOGIN_DOMAIN } from "@/lib/loginPolicy";
 
 //: stateのnonceを入れるcookie。**連携フローとは別名**にする。同じ名前を使い回すと、
 //: Gmail連携の途中でログインし直したときに互いのnonceを上書きし、進行中のフローが
@@ -44,6 +45,9 @@ export function buildLoginAuthUrl(state: string): string {
     state,
     // 別のGoogleアカウントでログインし直せるように、毎回アカウント選択を出す。
     prompt: "select_account",
+    // アカウント選択画面を cnctor.jp の Workspace アカウントに絞る。画面上の絞り込みで
+    // しかなく、本当の判定はコールバック側の checkGoogleAccountDomain（2026-09-16）。
+    hd: ALLOWED_LOGIN_DOMAIN,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
@@ -58,6 +62,11 @@ export interface GoogleIdentity {
   email: string;
   /** Google側でメールアドレスの所有が確認済みか。falseなら本人確認の材料にならない。 */
   verifiedEmail: boolean;
+  /**
+   * Google Workspace の所属ドメイン（hd）。個人の Google アカウントでは付かない。
+   * ログインを cnctor.jp に限定する判定で使う（lib/loginPolicy.ts、2026-09-16）。
+   */
+  hostedDomain: string | null;
 }
 
 /**
@@ -103,6 +112,7 @@ export async function exchangeCodeForGoogleIdentity(code: string): Promise<Googl
     id?: string;
     email?: string;
     verified_email?: boolean;
+    hd?: string;
   };
   // oauth2/v2/userinfo はsubjectを `id` という名前で返す（OIDCの `sub` と同じ値）。
   const subject = (info.id ?? "").trim();
@@ -113,5 +123,6 @@ export async function exchangeCodeForGoogleIdentity(code: string): Promise<Googl
   if (!email) {
     throw new Error("Googleアカウントのメールアドレスを取得できませんでした");
   }
-  return { subject, email, verifiedEmail: info.verified_email === true };
+  const hostedDomain = (info.hd ?? "").trim().toLowerCase() || null;
+  return { subject, email, verifiedEmail: info.verified_email === true, hostedDomain };
 }

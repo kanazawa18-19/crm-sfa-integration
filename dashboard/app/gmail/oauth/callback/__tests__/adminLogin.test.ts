@@ -86,10 +86,12 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
 
     // ログイン前なのでセッションは無い。それが既定の状態。
     getCurrentUserMock.mockResolvedValue(null);
+    // 既定は cnctor.jp の Workspace アカウント（ログインを許す唯一の形）。
     exchangeIdentityMock.mockResolvedValue({
       subject: "google-sub-1",
-      email: "admin@example.com",
+      email: "admin@cnctor.jp",
       verifiedEmail: true,
+      hostedDomain: "cnctor.jp",
     });
     updateUserMock.mockReset();
     updateUserMock.mockResolvedValue({});
@@ -97,7 +99,7 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
     findUserMock.mockImplementation((args: { where: Record<string, unknown> }) =>
       "googleSubject" in args.where
         ? null
-        : { id: "user-1", email: "admin@example.com", googleSubject: null }
+        : { id: "user-1", email: "admin@cnctor.jp", googleSubject: null }
     );
     establishSessionMock.mockResolvedValue({ needsTwoFactor: false, redirectTo: "/" });
   });
@@ -130,8 +132,9 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
   it("Google側でメールが未確認なら拒否する", async () => {
     exchangeIdentityMock.mockResolvedValue({
       subject: "google-sub-1",
-      email: "admin@example.com",
+      email: "admin@cnctor.jp",
       verifiedEmail: false,
+      hostedDomain: "cnctor.jp",
     });
 
     const response = await GET(makeRequest());
@@ -139,6 +142,36 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
     expect(findUserMock).not.toHaveBeenCalled();
     expect(establishSessionMock).not.toHaveBeenCalled();
     expect(errorOf(response)).toContain("確認済みではありません");
+  });
+
+  it("他ドメインの Google アカウントは、User 表に居ても拒否する（2026-09-16 cnctor.jp 限定）", async () => {
+    exchangeIdentityMock.mockResolvedValue({
+      subject: "google-sub-9",
+      email: "someone@gmail.com",
+      verifiedEmail: true,
+      hostedDomain: null,
+    });
+    findUserMock.mockResolvedValue({ id: "user-9", email: "someone@gmail.com", googleSubject: null });
+
+    const response = await GET(makeRequest());
+
+    expect(findUserMock).not.toHaveBeenCalled();
+    expect(establishSessionMock).not.toHaveBeenCalled();
+    expect(errorOf(response)).toContain("cnctor.jp の Google アカウントでのみ");
+  });
+
+  it("メールが cnctor.jp でも Workspace の所属ドメイン（hd）が無ければ拒否する", async () => {
+    exchangeIdentityMock.mockResolvedValue({
+      subject: "google-sub-1",
+      email: "admin@cnctor.jp",
+      verifiedEmail: true,
+      hostedDomain: null,
+    });
+
+    const response = await GET(makeRequest());
+
+    expect(establishSessionMock).not.toHaveBeenCalled();
+    expect(errorOf(response)).toContain("Workspace アカウントとして確認できません");
   });
 
   it("nonceが一致しなければ拒否する（CSRF対策が効いていること）", async () => {
@@ -189,7 +222,7 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
     findUserMock.mockImplementation((args: { where: Record<string, unknown> }) =>
       "googleSubject" in args.where
         ? null
-        : { id: "user-1", email: "admin@example.com", googleSubject: "別のsub" }
+        : { id: "user-1", email: "admin@cnctor.jp", googleSubject: "別のsub" }
     );
 
     const response = await GET(makeRequest());

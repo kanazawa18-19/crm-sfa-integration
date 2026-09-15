@@ -15,14 +15,11 @@ import {
   PENDING_2FA_COOKIE_NAME,
 } from "@/lib/adminSession";
 import { requireRole } from "@/lib/auth";
+import { GOOGLE_ONLY_LOGIN_MESSAGE, INVITE_DOMAIN_REJECTED_MESSAGE, isAllowedLoginEmail } from "@/lib/loginPolicy";
 // ログインセッションの確立は lib/loginSession.ts に置いている。
 // このファイルは "use server" なので、ここから export するとクライアントから
 // 任意のuserIdで呼べる公開Server Functionになってしまうため（2026-08-31）。
-import {
-  establishSession,
-  establishSessionForUser,
-  sendEmailOtpCode,
-} from "@/lib/loginSession";
+import { establishSession, sendEmailOtpCode } from "@/lib/loginSession";
 import { sendEmail } from "@/lib/email";
 import { encryptToken, decryptToken } from "@/lib/tokenCrypto";
 import { validateAvatarFile } from "@/lib/avatar";
@@ -44,17 +41,15 @@ import {
 // **セッション確立の関数をこのファイルから export しないこと。**
 // "use server" のファイルから export した関数はクライアントから呼べる公開APIになる。
 
-export async function login(_prevState: string | undefined, formData: FormData) {
-  const email = String(formData.get("email") ?? "").trim().toLowerCase();
-  const password = String(formData.get("password") ?? "");
-
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !verifyPassword(password, user.passwordHash)) {
-    return "メールアドレスまたはパスワードが違います";
-  }
-
-  const { redirectTo } = await establishSessionForUser(user.id);
-  redirect(redirectTo);
+/**
+ * パスワードログインは廃止した（2026-09-16 本人指示。ログインは cnctor.jp の
+ * Google アカウントだけ）。ログイン画面からフォームは消してあるが、
+ * "use server" から export した関数は誰でも呼べる公開エンドポイントなので、
+ * ここでも必ず拒否する。入力は読まず、DB にも触らない。
+ * Google ログインは app/gmail/oauth/callback の admin_login 分岐。
+ */
+export async function login(_prevState: string | undefined, _formData: FormData) {
+  return GOOGLE_ONLY_LOGIN_MESSAGE;
 }
 
 export async function logout() {
@@ -178,79 +173,46 @@ export async function confirmTotpEnrollment(
 
 const RESET_TOKEN_TTL_MS = 1000 * 60 * 60; // 1 hour
 
-async function issueResetToken(userId: string): Promise<string> {
-  const token = randomBytes(32).toString("hex");
-  await prisma.passwordResetToken.create({
-    data: { userId, token, expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS) },
-  });
-  return token;
+/**
+ * パスワード再設定は廃止した（2026-09-16、パスワードログイン廃止に伴う）。
+ * 残しておくと、誰でも登録メール宛に再設定メールを送りつけられる（フィッシングの下地）うえ、
+ * 設定したパスワードはログインに使えず利用者が迷う（シロクマの WARN 2 件）。
+ * Server Action は公開エンドポイントなので、画面だけでなくここで拒否する。DB・メールに触らない。
+ */
+export async function requestPasswordReset(_prevState: string | undefined, _formData: FormData) {
+  return GOOGLE_ONLY_LOGIN_MESSAGE;
 }
 
-export async function requestPasswordReset(_prevState: string | undefined, formData: FormData) {
-  const email = String(formData.get("email") ?? "").trim().toLowerCase();
-  const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
-
-  const user = await prisma.user.findUnique({ where: { email } });
-  // Always show the same message — don't leak whether the address is registered.
-  if (user) {
-    const token = await issueResetToken(user.id);
-    await sendEmail({
-      to: user.email,
-      subject: "【営業管理ダッシュボード】パスワード再設定",
-      text: `パスワードを再設定するには以下のリンクを開いてください(1時間有効)。\n\n${baseUrl}/set-password?token=${token}\n\n心当たりがない場合はこのメールを無視してください。`,
-    });
-  }
-
-  return "登録されているメールアドレスであれば、再設定用のリンクを送信しました。";
-}
-
-export async function setPassword(_prevState: string | undefined, formData: FormData) {
-  const token = String(formData.get("token") ?? "");
-  const password = String(formData.get("password") ?? "");
-  if (!token || password.length < 8) {
-    return "パスワードは8文字以上で入力してください";
-  }
-
-  const resetToken = await prisma.passwordResetToken.findUnique({ where: { token } });
-  if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) {
-    return "リンクの有効期限が切れています。もう一度お試しください。";
-  }
-
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: resetToken.userId },
-      data: { passwordHash: hashPassword(password) },
-    }),
-    prisma.passwordResetToken.update({
-      where: { id: resetToken.id },
-      data: { usedAt: new Date() },
-    }),
-  ]);
-
-  redirect("/login");
+/** 同上。旧い再設定リンクを踏んでも何も更新しない。 */
+export async function setPassword(_prevState: string | undefined, _formData: FormData) {
+  return GOOGLE_ONLY_LOGIN_MESSAGE;
 }
 
 // --- ユーザー管理 ------------------------------------------------------------
 
-export async function inviteUser(_prevState: void | undefined, formData: FormData) {
+export async function inviteUser(_prevState: string | undefined, formData: FormData) {
   await requireRole("master");
 
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const role = String(formData.get("role") ?? "viewer") as "master" | "editor" | "viewer";
-  if (!email) return;
+  if (!email) return "メールアドレスを入力してください";
+  // ログインできるのは cnctor.jp の Google アカウントだけなので、他ドメインを招待しても
+  // 一生ログインできない行が User 表に増えるだけ。入口で止める（2026-09-16）。
+  if (!isAllowedLoginEmail(email)) return INVITE_DOMAIN_REJECTED_MESSAGE;
 
   const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
-  const user = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { email },
     update: { role },
     create: { email, role, passwordHash: null },
   });
 
-  const token = await issueResetToken(user.id);
+  // パスワード設定リンクは送らない（パスワードログインは廃止）。
+  // 招待された人は User 表に載った時点で、Google でログインできる。
   await sendEmail({
     to: email,
     subject: "【営業管理ダッシュボード】管理画面への招待",
-    text: `管理画面に招待されました。以下のリンクからパスワードを設定してログインしてください(1時間有効)。\n\n${baseUrl}/set-password?token=${token}`,
+    text: `管理画面に招待されました。cnctor.jp の Google アカウントで、以下のURLの「Googleでログイン」からログインしてください。\n\n${baseUrl}/login`,
   });
 
   redirect("/users");

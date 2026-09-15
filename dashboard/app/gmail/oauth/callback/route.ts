@@ -11,6 +11,7 @@ import {
   exchangeCodeForGoogleIdentity,
 } from "@/lib/googleLoginOauth";
 import { establishSessionForUser } from "@/lib/loginSession";
+import { checkGoogleAccountDomain } from "@/lib/loginPolicy";
 
 const STATE_COOKIE = "gmail_oauth_state";
 
@@ -124,6 +125,13 @@ async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
 
   if (!identity.verifiedEmail) {
     return failLogin("このGoogleアカウントはメールアドレスが確認済みではありません");
+  }
+
+  // cnctor.jp の Google Workspace アカウント以外は、User 表に居ても通さない
+  // （2026-09-16 本人指示。判定表は lib/loginPolicy.ts）。
+  const domainCheck = checkGoogleAccountDomain(identity);
+  if (!domainCheck.ok) {
+    return failLogin(domainCheck.reason);
   }
 
   const user = await findUserForGoogleIdentity(identity);
