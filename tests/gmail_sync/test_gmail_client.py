@@ -250,3 +250,35 @@ def test_every_gmail_request_passes_the_current_rate_limit_retries(monkeypatch) 
         gmail_client.get_message(_ACCESS_TOKEN, "msg1")
 
     assert seen == [2] * 6
+
+
+def test_bounded_rate_limit_retries_does_not_leak_between_concurrent_threadpool_requests() -> None:
+    """FastAPIのルートが`run_in_threadpool`で同時に2本動かしても、片方の絞りがもう片方や
+    既定値へ漏れない(kuma-qaレビューWARN対応: 並行時の非汚染を自動テストに残す)。
+    anyioは`run_sync`でcontextvarsをスレッドへ複製するので、各リクエストが自分の値だけを見る。"""
+    import threading
+
+    import anyio
+    from starlette.concurrency import run_in_threadpool
+
+    from src.gmail_sync import gmail_client
+    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+    both_started = threading.Barrier(2, timeout=5)
+    seen: dict[str, list[int]] = {"a": [], "b": []}
+
+    def request(name: str, bound: int) -> None:
+        with gmail_client.bounded_rate_limit_retries(bound):
+            seen[name].append(gmail_client.current_max_rate_limit_retries())
+            both_started.wait()  # 相手も絞りの中に入るまで待ってから、もう一度自分の値を見る
+            seen[name].append(gmail_client.current_max_rate_limit_retries())
+
+    async def main() -> None:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run_in_threadpool, request, "a", 2)
+            tg.start_soon(run_in_threadpool, request, "b", 5)
+
+    anyio.run(main)
+
+    assert seen == {"a": [2, 2], "b": [5, 5]}
+    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES

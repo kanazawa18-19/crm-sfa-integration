@@ -15,6 +15,8 @@ Zoho CRM方式(メアド一致による自動関連付け)を採用: 特定の�
 
 from __future__ import annotations
 
+import contextlib
+import itertools
 import logging
 import os
 import time
@@ -31,6 +33,7 @@ from src.gmail_sync.notify import notify_web_engagement_tool
 from src.gmail_sync.token_crypto import decrypt_token
 from src.incident_detection.notify import notify_managers_immediate
 from src.incident_detection.scorer import score_email
+from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 logger = logging.getLogger(__name__)
@@ -279,20 +282,41 @@ def _process_message_ref_or_skip(
         raise
 
 
+def _deadline_passed(deadline: float | None) -> bool:
+    """`deadline`(`time.monotonic()`基準)を過ぎていればTrue。未指定なら時計を見ない。"""
+    return deadline is not None and time.monotonic() >= deadline
+
+
 def sync_rep(
     rep_email: str,
     refresh_token: str,
     contact_client: HttpNotionClient,
     *,
     internal_domains: frozenset[str],
+    deadline: float | None = None,
 ) -> int:
     """1名分の営業担当のGmailを同期する(直近`gmail_client._SEARCH_WINDOW_DAYS`日分の
-    フルスキャン)。新規に記録したメール件数を返す。"""
+    フルスキャン)。新規に記録したメール件数を返す。
+
+    `deadline`を渡すと、期限を過ぎた時点で残りを打ち切る(2026-09-21、shirokuma-secレビュー
+    BLOCKER対応。Push経路から`historyId`未設定・失効時にここへ落ちてくる場合に、フルスキャン
+    だけ打ち切りが無いとVercelの300秒で殺される)。フルスキャンには再開位置が無いので、残りは
+    次のPushか毎日の`sync_all()`に任せる(処理済みは`db.email_log_exists()`で弾かれる)。
+    """
     access_token = gmail_client.refresh_access_token(refresh_token)
     refs = gmail_client.list_recent_messages(access_token)
 
     logged_count = 0
-    for ref in refs:
+    for index, ref in enumerate(refs):
+        if _deadline_passed(deadline):
+            logger.warning(
+                "gmail_sync: time budget exhausted for rep %s during full scan after %d/%d "
+                "messages, leaving the rest to the next push or the daily sync",
+                rep_email,
+                index,
+                len(refs),
+            )
+            break
         if _process_message_ref_or_skip(
             ref.id, access_token, rep_email, contact_client, internal_domains=internal_domains
         ):
@@ -312,16 +336,20 @@ def sync_rep_incremental(
     """1名分の営業担当のGmailを、保存済みの`historyId`起点で増分同期する(2026-08-16、
     `gmail_push_webhook.py`から呼ばれる主経路)。新規に記録したメール件数を返す。
 
-    `deadline`(`time.monotonic()`基準の期限、2026-09-21)を渡すと、期限を過ぎた時点で残りの
-    メッセージ処理を打ち切る。Vercel関数は300秒で強制終了され、そうなると`historyId`の更新に
-    到達できず、Pub/Subの再送のたびに同じ先頭から処理し直して毎回タイムアウトする
-    (停止から復旧した直後に溜まった分を処理する場面で実際に起きた)。打ち切るときは
-    「最後まで処理し終えたhistoryレコード」の`id`を`historyId`として保存し、次回のPushで
-    そこから再開する(処理済みのメールは`db.email_log_exists()`で弾かれるので、1レコード分の
-    重なりは無害)。1レコードも処理し終えていなければ`historyId`は動かさない。
+    `deadline`(`time.monotonic()`基準の期限、2026-09-21)を渡すと、Vercel関数(300秒で強制終了)
+    の中でも必ず期限内に返るようにする。具体的には:
+    - 期限を過ぎた時点で残りのメッセージ処理を打ち切る(フルスキャンへの退避経路も同じ)
+    - 内部のGmail API呼び出しの429リトライを`INTERACTIVE_MAX_RATE_LIMIT_RETRIES`回に絞る
+      (既定の30回だと1回の呼び出しだけで期限を大きく超えるため、期限とセットで効かせる)
+    - historyレコードを1つ処理し終えるたびに、その`id`を`historyId`として保存する
+      (処理し終えたレコードの直後から再開できる。途中で強制終了されても進みが残るので、
+      Pub/Subの再送のたびに同じ先頭からやり直して末尾へ永遠に届かない、が起きない)
+    処理済みのメールは`db.email_log_exists()`で弾かれるので、再開時に1レコード分が重なっても
+    二重記録にはならない。
 
-    `historyId`の更新は、増分同期が正常完了した場合(`list_history()`のレスポンス自体に
-    含まれる`historyId`を使う)にのみ行う。以下2つのフォールバック経路では`historyId`を
+    `historyId`の更新は、増分同期がレコードを処理し終えた場合(そのレコードの`id`)と正常完了
+    した場合(`list_history()`のレスポンス自体に含まれる`historyId`)にのみ行う。以下2つの
+    フォールバック経路では`historyId`を
     進めない(shirokuma-secレビューWARN対応、2026-08-16 — 誤って進めるとバックログを
     飛び越えて恒久的な見逃しにつながるため):
     - 保存済み`historyId`が無い(Push未登録・初回)場合: `sync_rep()`(フル同期)にフォール
@@ -338,13 +366,44 @@ def sync_rep_incremental(
     `historyId`更新自体にも到達できなくなり、`historyId`カーソルが恒久的に固まって次回以降
     毎回同じ404で失敗し続ける(実際に2026-08-25〜26でPush通知が170回連続失敗した)。
     """
+    # 時間予算を切る呼び出し元(Push経路)では、内部のリトライも自動で絞る(obasan-qualityレビュー
+    # WARN対応: 期限とリトライの絞りは別々に指定させず、ここで1つに結びつける)。
+    retry_scope = (
+        gmail_client.bounded_rate_limit_retries(INTERACTIVE_MAX_RATE_LIMIT_RETRIES)
+        if deadline is not None
+        else contextlib.nullcontext()
+    )
+    with retry_scope:
+        return _sync_rep_incremental(
+            rep_email,
+            refresh_token,
+            contact_client,
+            internal_domains=internal_domains,
+            deadline=deadline,
+        )
+
+
+def _sync_rep_incremental(
+    rep_email: str,
+    refresh_token: str,
+    contact_client: HttpNotionClient,
+    *,
+    internal_domains: frozenset[str],
+    deadline: float | None,
+) -> int:
     conn = db.find_connection_by_email(rep_email)
     stored_history_id = conn.history_id if conn is not None else None
 
     access_token = gmail_client.refresh_access_token(refresh_token)
 
     if not stored_history_id:
-        return sync_rep(rep_email, refresh_token, contact_client, internal_domains=internal_domains)
+        return sync_rep(
+            rep_email,
+            refresh_token,
+            contact_client,
+            internal_domains=internal_domains,
+            deadline=deadline,
+        )
 
     try:
         result = gmail_client.list_history(access_token, stored_history_id)
@@ -353,46 +412,49 @@ def sync_rep_incremental(
             "gmail_sync: historyId expired for rep %s, falling back to full sync", rep_email
         )
         logged_count = sync_rep(
-            rep_email, refresh_token, contact_client, internal_domains=internal_domains
+            rep_email,
+            refresh_token,
+            contact_client,
+            internal_domains=internal_domains,
+            deadline=deadline,
         )
         db.update_history_id(rep_email, None)
         return logged_count
 
     logged_count = 0
-    message_ids = result.message_ids
-    # 途中で打ち切ったときの再開位置(最後まで処理し終えたhistoryレコードのid)。
-    completed_record_history_id: str | None = None
-    for index, message_id in enumerate(message_ids):
-        if deadline is not None and time.monotonic() >= deadline:
-            logger.warning(
-                "gmail_sync: time budget exhausted for rep %s after %d/%d messages, "
-                "will resume from historyId %s on the next push",
+    processed = 0
+    total = len(result.message_ids)
+    # `message_ids`は同じhistoryレコードのメッセージが連続して並んでいる(`list_history()`が
+    # レコード順に詰めるため)ので、レコードごとの束にして処理する。
+    for record_id, record_message_ids in itertools.groupby(
+        result.message_ids, key=result.message_history_ids.get
+    ):
+        for message_id in record_message_ids:
+            if _deadline_passed(deadline):
+                logger.warning(
+                    "gmail_sync: time budget exhausted for rep %s after %d/%d messages, "
+                    "the next push resumes from the last completed history record",
+                    rep_email,
+                    processed,
+                    total,
+                )
+                return logged_count
+            if _process_message_ref_or_skip(
+                message_id,
+                access_token,
                 rep_email,
-                index,
-                len(message_ids),
-                completed_record_history_id,
-            )
-            if completed_record_history_id:
-                db.update_history_id(rep_email, completed_record_history_id)
-            return logged_count
-        if _process_message_ref_or_skip(
-            message_id, access_token, rep_email, contact_client, internal_domains=internal_domains
-        ):
-            logged_count += 1
-        # このメッセージが所属レコードの最後のメッセージなら、そのレコードは処理し終えた。
-        record_id = result.message_history_ids.get(message_id)
-        next_record_id = (
-            result.message_history_ids.get(message_ids[index + 1])
-            if index + 1 < len(message_ids)
-            else None
-        )
-        if record_id and record_id != next_record_id:
-            completed_record_history_id = record_id
+                contact_client,
+                internal_domains=internal_domains,
+            ):
+                logged_count += 1
+            processed += 1
+        # このレコードは丸ごと処理し終えたので、再開位置をここまで進める。
+        if record_id:
+            db.update_history_id(rep_email, record_id)
 
     if result.history_id:
         db.update_history_id(rep_email, result.history_id)
     return logged_count
-
 
 def _default_contact_client() -> HttpNotionClient:
     schema = get_schema(_CONTACT_DB_KEY)

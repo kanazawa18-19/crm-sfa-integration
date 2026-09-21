@@ -35,7 +35,7 @@ import time
 from typing import Any, Mapping
 
 from src.db_schema.registry import get_schema
-from src.gmail_sync import db, gmail_client, sync
+from src.gmail_sync import db, sync
 from src.gmail_sync.token_crypto import decrypt_token
 from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.notion_client import HttpNotionClient
@@ -48,12 +48,14 @@ from src.sync_engine.webhook_handlers._common import (
 _CONTACT_DB_KEY = "contact"
 
 # 1回のPush通知で増分同期に使ってよい時間(秒、2026-09-21)。Vercel関数の上限は300秒で、
-# 超えると途中で殺されて`historyId`が進まず、Pub/Subの再送のたびに同じ所からやり直しになる。
-# 期限を過ぎたら`sync.sync_rep_incremental()`が残りを打ち切って再開位置を保存し、ここは
-# 200を返す(残りは次のPush・毎日の`gmail-sync` cronが拾う)。最後の1件が長引いても
-# 300秒に収まるよう、Gmail API 1回分の最悪待ち(429を3回×最大30秒＋タイムアウト)ぶんの
-# 余白を残している。
-PUSH_SYNC_TIME_BUDGET_SECONDS = 180.0
+# 超えると途中で殺される。期限を過ぎたら`sync.sync_rep_incremental()`が残りを打ち切り、
+# ここは200を返す(残りは次のPush・毎日の`gmail-sync` cronが拾う)。
+# 期限の判定はメッセージ1件ごとなので、最後の1件が長引いても300秒に収まるよう、外部API
+# 1回分の最悪待ち(タイムアウト×(リトライ3回＋1)＋429の待機30秒×3回 ≒ 130秒)より大きい
+# 余白を残す(`tests/.../test_gmail_push_webhook.py`で定数から検算している)。1件の中で
+# Notion側の429が何度も続く場合は理論上これを超えうるが、処理し終えたレコードは都度保存
+# されるので、万一殺されても次のPushはその続きから進む(増幅はしない)。
+PUSH_SYNC_TIME_BUDGET_SECONDS = 120.0
 
 
 def _default_contact_client() -> HttpNotionClient:
@@ -161,18 +163,16 @@ def handler(
         try:
             refresh_token = decrypt_token(conn.refresh_token_enc)
             client = contact_client if contact_client is not None else _default_contact_client()
-            # Gmail API側の429リトライも数回に絞り、全体を時間予算で打ち切る(2026-09-21、
-            # 上の`PUSH_SYNC_TIME_BUDGET_SECONDS`と`gmail_client.bounded_rate_limit_retries()`
-            # のコメント参照)。リトライを使い切った場合は例外→下のexceptで200を返し、
-            # `historyId`は進まないので次回のPushで同じ所から拾い直す。
-            with gmail_client.bounded_rate_limit_retries(INTERACTIVE_MAX_RATE_LIMIT_RETRIES):
-                count = sync.sync_rep_incremental(
-                    conn.rep_email,
-                    refresh_token,
-                    client,
-                    internal_domains=_internal_domains(),
-                    deadline=time.monotonic() + PUSH_SYNC_TIME_BUDGET_SECONDS,
-                )
+            # 時間予算を渡す(2026-09-21)。`sync_rep_incremental()`は期限内に必ず返り、
+            # 内部のGmail API呼び出しの429リトライも自動で数回に絞る。リトライを使い切った
+            # 場合は例外→下のexceptで200を返し、次回のPushで保存済みの位置から拾い直す。
+            count = sync.sync_rep_incremental(
+                conn.rep_email,
+                refresh_token,
+                client,
+                internal_domains=_internal_domains(),
+                deadline=time.monotonic() + PUSH_SYNC_TIME_BUDGET_SECONDS,
+            )
         finally:
             db.release_push_sync_lock(lock_conn, conn.rep_email)
     except Exception:

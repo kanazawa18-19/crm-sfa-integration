@@ -766,8 +766,8 @@ def _clock(monkeypatch, ticks: list[float]) -> None:
 def test_sync_rep_incremental_stops_at_the_deadline_and_resumes_from_the_last_completed_record(
     monkeypatch,
 ) -> None:
-    """期限を過ぎたら残りを打ち切り、「最後まで処理し終えたレコード」のidを`historyId`に保存する
-    (2026-09-21)。レコード4002の途中で切れたので、再開位置は4001。"""
+    """レコードを処理し終えるたびにそのidを`historyId`へ保存し、期限を過ぎたら残りを打ち切る
+    (2026-09-21)。レコード4002の途中で切れたので、保存されているのは4001まで。"""
     fetched, saved = _incremental_fixture(
         monkeypatch, records=[("4001", ["m1", "m2"]), ("4002", ["m3", "m4"]), ("4003", ["m5"])]
     )
@@ -823,7 +823,8 @@ def test_sync_rep_incremental_advances_to_the_latest_history_id_when_finished_wi
 
     assert fetched == ["m1", "m2"]
     assert count == 2
-    assert saved == [("rep@cnctor.jp", "9000")]
+    # レコードごとの保存 → 最後に応答全体の最新historyId。
+    assert saved == [("rep@cnctor.jp", "4001"), ("rep@cnctor.jp", "4002"), ("rep@cnctor.jp", "9000")]
 
 
 def test_sync_rep_incremental_without_deadline_never_consults_the_clock(monkeypatch) -> None:
@@ -841,7 +842,7 @@ def test_sync_rep_incremental_without_deadline_never_consults_the_clock(monkeypa
 
     assert fetched == ["m1", "m2"]
     assert count == 2
-    assert saved == [("rep@cnctor.jp", "9000")]
+    assert saved == [("rep@cnctor.jp", "4001"), ("rep@cnctor.jp", "4002"), ("rep@cnctor.jp", "9000")]
 
 
 def test_sync_rep_incremental_ignores_deadline_when_history_result_lacks_record_ids(monkeypatch) -> None:
@@ -866,3 +867,172 @@ def test_sync_rep_incremental_ignores_deadline_when_history_result_lacks_record_
 
     assert fetched == ["m1"]
     assert saved == []
+
+
+def test_sync_rep_incremental_checkpoints_past_a_record_whose_last_message_was_deleted(
+    monkeypatch,
+) -> None:
+    """404でスキップしたメッセージ(既に削除済み)がレコードの最後でも、そのレコードは
+    「処理し終えた」として再開位置に使う(kuma-qaレビューWARN対応: 打ち切り×404の組み合わせ)。"""
+    fetched, saved = _incremental_fixture(
+        monkeypatch, records=[("4001", ["m1", "m2"]), ("4002", ["m3", "m4"])]
+    )
+
+    def get_message(access_token, message_id):
+        fetched.append(message_id)
+        if message_id == "m2":
+            raise GmailApiError(404, "gone")
+        return _message(id_=message_id)
+
+    monkeypatch.setattr(sync.gmail_client, "get_message", get_message)
+    # m1=0, m2=1, m3=100(期限切れ)
+    _clock(monkeypatch, [0.0, 1.0, 100.0])
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp",
+        "refresh-token",
+        FakeContactClient({}),
+        internal_domains=frozenset({"cnctor.jp"}),
+        deadline=50.0,
+    )
+
+    assert fetched == ["m1", "m2"]
+    assert count == 1
+    assert saved == [("rep@cnctor.jp", "4001")]
+
+
+def test_sync_rep_incremental_with_deadline_bounds_gmail_rate_limit_retries(monkeypatch) -> None:
+    """期限を渡した呼び出しでは、内部のGmail API呼び出しの429リトライが自動で数回に絞られ、
+    抜けたら既定に戻る(obasan-qualityレビューWARN対応: 期限とリトライの絞りをセットにする)。"""
+    from src.gmail_sync import gmail_client
+    from src.gmail_sync.gmail_client import HistoryListResult
+    from src.sync_engine.clients._http import (
+        DEFAULT_MAX_RATE_LIMIT_RETRIES,
+        INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+    )
+
+    _incremental_fixture(monkeypatch, records=[])
+    seen: list[int] = []
+
+    def list_history(access_token, start_history_id):
+        seen.append(gmail_client.current_max_rate_limit_retries())
+        return HistoryListResult(message_ids=[], history_id="9000")
+
+    monkeypatch.setattr(sync.gmail_client, "list_history", list_history)
+    _clock(monkeypatch, [0.0])
+
+    sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset(), deadline=50.0
+    )
+    sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset()
+    )
+
+    assert seen == [INTERACTIVE_MAX_RATE_LIMIT_RETRIES, DEFAULT_MAX_RATE_LIMIT_RETRIES]
+    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+
+def test_sync_rep_incremental_restores_rate_limit_retries_when_sync_raises(monkeypatch) -> None:
+    import pytest
+
+    from src.gmail_sync import gmail_client
+    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+    _incremental_fixture(monkeypatch, records=[])
+
+    def boom(access_token, start_history_id):
+        raise RuntimeError("gmail down")
+
+    monkeypatch.setattr(sync.gmail_client, "list_history", boom)
+
+    with pytest.raises(RuntimeError):
+        sync.sync_rep_incremental(
+            "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset(), deadline=50.0
+        )
+
+    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+
+def _full_scan_fixture(monkeypatch, message_ids: list[str]):
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_recent_messages",
+        lambda access_token: [GmailMessageRef(id=m) for m in message_ids],
+    )
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: fetched.append(message_id) or _message(id_=message_id),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+    return fetched
+
+
+def test_sync_rep_stops_at_the_deadline(monkeypatch) -> None:
+    """フルスキャンにも時間予算が効く(shirokuma-secレビューBLOCKER対応)。"""
+    fetched = _full_scan_fixture(monkeypatch, ["m1", "m2", "m3"])
+    _clock(monkeypatch, [0.0, 1.0, 100.0])
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp",
+        "refresh-token",
+        FakeContactClient({}),
+        internal_domains=frozenset({"cnctor.jp"}),
+        deadline=50.0,
+    )
+
+    assert fetched == ["m1", "m2"]
+    assert count == 2
+
+
+def test_sync_rep_without_deadline_never_consults_the_clock(monkeypatch) -> None:
+    fetched = _full_scan_fixture(monkeypatch, ["m1", "m2"])
+
+    def fail_monotonic() -> float:
+        raise AssertionError("monotonic() must not be called without a deadline")
+
+    monkeypatch.setattr(sync.time, "monotonic", fail_monotonic)
+
+    count = sync.sync_rep(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert fetched == ["m1", "m2"]
+    assert count == 2
+
+
+def test_sync_rep_incremental_passes_the_deadline_to_the_full_scan_fallbacks(monkeypatch) -> None:
+    """`historyId`未設定・失効でフルスキャンへ退避するときも期限を引き継ぐ
+    (shirokuma-secレビューBLOCKER対応: 復旧直後に一番踏みやすい経路)。"""
+    seen: list[float | None] = []
+
+    def fake_sync_rep(rep_email, refresh_token, contact_client, *, internal_domains, deadline=None):
+        seen.append(deadline)
+        return 0
+
+    monkeypatch.setattr(sync, "sync_rep", fake_sync_rep)
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(sync.db, "update_history_id", lambda rep_email, history_id: None)
+
+    # ① historyId未設定
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection(None))
+    sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset(), deadline=50.0
+    )
+    # ② historyId失効
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("old"))
+
+    def raise_expired(access_token, start_history_id):
+        raise HistoryIdExpiredError(404, "not found")
+
+    monkeypatch.setattr(sync.gmail_client, "list_history", raise_expired)
+    sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset(), deadline=60.0
+    )
+
+    assert seen == [50.0, 60.0]
