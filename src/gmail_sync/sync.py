@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import getaddresses, parsedate_to_datetime
@@ -306,9 +307,18 @@ def sync_rep_incremental(
     contact_client: HttpNotionClient,
     *,
     internal_domains: frozenset[str],
+    deadline: float | None = None,
 ) -> int:
     """1名分の営業担当のGmailを、保存済みの`historyId`起点で増分同期する(2026-08-16、
     `gmail_push_webhook.py`から呼ばれる主経路)。新規に記録したメール件数を返す。
+
+    `deadline`(`time.monotonic()`基準の期限、2026-09-21)を渡すと、期限を過ぎた時点で残りの
+    メッセージ処理を打ち切る。Vercel関数は300秒で強制終了され、そうなると`historyId`の更新に
+    到達できず、Pub/Subの再送のたびに同じ先頭から処理し直して毎回タイムアウトする
+    (停止から復旧した直後に溜まった分を処理する場面で実際に起きた)。打ち切るときは
+    「最後まで処理し終えたhistoryレコード」の`id`を`historyId`として保存し、次回のPushで
+    そこから再開する(処理済みのメールは`db.email_log_exists()`で弾かれるので、1レコード分の
+    重なりは無害)。1レコードも処理し終えていなければ`historyId`は動かさない。
 
     `historyId`の更新は、増分同期が正常完了した場合(`list_history()`のレスポンス自体に
     含まれる`historyId`を使う)にのみ行う。以下2つのフォールバック経路では`historyId`を
@@ -349,11 +359,35 @@ def sync_rep_incremental(
         return logged_count
 
     logged_count = 0
-    for message_id in result.message_ids:
+    message_ids = result.message_ids
+    # 途中で打ち切ったときの再開位置(最後まで処理し終えたhistoryレコードのid)。
+    completed_record_history_id: str | None = None
+    for index, message_id in enumerate(message_ids):
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning(
+                "gmail_sync: time budget exhausted for rep %s after %d/%d messages, "
+                "will resume from historyId %s on the next push",
+                rep_email,
+                index,
+                len(message_ids),
+                completed_record_history_id,
+            )
+            if completed_record_history_id:
+                db.update_history_id(rep_email, completed_record_history_id)
+            return logged_count
         if _process_message_ref_or_skip(
             message_id, access_token, rep_email, contact_client, internal_domains=internal_domains
         ):
             logged_count += 1
+        # このメッセージが所属レコードの最後のメッセージなら、そのレコードは処理し終えた。
+        record_id = result.message_history_ids.get(message_id)
+        next_record_id = (
+            result.message_history_ids.get(message_ids[index + 1])
+            if index + 1 < len(message_ids)
+            else None
+        )
+        if record_id and record_id != next_record_id:
+            completed_record_history_id = record_id
 
     if result.history_id:
         db.update_history_id(rep_email, result.history_id)

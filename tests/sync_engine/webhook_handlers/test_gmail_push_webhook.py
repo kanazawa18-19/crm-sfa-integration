@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 import pytest
 
-from src.gmail_sync import db
-from src.sync_engine.webhook_handlers.gmail_push_webhook import handler
+from src.gmail_sync import db, gmail_client
+from src.sync_engine.clients._http import (
+    DEFAULT_MAX_RATE_LIMIT_RETRIES,
+    INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+)
+from src.sync_engine.webhook_handlers import gmail_push_webhook
+from src.sync_engine.webhook_handlers.gmail_push_webhook import PUSH_SYNC_TIME_BUDGET_SECONDS, handler
 
 
 class FakeContactClient:
@@ -115,7 +121,7 @@ def test_handler_calls_sync_rep_incremental_when_rep_found(monkeypatch: pytest.M
     calls: list[tuple] = []
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
-        lambda rep_email, refresh_token, contact_client, *, internal_domains: calls.append(
+        lambda rep_email, refresh_token, contact_client, *, internal_domains, deadline: calls.append(
             (rep_email, refresh_token, internal_domains)
         )
         or 2,
@@ -144,7 +150,7 @@ def test_handler_lowercases_email_address_before_lookup(monkeypatch: pytest.Monk
     )
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
-        lambda rep_email, refresh_token, contact_client, *, internal_domains: 0,
+        lambda rep_email, refresh_token, contact_client, *, internal_domains, deadline: 0,
     )
 
     response = handler(
@@ -252,3 +258,94 @@ def test_handler_releases_push_sync_lock_after_successful_sync(
 
     assert json.loads(response["body"]) == {"processed": True, "logged_count": 1}
     assert _push_sync_lock.released_for == ["rep@cnctor.jp"]
+
+
+def test_handler_bounds_gmail_rate_limit_retries_and_passes_a_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Push経路(Vercel関数、300秒で強制終了)では429リトライを数回に絞り、全体に時間予算を
+    掛ける(2026-09-21の本番障害対応)。絞りは同期処理の中でだけ効き、抜けたら既定に戻る。"""
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.db.find_connection_by_email",
+        lambda rep_email: _connection(rep_email),
+    )
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.decrypt_token",
+        lambda enc: "refresh-token",
+    )
+    seen: dict = {}
+
+    def fake_sync(rep_email, refresh_token, contact_client, *, internal_domains, deadline):
+        seen["retries_inside"] = gmail_client.current_max_rate_limit_retries()
+        seen["deadline"] = deadline
+        return 0
+
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental", fake_sync
+    )
+
+    before = time.monotonic()
+    response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
+    after = time.monotonic()
+
+    assert response["statusCode"] == 200
+    assert seen["retries_inside"] == INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+    assert before + PUSH_SYNC_TIME_BUDGET_SECONDS <= seen["deadline"] <= after + PUSH_SYNC_TIME_BUDGET_SECONDS
+    # ハンドラを抜けたら既定(バッチ向けの大きい値)に戻っている。
+    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+
+def test_handler_restores_rate_limit_retries_even_when_sync_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.db.find_connection_by_email",
+        lambda rep_email: _connection(rep_email),
+    )
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.decrypt_token",
+        lambda enc: "refresh-token",
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("gmail down")
+
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental", boom
+    )
+
+    response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
+
+    assert json.loads(response["body"])["reason"] == "error"
+    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+
+def test_push_time_budget_leaves_headroom_under_the_vercel_limit() -> None:
+    """Vercel関数の上限300秒より十分小さい(最後の1件の最悪待ちを足しても収まる)。"""
+    assert 0 < PUSH_SYNC_TIME_BUDGET_SECONDS <= 200
+
+
+def test_default_contact_client_bounds_notion_rate_limit_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notion側も同じくリクエスト/レスポンス型向けの小さいリトライ回数を明示する
+    (`_http.py`の指針。既定の30回だと最悪15分待ちで関数ごとタイムアウトする)。"""
+    captured: dict = {}
+
+    class FakeSchema:
+        notion_database_id = "db-123"
+
+    class FakeNotionClient:
+        def __init__(self, db_key, database_id, **kwargs):
+            captured["db_key"] = db_key
+            captured["database_id"] = database_id
+            captured.update(kwargs)
+
+    monkeypatch.setattr(gmail_push_webhook, "get_schema", lambda key: FakeSchema())
+    monkeypatch.setattr(gmail_push_webhook, "HttpNotionClient", FakeNotionClient)
+
+    gmail_push_webhook._default_contact_client()
+
+    assert captured["db_key"] == "contact"
+    assert captured["database_id"] == "db-123"
+    assert captured["max_rate_limit_retries"] == INTERACTIVE_MAX_RATE_LIMIT_RETRIES

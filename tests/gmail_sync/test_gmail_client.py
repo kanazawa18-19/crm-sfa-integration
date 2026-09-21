@@ -155,3 +155,98 @@ def test_list_messages_page_raises_on_error(requests_mock) -> None:
 
     with pytest.raises(GmailApiError):
         list_messages_page(_ACCESS_TOKEN, query="q")
+
+
+def test_list_history_records_the_history_record_id_of_each_message(requests_mock) -> None:
+    """時間予算で途中終了したときの再開位置に使う(2026-09-21)。"""
+    requests_mock.get(
+        f"{_BASE_URL}/history",
+        json={
+            "history": [
+                {"id": "4001", "messagesAdded": [{"message": {"id": "msg1"}}]},
+                {"id": 4002, "messagesAdded": [{"message": {"id": "msg2"}}, {"message": {"id": "msg3"}}]},
+                {"messagesAdded": [{"message": {"id": "msg4"}}]},
+            ],
+            "historyId": "5000",
+        },
+    )
+
+    result = list_history(_ACCESS_TOKEN, "1000")
+
+    assert result.message_ids == ["msg1", "msg2", "msg3", "msg4"]
+    # idは文字列に揃える。idの無いレコード(想定外)は再開位置に使わない。
+    assert result.message_history_ids == {"msg1": "4001", "msg2": "4002", "msg3": "4002"}
+
+
+def test_rate_limit_retries_default_to_the_batch_value_and_can_be_bounded(monkeypatch) -> None:
+    """Gmail API呼び出しの429リトライ回数は既定で`_http`のバッチ向け既定値。
+    `bounded_rate_limit_retries()`の中でだけ小さくなり、抜けたら戻る(2026-09-21)。"""
+    from src.gmail_sync import gmail_client
+    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+    seen: list[int] = []
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        headers: dict = {}
+
+        @staticmethod
+        def json():
+            return {"id": "msg1", "payload": {"headers": []}, "snippet": ""}
+
+    def fake_request_with_retry(method, url, **kwargs):
+        seen.append(kwargs["max_rate_limit_retries"])
+        return FakeResponse()
+
+    monkeypatch.setattr(gmail_client, "request_with_retry", fake_request_with_retry)
+
+    gmail_client.get_message(_ACCESS_TOKEN, "msg1")
+    with gmail_client.bounded_rate_limit_retries(3):
+        gmail_client.get_message(_ACCESS_TOKEN, "msg1")
+        gmail_client.list_history(_ACCESS_TOKEN, "1000")
+    gmail_client.get_message(_ACCESS_TOKEN, "msg1")
+
+    assert seen == [DEFAULT_MAX_RATE_LIMIT_RETRIES, 3, 3, DEFAULT_MAX_RATE_LIMIT_RETRIES]
+    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+
+def test_every_gmail_request_passes_the_current_rate_limit_retries(monkeypatch) -> None:
+    """呼び出しを1つでも取りこぼすと、その1つだけ既定の30回に戻って関数ごとタイムアウトする。"""
+    from src.gmail_sync import gmail_client
+
+    seen: list[int] = []
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        headers: dict = {}
+
+        @staticmethod
+        def json():
+            return {
+                "access_token": "tok",
+                "messages": [],
+                "history": [],
+                "id": "msg1",
+                "payload": {"headers": []},
+                "snippet": "",
+            }
+
+    def fake_request_with_retry(method, url, **kwargs):
+        seen.append(kwargs["max_rate_limit_retries"])
+        return FakeResponse()
+
+    monkeypatch.setattr(gmail_client, "request_with_retry", fake_request_with_retry)
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "csec")
+
+    with gmail_client.bounded_rate_limit_retries(2):
+        gmail_client.refresh_access_token("refresh")
+        gmail_client.list_recent_messages(_ACCESS_TOKEN)
+        gmail_client.list_messages_page(_ACCESS_TOKEN, query="q")
+        gmail_client.watch_mailbox(_ACCESS_TOKEN, "projects/p/topics/t")
+        gmail_client.list_history(_ACCESS_TOKEN, "1000")
+        gmail_client.get_message(_ACCESS_TOKEN, "msg1")
+
+    assert seen == [2] * 6

@@ -633,6 +633,38 @@ def test_webhook_notion_returns_401_when_secret_mismatches(
     assert response.status_code == 401
 
 
+# --- /api/webhooks/gmail-push ----------------------------------------------------------------
+
+
+def test_webhook_gmail_push_runs_the_sync_handler_off_the_event_loop(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gmail Push の同期ハンドラは数分かかりうるので、イベントループの上で直接呼ばず
+    ワーカースレッドで動かす(2026-09-21の本番障害。同じインスタンスの`/healthz`まで
+    40秒以上止まった)。ハンドラの中では「動いているイベントループ」が見えないこと。"""
+    import asyncio
+
+    seen: dict[str, Any] = {}
+
+    def fake_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        seen["body"] = event["body"]
+        return {"statusCode": 200, "body": '{"processed": true, "logged_count": 1}'}
+
+    monkeypatch.setattr("src.api.routes.webhooks.gmail_push_webhook_handler", fake_handler)
+
+    response = client.post("/api/webhooks/gmail-push?token=t", json={"message": {"data": "e30="}})
+
+    assert response.status_code == 200
+    assert response.json() == {"processed": True, "logged_count": 1}
+    assert seen["on_event_loop"] is False
+    assert "e30=" in seen["body"]
+
+
 # --- /api/webhooks/web-engagement ------------------------------------------------------------
 
 

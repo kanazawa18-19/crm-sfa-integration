@@ -10,12 +10,15 @@ google-api-python-clientは使わず、既存のrequests + `_http.request_with_r
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Iterator
 
 from src.sync_engine.clients._http import (
     ApiError,
+    DEFAULT_MAX_RATE_LIMIT_RETRIES,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
     extract_error_message,
@@ -29,6 +32,33 @@ _MAX_MESSAGES_PER_SYNC = 100
 # cron実行間隔(1日1回想定)より少し広めに取り、実行遅延・タイムゾーン差で取りこぼさない
 # ようにする(重複はgmailMessageIdでdb.email_log_exists()により弾かれるため安全)。
 _SEARCH_WINDOW_DAYS = 2
+
+# Gmail API / OAuth token エンドポイントへの429リトライ回数(2026-09-21)。
+# 既定は`_http.DEFAULT_MAX_RATE_LIMIT_RETRIES`(30回。過去分の一括取り込みスクリプトのような
+# 数時間規模のバッチではこれでよい)。一方、Vercel関数(300秒で強制終了)の中で動くGmail Push
+# 経路では、429を30回×最大30秒待つと関数ごとタイムアウト→Pub/Subが再送→また30回待つ、の
+# 増幅ループになる(2026-09-21の本番障害)。関数の中から呼ぶ側は`bounded_rate_limit_retries()`で
+# 数回に絞ること。本モジュールの関数は引数の形を変えず、この値を各呼び出しで参照する
+# (同期処理の深い所まで引数を通さずに済ませるため。contextvarなので、ハンドラ全体を
+# 1本のスレッドで動かす限り中の呼び出し全部に効く)。
+_max_rate_limit_retries: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "gmail_max_rate_limit_retries", default=DEFAULT_MAX_RATE_LIMIT_RETRIES
+)
+
+
+def current_max_rate_limit_retries() -> int:
+    """いま有効な429リトライ回数(既定は`DEFAULT_MAX_RATE_LIMIT_RETRIES`)。"""
+    return _max_rate_limit_retries.get()
+
+
+@contextlib.contextmanager
+def bounded_rate_limit_retries(max_retries: int) -> Iterator[None]:
+    """このブロックの中で行うGmail API呼び出しの429リトライ回数を`max_retries`に絞る。"""
+    token = _max_rate_limit_retries.set(max_retries)
+    try:
+        yield
+    finally:
+        _max_rate_limit_retries.reset(token)
 
 
 class GmailApiError(ApiError):
@@ -57,6 +87,7 @@ def refresh_access_token(refresh_token: str) -> str:
         },
         timeout=DEFAULT_TIMEOUT_SECONDS,
         max_retries=DEFAULT_MAX_RETRIES,
+        max_rate_limit_retries=current_max_rate_limit_retries(),
     )
     raise_for_error(response, GmailApiError)
     access_token = response.json().get("access_token")
@@ -82,6 +113,7 @@ def list_recent_messages(access_token: str) -> list[GmailMessageRef]:
         f"{_GMAIL_API_BASE}/messages",
         headers={"Authorization": f"Bearer {access_token}"},
         params={"q": f"newer_than:{_SEARCH_WINDOW_DAYS}d", "maxResults": _MAX_MESSAGES_PER_SYNC},
+        max_rate_limit_retries=current_max_rate_limit_retries(),
     )
     raise_for_error(response, GmailApiError)
     return [GmailMessageRef(id=m["id"]) for m in response.json().get("messages", [])]
@@ -121,6 +153,7 @@ def list_messages_page(
         f"{_GMAIL_API_BASE}/messages",
         headers={"Authorization": f"Bearer {access_token}"},
         params=params,
+        max_rate_limit_retries=current_max_rate_limit_retries(),
     )
     raise_for_error(response, GmailApiError)
     body = response.json()
@@ -167,6 +200,7 @@ def watch_mailbox(access_token: str, topic_name: str) -> dict[str, Any]:
         f"{_GMAIL_API_BASE}/watch",
         headers={"Authorization": f"Bearer {access_token}"},
         json_body={"topicName": topic_name, "labelIds": ["INBOX"]},
+        max_rate_limit_retries=current_max_rate_limit_retries(),
     )
     raise_for_error(response, GmailApiError)
     return response.json()
@@ -189,6 +223,11 @@ class HistoryListResult:
     # (2026-08-16、shirokuma-secレビューWARN対応)。全ページ中`historyId`が含まれる最後の
     # ページの値を採用する(取得できなければNone)。
     history_id: str | None
+    # メッセージID → そのメッセージを載せていたhistoryレコードの`id`(2026-09-21)。
+    # Push経路が時間予算で途中終了したとき、「最後まで処理し終えたレコード」の`id`を
+    # `historyId`として保存し、次回はそこから再開するために使う(`sync.sync_rep_incremental()`)。
+    # 処理し終えた先頭部分を毎回やり直して末尾へ永遠に届かない、を防ぐ。
+    message_history_ids: dict[str, str] = field(default_factory=dict)
 
 
 def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
@@ -201,6 +240,7 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
     ため、呼び出し元はフル同期にフォールバックすること)。
     """
     message_ids: list[str] = []
+    message_history_ids: dict[str, str] = {}
     latest_history_id: str | None = None
     page_token: str | None = None
     while True:
@@ -215,24 +255,32 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
             f"{_GMAIL_API_BASE}/history",
             headers={"Authorization": f"Bearer {access_token}"},
             params=params,
+            max_rate_limit_retries=current_max_rate_limit_retries(),
         )
         if response.status_code == 404:
             raise HistoryIdExpiredError(response.status_code, extract_error_message(response))
         raise_for_error(response, GmailApiError)
         data = response.json()
         for record in data.get("history", []):
+            record_id = record.get("id")
             for added in record.get("messagesAdded", []):
                 message = added.get("message") or {}
                 message_id = message.get("id")
                 if message_id:
                     message_ids.append(message_id)
+                    if record_id:
+                        message_history_ids[message_id] = str(record_id)
         response_history_id = data.get("historyId")
         if response_history_id:
             latest_history_id = str(response_history_id)
         page_token = data.get("nextPageToken")
         if not page_token:
             break
-    return HistoryListResult(message_ids=message_ids, history_id=latest_history_id)
+    return HistoryListResult(
+        message_ids=message_ids,
+        history_id=latest_history_id,
+        message_history_ids=message_history_ids,
+    )
 
 
 def get_message(access_token: str, message_id: str) -> GmailMessage:
@@ -241,6 +289,7 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
         f"{_GMAIL_API_BASE}/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"},
         params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
+        max_rate_limit_retries=current_max_rate_limit_retries(),
     )
     raise_for_error(response, GmailApiError)
     data = response.json()

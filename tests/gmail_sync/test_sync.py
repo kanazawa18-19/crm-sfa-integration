@@ -715,3 +715,154 @@ def test_classify_message_parses_the_date_header_into_utc() -> None:
     # JST 10:00 = UTC 01:00
     assert result.sent_at.utcoffset().total_seconds() == 9 * 3600
     assert result.sent_at.astimezone(timezone.utc).hour == 1
+
+
+def _incremental_fixture(monkeypatch, *, records: list[tuple[str, list[str]]], history_id: str = "9000"):
+    """`sync_rep_incremental()`の時間予算テスト用の共通配線。`records`は
+    (historyレコードid, そのレコードに載っているメッセージid...)の並び。"""
+    from src.gmail_sync.gmail_client import HistoryListResult
+
+    message_ids = [m for _, ids in records for m in ids]
+    message_history_ids = {m: rid for rid, ids in records for m in ids}
+    monkeypatch.setattr(sync.db, "find_connection_by_email", lambda rep_email: _stored_connection("1000"))
+    monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_history",
+        lambda access_token, start_history_id: HistoryListResult(
+            message_ids=message_ids, history_id=history_id, message_history_ids=message_history_ids
+        ),
+    )
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "get_message",
+        lambda access_token, message_id: fetched.append(message_id) or _message(id_=message_id),
+    )
+    monkeypatch.setattr(sync.db, "email_log_exists", lambda gmail_message_id: False)
+    monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
+    monkeypatch.setattr(sync, "find_contact_page_id", lambda client, email: "contact-page-1")
+    monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
+    saved: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        sync.db, "update_history_id", lambda rep_email, history_id: saved.append((rep_email, history_id))
+    )
+    return fetched, saved
+
+
+def _clock(monkeypatch, ticks: list[float]) -> None:
+    """`time.monotonic()`を呼ぶたびに`ticks`を順に返す(尽きたら最後の値)。"""
+    it = iter(ticks)
+    last = ticks[-1]
+
+    def fake_monotonic() -> float:
+        nonlocal last
+        last = next(it, last)
+        return last
+
+    monkeypatch.setattr(sync.time, "monotonic", fake_monotonic)
+
+
+def test_sync_rep_incremental_stops_at_the_deadline_and_resumes_from_the_last_completed_record(
+    monkeypatch,
+) -> None:
+    """期限を過ぎたら残りを打ち切り、「最後まで処理し終えたレコード」のidを`historyId`に保存する
+    (2026-09-21)。レコード4002の途中で切れたので、再開位置は4001。"""
+    fetched, saved = _incremental_fixture(
+        monkeypatch, records=[("4001", ["m1", "m2"]), ("4002", ["m3", "m4"]), ("4003", ["m5"])]
+    )
+    # 各メッセージの前に1回ずつ時計を見る: m1=0, m2=1, m3=2, m4=100(期限切れ)
+    _clock(monkeypatch, [0.0, 1.0, 2.0, 100.0])
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp",
+        "refresh-token",
+        FakeContactClient({}),
+        internal_domains=frozenset({"cnctor.jp"}),
+        deadline=50.0,
+    )
+
+    assert fetched == ["m1", "m2", "m3"]
+    assert count == 3
+    # 最新の9000ではなく、処理し終えたレコードの4001まで進める。
+    assert saved == [("rep@cnctor.jp", "4001")]
+
+
+def test_sync_rep_incremental_does_not_advance_history_id_when_no_record_was_completed(
+    monkeypatch,
+) -> None:
+    fetched, saved = _incremental_fixture(monkeypatch, records=[("4001", ["m1", "m2"])])
+    _clock(monkeypatch, [0.0, 100.0])
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp",
+        "refresh-token",
+        FakeContactClient({}),
+        internal_domains=frozenset({"cnctor.jp"}),
+        deadline=50.0,
+    )
+
+    assert fetched == ["m1"]
+    assert count == 1
+    assert saved == []
+
+
+def test_sync_rep_incremental_advances_to_the_latest_history_id_when_finished_within_the_deadline(
+    monkeypatch,
+) -> None:
+    fetched, saved = _incremental_fixture(monkeypatch, records=[("4001", ["m1"]), ("4002", ["m2"])])
+    _clock(monkeypatch, [0.0, 1.0])
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp",
+        "refresh-token",
+        FakeContactClient({}),
+        internal_domains=frozenset({"cnctor.jp"}),
+        deadline=50.0,
+    )
+
+    assert fetched == ["m1", "m2"]
+    assert count == 2
+    assert saved == [("rep@cnctor.jp", "9000")]
+
+
+def test_sync_rep_incremental_without_deadline_never_consults_the_clock(monkeypatch) -> None:
+    """cron・スクリプト等、期限を渡さない既存の呼び出し元の挙動は変わらない。"""
+    fetched, saved = _incremental_fixture(monkeypatch, records=[("4001", ["m1"]), ("4002", ["m2"])])
+
+    def fail_monotonic() -> float:
+        raise AssertionError("monotonic() must not be called without a deadline")
+
+    monkeypatch.setattr(sync.time, "monotonic", fail_monotonic)
+
+    count = sync.sync_rep_incremental(
+        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset({"cnctor.jp"})
+    )
+
+    assert fetched == ["m1", "m2"]
+    assert count == 2
+    assert saved == [("rep@cnctor.jp", "9000")]
+
+
+def test_sync_rep_incremental_ignores_deadline_when_history_result_lacks_record_ids(monkeypatch) -> None:
+    """レコードidが無い(古い形の)結果で途中終了しても、`historyId`を誤って進めない。"""
+    from src.gmail_sync.gmail_client import HistoryListResult
+
+    fetched, saved = _incremental_fixture(monkeypatch, records=[("x", ["m1", "m2"])])
+    monkeypatch.setattr(
+        sync.gmail_client,
+        "list_history",
+        lambda access_token, start_history_id: HistoryListResult(message_ids=["m1", "m2"], history_id="9000"),
+    )
+    _clock(monkeypatch, [0.0, 100.0])
+
+    sync.sync_rep_incremental(
+        "rep@cnctor.jp",
+        "refresh-token",
+        FakeContactClient({}),
+        internal_domains=frozenset({"cnctor.jp"}),
+        deadline=50.0,
+    )
+
+    assert fetched == ["m1"]
+    assert saved == []

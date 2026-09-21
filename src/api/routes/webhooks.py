@@ -18,6 +18,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from src.api.dependencies import wiring_dependency
 from src.sync_engine import webhook_receipts
@@ -259,9 +260,16 @@ async def webhook_gmail_push(request: Request) -> Response:
     `Dispatcher`/`IdMappingStore`は経由しない設計(`gmail_push_webhook.handler`の
     docstring参照)のため、`_wiring_dependency`(Dispatcher一式)には依存しない。担当者が
     見つからない・処理中の例外いずれも、Pub/Subの再送ループを防ぐため常に200を返す。
+
+    ハンドラ本体は同期関数で、Gmail API・Notion・DBを順に叩くため数十秒〜数分かかりうる。
+    `async def`の中で直接呼ぶとその間イベントループごと止まり、同じインスタンスに来た
+    `/healthz`やダッシュボードのAPI呼び出しまで全部待たされる(2026-09-21の本番障害。
+    40秒以上無応答になった)。そのためワーカースレッドで動かし、イベントループを空けておく。
+    レスポンスを返した後に処理を続ける形(`BackgroundTasks`)にはしない — Vercelはレスポンス
+    送信後にプロセスを凍結しうるため(`src/notifications/manager_dm.py`のコメント参照)。
     """
     event = await _lambda_event_from_request(request)
-    result = gmail_push_webhook_handler(event, context=None)
+    result = await run_in_threadpool(gmail_push_webhook_handler, event, context=None)
     return _lambda_result_to_response(result)
 
 
