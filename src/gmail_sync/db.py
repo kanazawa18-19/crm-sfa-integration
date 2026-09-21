@@ -17,6 +17,12 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+import logging
+
+from src import db_utils
+
+logger = logging.getLogger(__name__)
+
 
 def _connect() -> psycopg.Connection[dict[str, Any]]:
     url = os.environ.get("DATABASE_URL")
@@ -304,3 +310,51 @@ def fetch_oldest_email_sent_at() -> datetime | None:
         cur.execute('SELECT min("sentAt") AS oldest FROM "EmailLog"')
         row = cur.fetchone()
         return row["oldest"] if row else None
+
+
+# Push通知1件ごとの増分同期を、同じメールボックスについて同時に1本だけ走らせるためのロック
+# (2026-09-21)。Vercelが停止していた間にPub/Subへ溜まった通知が復旧直後に一斉に届き、同じ
+# メールボックスの`history.list`が何十本も同時に走ってGmail APIの429(回数制限)→リトライ待ち
+# →300秒タイムアウト(504)→Pub/Subの再送、という嵐になった(crm-sfa-integrationのVercelチーム
+# 移行直後に実際に発生。`/healthz`まで巻き込まれて応答しなくなった)。
+# Push通知は「新着があった」という合図にすぎず、増分同期は保存済み`historyId`から全部拾うので、
+# 同じメールボックスの同期は1本走っていれば足りる。取れなかった分は即200で返してPub/Subに
+# ackさせる(取りこぼしは無い。走っている1本と日次の`sync_all()`が拾う)。
+_PUSH_SYNC_LOCK_NAMESPACE = 20260921
+
+
+def try_acquire_push_sync_lock(rep_email: str) -> psycopg.Connection[dict[str, Any]] | None:
+    """`rep_email`ごとの増分同期ロックを`pg_try_advisory_lock(namespace, hashtext(email))`で試みる。
+
+    取得できたらロックを保持したままの`Connection`を返す(呼び出し元は必ず
+    `release_push_sync_lock()`でこの接続ごと解放すること)。既に同じメールボックスの同期が
+    走っていれば`None`。接続は`db_utils.connect_for_advisory_lock()`(非pooled)を使う
+    (pooled接続ではadvisory lockが無言で効かなくなるため。`src/relation_sync/db.py`と同じ設計)。
+    """
+    conn = db_utils.connect_for_advisory_lock(logger)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(%s, hashtext(%s)) AS locked",
+                (_PUSH_SYNC_LOCK_NAMESPACE, rep_email),
+            )
+            row = cur.fetchone()
+    except Exception:
+        conn.close()
+        raise
+    if not (row and row["locked"]):
+        conn.close()
+        return None
+    return conn
+
+
+def release_push_sync_lock(conn: psycopg.Connection[dict[str, Any]], rep_email: str) -> None:
+    """`try_acquire_push_sync_lock()`で取得したロックを解放し、接続を閉じる。"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_unlock(%s, hashtext(%s))",
+                (_PUSH_SYNC_LOCK_NAMESPACE, rep_email),
+            )
+    finally:
+        conn.close()

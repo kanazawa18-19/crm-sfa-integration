@@ -127,11 +127,29 @@ def handler(
                 "body": json.dumps({"processed": False, "reason": "unknown_rep"}),
             }
 
-        refresh_token = decrypt_token(conn.refresh_token_enc)
-        client = contact_client if contact_client is not None else _default_contact_client()
-        count = sync.sync_rep_incremental(
-            conn.rep_email, refresh_token, client, internal_domains=_internal_domains()
-        )
+        # 同じメールボックスの増分同期は同時に1本だけ(2026-09-21)。停止から復旧した直後に
+        # 溜まっていた通知が一斉に届くと、同じ`history.list`が何十本も並走してGmail APIの429と
+        # 300秒タイムアウトの嵐になる(`db.try_acquire_push_sync_lock()`のコメント参照)。
+        # 取れなかった分は即200で返す。走っている1本が保存済み`historyId`から全部拾うので
+        # 取りこぼしは無い。
+        lock_conn = db.try_acquire_push_sync_lock(conn.rep_email)
+        if lock_conn is None:
+            logger.info(
+                "gmail_push_webhook: incremental sync already running for %s, acknowledging without work",
+                email_address_normalized,
+            )
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"processed": False, "reason": "already_syncing"}),
+            }
+        try:
+            refresh_token = decrypt_token(conn.refresh_token_enc)
+            client = contact_client if contact_client is not None else _default_contact_client()
+            count = sync.sync_rep_incremental(
+                conn.rep_email, refresh_token, client, internal_domains=_internal_domains()
+            )
+        finally:
+            db.release_push_sync_lock(lock_conn, conn.rep_email)
     except Exception:
         # Pub/Subの再送ループを防ぐため、処理中の例外でも200を返す(モジュールdocstring参照)。
         # 取りこぼした分は次回のsync_all()(日次セーフティネット)で拾われる。
