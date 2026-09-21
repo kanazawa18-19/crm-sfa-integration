@@ -120,12 +120,13 @@ def test_handler_calls_sync_rep_incremental_when_rep_found(monkeypatch: pytest.M
         lambda enc: "refresh-token",
     )
     calls: list[tuple] = []
+    results = iter([2, 0])
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
         lambda rep_email, refresh_token, contact_client, *, internal_domains, deadline: calls.append(
             (rep_email, refresh_token, internal_domains)
         )
-        or 2,
+        or next(results),
     )
 
     response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
@@ -134,7 +135,8 @@ def test_handler_calls_sync_rep_incremental_when_rep_found(monkeypatch: pytest.M
     body = json.loads(response["body"])
     assert body["processed"] is True
     assert body["logged_count"] == 2
-    assert calls == [("rep@cnctor.jp", "refresh-token", frozenset({"cnctor.jp"}))]
+    # 1周目で記録があったので、その間に届いた分を拾う2周目が走る(2周目は0件)。
+    assert calls == [("rep@cnctor.jp", "refresh-token", frozenset({"cnctor.jp"}))] * 2
 
 
 def test_handler_lowercases_email_address_before_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,9 +252,10 @@ def test_handler_releases_push_sync_lock_after_successful_sync(
         "src.sync_engine.webhook_handlers.gmail_push_webhook.decrypt_token",
         lambda enc: "refresh-token",
     )
+    results = iter([1, 0])
     monkeypatch.setattr(
         "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
-        lambda *args, **kwargs: 1,
+        lambda *args, **kwargs: next(results),
     )
 
     response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
@@ -328,3 +331,71 @@ def test_default_contact_client_bounds_notion_rate_limit_retries(
     assert captured["db_key"] == "contact"
     assert captured["database_id"] == "db-123"
     assert captured["max_rate_limit_retries"] == INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+
+
+def _rep_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.db.find_connection_by_email",
+        lambda rep_email: _connection(rep_email),
+    )
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.decrypt_token",
+        lambda enc: "refresh-token",
+    )
+
+
+def test_handler_does_not_run_a_second_pass_when_the_first_pass_logged_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1周目が0件(=すぐ終わった)なら、その間に通知を取りこぼした可能性は無いので1周で終える。"""
+    _rep_found(monkeypatch)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
+        lambda *args, **kwargs: calls.append(1) or 0,
+    )
+
+    response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
+
+    assert json.loads(response["body"]) == {"processed": True, "logged_count": 0}
+    assert len(calls) == 1
+
+
+def test_handler_skips_the_second_pass_when_the_time_budget_is_already_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1周目で記録があっても、期限を過ぎていれば2周目は始めない(300秒内に必ず返す)。"""
+    _rep_found(monkeypatch)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
+        lambda *args, **kwargs: calls.append(1) or 5,
+    )
+    ticks = iter([0.0, PUSH_SYNC_TIME_BUDGET_SECONDS + 1.0])
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.time.monotonic", lambda: next(ticks)
+    )
+
+    response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
+
+    assert json.loads(response["body"]) == {"processed": True, "logged_count": 5}
+    assert len(calls) == 1
+
+
+def test_handler_runs_a_second_pass_with_the_same_deadline_when_the_first_pass_logged_mail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2周目は1周目と同じ期限を使う(周回で時間予算が伸びない)。"""
+    _rep_found(monkeypatch)
+    deadlines: list[float] = []
+    results = iter([3, 1])
+    monkeypatch.setattr(
+        "src.sync_engine.webhook_handlers.gmail_push_webhook.sync.sync_rep_incremental",
+        lambda *args, deadline, **kwargs: deadlines.append(deadline) or next(results),
+    )
+
+    response = handler(_event(_pubsub_body()), context=None, contact_client=FakeContactClient())
+
+    assert json.loads(response["body"]) == {"processed": True, "logged_count": 4}
+    assert len(deadlines) == 2
+    assert deadlines[0] == deadlines[1]

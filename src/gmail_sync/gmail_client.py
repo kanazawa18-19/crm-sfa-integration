@@ -18,9 +18,9 @@ from typing import Any, Iterator
 
 from src.sync_engine.clients._http import (
     ApiError,
-    DEFAULT_MAX_RATE_LIMIT_RETRIES,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
     extract_error_message,
     raise_for_error,
     request_with_retry,
@@ -34,26 +34,28 @@ _MAX_MESSAGES_PER_SYNC = 100
 _SEARCH_WINDOW_DAYS = 2
 
 # Gmail API / OAuth token エンドポイントへの429リトライ回数(2026-09-21)。
-# 既定は`_http.DEFAULT_MAX_RATE_LIMIT_RETRIES`(30回。過去分の一括取り込みスクリプトのような
-# 数時間規模のバッチではこれでよい)。一方、Vercel関数(300秒で強制終了)の中で動くGmail Push
-# 経路では、429を30回×最大30秒待つと関数ごとタイムアウト→Pub/Subが再送→また30回待つ、の
-# 増幅ループになる(2026-09-21の本番障害)。関数の中から呼ぶ側は`bounded_rate_limit_retries()`で
-# 数回に絞ること。本モジュールの関数は引数の形を変えず、この値を各呼び出しで参照する
-# (同期処理の深い所まで引数を通さずに済ませるため。contextvarなので、ハンドラ全体を
-# 1本のスレッドで動かす限り中の呼び出し全部に効く)。
+# 既定は`_http.INTERACTIVE_MAX_RATE_LIMIT_RETRIES`(3回)。本モジュールの呼び出し元はほぼ全部
+# Vercel関数(300秒で強制終了)の中で動く(Gmail Push・毎日の同期cron・watch延長cron)ため、
+# 429を既定の30回×最大30秒待つと関数ごとタイムアウト→Pub/Subが再送→また30回待つ、の増幅
+# ループになる(2026-09-21の本番障害)。数時間規模のバッチ(`scripts/backfill_gmail_history.py`)
+# だけが`bounded_rate_limit_retries(DEFAULT_MAX_RATE_LIMIT_RETRIES)`で明示的に広げる
+# (安全側を既定にし、緩める側をオプトインにする。Gemini・ChatGPT・obasan-qualityレビュー指摘)。
+# 本モジュールの関数は引数の形を変えず、この値を各呼び出しで参照する(contextvarなので、
+# `with`で囲んだ範囲の中の呼び出し全部に効く。スレッドプール越しでも各リクエストに複製される)。
 _max_rate_limit_retries: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "gmail_max_rate_limit_retries", default=DEFAULT_MAX_RATE_LIMIT_RETRIES
+    "gmail_max_rate_limit_retries", default=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 )
 
 
 def current_max_rate_limit_retries() -> int:
-    """いま有効な429リトライ回数(既定は`DEFAULT_MAX_RATE_LIMIT_RETRIES`)。"""
+    """いま有効な429リトライ回数(既定は`INTERACTIVE_MAX_RATE_LIMIT_RETRIES`)。"""
     return _max_rate_limit_retries.get()
 
 
 @contextlib.contextmanager
 def bounded_rate_limit_retries(max_retries: int) -> Iterator[None]:
-    """このブロックの中で行うGmail API呼び出しの429リトライ回数を`max_retries`に絞る。"""
+    """このブロックの中で行うGmail API呼び出しの429リトライ回数を`max_retries`にする
+    (Vercel関数の中では既定より増やさないこと)。"""
     token = _max_rate_limit_retries.set(max_retries)
     try:
         yield

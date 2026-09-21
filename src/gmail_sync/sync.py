@@ -15,7 +15,6 @@ Zoho CRM方式(メアド一致による自動関連付け)を採用: 特定の�
 
 from __future__ import annotations
 
-import contextlib
 import itertools
 import logging
 import os
@@ -33,7 +32,6 @@ from src.gmail_sync.notify import notify_web_engagement_tool
 from src.gmail_sync.token_crypto import decrypt_token
 from src.incident_detection.notify import notify_managers_immediate
 from src.incident_detection.scorer import score_email
-from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.clients.notion_client import HttpNotionClient
 
 logger = logging.getLogger(__name__)
@@ -339,8 +337,8 @@ def sync_rep_incremental(
     `deadline`(`time.monotonic()`基準の期限、2026-09-21)を渡すと、Vercel関数(300秒で強制終了)
     の中でも必ず期限内に返るようにする。具体的には:
     - 期限を過ぎた時点で残りのメッセージ処理を打ち切る(フルスキャンへの退避経路も同じ)
-    - 内部のGmail API呼び出しの429リトライを`INTERACTIVE_MAX_RATE_LIMIT_RETRIES`回に絞る
-      (既定の30回だと1回の呼び出しだけで期限を大きく超えるため、期限とセットで効かせる)
+    (Gmail API呼び出しの429リトライは`gmail_client`の既定が数回に絞られているので、1回の
+    呼び出しが期限を大きく超えることはない)
     - historyレコードを1つ処理し終えるたびに、その`id`を`historyId`として保存する
       (処理し終えたレコードの直後から再開できる。途中で強制終了されても進みが残るので、
       Pub/Subの再送のたびに同じ先頭からやり直して末尾へ永遠に届かない、が起きない)
@@ -366,31 +364,6 @@ def sync_rep_incremental(
     `historyId`更新自体にも到達できなくなり、`historyId`カーソルが恒久的に固まって次回以降
     毎回同じ404で失敗し続ける(実際に2026-08-25〜26でPush通知が170回連続失敗した)。
     """
-    # 時間予算を切る呼び出し元(Push経路)では、内部のリトライも自動で絞る(obasan-qualityレビュー
-    # WARN対応: 期限とリトライの絞りは別々に指定させず、ここで1つに結びつける)。
-    retry_scope = (
-        gmail_client.bounded_rate_limit_retries(INTERACTIVE_MAX_RATE_LIMIT_RETRIES)
-        if deadline is not None
-        else contextlib.nullcontext()
-    )
-    with retry_scope:
-        return _sync_rep_incremental(
-            rep_email,
-            refresh_token,
-            contact_client,
-            internal_domains=internal_domains,
-            deadline=deadline,
-        )
-
-
-def _sync_rep_incremental(
-    rep_email: str,
-    refresh_token: str,
-    contact_client: HttpNotionClient,
-    *,
-    internal_domains: frozenset[str],
-    deadline: float | None,
-) -> int:
     conn = db.find_connection_by_email(rep_email)
     stored_history_id = conn.history_id if conn is not None else None
 

@@ -166,13 +166,26 @@ def handler(
             # 時間予算を渡す(2026-09-21)。`sync_rep_incremental()`は期限内に必ず返り、
             # 内部のGmail API呼び出しの429リトライも自動で数回に絞る。リトライを使い切った
             # 場合は例外→下のexceptで200を返し、次回のPushで保存済みの位置から拾い直す。
+            deadline = time.monotonic() + PUSH_SYNC_TIME_BUDGET_SECONDS
             count = sync.sync_rep_incremental(
                 conn.rep_email,
                 refresh_token,
                 client,
                 internal_domains=_internal_domains(),
-                deadline=time.monotonic() + PUSH_SYNC_TIME_BUDGET_SECONDS,
+                deadline=deadline,
             )
+            # 同期中に届いた通知は、上のロックで「処理中」として即200で捨てている。何か記録した
+            # (=同期に時間がかかり、その間に新着が届いたかもしれない)場合は、期限内にもう1周して
+            # その分を拾う(ChatGPTレビューBLOCKER対応。2周目は保存済みのhistoryIdから見るので
+            # 1周目の分を取りに行き直さない)。それでも残った分は次のPushか毎日のcronが拾う。
+            if count > 0 and time.monotonic() < deadline:
+                count += sync.sync_rep_incremental(
+                    conn.rep_email,
+                    refresh_token,
+                    client,
+                    internal_domains=_internal_domains(),
+                    deadline=deadline,
+                )
         finally:
             db.release_push_sync_lock(lock_conn, conn.rep_email)
     except Exception:

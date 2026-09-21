@@ -78,6 +78,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.db_schema.registry import get_schema
+from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
 from src.gmail_sync import db, gmail_client, sync
 from src.gmail_sync.token_crypto import decrypt_token
 from src.sync_engine.clients.notion_client import HttpNotionClient, parse_notion_property_value
@@ -592,4 +593,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # 数時間規模のバッチなので、Gmail APIの429リトライ回数をバッチ向けの大きい値へ広げる
+    # (2026-09-21、既定はVercel関数向けの数回。`gmail_client`のコメント参照)。
+    with gmail_client.bounded_rate_limit_retries(DEFAULT_MAX_RATE_LIMIT_RETRIES):
+        raise SystemExit(main())

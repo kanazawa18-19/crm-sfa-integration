@@ -901,58 +901,6 @@ def test_sync_rep_incremental_checkpoints_past_a_record_whose_last_message_was_d
     assert saved == [("rep@cnctor.jp", "4001")]
 
 
-def test_sync_rep_incremental_with_deadline_bounds_gmail_rate_limit_retries(monkeypatch) -> None:
-    """期限を渡した呼び出しでは、内部のGmail API呼び出しの429リトライが自動で数回に絞られ、
-    抜けたら既定に戻る(obasan-qualityレビューWARN対応: 期限とリトライの絞りをセットにする)。"""
-    from src.gmail_sync import gmail_client
-    from src.gmail_sync.gmail_client import HistoryListResult
-    from src.sync_engine.clients._http import (
-        DEFAULT_MAX_RATE_LIMIT_RETRIES,
-        INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
-    )
-
-    _incremental_fixture(monkeypatch, records=[])
-    seen: list[int] = []
-
-    def list_history(access_token, start_history_id):
-        seen.append(gmail_client.current_max_rate_limit_retries())
-        return HistoryListResult(message_ids=[], history_id="9000")
-
-    monkeypatch.setattr(sync.gmail_client, "list_history", list_history)
-    _clock(monkeypatch, [0.0])
-
-    sync.sync_rep_incremental(
-        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset(), deadline=50.0
-    )
-    sync.sync_rep_incremental(
-        "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset()
-    )
-
-    assert seen == [INTERACTIVE_MAX_RATE_LIMIT_RETRIES, DEFAULT_MAX_RATE_LIMIT_RETRIES]
-    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
-
-
-def test_sync_rep_incremental_restores_rate_limit_retries_when_sync_raises(monkeypatch) -> None:
-    import pytest
-
-    from src.gmail_sync import gmail_client
-    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
-
-    _incremental_fixture(monkeypatch, records=[])
-
-    def boom(access_token, start_history_id):
-        raise RuntimeError("gmail down")
-
-    monkeypatch.setattr(sync.gmail_client, "list_history", boom)
-
-    with pytest.raises(RuntimeError):
-        sync.sync_rep_incremental(
-            "rep@cnctor.jp", "refresh-token", FakeContactClient({}), internal_domains=frozenset(), deadline=50.0
-        )
-
-    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
-
-
 def _full_scan_fixture(monkeypatch, message_ids: list[str]):
     monkeypatch.setattr(sync.gmail_client, "refresh_access_token", lambda refresh_token: "access-token")
     monkeypatch.setattr(

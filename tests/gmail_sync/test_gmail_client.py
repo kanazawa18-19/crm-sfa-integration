@@ -61,14 +61,14 @@ def test_list_history_follows_pagination_and_uses_last_page_history_id(requests_
         [
             {
                 "json": {
-                    "history": [{"messagesAdded": [{"message": {"id": "msg1"}}]}],
+                    "history": [{"id": "3001", "messagesAdded": [{"message": {"id": "msg1"}}]}],
                     "nextPageToken": "page2",
                     "historyId": "4000",
                 }
             },
             {
                 "json": {
-                    "history": [{"messagesAdded": [{"message": {"id": "msg2"}}]}],
+                    "history": [{"id": "3002", "messagesAdded": [{"message": {"id": "msg2"}}]}],
                     "historyId": "5000",
                 }
             },
@@ -78,6 +78,8 @@ def test_list_history_follows_pagination_and_uses_last_page_history_id(requests_
     result = list_history(_ACCESS_TOKEN, "1000")
 
     assert result.message_ids == ["msg1", "msg2"]
+    # ページを跨いでもレコードidの対応が保たれる(再開位置に使う)。
+    assert result.message_history_ids == {"msg1": "3001", "msg2": "3002"}
     # 最後のページの値を採用する(shirokuma-secレビューWARN対応: レスポンス自体に含まれる
     # historyIdを使うことで、list_history()完了後に別途get_profile()を呼ぶ場合に生じる
     # レース(その間の新着メールのhistoryIdを見逃す)を避ける)。
@@ -178,11 +180,15 @@ def test_list_history_records_the_history_record_id_of_each_message(requests_moc
     assert result.message_history_ids == {"msg1": "4001", "msg2": "4002", "msg3": "4002"}
 
 
-def test_rate_limit_retries_default_to_the_batch_value_and_can_be_bounded(monkeypatch) -> None:
-    """Gmail API呼び出しの429リトライ回数は既定で`_http`のバッチ向け既定値。
-    `bounded_rate_limit_retries()`の中でだけ小さくなり、抜けたら戻る(2026-09-21)。"""
+def test_rate_limit_retries_default_to_the_interactive_value_and_can_be_widened(monkeypatch) -> None:
+    """Gmail API呼び出しの429リトライ回数は既定でリクエスト/レスポンス型向けの小さい値
+    (Vercel関数の300秒に収まる側が既定)。`bounded_rate_limit_retries()`の中でだけ変わり、
+    抜けたら戻る(2026-09-21)。"""
     from src.gmail_sync import gmail_client
-    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
+    from src.sync_engine.clients._http import (
+        DEFAULT_MAX_RATE_LIMIT_RETRIES,
+        INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+    )
 
     seen: list[int] = []
 
@@ -202,13 +208,19 @@ def test_rate_limit_retries_default_to_the_batch_value_and_can_be_bounded(monkey
     monkeypatch.setattr(gmail_client, "request_with_retry", fake_request_with_retry)
 
     gmail_client.get_message(_ACCESS_TOKEN, "msg1")
-    with gmail_client.bounded_rate_limit_retries(3):
+    with gmail_client.bounded_rate_limit_retries(DEFAULT_MAX_RATE_LIMIT_RETRIES):
         gmail_client.get_message(_ACCESS_TOKEN, "msg1")
         gmail_client.list_history(_ACCESS_TOKEN, "1000")
     gmail_client.get_message(_ACCESS_TOKEN, "msg1")
 
-    assert seen == [DEFAULT_MAX_RATE_LIMIT_RETRIES, 3, 3, DEFAULT_MAX_RATE_LIMIT_RETRIES]
-    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+    assert seen == [
+        INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+        DEFAULT_MAX_RATE_LIMIT_RETRIES,
+        DEFAULT_MAX_RATE_LIMIT_RETRIES,
+        INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+    ]
+    assert gmail_client.current_max_rate_limit_retries() == INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+    assert INTERACTIVE_MAX_RATE_LIMIT_RETRIES < DEFAULT_MAX_RATE_LIMIT_RETRIES
 
 
 def test_every_gmail_request_passes_the_current_rate_limit_retries(monkeypatch) -> None:
@@ -262,7 +274,7 @@ def test_bounded_rate_limit_retries_does_not_leak_between_concurrent_threadpool_
     from starlette.concurrency import run_in_threadpool
 
     from src.gmail_sync import gmail_client
-    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
+    from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 
     both_started = threading.Barrier(2, timeout=5)
     seen: dict[str, list[int]] = {"a": [], "b": []}
@@ -281,4 +293,4 @@ def test_bounded_rate_limit_retries_does_not_leak_between_concurrent_threadpool_
     anyio.run(main)
 
     assert seen == {"a": [2, 2], "b": [5, 5]}
-    assert gmail_client.current_max_rate_limit_retries() == DEFAULT_MAX_RATE_LIMIT_RETRIES
+    assert gmail_client.current_max_rate_limit_retries() == INTERACTIVE_MAX_RATE_LIMIT_RETRIES
