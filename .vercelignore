@@ -19,9 +19,12 @@
 # migration_output/ は氏名・部署・役職・携帯番号・メールアドレスを含む
 migration_output/
 
-# --- 別のVercelプロジェクトとして個別にデプロイされるもの -------------------
-# dashboard/ は自前の .vercel/project.json を持つ別プロジェクト
-dashboard/
+# --- dashboard/ は除外しない（2026-09-21） --------------------------------
+# dashboard/ は Root Directory = dashboard の別プロジェクトだが、Git 連携の
+# ビルドではこのファイル（リポジトリ直下）が両方のプロジェクトに掛かる。
+# ここに dashboard/ を書くと dashboard 側の package.json まで消えて
+# 「No Next.js version detected」でビルドが落ちる（実際に起きた）。
+# Python 側に dashboard/ のソースが混ざっても実行には影響しない。
 
 # --- 実行に要らないもの ---------------------------------------------------
 pyproject.toml
