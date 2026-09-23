@@ -205,9 +205,27 @@ export function searchClients(query: string): Promise<ClientSearchResponse> {
   return fetchBackend<ClientSearchResponse>(`/api/clients/search?q=${encodeURIComponent(query)}`);
 }
 
+// 連絡先1件に紐づく取引先(`取引先マスター`relation)の参照先。取引先名は先頭relation
+// 1件までしかバックエンドが解決しないため、2件目以降は`取引先名: null`になりうる
+// (`src/api/client_360_service.py`の`_resolve_client_name`参照)。
+// `取引先名_status`は`取引先名: null`になった理由の内訳(obasan-qualityレビューWARN対応、
+// 2026-09-24)。「2件目以降だから引いていない(not_fetched)」と「引いたが失敗した(failed)」
+// を区別しないと、画面側がどちらも同じ「取得できませんでした」表示になってしまうため。
+export type ContactSearchClientNameStatus = "resolved" | "not_fetched" | "failed";
+
+export interface ContactSearchClientRef {
+  notion_page_id: string;
+  取引先名: string | null;
+  取引先名_status: ContactSearchClientNameStatus;
+}
+
 export interface ContactSearchResult {
   notion_page_id: string;
   名前: string;
+  // 同姓同名を区別できるよう部署・役職も返る(INFO対応、2026-09-24)。
+  部署: string | null;
+  役職: string | null;
+  取引先: ContactSearchClientRef[];
 }
 
 export interface ContactSearchResponse {
@@ -215,8 +233,8 @@ export interface ContactSearchResponse {
   truncated: boolean;
 }
 
-// 現行UIの360ビューは取引先検索から入るのみで連絡先検索は未使用だが、将来の拡張用に
-// バックエンド側の`/api/contacts/search`ラッパーとして残しておく。
+// 連絡先名から取引先360ビューへ辿る入口(`/clients`画面、2026-09-24)。会社名の
+// 表記ゆれで取引先名検索が0件になる問題への対応(~/notes/Dev/crm-sfa-integration.md参照)。
 export function searchContacts(query: string): Promise<ContactSearchResponse> {
   return fetchBackend<ContactSearchResponse>(`/api/contacts/search?q=${encodeURIComponent(query)}`);
 }

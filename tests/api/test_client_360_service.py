@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import requests
+
 from src.api.client_360_service import (
     PROP_取引先マスター_ACTION,
+    STATUS_取引先名_解決済み,
+    STATUS_取引先名_取得失敗,
+    STATUS_取引先名_未取得,
     Client360DataSource,
+    _MAX_CLIENT_NAME_LOOKUPS,
     get_client_360,
     search_clients,
     search_contacts,
@@ -38,7 +44,11 @@ class _FakeQueryClient:
 
 
 class _FakeClientMasterClient(_FakeQueryClient):
-    """取引先マスターDB用。`get_raw_page`も持つ（get_client_360で使用）。"""
+    """取引先マスターDB用。`get_raw_page`も持つ（get_client_360で使用）。
+
+    `get_raw_page`の呼び出しをclient_id毎に記録する（`search_contacts`のメモ化を
+    検証するため）。
+    """
 
     def __init__(
         self,
@@ -48,11 +58,25 @@ class _FakeClientMasterClient(_FakeQueryClient):
     ) -> None:
         super().__init__(pages)
         self._raw_pages = raw_pages or {}
+        self.get_raw_page_calls: list[str] = []
 
     def get_raw_page(self, page_id: str) -> dict[str, Any]:
+        self.get_raw_page_calls.append(page_id)
         if page_id not in self._raw_pages:
             raise NotionApiError(404, "not found")
         return self._raw_pages[page_id]
+
+
+class _RequestExceptionClientMasterClient(_FakeClientMasterClient):
+    """`get_raw_page`がHTTPリクエスト自体の失敗（タイムアウト・接続断等）を模したスタブ。
+
+    `NotionApiError`ではなく`requests.exceptions.RequestException`を投げる
+    （Notion側のエラーレスポンスに正規化される前の失敗、WARN対応の検証用）。
+    """
+
+    def get_raw_page(self, page_id: str) -> dict[str, Any]:
+        self.get_raw_page_calls.append(page_id)
+        raise requests.exceptions.Timeout("timed out")
 
 
 def _client_master_page(page_id: str = "cli-1", name: str = "サンプルホテル") -> dict[str, Any]:
@@ -79,6 +103,21 @@ def _contact_page(page_id: str = "cnt-1", name: str = "山田太郎") -> dict[st
         "id": page_id,
         "properties": {
             "名前": {"type": "title", "title": [{"plain_text": name}]},
+        },
+    }
+
+
+def _contact_page_with_client(
+    page_id: str = "cnt-1", name: str = "山田太郎", client_ids: list[str] | None = None
+) -> dict[str, Any]:
+    return {
+        "id": page_id,
+        "properties": {
+            "名前": {"type": "title", "title": [{"plain_text": name}]},
+            "取引先マスター": {
+                "type": "relation",
+                "relation": [{"id": cid} for cid in (client_ids or [])],
+            },
         },
     }
 
@@ -199,8 +238,254 @@ def test_search_contacts_sends_title_contains_filter_to_notion_api() -> None:
     assert contact_client.calls == [
         {"page_size": 21, "filter": {"property": "名前", "title": {"contains": "山田"}}}
     ]
-    assert result["contacts"] == [{"notion_page_id": "cnt-1", "名前": "山田太郎"}]
+    assert result["contacts"] == [
+        {
+            "notion_page_id": "cnt-1",
+            "名前": "山田太郎",
+            "部署": None,
+            "役職": None,
+            "取引先": [],
+        }
+    ]
     assert result["truncated"] is False
+
+
+def test_search_contacts_reports_truncated_when_more_than_max_results() -> None:
+    # search_clientsの同種テストと同型（obasan-qualityレビューWARN対応、2026-09-24。
+    # search_contactsだけこの回帰テストが無く、_MAX_SEARCH_RESULTSでの打ち切りが
+    # 検証されていなかった）。
+    pages = [_contact_page(page_id=f"cnt-{i}") for i in range(21)]
+    contact_client = _FakeQueryClient(pages=pages)
+    data_source = _data_source(contact_client=contact_client)
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert len(result["contacts"]) == 20
+    assert result["truncated"] is True
+
+
+def test_search_contacts_resolves_client_name_for_first_relation() -> None:
+    contact_page = _contact_page_with_client(client_ids=["cli-1"])
+    contact_client = _FakeQueryClient(pages=[contact_page])
+    client_master_client = _FakeClientMasterClient(
+        raw_pages={"cli-1": _client_master_page(page_id="cli-1", name="サンプルホテル")}
+    )
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert result["contacts"] == [
+        {
+            "notion_page_id": "cnt-1",
+            "名前": "山田太郎",
+            "部署": None,
+            "役職": None,
+            "取引先": [
+                {
+                    "notion_page_id": "cli-1",
+                    "取引先名": "サンプルホテル",
+                    "取引先名_status": STATUS_取引先名_解決済み,
+                }
+            ],
+        }
+    ]
+
+
+def test_search_contacts_marks_second_relation_as_not_fetched() -> None:
+    """2件目以降のrelationは設計上APIを引かない。取得失敗と区別できるよう
+    `取引先名_status`は`"not_fetched"`になる（`"failed"`とは別、obasan-qualityレビューWARN対応）。
+    """
+    contact_page = _contact_page_with_client(client_ids=["cli-1", "cli-2"])
+    contact_client = _FakeQueryClient(pages=[contact_page])
+    client_master_client = _FakeClientMasterClient(
+        raw_pages={"cli-1": _client_master_page(page_id="cli-1", name="サンプルホテル")}
+    )
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert result["contacts"][0]["取引先"] == [
+        {
+            "notion_page_id": "cli-1",
+            "取引先名": "サンプルホテル",
+            "取引先名_status": STATUS_取引先名_解決済み,
+        },
+        {"notion_page_id": "cli-2", "取引先名": None, "取引先名_status": STATUS_取引先名_未取得},
+    ]
+    # 2件目のrelationはAPIを引いていない(client_master_clientへの呼び出しはcli-1の1回のみ)。
+    assert client_master_client.get_raw_page_calls == ["cli-1"]
+
+
+def test_search_contacts_leaves_client_name_none_when_client_unset() -> None:
+    contact_page = _contact_page_with_client(client_ids=[])
+    contact_client = _FakeQueryClient(pages=[contact_page])
+    data_source = _data_source(contact_client=contact_client)
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert result["contacts"] == [
+        {
+            "notion_page_id": "cnt-1",
+            "名前": "山田太郎",
+            "部署": None,
+            "役職": None,
+            "取引先": [],
+        }
+    ]
+
+
+def test_search_contacts_leaves_client_name_none_when_client_lookup_fails() -> None:
+    contact_page = _contact_page_with_client(client_ids=["missing-cli"])
+    contact_client = _FakeQueryClient(pages=[contact_page])
+    # raw_pages未登録=get_raw_page()がNotionApiError(404)を投げる
+    client_master_client = _FakeClientMasterClient(raw_pages={})
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert result["contacts"] == [
+        {
+            "notion_page_id": "cnt-1",
+            "名前": "山田太郎",
+            "部署": None,
+            "役職": None,
+            "取引先": [
+                {
+                    "notion_page_id": "missing-cli",
+                    "取引先名": None,
+                    "取引先名_status": STATUS_取引先名_取得失敗,
+                }
+            ],
+        }
+    ]
+
+
+def test_search_contacts_falls_back_to_none_on_request_exception() -> None:
+    """`NotionApiError`に正規化される前のHTTPリクエスト自体の失敗（タイムアウト等）でも
+    検索全体を落とさずNoneへフォールバックする（obasan-qualityレビューWARN対応、2026-09-24。
+    20件中1件のタイムアウトで検索全体が落ちていた）。
+    """
+    contact_page = _contact_page_with_client(client_ids=["cli-1"])
+    contact_client = _FakeQueryClient(pages=[contact_page])
+    client_master_client = _RequestExceptionClientMasterClient()
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert result["contacts"] == [
+        {
+            "notion_page_id": "cnt-1",
+            "名前": "山田太郎",
+            "部署": None,
+            "役職": None,
+            "取引先": [
+                {
+                    "notion_page_id": "cli-1",
+                    "取引先名": None,
+                    "取引先名_status": STATUS_取引先名_取得失敗,
+                }
+            ],
+        }
+    ]
+
+
+def test_search_contacts_resolves_shared_client_id_only_once() -> None:
+    """同じ会社の社員が複数ヒットした場合、同じclient_idへの`get_raw_page()`は
+    1回のリクエスト内で1回だけ（obasan-qualityレビューWARN対応、2026-09-24。
+    N+1が「検索結果内で会社が重複する」ケースで野放しになっていた）。
+    """
+    pages = [
+        _contact_page_with_client(page_id="cnt-1", name="山田太郎", client_ids=["cli-1"]),
+        _contact_page_with_client(page_id="cnt-2", name="山田花子", client_ids=["cli-1"]),
+    ]
+    contact_client = _FakeQueryClient(pages=pages)
+    client_master_client = _FakeClientMasterClient(
+        raw_pages={"cli-1": _client_master_page(page_id="cli-1", name="サンプルホテル")}
+    )
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert [c["取引先"][0]["取引先名"] for c in result["contacts"]] == [
+        "サンプルホテル",
+        "サンプルホテル",
+    ]
+    assert client_master_client.get_raw_page_calls == ["cli-1"]
+
+
+def test_search_contacts_caps_distinct_client_name_lookups() -> None:
+    """1リクエストで名前解決を試みる異なるclient_idは`_MAX_CLIENT_NAME_LOOKUPS`件まで
+    （ChatGPTレビューWARN対応、2026-09-24）。検索20件が20社別々のclient_idを持つ最悪
+    ケースで`get_raw_page()`が直列20回になり、Notionのレート制限に対して重すぎるため。
+    上限を超えた分は`not_fetched`（`notion_page_id`は返るので360ビューへのボタンは出せる）。
+    """
+    assert _MAX_CLIENT_NAME_LOOKUPS == 5
+    client_count = _MAX_CLIENT_NAME_LOOKUPS + 1
+    pages = [
+        _contact_page_with_client(
+            page_id=f"cnt-{i}", name=f"連絡先{i}", client_ids=[f"cli-{i}"]
+        )
+        for i in range(client_count)
+    ]
+    contact_client = _FakeQueryClient(pages=pages)
+    client_master_client = _FakeClientMasterClient(
+        raw_pages={
+            f"cli-{i}": _client_master_page(page_id=f"cli-{i}", name=f"取引先{i}")
+            for i in range(client_count)
+        }
+    )
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("連絡先", data_source=data_source)
+
+    assert len(client_master_client.get_raw_page_calls) == _MAX_CLIENT_NAME_LOOKUPS
+    statuses = [c["取引先"][0]["取引先名_status"] for c in result["contacts"]]
+    assert statuses.count(STATUS_取引先名_解決済み) == _MAX_CLIENT_NAME_LOOKUPS
+    assert statuses.count(STATUS_取引先名_未取得) == 1
+    # 上限を超えた1件も`notion_page_id`は返る(画面側で360ビューへのボタンを出せる)。
+    assert result["contacts"][-1]["取引先"][0]["notion_page_id"] == f"cli-{client_count - 1}"
+    assert result["contacts"][-1]["取引先"][0]["取引先名"] is None
+
+
+def test_search_contacts_resolved_status_with_empty_client_name() -> None:
+    """ページ取得自体は成功したが`取引先名`プロパティが未入力のケース。
+    `resolved`＋`取引先名: None`のまま返す（状態は増やさない、ChatGPTレビュー対応、
+    2026-09-24。UI側で`resolved`かどうかで「取得失敗」と区別する）。
+    """
+    contact_page = _contact_page_with_client(client_ids=["cli-1"])
+    contact_client = _FakeQueryClient(pages=[contact_page])
+    empty_name_client_page = {
+        "id": "cli-1",
+        "properties": {"取引先名": {"type": "title", "title": []}},
+    }
+    client_master_client = _FakeClientMasterClient(
+        raw_pages={"cli-1": empty_name_client_page}
+    )
+    data_source = _data_source(
+        contact_client=contact_client, client_master_client=client_master_client
+    )
+
+    result = search_contacts("山田", data_source=data_source)
+
+    assert result["contacts"][0]["取引先"] == [
+        {
+            "notion_page_id": "cli-1",
+            "取引先名": None,
+            "取引先名_status": STATUS_取引先名_解決済み,
+        }
+    ]
 
 
 # --- get_client_360 ---------------------------------------------------------------------------
