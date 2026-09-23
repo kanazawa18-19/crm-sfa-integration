@@ -109,8 +109,14 @@ def test_observer_separate_budget_and_once(retry_ledger):
     assert data["reserved"]["writes"] == 3623
 
 
-def _reserve_process(path, ticket, queue):
-    # forkによる合成時計・固定パスの継承。親と同じ実ロックを競合させる。
+def _reserve_process(path, ticket, queue, now, expected_history_sha256):
+    # 親と同じ実ロックを競合させる。以前は fork で親の monkeypatch（合成時計・履歴の指紋・
+    # 台帳パス）をそのまま継承していたが、Python 3.14 は複数スレッド下の fork を非推奨に
+    # したため forkserver へ切り替え、継承に頼らず必要な3つを引数で受け取って再適用する
+    # （2026-09-24。forkserver の子は module を新規 import するので monkeypatch は効かない）。
+    policy.wall_time = lambda: now
+    policy.EXPECTED_HISTORY_SHA256 = expected_history_sha256
+    policy.LEDGER_PATH = path
     ledger = Ledger(path)
     ledger.retry_role, ledger.retry_ticket = "runner", ticket
     try:
@@ -124,9 +130,12 @@ def test_parallel_boundary_has_no_excess_reservation(retry_ledger):
     ticket = policy.begin(retry_ledger, "runner")
     for _ in range(399):
         retry_ledger.reserve(rpc=True)
-    context = multiprocessing.get_context("fork")
+    # Python 3.14 では複数スレッドが動いている時の fork が非推奨（DeprecationWarning 12件）。
+    # forkserver に切り替え、親の合成時計と履歴の指紋は `_reserve_process` へ明示的に渡す。
+    context = multiprocessing.get_context("forkserver")
     queue = context.Queue()
-    children = [context.Process(target=_reserve_process, args=(retry_ledger.path, ticket, queue)) for _ in range(12)]
+    child_args = (retry_ledger.path, ticket, queue, policy.wall_time(), policy.EXPECTED_HISTORY_SHA256)
+    children = [context.Process(target=_reserve_process, args=child_args) for _ in range(12)]
     for child in children:
         child.start()
     for child in children:
