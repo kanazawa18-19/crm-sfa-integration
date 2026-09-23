@@ -52,6 +52,7 @@ from src.sync_engine.id_mapping import IdMappingStore
 from src.sync_engine.record_sync_lock import (
     RecordSyncBusy, acquire_record_sync_lock, validate_record_sync_storage,
 )
+from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
 from src.sync_engine.production_wiring import (
     build_id_mapping_store,
     build_notion_clients_by_db,
@@ -112,7 +113,15 @@ def drain_spreadsheet_outbox(
     # 共通設定の不備で全件の再試行回数を使い切らない。失敗時はキューに触れず終了する。
     validate_record_sync_storage(store)
     entries = spreadsheet_outbox.claim_due(db_keys=enabled_db_keys, limit=limit)
-    notion_clients = notion_clients if notion_clients is not None else build_notion_clients_by_db()
+    # Vercel cron（300秒上限）から呼ばれるので、Notion の429リトライは INTERACTIVE（3回）に
+    # 絞る（2026-09-24）。1件が長く握るより、残りを次回の drain へ回す方が安全。
+    notion_clients = (
+        notion_clients
+        if notion_clients is not None
+        else build_notion_clients_by_db(
+            max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+        )
+    )
     spreadsheet_targets = (
         spreadsheet_targets
         if spreadsheet_targets is not None

@@ -88,6 +88,68 @@ def test_build_notion_clients_by_db_returns_one_client_per_schema(
     assert set(clients.keys()) == {s.key for s in ALL_SCHEMAS if s.notion_database_id is not None}
 
 
+def test_build_notion_clients_by_db_defaults_to_bulk_rate_limit_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """既定値はローカルのバックフィルスクリプト向けの30回のまま（引数を渡さない
+    `scripts/backfill_spreadsheet_rows.py`等の挙動を変えない）。"""
+    from src.sync_engine.clients._http import DEFAULT_MAX_RATE_LIMIT_RETRIES
+
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+
+    clients = build_notion_clients_by_db()
+
+    assert all(
+        c._max_rate_limit_retries == DEFAULT_MAX_RATE_LIMIT_RETRIES  # noqa: SLF001
+        for c in clients.values()
+    )
+
+
+def test_build_notion_clients_by_db_passes_rate_limit_retries_to_every_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+
+    clients = build_notion_clients_by_db(max_rate_limit_retries=3)
+
+    assert clients
+    assert all(c._max_rate_limit_retries == 3 for c in clients.values())  # noqa: SLF001
+
+
+def test_no_bare_build_notion_clients_by_db_call_outside_scripts() -> None:
+    """`src/` 配下で `build_notion_clients_by_db()` を引数なしで呼ぶ箇所が増えていないこと。
+
+    既定値（30回）はローカルのバックフィルスクリプト専用で、Vercel の関数（Webhook・cron）
+    から呼ぶなら INTERACTIVE を渡す必要がある。docstring の注意書きだけでは次の呼び手が
+    見落とすので（gmail-push 障害がまさに「同じ構造の別経路に後から気づいた」例）、
+    引数なしの呼び出しを機械的に検知する（obasan-quality レビュー WARN 対応、2026-09-24）。
+    新しく引数なしで呼ぶ正当な理由ができたら、このテストの許可リストに足すこと。"""
+    import ast
+    from pathlib import Path
+
+    def _has_bare_call(source: str) -> bool:
+        # docstring やコメントの中の `build_notion_clients_by_db()` を拾わないよう AST で見る
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if name == "build_notion_clients_by_db" and not node.args and not node.keywords:
+                return True
+        return False
+
+    src_root = Path(__file__).resolve().parents[2] / "src"
+    offenders = [
+        str(path.relative_to(src_root.parent))
+        for path in src_root.rglob("*.py")
+        if _has_bare_call(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], (
+        "src/ 配下で build_notion_clients_by_db() を引数なしで呼んでいます。Vercel から呼ぶなら "
+        f"max_rate_limit_retries=INTERACTIVE_MAX_RATE_LIMIT_RETRIES を渡してください: {offenders}"
+    )
+
+
 # --- build_kintone_targets_by_db -------------------------------------------------------------
 
 
@@ -367,6 +429,55 @@ def test_build_lead_sync_callable_uses_hook_timeout_and_retries_not_client_defau
     lead_sync_client = lead_sync.keywords["lead_sync_client"]  # type: ignore[attr-defined]
     assert lead_sync_client._timeout == HOOK_TIMEOUT_SECONDS  # noqa: SLF001
     assert lead_sync_client._max_retries == HOOK_MAX_RETRIES  # noqa: SLF001
+
+
+def test_build_production_dispatcher_defaults_to_interactive_rate_limit_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`build_production_dispatcher()` を引数なしで呼んでも Notion の429リトライは INTERACTIVE
+    （名前が production なので引数なし呼び出しが自然。ChatGPT レビュー WARN、2026-09-24）。"""
+    from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+    from src.sync_engine.production_wiring import _MultiDbNotionSyncTarget
+
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    _isolate_tool_env(monkeypatch)
+
+    dispatcher = build_production_dispatcher()
+
+    notion_target = dispatcher._targets[Tool.NOTION]  # noqa: SLF001
+    assert isinstance(notion_target, _MultiDbNotionSyncTarget)
+    assert all(
+        c._max_rate_limit_retries == INTERACTIVE_MAX_RATE_LIMIT_RETRIES  # noqa: SLF001
+        for c in notion_target._clients_by_db_key.values()  # noqa: SLF001
+    )
+
+
+def test_production_sync_wiring_uses_interactive_rate_limit_retries_for_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vercel の関数（Webhook 受信・cron）から使う配線では、Notion の429リトライを
+    INTERACTIVE（3回）に絞る（2026-09-24、3レビュー共通指摘）。既定の30回だと Notion の
+    レート制限中に届いた Webhook 1本が関数の300秒上限まで握り続け、gmail-push と同じ
+    再送の増幅になる。Dispatcher 側の Notion クライアントも同じ値であること。"""
+    from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+    from src.sync_engine.production_wiring import _MultiDbNotionSyncTarget
+
+    monkeypatch.setenv("NOTION_API_KEY", "secret-key")
+    _isolate_tool_env(monkeypatch)
+
+    wiring = ProductionSyncWiring()
+
+    assert wiring.any_db_page_client is not None
+    assert (
+        wiring.any_db_page_client._max_rate_limit_retries  # noqa: SLF001
+        == INTERACTIVE_MAX_RATE_LIMIT_RETRIES
+    )
+    notion_target = wiring.dispatcher._dispatcher._targets[Tool.NOTION]  # noqa: SLF001
+    assert isinstance(notion_target, _MultiDbNotionSyncTarget)
+    assert all(
+        c._max_rate_limit_retries == INTERACTIVE_MAX_RATE_LIMIT_RETRIES  # noqa: SLF001
+        for c in notion_target._clients_by_db_key.values()  # noqa: SLF001
+    )
 
 
 def test_production_sync_wiring_calendar_sync_callable_is_none_without_credentials(
@@ -1126,6 +1237,29 @@ def test_multi_db_kintone_sync_target_reports_skip_through_real_dispatcher(
 
 
 # --- SkipTrackingDispatcher ---------------------------------------------------------------
+
+
+def test_skip_tracking_dispatcher_last_result_is_context_local() -> None:
+    """`last_result` は contextvars に持ち、別コンテキスト（＝別リクエストのワーカースレッド）で
+    set した値が漏れてこないこと。並列化で生まれた「Aのレスポンスに B の部分スキップが乗る」
+    競合の再発防止（shirokuma-sec レビュー WARN、2026-09-24）。"""
+    import contextvars
+
+    from src.sync_engine.dispatcher import DispatchResult
+
+    class _Inner:
+        def dispatch(self, event: Any) -> DispatchResult:
+            return DispatchResult(skipped=True, reason=str(event))
+
+    wrapped = SkipTrackingDispatcher(_Inner())  # type: ignore[arg-type]
+
+    result_b = contextvars.copy_context().run(wrapped.dispatch, "B")
+
+    assert result_b.reason == "B"
+    assert wrapped.last_result is None  # 別コンテキストの set は外に漏れない
+
+    result_a = wrapped.dispatch("A")
+    assert wrapped.last_result is result_a
 
 
 def test_skip_tracking_dispatcher_delegates_and_stores_last_result(

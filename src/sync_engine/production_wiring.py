@@ -47,6 +47,7 @@ Notion/kintone/Zoho/スプレッドシートAPIクライアントを組み立て
 from __future__ import annotations
 
 import functools
+from contextvars import ContextVar
 import logging
 import os
 from pathlib import Path
@@ -64,6 +65,7 @@ from src.lead_sync.web_engagement_tool_client import WebEngagementToolLeadSyncCl
 from src.project_mirror.sync import sync_project_to_mirror
 from src.relation_sync.sync import sync_client_name_to_index
 from src.sync_engine.clients._http import (
+    DEFAULT_MAX_RATE_LIMIT_RETRIES,
     HOOK_MAX_RETRIES,
     HOOK_TIMEOUT_SECONDS,
     INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
@@ -594,17 +596,32 @@ def build_id_mapping_store(db_path: str | None = None) -> IdMappingStore:
     return SQLiteIdMappingStore(path)
 
 
-def build_notion_clients_by_db() -> dict[str, HttpNotionClient]:
+def build_notion_clients_by_db(
+    *, max_rate_limit_retries: int = DEFAULT_MAX_RATE_LIMIT_RETRIES
+) -> dict[str, HttpNotionClient]:
     """db_key単位のHttpNotionClientを組み立てる（`notion_database_id`が設定済みのDBのみ）。
 
     `NOTION_API_KEY`が未設定の場合は空辞書を返す（Notion同期を無効化する）。
+
+    `max_rate_limit_retries`は429（レート制限）のリトライ回数。既定は
+    `DEFAULT_MAX_RATE_LIMIT_RETRIES`（30回）で、これは実行時間の上限が無いローカルの
+    バックフィルスクリプト（`scripts/backfill_spreadsheet_rows.py`等）向けの値。
+    **Vercel の関数（Webhook 受信・cron）から呼ぶ側は`INTERACTIVE_MAX_RATE_LIMIT_RETRIES`
+    （3回）を明示的に渡すこと。** 30回のままだと、Notion がレート制限中に届いた Webhook 1本が
+    最悪15分近くワーカースレッドを握り、関数の300秒上限で強制終了→送信元の再送→増幅、
+    という 2026-09-21 の gmail-push 障害と同じ形になる（当時は Gmail API 側の 429 だったが
+    構造は同じ。3レビュー共通指摘、2026-09-21）。
     """
     clients: dict[str, HttpNotionClient] = {}
     for schema in ALL_SCHEMAS:
         if schema.notion_database_id is None:
             continue
         try:
-            clients[schema.key] = HttpNotionClient(schema.key, schema.notion_database_id)
+            clients[schema.key] = HttpNotionClient(
+                schema.key,
+                schema.notion_database_id,
+                max_rate_limit_retries=max_rate_limit_retries,
+            )
         except ValueError:
             logger.warning(
                 "NOTION_API_KEYが未設定のため、Notion同期ターゲットを構築できません"
@@ -850,7 +867,10 @@ def build_client_name_index_sync_callable(
 
 
 def build_production_dispatcher(
-    *, id_mapping_store: IdMappingStore | None = None, zoho_client: HttpZohoClient | None = None
+    *,
+    id_mapping_store: IdMappingStore | None = None,
+    zoho_client: HttpZohoClient | None = None,
+    max_rate_limit_retries: int = INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
 ) -> Dispatcher:
     """本番用のDispatcher（4ツール分のSyncTarget＋IdMappingStore）を組み立てる。
 
@@ -862,11 +882,17 @@ def build_production_dispatcher(
     `ProductionSyncWiring.__init__`が`zoho_action_client`用に既に構築済みの`HttpZohoClient`を
     渡すことで、`HttpZohoClient`（OAuthアクセストークンキャッシュを持つ）が同一プロセス内で
     二重生成されるのを防ぐ（shirokuma-sec/obasan-qualityレビューWARN対応、2026-08-25）。
+
+    `max_rate_limit_retries`は Notion クライアントの429リトライ回数
+    （`build_notion_clients_by_db`参照）。**既定は INTERACTIVE（3回）**。名前が
+    「production」なので引数なしで呼ばれるのが自然であり、30回を既定にすると Vercel の
+    関数から素直に呼んだ人が危険側に落ちる（ChatGPT レビュー WARN、2026-09-24）。
+    30回を既定に残すのは低レベルの`build_notion_clients_by_db()`だけ。
     """
     store = id_mapping_store or build_id_mapping_store()
     targets: dict[Tool, SyncTarget] = {}
 
-    notion_clients = build_notion_clients_by_db()
+    notion_clients = build_notion_clients_by_db(max_rate_limit_retries=max_rate_limit_retries)
     if notion_clients:
         targets[Tool.NOTION] = _MultiDbNotionSyncTarget(notion_clients, store)
 
@@ -908,7 +934,25 @@ class SkipTrackingDispatcher:
     ) -> None:
         self._dispatcher = dispatcher
         self._slack_notifier = slack_notifier
-        self.last_result: DispatchResult | None = None
+        # `last_result` はリクエストごとのコンテキスト（contextvars）に持つ。
+        # このオブジェクトはプロセス内シングルトンで、2026-09-24 から Webhook ルートが
+        # ワーカースレッドで並列に dispatch() を呼ぶため、素のインスタンス属性だと
+        # リクエストAの結果を直後に来たBが上書きし、Aのレスポンスの `partial_sync_skipped`
+        # にBの内容が乗る（shirokuma-sec レビュー WARN、2026-09-24）。
+        # `run_in_threadpool` は呼び出しごとにコンテキストを複製してスレッドへ渡すので、
+        # 同じスレッドの中で set → get する限り他リクエストとは混ざらない。
+        self._last_result_var: ContextVar[DispatchResult | None] = ContextVar(
+            f"skip_tracking_last_result_{id(self)}", default=None
+        )
+
+    @property
+    def last_result(self) -> DispatchResult | None:
+        """直近の `dispatch()` 結果（現在のコンテキスト内のもの。他リクエストの結果は見えない）。"""
+        return self._last_result_var.get()
+
+    @last_result.setter
+    def last_result(self, value: DispatchResult | None) -> None:
+        self._last_result_var.set(value)
 
     #: 「そもそも書けないと分かっている」かを判定するための、外向き対応表の取得関数。
     _OUTBOUND_TABLES = {
@@ -1048,9 +1092,18 @@ class ProductionSyncWiring:
     `ENABLE_ZOHO=False`または認証情報未設定の場合は`None`になる。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_rate_limit_retries: int = INTERACTIVE_MAX_RATE_LIMIT_RETRIES) -> None:
         self.id_mapping_store: IdMappingStore = build_id_mapping_store()
-        notion_clients = build_notion_clients_by_db()
+        # この配線は Vercel の関数（Webhook 受信・cron。実行上限300秒）から使うため、
+        # Notion の429リトライの既定は INTERACTIVE（3回）（2026-09-24。3レビュー共通指摘への
+        # 対応。既定の30回だと Notion のレート制限中に来た1本が関数の上限まで握り続ける）。
+        # ローカルのバックフィルスクリプトはこの配線を通らず`build_notion_clients_by_db()`を
+        # 既定値のまま直接呼ぶので影響しない。
+        # 引数で変えられるのは `src/sync_capacity/worker.py`（既定無効・未配備）のため。
+        # あちらは排他ロックで1件ずつ最大240秒使う作りで「早く諦める」必要が無く、有効化する
+        # ときは `get_production_wiring()` とは別に大きい回数で組み立てる余地を残す
+        # （shirokuma-sec レビュー WARN、2026-09-24。現時点では未対応で既定のまま）。
+        notion_clients = build_notion_clients_by_db(max_rate_limit_retries=max_rate_limit_retries)
         self.any_db_page_client: HttpNotionClient | None = (
             next(iter(notion_clients.values())) if notion_clients else None
         )
@@ -1068,7 +1121,9 @@ class ProductionSyncWiring:
         self.zoho_action_client: HttpZohoClient | None = build_zoho_client()
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
             build_production_dispatcher(
-                id_mapping_store=self.id_mapping_store, zoho_client=self.zoho_action_client
+                id_mapping_store=self.id_mapping_store,
+                zoho_client=self.zoho_action_client,
+                max_rate_limit_retries=max_rate_limit_retries,
             ),
             # 既知のズレ以外のスキップだけをSlackへ上げる（`_unexpected_skips`参照）。
             slack_notifier=WebhookSlackNotifier(),

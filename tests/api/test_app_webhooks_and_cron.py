@@ -665,6 +665,163 @@ def test_webhook_gmail_push_runs_the_sync_handler_off_the_event_loop(
     assert "e30=" in seen["body"]
 
 
+@pytest.mark.parametrize(
+    ("path", "handler_name", "override_wiring", "expect_receipt_recorded"),
+    [
+        # wiring（Dispatcher一式）を使う4経路は、認証を通った受信を WebhookReceipt に記録する
+        ("/api/webhooks/notion", "notion_webhook_handler_with_proxy", True, True),
+        ("/api/webhooks/kintone", "kintone_webhook_handler", True, True),
+        ("/api/webhooks/zoho", "zoho_webhook_handler", True, True),
+        ("/api/webhooks/spreadsheet", "spreadsheet_webhook_handler", True, True),
+        # wiring を使わない4経路は受信記録の対象外（webhook_receipts に送信元の定義が無い）
+        ("/api/webhooks/web-engagement", "web_engagement_webhook_handler", False, False),
+        (
+            "/api/webhooks/web-engagement-meeting",
+            "web_engagement_meeting_webhook_handler",
+            False,
+            False,
+        ),
+        ("/api/webhooks/lead-inquiry", "lead_inquiry_webhook_handler", False, False),
+        ("/api/webhooks/slack-interactions", "slack_interaction_webhook_handler", False, False),
+    ],
+)
+def test_every_webhook_runs_its_sync_handler_off_the_event_loop(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    handler_name: str,
+    override_wiring: bool,
+    expect_receipt_recorded: bool,
+) -> None:
+    """gmail-push だけでなく全 Webhook が同期ハンドラをワーカースレッドで動かすこと
+    （2026-09-24、3レビュー共通指摘。同じ `async def` 直呼びの構造が残っていた）。
+    ハンドラの中では「動いているイベントループ」が見えず、受信記録も含めて
+    レスポンスが返る前に完了していること。"""
+    import asyncio
+
+    seen: dict[str, Any] = {}
+
+    def fake_handler(event: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        seen["body"] = event["body"]
+        return {"statusCode": 200, "body": '{"ok": true}'}
+
+    recorded: list[str] = []
+    monkeypatch.setattr(f"src.api.routes.webhooks.{handler_name}", fake_handler)
+    monkeypatch.setattr(
+        "src.api.routes.webhooks.webhook_receipts.record_webhook_receipt",
+        lambda source: recorded.append(source),
+    )
+    if override_wiring:
+        _override_wiring(_FakeWiring(dispatcher=_SpyDispatcher(), any_db_page_client=object()))
+
+    response = client.post(path, json={"probe": "x"})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert seen["on_event_loop"] is False
+    assert "probe" in seen["body"]
+    # 受信記録はハンドラと同じスレッドで、レスポンスが返る前に済んでいること
+    assert (len(recorded) == 1) is expect_receipt_recorded, (
+        f"{path}: 受信記録の回数 {len(recorded)} が期待（{'1' if expect_receipt_recorded else '0'}）と違う"
+    )
+
+
+def test_run_off_event_loop_caps_concurrent_webhook_threads() -> None:
+    """Webhook の同時実行はワーカースレッド `WEBHOOK_THREAD_LIMIT` 本までで、超過分は
+    非同期に待つ（共有プール 40 本を Webhook だけで使い切らない。Gemini・ChatGPT レビューが
+    独立に指摘、2026-09-24）。12 本同時に投げても同時に走るのは上限本数まで。"""
+    import asyncio
+    import threading
+    import time
+
+    from src.api.routes import webhooks as webhooks_module
+
+    lock = threading.Lock()
+    state = {"active": 0, "max_active": 0}
+
+    def slow_handler(event: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        time.sleep(0.15)
+        with lock:
+            state["active"] -= 1
+        return {"statusCode": 200, "body": "{}"}
+
+    async def main() -> None:
+        await asyncio.gather(
+            *(
+                webhooks_module._run_off_event_loop(  # noqa: SLF001
+                    slow_handler, {"body": str(i)}, handler_kwargs=dict(context=None)
+                )
+                for i in range(12)
+            )
+        )
+
+    asyncio.run(main())
+
+    assert 1 < state["max_active"] <= webhooks_module.WEBHOOK_THREAD_LIMIT
+
+
+def test_partial_skip_summary_does_not_cross_between_concurrent_webhooks() -> None:
+    """A/B の 2 リクエストがワーカースレッドで交差しても、それぞれの `partial_sync_skipped`
+    に自分の dispatch 結果だけが乗ること（ChatGPT レビュー WARN 対応、2026-09-24。
+    contextvars の単体性質ではなく `_run_off_event_loop` → dispatch → `_partial_skip_summary`
+    という実経路で検証する）。B が dispatch した後に A が要約を読む順序を Barrier で強制する。"""
+    import asyncio
+    import threading
+
+    from src.api.routes import webhooks as webhooks_module
+    from src.sync_engine.production_wiring import SkipTrackingDispatcher
+
+    from types import SimpleNamespace
+
+    class _Inner:
+        def dispatch(self, event: Any) -> DispatchResult:
+            return DispatchResult(
+                skipped=False,
+                properties=(
+                    PropertyDispatchResult(
+                        property_name=f"prop-{event.external_id}",
+                        resolution=None,
+                        written_tools=frozenset({Tool.ZOHO}),
+                        skipped_tools=frozenset({Tool.KINTONE}),
+                    ),
+                ),
+            )
+
+    dispatcher = SkipTrackingDispatcher(_Inner())  # type: ignore[arg-type]
+    barrier = threading.Barrier(2, timeout=5)
+
+    def handler(event: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        # SkipTrackingDispatcher は既知のズレ判定で event.db_key 等を読むので SyncEvent 相当を渡す
+        dispatcher.dispatch(
+            SimpleNamespace(db_key="project", source_tool=Tool.ZOHO, external_id=event["body"])
+        )
+        barrier.wait()  # 両方が dispatch し終わってから要約を読みに行く
+        return {"statusCode": 200, "body": "{}"}
+
+    async def main() -> list[Any]:
+        return await asyncio.gather(
+            *(
+                webhooks_module._run_off_event_loop(  # noqa: SLF001
+                    handler, {"body": name}, dispatcher=dispatcher, handler_kwargs={}
+                )
+                for name in ("A", "B")
+            )
+        )
+
+    outcome_a, outcome_b = asyncio.run(main())
+
+    assert [p["property"] for p in outcome_a.partial_skip] == ["prop-A"]
+    assert [p["property"] for p in outcome_b.partial_skip] == ["prop-B"]
+
+
 # --- /api/webhooks/web-engagement ------------------------------------------------------------
 
 
