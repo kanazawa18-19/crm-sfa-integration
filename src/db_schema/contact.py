@@ -42,15 +42,18 @@ CONTACT_SCHEMA = DatabaseSchema(
         PropertyDefinition(
             name="取引先マスター",
             property_type=PropertyType.RELATION,
-            requirement=RequirementLevel.REQUIRED,
+            # 2026-09-26 本人判断で REQUIRED → OPTIONAL。Zoho 側の「お取引先」が空の連絡先
+            # （CSV インポート分の約半数）を「必須不足」で作らないより、取引先なしで作って
+            # 後から紐づける方がよい、との判断。会社名があるのに取引先マスターと 1 件に決まらない
+            # 場合も同様に空で作られ、リレーション解決のレビューキューに残る。
+            requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
             description=(
-                "所属企業。ただし"
-                "webhook_handlers/lead_inquiry_webhook.py経由のレコードのみ、会社名が"
+                "所属企業。空でも作成してよい（2026-09-26 本人判断）。"
+                "webhook_handlers/lead_inquiry_webhook.py経由のレコードは、会社名が"
                 "取引先マスターと完全一致しなかった場合に意図的に空のまま作成される"
                 "（無数の重複取引先マスター作成を避けるための割り切り、2026-08-14）。"
-                "この経路由来のレコードで空なのは仕様通りであり、データ品質バッチ等で"
-                "誤ってバグ扱いしないこと。"
+                "空なのは仕様通りであり、データ品質バッチ等で誤ってバグ扱いしないこと。"
             ),
             relation_target="client_master",
         ),

@@ -38,11 +38,10 @@ def test_split_by_mapping_marks_unmapped_as_new_and_mapped_as_existing() -> None
 
 
 def test_missing_required_properties_uses_contact_schema_requirements() -> None:
-    """連絡先は「名前」と「取引先マスター」が必須。取引先が解決できないと不足として出ること。"""
-    missing = mod.missing_required_properties("contact", {"名前": "山田 太郎"})
-    assert "取引先マスター" in missing
-    assert "名前" not in missing
-    assert mod.missing_required_properties("contact", {"名前": "山田 太郎", "取引先マスター": "page-id"}) == []
+    """連絡先の必須は「名前」だけ。「取引先マスター」は 2026-09-26 に任意へ変えた
+    （Zoho の「お取引先」が空でも作る、本人判断）ので、空でも不足として出ないこと。"""
+    assert mod.missing_required_properties("contact", {"名前": "山田 太郎"}) == []
+    assert mod.missing_required_properties("contact", {}) == ["名前"]
 
 
 def test_parse_since_requires_timezone() -> None:
@@ -238,8 +237,9 @@ def test_predict_creation_marks_missing_required_when_lookup_finds_nothing(monke
     )
     it = _contact_item()
     mod.predict_creation(it, {"Full_Name": "山田 太郎"}, store=None, lookup=lambda v: (None, True))
-    assert it.predicted == mod.PREDICT_MISSING_REQUIRED
-    assert it.missing_required == ["取引先マスター"]
+    # 取引先マスターは任意（2026-09-26）なので、解決できなくても作れる
+    assert it.predicted == mod.PREDICT_CREATE
+    assert it.missing_required == []
 
 
 def test_predict_creation_marks_unverified_when_lookup_could_not_check(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,7 +253,8 @@ def test_predict_creation_marks_unverified_when_lookup_could_not_check(monkeypat
     first, second = _contact_item(), _contact_item()
     mod.predict_creation(first, {"Full_Name": "A"}, store=None, lookup=lambda v: next(calls))
     mod.predict_creation(second, {"Full_Name": "B"}, store=None, lookup=lambda v: next(calls))
-    assert first.predicted == mod.PREDICT_UNVERIFIED
+    # 取引先マスターが任意になった今は、未検証でも「作れる」に倒れる（必須項目は名前だけ）
+    assert first.predicted == mod.PREDICT_CREATE
     assert second.predicted == mod.PREDICT_CREATE
 
 
