@@ -1057,7 +1057,32 @@ def test_cron_zoho_webhook_renewal_succeeds_when_secret_matches(
         "status": "success",
         "channel_id": "123",
         "channel_expiry": "2026-08-13T00:00:00+00:00",
+        "re_registered": False,
     }
+
+
+def test_cron_zoho_webhook_renewal_reports_re_registration(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """延長（PUT）に失敗して同じchannel_idでPOST再登録した場合、応答に`re_registered: true`が
+    出ること（cronの実行履歴から「失効から自己修復した」ことを読み取れるようにする）。"""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    monkeypatch.setattr("src.api.routes.cron.build_zoho_client_from_env", lambda: object())
+    monkeypatch.setattr(
+        "src.api.routes.cron.renew_zoho_watch_channel",
+        lambda client, **kwargs: {
+            "channel_id": "123",
+            "channel_expiry": "2026-08-13T00:00:00+00:00",
+            "re_registered": True,
+        },
+    )
+
+    response = client.get(
+        "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["re_registered"] is True
 
 
 def test_cron_zoho_webhook_renewal_returns_500_when_channel_not_configured(
@@ -1185,6 +1210,8 @@ def test_cron_zoho_webhook_renewal_returns_clean_error_when_watch_entry_is_not_a
 ) -> None:
     _mock_zoho_token(requests_mock)
     requests_mock.put(_WATCH_URL, json={"watch": ["not-a-dict"]})
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(_WATCH_URL, json={"watch": ["not-a-dict"]})
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -1199,6 +1226,8 @@ def test_cron_zoho_webhook_renewal_returns_clean_error_when_response_body_is_not
 ) -> None:
     _mock_zoho_token(requests_mock)
     requests_mock.put(_WATCH_URL, status_code=200, text="this is not json")
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(_WATCH_URL, status_code=200, text="this is not json")
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -1213,6 +1242,8 @@ def test_cron_zoho_webhook_renewal_returns_clean_error_when_response_body_is_a_b
 ) -> None:
     _mock_zoho_token(requests_mock)
     requests_mock.put(_WATCH_URL, json=["unexpected", "shape"])
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(_WATCH_URL, json=["unexpected", "shape"])
 
     response = client.get(
         "/api/cron/zoho-webhook-renewal", headers={"Authorization": "Bearer correct-secret"}
@@ -1233,6 +1264,18 @@ def test_cron_zoho_webhook_renewal_defaults_to_all_six_modules(
 
     _mock_zoho_token(requests_mock)
     requests_mock.put(
+        _WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
         _WATCH_URL,
         json={
             "watch": [

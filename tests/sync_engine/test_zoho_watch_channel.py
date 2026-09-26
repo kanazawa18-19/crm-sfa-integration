@@ -102,6 +102,18 @@ def test_renew_watch_channel_puts_using_explicit_channel_id_and_notify_url(
             ]
         },
     )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     result = renew_zoho_watch_channel(
         client,
@@ -149,6 +161,18 @@ def test_renew_watch_channel_defaults_to_all_six_modules(
             ]
         },
     )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     renew_zoho_watch_channel(
         client,
@@ -178,6 +202,18 @@ def test_renew_watch_channel_falls_back_to_env_var_channel_id(
             ]
         },
     )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "999"}]},
+                }
+            ]
+        },
+    )
 
     result = renew_zoho_watch_channel(
         client,
@@ -196,6 +232,18 @@ def test_renew_watch_channel_builds_notify_url_from_base_url_env_var(
     monkeypatch.setenv("ZOHO_WEBHOOK_BASE_URL", "https://crm-sfa-integration.vercel.app")
     _mock_token(requests_mock)
     requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
         WATCH_URL,
         json={
             "watch": [
@@ -239,6 +287,18 @@ def test_renew_watch_channel_default_expiry_requests_less_than_full_day_margin(
             ]
         },
     )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
 
     before = datetime.now(timezone.utc)
     result = renew_zoho_watch_channel(
@@ -269,6 +329,18 @@ def test_renew_watch_channel_explicit_expiry_days_overrides_cron_default(
     指定した値がそのまま使われること。"""
     _mock_token(requests_mock)
     requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {"events": [{"channel_id": "123"}]},
+                }
+            ]
+        },
+    )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
         WATCH_URL,
         json={
             "watch": [
@@ -329,6 +401,8 @@ def test_renew_watch_channel_propagates_zoho_api_error_on_http_failure(
 ) -> None:
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, status_code=400, json={"message": "invalid request"})
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, status_code=400, json={"message": "invalid request"})
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -344,6 +418,11 @@ def test_renew_watch_channel_propagates_zoho_api_error_on_non_success_entry(
 ) -> None:
     _mock_token(requests_mock)
     requests_mock.put(
+        WATCH_URL,
+        json={"watch": [{"status": "error", "code": "INVALID_DATA", "message": "bad channel_id"}]},
+    )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
         WATCH_URL,
         json={"watch": [{"status": "error", "code": "INVALID_DATA", "message": "bad channel_id"}]},
     )
@@ -381,6 +460,20 @@ def test_non_success_entry_error_message_redacts_echoed_back_token(
             ]
         },
     )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "error",
+                    "code": "INVALID_DATA",
+                    "channel_id": "123",
+                    "token": real_secret,
+                }
+            ]
+        },
+    )
 
     with pytest.raises(ZohoApiError) as exc_info:
         renew_zoho_watch_channel(
@@ -401,6 +494,8 @@ def test_non_success_entry_error_message_redacts_echoed_back_token(
 def test_raises_when_response_has_no_watch_key(requests_mock, client: HttpZohoClient) -> None:
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, json={"someOtherKey": "whatever"})
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, json={"someOtherKey": "whatever"})
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -414,6 +509,8 @@ def test_raises_when_response_has_no_watch_key(requests_mock, client: HttpZohoCl
 def test_raises_when_watch_array_is_empty(requests_mock, client: HttpZohoClient) -> None:
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, json={"watch": []})
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, json={"watch": []})
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -431,6 +528,8 @@ def test_raises_when_no_watch_entry_confirms_requested_channel_id(
     確認できたとはみなさずエラーとする。"""
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, json={"watch": [{"status": "success", "channel_id": "other-id"}]})
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, json={"watch": [{"status": "success", "channel_id": "other-id"}]})
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -466,6 +565,27 @@ def test_confirms_channel_id_from_response_with_one_event_entry_per_module(
         token=None,
     )
     requests_mock.put(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {
+                        "events": [
+                            {
+                                "module": module,
+                                "channel_id": "123",
+                                "resource_uri": f"https://www.zohoapis.jp/crm/v3/{module}",
+                            }
+                            for module in DEFAULT_MODULES
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
         WATCH_URL,
         json={
             "watch": [
@@ -537,6 +657,27 @@ def test_raises_when_one_of_six_requested_modules_is_missing_from_response(
             ]
         },
     )
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(
+        WATCH_URL,
+        json={
+            "watch": [
+                {
+                    "status": "success",
+                    "details": {
+                        "events": [
+                            {
+                                "module": module,
+                                "channel_id": "123",
+                                "resource_uri": f"https://www.zohoapis.jp/crm/v3/{module}",
+                            }
+                            for module in confirmed_modules
+                        ]
+                    },
+                }
+            ]
+        },
+    )
 
     with pytest.raises(ZohoApiError, match=missing_module):
         register_or_renew_watch(
@@ -552,6 +693,8 @@ def test_raises_zoho_api_error_when_watch_entry_is_not_a_dict(
 ) -> None:
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, json={"watch": ["not-a-dict"]})
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, json={"watch": ["not-a-dict"]})
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -567,6 +710,8 @@ def test_raises_zoho_api_error_when_response_body_is_not_json(
 ) -> None:
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, status_code=200, text="this is not json")
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, status_code=200, text="this is not json")
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -582,6 +727,8 @@ def test_raises_zoho_api_error_when_response_body_is_a_bare_json_array(
 ) -> None:
     _mock_token(requests_mock)
     requests_mock.put(WATCH_URL, json=["unexpected", "shape"])
+    # 延長（PUT）失敗時は同じpayloadでPOST再登録する（自己修復）ため、POSTも同じ応答にする
+    requests_mock.post(WATCH_URL, json=["unexpected", "shape"])
 
     with pytest.raises(ZohoApiError):
         renew_zoho_watch_channel(
@@ -590,3 +737,180 @@ def test_raises_zoho_api_error_when_response_body_is_a_bare_json_array(
             notify_url="https://example.com/api/webhooks/zoho",
             watch_api_base_url=WATCH_API_BASE_URL,
         )
+
+
+# --- 失効時の自己修復: PUT失敗 → GETで消えていることを確認 → 同じchannel_idでPOST再登録 ----------
+
+
+_SUCCESS_BODY = {"watch": [{"status": "success", "details": {"events": [{"channel_id": "123"}]}}]}
+
+
+def _renew(client: HttpZohoClient) -> dict:
+    return renew_zoho_watch_channel(
+        client,
+        channel_id="123",
+        modules=["Deals"],
+        notify_url="https://example.com/api/webhooks/zoho",
+        token="secret-token",
+        watch_api_base_url=WATCH_API_BASE_URL,
+    )
+
+
+def _watch_methods(requests_mock) -> list[str]:
+    return [req.method for req in requests_mock.request_history if req.url.startswith(WATCH_URL)]
+
+
+def test_renew_watch_channel_does_not_post_when_put_succeeds(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, json=_SUCCESS_BODY)
+    requests_mock.get(WATCH_URL, status_code=204)
+    post = requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    result = _renew(client)
+
+    assert result["re_registered"] is False
+    assert post.call_count == 0
+    assert _watch_methods(requests_mock) == ["PUT"]
+
+
+def test_renew_watch_channel_re_registers_with_post_when_channel_is_gone(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """失効したチャンネルはZoho側から消える（GETが204）。PUTが失敗し、GETで消えていると
+    分かった場合だけ、同じchannel_id・同じpayloadでPOSTし直し、`re_registered=True`を返すこと。"""
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, status_code=400, json={"code": "INVALID_DATA"})
+    requests_mock.get(WATCH_URL, status_code=204)
+    requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    result = _renew(client)
+
+    assert result["re_registered"] is True
+    assert result["channel_id"] == "123"
+    assert _watch_methods(requests_mock) == ["PUT", "GET", "POST"]
+    watch_calls = [req for req in requests_mock.request_history if req.url == WATCH_URL and req.method != "GET"]
+    assert watch_calls[0].json() == watch_calls[1].json()
+    assert watch_calls[1].json()["watch"][0]["channel_id"] == "123"
+    assert watch_calls[1].json()["watch"][0]["token"] == "secret-token"
+
+
+def test_renew_watch_channel_re_registers_when_get_lists_other_channels_only(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    _mock_token(requests_mock)
+    requests_mock.put(
+        WATCH_URL,
+        json={"watch": [{"status": "error", "code": "INVALID_DATA", "message": "bad channel_id"}]},
+    )
+    requests_mock.get(WATCH_URL, json={"watch": [{"channel_id": "999", "events": []}]})
+    requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    result = _renew(client)
+
+    assert result["re_registered"] is True
+
+
+def test_renew_watch_channel_does_not_post_when_channel_still_exists(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """PUTの失敗が失効以外の理由（一時的な4xx等）で、GETでチャンネルがまだ生きている場合は
+    POSTせず、元のZohoApiErrorをそのまま送出すること（二重登録・上書きを避ける）。"""
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, status_code=400, json={"code": "INVALID_DATA"})
+    requests_mock.get(WATCH_URL, json={"watch": [{"channel_id": 123, "events": ["Deals.all"]}]})
+    post = requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    with pytest.raises(ZohoApiError):
+        _renew(client)
+    assert post.call_count == 0
+
+
+def test_renew_watch_channel_does_not_post_when_lookup_fails(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """存在確認のGET自体が失敗したら「分からない」ので再登録しない（安全側）。"""
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, status_code=400, json={"code": "INVALID_DATA"})
+    requests_mock.get(WATCH_URL, status_code=500, json={"code": "INTERNAL_ERROR"})
+    post = requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    with pytest.raises(ZohoApiError):
+        _renew(client)
+    assert post.call_count == 0
+
+
+def test_renew_watch_channel_raises_when_both_put_and_post_fail(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """PUTもPOSTも失敗した場合は握りつぶさずZohoApiErrorを送出し、cronが502で表面化させる。"""
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, status_code=400, json={"code": "INVALID_DATA"})
+    requests_mock.get(WATCH_URL, status_code=204)
+    requests_mock.post(WATCH_URL, status_code=400, json={"code": "MANDATORY_NOT_FOUND"})
+
+    with pytest.raises(ZohoApiError):
+        _renew(client)
+    assert _watch_methods(requests_mock) == ["PUT", "GET", "POST"]
+
+
+def test_renew_watch_channel_does_not_self_heal_on_network_timeout(
+    requests_mock, client: HttpZohoClient
+) -> None:
+    """通信例外（PUTが届いたか不明）は自己修復の対象外。ZohoApiErrorに変えず、POSTもしない。"""
+    import requests as _requests
+
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, exc=_requests.exceptions.ConnectTimeout)
+    post = requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    with pytest.raises(_requests.exceptions.ConnectTimeout):
+        _renew(client)
+    assert post.call_count == 0
+
+
+def test_watch_channel_exists_reads_get_response(requests_mock, client: HttpZohoClient) -> None:
+    from src.sync_engine.zoho_watch_channel import watch_channel_exists
+
+    _mock_token(requests_mock)
+    requests_mock.get(WATCH_URL, status_code=204)
+    assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is False
+    requests_mock.get(WATCH_URL, json={"watch": [{"channel_id": "123"}]})
+    assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is True
+    requests_mock.get(WATCH_URL, json={"watch": [{"details": {"events": [{"channel_id": "123"}]}}]})
+    assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is True
+    requests_mock.get(WATCH_URL, json={"watch": []})
+    assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is False
+    requests_mock.get(WATCH_URL, text="not json")
+    assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"watch": None}, {"watch": {}}, {"watch": "unexpected"}, ["unexpected"], {"watch": ["not-a-dict"]}],
+)
+def test_renew_watch_channel_does_not_post_when_lookup_response_shape_is_unexpected(
+    requests_mock, client: HttpZohoClient, body
+) -> None:
+    """GETが200でも形が想定外なら「分からない」扱いで再登録しない（False＝POSTは書き込みなので、
+    判別不能は全て True 側へ倒す）。"""
+    _mock_token(requests_mock)
+    requests_mock.put(WATCH_URL, status_code=400, json={"code": "INVALID_DATA"})
+    requests_mock.get(WATCH_URL, json=body)
+    post = requests_mock.post(WATCH_URL, json=_SUCCESS_BODY)
+
+    with pytest.raises(ZohoApiError):
+        _renew(client)
+    assert post.call_count == 0
+
+
+def test_watch_channel_exists_treats_unexpected_shapes_as_existing(requests_mock, client: HttpZohoClient) -> None:
+    from src.sync_engine.zoho_watch_channel import watch_channel_exists
+
+    _mock_token(requests_mock)
+    for body in ({}, {"watch": None}, {"watch": {}}, ["x"], {"watch": ["not-a-dict"]}):
+        requests_mock.get(WATCH_URL, json=body)
+        assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is True, body
+    requests_mock.get(WATCH_URL, json={"watch": [{"channel_id": "999"}]})
+    assert watch_channel_exists(client, watch_api_base_url=WATCH_API_BASE_URL, channel_id="123") is False

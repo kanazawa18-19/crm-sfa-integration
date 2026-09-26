@@ -187,14 +187,15 @@ def run_document_approval_poll() -> dict[str, Any]:
 
 @router.get("/api/cron/zoho-webhook-renewal", dependencies=[Depends(verify_cron_secret)])
 def run_zoho_webhook_renewal() -> dict[str, Any]:
-    """Vercel Cronから1日1回呼ばれる、Zoho CRM Notifications（watch）チャンネルの
-    自動延長（`PUT /crm/v3/actions/watch`）エントリポイント。
+    """Vercel Cronから6時間ごとに呼ばれる、Zoho CRM Notifications（watch）チャンネルの
+    自動延長（`PUT /crm/v3/actions/watch`。失敗時は同じchannel_idでPOST再登録）エントリポイント。
 
     Zohoのwatchチャンネルは登録・延長時点から最大1日で失効し、放置すると`/api/webhooks/zoho`
-    への通知が無音で止まる（`docs/zoho_webhook_activation_note.md`参照）。Vercel Hobbyプランの
-    制約でcronは1日1回しか実行できないため、`renew_zoho_watch_channel()`は毎回、Zoho上限の
-    24hではなく21h先のchannel_expiryを要求し、3時間分の安全マージンを確保する
-    （`expiry_days`未指定時の既定値`CRON_RENEWAL_EXPIRY_DAYS`）。対象モジュールも省略時は
+    への通知が無音で止まる（`docs/zoho_webhook_activation_note.md`参照）。cronは6時間ごとに
+    走り、毎回21h先のchannel_expiryを要求する（`expiry_days`未指定時の既定値
+    `CRON_RENEWAL_EXPIRY_DAYS`）ので、実行が数回飛んでも失効しない。失効していた場合
+    （PUTが失敗）は`renew_zoho_watch_channel()`が同じchannel_idでPOST再登録して自己修復し、
+    応答の`re_registered`をtrueにする（2026-09-26、9/15から通知が止まっていた件の再発防止）。対象モジュールも省略時は
     `DEFAULT_MODULES`（`Deals`/`CustomModule3`/`CustomModule2`/`Accounts`/`Contacts`/`Products`
     の6モジュール）全てを1つのwatchチャンネルでまとめて延長する。実際の延長ロジック・
     channel_idの一次情報源（環境変数`ZOHO_WATCH_CHANNEL_ID`）の設計判断は
@@ -224,15 +225,18 @@ def run_zoho_webhook_renewal() -> dict[str, Any]:
             status_code=500, detail="internal error during zoho webhook renewal"
         ) from None
 
+    re_registered = bool(result.get("re_registered"))
     logger.info(
-        "zoho watch channel renewed: channel_id=%s channel_expiry=%s",
+        "zoho watch channel renewed: channel_id=%s channel_expiry=%s re_registered=%s",
         result["channel_id"],
         result["channel_expiry"],
+        re_registered,
     )
     return {
         "status": "success",
         "channel_id": result["channel_id"],
         "channel_expiry": result["channel_expiry"],
+        "re_registered": re_registered,
     }
 
 

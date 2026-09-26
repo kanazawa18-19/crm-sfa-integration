@@ -47,6 +47,7 @@ channel_idを、Vercel本番環境変数`ZOHO_WATCH_CHANNEL_ID`へも手動で�
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Sequence
@@ -55,6 +56,8 @@ from typing import Any
 
 from src.sync_engine.clients._http import raise_for_error
 from src.sync_engine.clients.zoho_client import HttpZohoClient, ZohoApiError
+
+logger = logging.getLogger(__name__)
 
 # 2026-08-12、`ZOHO_LABEL_FIELD_MAPPINGS`（zoho_field_transforms.py）でフィールドマッピングの
 # カバレッジを6モジュール分揃えたことに合わせ、watchチャンネルの購読対象もこの6モジュール
@@ -74,14 +77,12 @@ MAX_EXPIRY_DAYS = 1
 # scripts/register_zoho_webhook.py（手動CLI）の既定値。新規登録・手動延長では上限いっぱいの
 # 1日を要求してよい（次にいつ人間が延長するか分からないため、猶予は長いほど安全）。
 DEFAULT_EXPIRY_DAYS = 1
-# `renew_zoho_watch_channel()`（Vercel Cronからの自動延長専用）の既定値。VercelがHobbyプランの
-# ため`GET /api/cron/zoho-webhook-renewal`は1日1回しか実行できない（vercel.jsonの
-# `zoho-webhook-renewal`スケジュール参照）。もしここでMAX_EXPIRY_DAYS（24h）いっぱいを
-# 要求すると、cronの実行間隔（約24h）とchannel_expiryの上限（24h）がほぼ一致してしまい、
-# 1回のcron実行が少しでも遅延・失敗すると安全マージンがゼロのままチャンネルが失効し、
-# `/api/webhooks/zoho`への通知が無音で止まる。そのため自動延長では上限より短い21時間
-# （24h上限に対し3時間の安全マージン）を要求する（詳細は
-# docs/zoho_webhook_activation_note.md参照）。
+# `renew_zoho_watch_channel()`（Vercel Cronからの自動延長専用）の既定値。
+# cron（vercel.jsonの`zoho-webhook-renewal`）は6時間ごとに走り、毎回21時間先までの
+# channel_expiryを要求する。実行が1〜2回飛んでも失効せず、失効しても次の実行で
+# 同じchannel_idのPOSTで自己修復する（`renew_zoho_watch_channel()`参照）。
+# ※ 2026-09-26まではcronが1日1回（05:00 JST）で、21hだと毎日02:00〜05:00 JSTに
+#   失効する空白が生まれていた（「3時間の安全マージン」という当時の説明は逆だった）。
 CRON_RENEWAL_EXPIRY_HOURS = 21
 CRON_RENEWAL_EXPIRY_DAYS = CRON_RENEWAL_EXPIRY_HOURS / 24
 # 本番Zoho orgは.jpデータセンター所属（ZOHO_ACCOUNTS_BASE_URL/ZOHO_API_BASE_URLと同じ理由）。
@@ -394,6 +395,49 @@ def build_zoho_client_from_env() -> HttpZohoClient:
     return HttpZohoClient(**kwargs)
 
 
+def watch_channel_exists(
+    client: HttpZohoClient, *, watch_api_base_url: str, channel_id: str
+) -> bool:
+    """`GET /actions/watch` で、指定channel_idの購読がZoho側にまだ存在するかを確かめる。
+    204（登録なし）か、正しい形の一覧にそのchannel_idが無ければ False。GET自体が失敗した場合や
+    応答の形が想定外の場合は「分からない」ので安全側に True（＝再登録しない）を返す。"""
+    url = f"{watch_api_base_url.rstrip('/')}/actions/watch"
+    try:
+        response = client.request("GET", url, idempotent=True)
+    except Exception as exc:  # 通信例外
+        logger.warning("zoho watch channel lookup failed (assuming it still exists): %r", exc)
+        return True
+    if response.status_code == 204:
+        return False
+    if response.status_code != 200:
+        logger.warning(
+            "zoho watch channel lookup returned HTTP %s (assuming it still exists)", response.status_code
+        )
+        return True
+    # 「消えている」と判定してよいのは、204 か、正しい形の一覧（`watch` がリスト）に
+    # そのchannel_idが無い場合だけ。形が想定外（JSONでない・dictでない・`watch`が無い／
+    # リストでない）なら「分からない」ので True（＝POSTしない）に倒す（ChatGPT レビュー
+    # BLOCKER、2026-09-26。False は POST という書き込みに直結するため、判別不能は全て True 側）。
+    try:
+        body = response.json()
+    except ValueError:
+        return True
+    if not isinstance(body, dict):
+        return True
+    entries = body.get("watch")
+    if not isinstance(entries, list):
+        return True
+    wanted = str(channel_id)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return True  # 要素の形が想定外＝判別不能
+        if wanted in {str(c) for c in _confirmed_channel_ids(entry)}:
+            return True
+        if str(entry.get("channel_id")) == wanted:
+            return True
+    return False
+
+
 def renew_zoho_watch_channel(
     client: HttpZohoClient,
     *,
@@ -455,13 +499,46 @@ def renew_zoho_watch_channel(
         channel_expiry=channel_expiry,
         token=token,
     )
-    response = register_or_renew_watch(
-        client, watch_api_base_url=watch_api_base_url, payload=payload, is_renewal=True
-    )
+    # 延長（PUT）が失敗したら、Zoho側にそのchannel_idが本当に無いことを確かめたうえで、
+    # 同じchannel_id・同じpayloadで新規登録（POST）をやり直す（自己修復）。
+    # Zohoのwatchチャンネルは登録から最大1日で失効し、失効したチャンネルはZoho側から消える
+    # （`GET /actions/watch`が204を返す）。その状態でPUTだけを続けても復活せず、通知が
+    # 無音で止まったままになる。2026-09-16〜21のVercel停止（Hobby上限・チーム移行）で
+    # 実際に失効し、9/15を最後にZoho発の同期が止まっていたのを9/26に発見した。
+    # - 捕まえるのは`ZohoApiError`（Zohoが応答を返したうえでの失敗）だけ。タイムアウト等の
+    #   通信例外は「PUTが届いたか不明」なので再登録せず、そのまま送出する（cronは500）。
+    # - GETでチャンネルがまだ生きていると分かった場合（PUTの失敗が失効以外の理由）や、
+    #   GET自体が失敗した場合は、POSTせず元のエラーを送出する（cronは502。6時間後に再試行）。
+    # - POSTが失敗した場合もそのままZohoApiErrorを送出し、cronは502で表面化させる。
+    re_registered = False
+    try:
+        response = register_or_renew_watch(
+            client, watch_api_base_url=watch_api_base_url, payload=payload, is_renewal=True
+        )
+    except ZohoApiError as exc:
+        if watch_channel_exists(client, watch_api_base_url=watch_api_base_url, channel_id=resolved_channel_id):
+            logger.warning(
+                "zoho watch channel renewal (PUT) failed but the channel still exists on Zoho; "
+                "not re-registering (channel_id=%s): %s",
+                resolved_channel_id,
+                exc,
+            )
+            raise
+        logger.warning(
+            "zoho watch channel renewal (PUT) failed and the channel is gone on Zoho; "
+            "re-registering with POST using the same channel_id=%s: %s",
+            resolved_channel_id,
+            exc,
+        )
+        response = register_or_renew_watch(
+            client, watch_api_base_url=watch_api_base_url, payload=payload, is_renewal=False
+        )
+        re_registered = True
     return {
         "channel_id": resolved_channel_id,
         "modules": list(modules),
         "channel_expiry": channel_expiry,
         "notify_url": resolved_notify_url,
         "response": response,
+        "re_registered": re_registered,
     }

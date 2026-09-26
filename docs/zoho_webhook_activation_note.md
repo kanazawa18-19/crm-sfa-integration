@@ -47,7 +47,7 @@
    3. 対応するNotionページが更新されたか確認する。
 
 6. 有効期限切れ前の定期的な延長は、以下の「自動延長（Vercel Cron）」節の通り
-   `GET /api/cron/zoho-webhook-renewal`が1日1回自動で行う。**新規登録直後（手順4）は
+   `GET /api/cron/zoho-webhook-renewal`が6時間ごとに自動で行う（失効していれば同じchannel_idで再登録）。**新規登録直後（手順4）は
    必ずVercel本番環境変数`ZOHO_WATCH_CHANNEL_ID`へも同じchannel_idを設定すること**
    （自動延長がこの値を参照するため。詳細は下記節を参照）。
 
@@ -57,15 +57,21 @@
 
 Zohoのwatchチャンネルは登録・延長時点から**最大1日**で失効し、放置すると
 `/api/webhooks/zoho`への通知が無音で止まる（エラーが表面化しない）。これを防ぐため、
-`GET /api/cron/zoho-webhook-renewal`（`src/api/app.py`）をVercel Cronから**1日1回**
-（`vercel.json`の`crons`、`0 20 * * *`＝毎日20:00 UTC）に自動起動し、`PUT /crm/v3/actions/watch`で
-延長し続ける。
+`GET /api/cron/zoho-webhook-renewal`（`src/api/routes/cron.py`）をVercel Cronから**6時間ごと**
+（`vercel.json`の`crons`、`0 */6 * * *`）に自動起動し、`PUT /crm/v3/actions/watch`で延長し続ける。
+PUTが失敗したら`GET /crm/v3/actions/watch`でチャンネルが消えていることを確かめ、同じchannel_idで
+POST再登録する（自己修復。2026-09-26 追記、末尾の節を参照）。
 
-当初は6時間毎（`0 */6 * * *`）の実行を想定していたが、VercelのHobbyプランでは
-1日1回未満の頻度でしかCron Jobを実行できない制約があり（Pro以上へのアップグレードは
-コスト面から今回は見送り）、1日1回に変更した。
+> **経緯**: 当初は6時間毎の実行を想定していたが、VercelのHobbyプランの制約で2026-08に1日1回
+> （`0 20 * * *`＝05:00 JST）へ変更した。2026-09-21にチーム`cnctor1`（Pro）へ移行したので
+> 2026-09-26に6時間ごとへ戻した。
 
 ### なぜ自動延長は毎回24h上限いっぱいを要求しないのか（安全マージンの設計判断）
+
+> ⚠️ **本節の前提は2026-09-26に誤りと判明した。** cronが1日1回（05:00 JST）のまま21h先を要求すると、
+> 毎日02:00〜05:00 JSTは失効した状態になる（マージンではなく空白）。しかもPUTでは失効した
+> チャンネルは復活しない。現在はcronが6時間ごとなので21hで問題ない。以下は当時の記録として残す。
+
 
 自動延長がcronの実行のたびにZoho上限いっぱいの24h先を`channel_expiry`として要求すると、
 cronの実行間隔（1日1回、約24h）と`channel_expiry`の上限（登録・延長時点から最大24h）が
@@ -262,3 +268,29 @@ Zohoが送信する通知に任意のHTTPヘッダーを付与させる仕組み
    「Vercel本番のZOHO_WEBHOOK_SECRET」と「登録スクリプトを実行するローカルシェルの
    ZOHO_WEBHOOK_SECRET」を運用者自身が同じ値に揃えた場合の話であり、自動では揃わない
    （上記「手順」節の手順3を参照）。
+
+
+## 2026-09-26 追記: 失効からの自己修復と、止まっていた間の回収
+
+```
+   9/15 16:01 JST  Zoho 発の最後の同期
+   9/16〜9/21      Vercel 停止（Hobby 上限 → チーム cnctor1 へ移行）。この間に watch が失効
+   9/21〜9/26      cron は毎日 PUT を送るが、消えたチャンネルは PUT では復活しない
+                   （`GET /crm/v3/actions/watch` は 204＝登録なし）。kintone 発は動いていたので気づけず
+   9/25            Zoho へ連絡先を CSV インポート（約 950 件）→ Notion には 1 件も出ない
+   9/26            発見。以下の 3 点で対処
+```
+
+1. **自己修復**（`renew_zoho_watch_channel()`）: PUT が失敗したら同じ `channel_id`・同じ payload で
+   POST し直す。応答と cron の JSON に `re_registered` を出す。PUT も POST も失敗したら 502。
+2. **cron を 6 時間ごとに**（`vercel.json`、Pro プラン前提）: 従来の「1 日 1 回 05:00 JST ＋ 21h 先」は
+   毎日 02:00〜05:00 JST に失効する空白を作っていた（当時の「3 時間の安全マージン」は逆だった）。
+3. **取りこぼしの回収**（`scripts/backfill_zoho_missed_records.py`）: 購読を戻しても過去分は通知されない
+   ので、`--since` 以降に Zoho で変更されたレコードのうち対応表に無いものを、本番と同じ Dispatcher の
+   新規作成経路へ流す。既定は dry-run。対応表にある（既存・変更あり）レコードは Notion 側の編集を
+   潰しうるので触らず、件数と ID を報告だけする。連絡先の「お取引先」→ 取引先マスターの解決は
+   `ClientNameIndex`（Postgres）を使うため `DATABASE_URL` が要る。Slack 通知は切って結果 JSON にまとめる。
+
+手元から購読の状態を見る（読み取りだけ）:
+
+    GET https://www.zohoapis.jp/crm/v3/actions/watch   → 204 なら登録なし（=止まっている）

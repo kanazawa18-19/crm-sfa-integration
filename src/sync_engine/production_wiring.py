@@ -866,11 +866,15 @@ def build_client_name_index_sync_callable(
     return functools.partial(sync_client_name_to_index, notion_client=notion_client)
 
 
+_DEFAULT_SLACK_NOTIFIER: object = object()  # 「省略された」印（None は「通知しない」の明示）
+
+
 def build_production_dispatcher(
     *,
     id_mapping_store: IdMappingStore | None = None,
     zoho_client: HttpZohoClient | None = None,
     max_rate_limit_retries: int = INTERACTIVE_MAX_RATE_LIMIT_RETRIES,
+    slack_notifier: SlackNotifier | None | object = _DEFAULT_SLACK_NOTIFIER,
 ) -> Dispatcher:
     """本番用のDispatcher（4ツール分のSyncTarget＋IdMappingStore）を組み立てる。
 
@@ -908,11 +912,15 @@ def build_production_dispatcher(
     if spreadsheet_targets:
         targets[Tool.SPREADSHEET] = _MultiDbSpreadsheetSyncTarget(spreadsheet_targets)
 
+    # `slack_notifier`（省略可）: 省略時は本番の運用 DM（`WebhookSlackNotifier`）。`None` を明示すると
+    # 通知しない（`scripts/backfill_zoho_missed_records.py` のように数百件を流す回収処理で、
+    # 必須項目不足のたびに DM が飛ぶのを避ける用途）。
+    notifier = WebhookSlackNotifier() if slack_notifier is _DEFAULT_SLACK_NOTIFIER else slack_notifier
     return Dispatcher(
         store,
         targets,
         sync_system_id=get_sync_system_id(),
-        slack_notifier=WebhookSlackNotifier(),
+        slack_notifier=notifier,
     )
 
 
