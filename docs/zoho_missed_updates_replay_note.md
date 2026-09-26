@@ -135,3 +135,48 @@ Notion が最初に書かれるので、TypeError で落ちた 11 件はどの�
 
 手順（この順でないと②が戻した値をまた書き戻す）: 修正を push → デプロイ READY → Zoho の上記 1 件を 2026/08/31 に戻す → `--apply --module Deals` を再実行。
 
+
+## 不具合①の影響範囲（2026-09-27 実測、イシュー A）
+
+「8/31〜9/27 05:57 の間に kintone / Zoho で直したのに Notion に届いていない更新」を洗い出した。
+本番ログ（Vercel）は保持が約 1 時間なので TypeError の実績は残っておらず、代わりに本番 DB の記録で確かめた。
+
+| 証拠 | 見えたこと |
+|---|---|
+| `AuditLog`（Notion への書き込み記録） | 8/31 以降、`kintone_webhook` 322 件・`zoho_webhook` 172 件は**すべて create**。update は 0 件。修正後の再送（`zoho_replay`）13 件は update として記録されている。8/31 より前には `kintone_webhook` の update が 3 件ある（8/17・8/28） |
+| `RecordSyncWatermark`（同期の受理・完了時刻） | 「受理したが完了していない」8 件（取引先マスター）が、kintone の更新時刻・更新者と分単位で一致（9/15 ×4、9/22、9/25 ×3）＝TypeError で途中で落ちた足跡 |
+| `WebhookReceipt` | kintone・Zoho の受信は続いていた（受け取って落ちていた） |
+
+つまり不具合①は「疑い」ではなく、**この期間の kintone / Zoho 発の既存レコード更新は 1 件も Notion に届いていない**。
+
+### Zoho 側（`replay_zoho_missed_updates.py --since 2026-08-31T00:00+09:00 --until 2026-09-27T05:57+09:00` dry-run）
+
+案件（Deals）137 件: ready 28・needs_review 6・nothing_to_do 103。項目は safe 65（営業ステータス 18・契約日 / 予想契約日 12・
+失注理由 10・失注日 10・初期費用 6・月額費用 6・案件名 1・メール 1・電話 1）、ambiguous 9、relation_pending 4、changed_after_until 1。
+safe 65 のうち 62 は 9/15 16:00 より前の変更＝イシュー B（通知停止中の分）では拾えなかった、不具合①だけが原因の取りこぼし。
+人が見るもの 7 件のうち 4 件は Notion の失注日が `2026-09-27`（Zoho は 4/23〜9/15 の日付）。9/27 に Notion 側で失注日が
+入った経緯は未確認（自動化の可能性。流す前に確かめる）。
+他モジュール（アクション 90・取引先 31・連絡先 1,101、計 1,222 件）: ready 13（全部アクション。safe 24 項目＝履歴メモ・アクション日・先方担当者）、needs_review 0。取引先・連絡先は流すものなし。対応表に無い（作成漏れ、backfill の担当）: アクション 8・取引先 1・連絡先 19・商品 55。
+
+### kintone 側（`scripts/inventory_kintone_missed_updates.py`、新規・読み取りだけ）
+
+kintone には項目単位の変更履歴 API が無いので、期間内に更新されたレコードを対応表で Notion に引き当て、同期対象の
+7 項目（取引先名・顧客種別・郵便番号・都道府県・住所・TEL・FAX）を本番と同じ変換に通して Notion の現在値と比べる。
+履歴が無いぶん**期間より前からのズレも混ざる**（区別できない）。
+期間内の更新は取引先マスターだけ（案件管理・アクション管理は 0 件）。376 件中 ready 22（safe 34 項目：取引先名 13・住所 5・郵便番号 5・
+都道府県 5・TEL 5・顧客種別 1）、ambiguous 0、whitespace_only 5（Notion の都道府県に先頭スペース）、not_mapped 39。
+ready の中身は「個人名 → 店舗名への取引先名の直し」と「住所・電話の追記」が大半だが、`#62388` は kintone 側が取引先名 `-`・TEL `なし`
+（Notion には正しい名前と番号がある）なので、機械的に流すと壊す。流す前に人が 22 件を見る。
+
+副産物として、**対応表に無い kintone 取引先が 39 件**見つかった。うち 36 件は 9/16〜21（Vercel 停止中）の作成＝kintone の
+Webhook は再送しないので Notion に作られないまま。残り 3 件は 8/19・8/30・8/31 の作成（1 件は顧客名が空で必須不足）。
+kintone 発の作成漏れを回収する仕組みは無い（Zoho の `backfill_zoho_missed_records.py` に相当するものが要る）。
+
+### この調査で分かった別件
+
+- **Notion からの Webhook が 9/17 18:21 JST を最後に届いていない**（`WebhookReceipt.notion` と `WebhookEvent` の両方）。
+  Vercel 停止中（9/16〜21）に Notion 側の再送が尽きて購読が止まった可能性が高いが、Notion の連携設定画面で確認が要る
+  （本人の Notion アカウントで `設定 → 接続 → 連携` の Webhook タブ）。止まっていれば **Notion 発の変更が 9/17 以降ずっと
+  kintone / Zoho / シートに流れていない**
+- `WebhookEvent`（Notion 再送の重複排除）に 8/31 からの記録 13,738 件が残っている。7 日で掃除するはずの `daily-batch` cron
+  （10:00 UTC）の `purge_old_events` が効いていない（cron 自体が走っていないか、掃除だけ失敗しているかは未確認）
