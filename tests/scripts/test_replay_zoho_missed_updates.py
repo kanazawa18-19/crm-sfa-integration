@@ -603,3 +603,20 @@ def test_changed_fields_same_second_changes_do_not_guess_order() -> None:
     ]
     found = mod.changed_fields_from_timeline(entries, SINCE)
     assert found["Stage"].order_uncertain is True and found["Stage"].display_old is None
+
+
+def test_plan_record_keeps_notion_value_for_relation_pending_and_recheck_treats_empty_list_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """名寄せ待ちの項目も Notion の現在値を控える。控えていないと書く直前の照合が None と [] を「動いた」と誤解して
+    毎回見送る（2026-09-27、荒木旅館で 2 回連続）。"""
+    monkeypatch.setenv("ZOHO_API_BASE_URL", "https://www.zohoapis.jp/crm/v2")
+    timeline = [_entry("updated", "2026-09-24T14:18:00+09:00", [("field10", "", "荒木 政臣")])]
+    zoho = _Zoho(timeline, {"id": "1", "field10": {"name": "荒木 政臣", "id": "9"}, "Deal_Name": "案件A"})
+    page = {"連絡先": [], NOTION_LAST_EDITED_TIME_KEY: datetime(2026, 8, 17, tzinfo=timezone.utc)}
+    r = mod.RecordReplay(zoho_id="1", module="Deals", db_key="project", notion_key="page-1")
+    mod.plan_record(r, zoho=zoho, notion_client=_Notion(page), store=None, since=SINCE, until=None, now=datetime(2026, 9, 27, tzinfo=timezone.utc))
+    pending = [f for f in r.fields if f.status == mod.FIELD_RELATION_PENDING]
+    assert pending and pending[0].notion_value == []
+    assert mod.notion_page_unchanged_since_plan(r, _Notion(page)) is True
+    pending[0].notion_value = None  # 控えが無い形でも [] と同じ扱い
+    assert mod.notion_page_unchanged_since_plan(r, _Notion(page)) is True
+    assert mod.notion_page_unchanged_since_plan(r, _Notion({**page, "連絡先": ["x"]})) is False

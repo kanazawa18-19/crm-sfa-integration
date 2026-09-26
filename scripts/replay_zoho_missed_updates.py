@@ -464,9 +464,12 @@ def plan_record(
             in_record = api_name in raw
             change.zoho_value = raw.get(api_name)
             is_converted = change.notion_property is not None and change.notion_property in converted
+            if change.notion_property is not None:
+                # 変換の成否に関わらず Notion の現在値を控える（書く直前の「動いていないか」の照合に使う。
+                # relation_pending の項目で控えていなかったため、毎回 notion_edited_after_plan で見送っていた）
+                change.notion_value = page.get(change.notion_property)
             if is_converted:
                 change.converted_value = converted[change.notion_property]
-                change.notion_value = page.get(change.notion_property)
             change.drifted_before = bool(
                 is_converted and not change.order_uncertain and change.display_old
                 and change.notion_value not in (None, "") and str(change.notion_value) != change.display_old
@@ -533,7 +536,8 @@ def notion_page_unchanged_since_plan(record: RecordReplay, notion_client) -> boo
         if f.notion_property is None:
             continue
         current = page.get(f.notion_property)
-        if not (_values_equal(current, f.notion_value) or (_is_empty(current) and _is_empty(f.notion_value))):
+        # リレーションは空でも [] で返るので、None / "" / [] はどれも「空」として同じ扱い
+        if not (_values_equal(current, f.notion_value) or (_is_empty(current) or current == []) and (_is_empty(f.notion_value) or f.notion_value == [])):
             return False
     return True
 
