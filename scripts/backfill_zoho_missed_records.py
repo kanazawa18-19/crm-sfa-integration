@@ -35,9 +35,11 @@ Notion に残った側は relation-sync-reconcile 等の突き合わせに任せ
       NOTION_API_KEY / ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN（必須）
       DATABASE_URL（連絡先の「お取引先」→ Notion 取引先マスターの解決に使う `ClientNameIndex` の置き場。
                     --apply では必須。dry-run では無くても動くが、取引先の解決は「未検証」になる）
+      DATABASE_URL_UNPOOLED（--apply で推奨。シートの行をその場で作るのに要る直接接続。無いと行は
+                    再試行キュー経由になり、日次 cron が 1 回 200 件ずつ作る）
     このスクリプトが強制的に上書きするもの（.env の値は見ない）:
       SYNC_ID_MAPPING_BACKEND=notion / ENABLE_ZOHO=True /
-      AUTO_CREATE_NEW_RECORDS_ENABLED（--apply のみ true）/ RELATION_SYNC_ENABLED（--apply のみ true）
+      AUTO_CREATE_NEW_RECORDS_ENABLED / RELATION_SYNC_ENABLED / SPREADSHEET_ROW_CREATION_ENABLED（--apply のみ true）
 
 ■ 安全側の設計
 - 対応表は本番と同じ Notion 実装（`SYNC_ID_MAPPING_BACKEND=notion`）を強制する。SQLite 既定のまま
@@ -204,6 +206,14 @@ def load_env(apply: bool, env_path: Path | None = None) -> None:
         if not os.environ.get("DATABASE_URL"):
             print("エラー: --apply には DATABASE_URL が必要です（取引先の解決に使う ClientNameIndex の置き場）", file=sys.stderr)
             raise SystemExit(2)
+        # シート（連絡先タブ等）の行もその場で作る（scripts/backfill_spreadsheet_all.py と同じ）。
+        # 行作成の前に「同期状態の確認」が走り、これには直接接続 DATABASE_URL_UNPOOLED が要る。
+        # 無いと行作成は再試行キュー（SpreadsheetOutbox）に積まれ、日次 cron が 1 回 200 件ずつ作る
+        # （数百件だと数日かかる）ので、無ければ起動時に知らせる。
+        os.environ["SPREADSHEET_ROW_CREATION_ENABLED"] = "true"
+        os.environ.setdefault("SPREADSHEET_ROW_CREATION_DB_KEYS", "*")
+        if not os.environ.get("DATABASE_URL_UNPOOLED"):
+            print("⚠️  DATABASE_URL_UNPOOLED が無いので、シートの行はその場で作れず再試行キュー経由（日次 cron・1 回 200 件）になる", file=sys.stderr)
     else:
         # dry-run ではレビューキューへの書き込みを起こさない
         os.environ["RELATION_SYNC_ENABLED"] = "false"

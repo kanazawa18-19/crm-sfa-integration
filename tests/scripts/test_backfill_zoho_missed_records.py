@@ -81,7 +81,8 @@ def test_zoho_v3_base_url_is_derived_from_v2_setting(monkeypatch: pytest.MonkeyP
 
 _ENV_KEYS = ("NOTION_API_KEY", "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN", "DATABASE_URL",
              "SYNC_ID_MAPPING_BACKEND", "SYNC_ID_MAPPING_NOTION_API_KEY", "ENABLE_ZOHO",
-             "AUTO_CREATE_NEW_RECORDS_ENABLED", "RELATION_SYNC_ENABLED")
+             "AUTO_CREATE_NEW_RECORDS_ENABLED", "RELATION_SYNC_ENABLED",
+             "SPREADSHEET_ROW_CREATION_ENABLED", "SPREADSHEET_ROW_CREATION_DB_KEYS", "DATABASE_URL_UNPOOLED")
 
 
 @pytest.fixture
@@ -109,9 +110,10 @@ def test_load_env_forces_notion_mapping_backend_and_no_writes_in_dry_run(env_fil
     assert os.environ["SYNC_ID_MAPPING_BACKEND"] == "notion"
     assert os.environ["SYNC_ID_MAPPING_NOTION_API_KEY"] == "n"
     assert os.environ["ENABLE_ZOHO"] == "True"
-    # dry-run ではレビューキューへの書き込みも自動作成も起こさない
+    # dry-run ではレビューキューへの書き込みも自動作成もシート行作成も起こさない
     assert os.environ["RELATION_SYNC_ENABLED"] == "false"
     assert "AUTO_CREATE_NEW_RECORDS_ENABLED" not in os.environ
+    assert "SPREADSHEET_ROW_CREATION_ENABLED" not in os.environ
 
 
 def test_load_env_apply_requires_database_url(env_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,6 +127,9 @@ def test_load_env_apply_requires_database_url(env_file: Path, monkeypatch: pytes
     mod.load_env(apply=True, env_path=env_file)
     assert os.environ["AUTO_CREATE_NEW_RECORDS_ENABLED"] == "true"
     assert os.environ["RELATION_SYNC_ENABLED"] == "true"
+    # シートの行もその場で作る（対象 db_key は全部）
+    assert os.environ["SPREADSHEET_ROW_CREATION_ENABLED"] == "true"
+    assert os.environ["SPREADSHEET_ROW_CREATION_DB_KEYS"] == "*"
 
 
 def test_load_env_fails_when_required_credentials_are_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
