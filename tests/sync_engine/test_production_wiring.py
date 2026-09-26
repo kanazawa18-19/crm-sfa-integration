@@ -709,6 +709,22 @@ def test_multi_db_notion_sync_target_routes_write_by_id_mapping_db_key(
     assert project_client.update_calls == []
 
 
+def test_multi_db_notion_sync_target_accepts_expected_version_like_dispatcher_passes(
+    store: SQLiteIdMappingStore,
+) -> None:
+    """`Dispatcher._write_value` は全ツールに `expected_version=` を渡す。受け取れないと
+    kintone / Zoho 発の既存レコード更新が Notion に書く直前に TypeError で落ちる
+    （2026-09-27、本番で実際に起きていた）。"""
+    store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", last_synced_at=NOW))
+    client = _FakeNotionClient("client_master")
+    target = _MultiDbNotionSyncTarget({"client_master": client}, store)
+
+    result = target.upsert_record("CLI-001", {"取引先名": "新名称"}, db_key="client_master", expected_version="2026-09-27T00:00:00+09:00")
+
+    assert result == "CLI-001"
+    assert client.update_calls == [("CLI-001", {"取引先名": "新名称"})]
+
+
 def test_multi_db_notion_sync_target_upsert_with_none_external_id_and_no_db_key_is_unsupported(
     store: SQLiteIdMappingStore,
 ) -> None:

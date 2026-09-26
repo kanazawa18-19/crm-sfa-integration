@@ -24,6 +24,7 @@ import dataclasses
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Mapping, MutableMapping
 
@@ -70,6 +71,16 @@ from src.sync_engine.sync_targets.spreadsheet_sync import SpreadsheetSyncTarget
 logger = logging.getLogger(__name__)
 
 _ALL_TOOLS: tuple[Tool, ...] = (Tool.NOTION, Tool.SPREADSHEET, Tool.KINTONE, Tool.ZOHO)
+
+# 現在値に更新時刻（"updated_at"）が無いツールの候補に付ける時刻。kintone / Zoho / スプレッドシートの
+# `get_record()` はどれも "updated_at" を返さない（2026-09-27 実測）。以前は `event.occurred_at` で
+# 補っていたため、送信元と**同時刻の同点**になり、同点の決め方（ツール名の五十音順）で
+# kintone < spreadsheet < zoho の順に勝っていた。つまり Zoho で直した値は、kintone やシートが
+# 古い値を持っているだけで捨てられ、その古い値が Zoho へ書き戻されていた
+# （再送スクリプトの --apply で 1 件実際に起きた。`docs/zoho_missed_updates_replay_note.md`）。
+# 「いつ更新されたか分からない値」は最新とは言えないので、比較では必ず最も古い扱いにする。
+# 採用値と違えば書き込み対象にはなる（補完される）ので、そのツールが置き去りになることはない。
+_UNKNOWN_UPDATED_AT = datetime.min.replace(tzinfo=timezone.utc)
 
 # 新規レコード作成（`AUTO_CREATE_NEW_RECORDS_ENABLED`、2026-08-25、Round2）のガード用環境変数。
 # `RELATION_SYNC_ENABLED`（Round1、既存プロパティの更新）とは意図的に別のフラグにする:
@@ -540,7 +551,8 @@ class Dispatcher:
                     ToolValue(
                         tool=tool,
                         value=record.get(property_name),
-                        updated_at=record.get("updated_at", event.occurred_at),
+                        # 更新時刻が無ければ「最も古い」扱い（`_UNKNOWN_UPDATED_AT` のコメント参照）
+                        updated_at=record.get("updated_at") or _UNKNOWN_UPDATED_AT,
                     )
                 )
 

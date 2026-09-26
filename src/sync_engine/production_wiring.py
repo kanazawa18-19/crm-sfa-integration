@@ -132,8 +132,18 @@ class _MultiDbNotionSyncTarget(SyncTarget):
         return self._fallback_client.get_page(external_id)
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
+        # `expected_version` は `Dispatcher._write_value` が全ツール共通で渡してくる（2026-08-31 の
+        # 楽観的排他）。Notion には If-Unmodified-Since 相当が無いので `NotionSyncTarget` と同じく
+        # 受け取るだけで使わない。**この引数が無かったため、kintone / Zoho 発の既存レコード更新が
+        # Notion に書く直前に TypeError で落ちていた**（2026-09-27、再送スクリプトの --apply で判明。
+        # 8/31 以降の本番 Webhook も同じ経路）。
         if external_id is None:
             # 新規Notionページ作成（`AUTO_CREATE_NEW_RECORDS_ENABLED`、2026-08-25、Round2）。
             # `Dispatcher`が呼び出し元（kintone/Zoho由来の新規レコード）から確定済みのdb_keyを
@@ -403,8 +413,16 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
         return target.get_record(external_id) if target is not None else None
 
     def upsert_record(
-        self, external_id: str | None, properties: dict[str, Any], *, db_key: str | None = None
+        self,
+        external_id: str | None,
+        properties: dict[str, Any],
+        *,
+        db_key: str | None = None,
+        expected_version: str | None = None,
     ) -> str | None:
+        # `expected_version` は `SyncTarget` の契約どおり受け取って中の target へ渡す。今の Dispatcher は
+        # 同期キー対応のこのラッパーを `_write_spreadsheet_value` 経由で呼ぶのでここには来ないが、
+        # Notion 側で同じ引数漏れが本番障害になった（2026-09-27）ので、契約違反を残さない
         if external_id is None:
             # external_idはスプレッドシートの行番号（`IdMapping.spreadsheet_row`）。
             # まだ行が無いレコードでは必ずNoneになるため、ここで一律スキップすると
@@ -452,7 +470,7 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
                 external_id,
             )
             return None
-        return target.upsert_record(external_id, properties, db_key=db_key)
+        return target.upsert_record(external_id, properties, db_key=db_key, expected_version=expected_version)
 
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         target = self._resolve(db_key)

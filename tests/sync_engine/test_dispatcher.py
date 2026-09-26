@@ -1739,6 +1739,38 @@ def test_conflict_considers_all_sync_scope_tools_not_only_notion_and_source(
     assert targets[Tool.KINTONE].upsert_calls == []  # 送信元は既にNotionと同じ値
 
 
+def test_tools_without_updated_at_never_win_over_the_source(
+    store: SQLiteIdMappingStore, mapping: IdMapping
+) -> None:
+    """kintone / Zoho / スプレッドシートの現在値には "updated_at" が無い。以前は送信元と同時刻の
+    同点になり、ツール名順で kintone・spreadsheet が Zoho に勝って、Zoho で直した値を捨てて
+    古い値を Zoho へ書き戻していた（2026-09-27、本番で 1 件発生）。更新時刻が分からない値は
+    最も古い扱いにし、送信元（Zoho）の値を採用して他ツールへ補完する。"""
+    notion = FakeSyncTarget(
+        Tool.NOTION, records={"CLI-001": {"取引先名": "旧", NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(days=10)}}
+    )
+    kintone = FakeSyncTarget(Tool.KINTONE, records={"1001": {"取引先名": "旧"}})  # updated_at 無し
+    spreadsheet = FakeSyncTarget(Tool.SPREADSHEET, records={"5": {"取引先名": "旧"}})  # updated_at 無し
+    targets = _all_targets()
+    targets[Tool.NOTION] = notion
+    targets[Tool.KINTONE] = kintone
+    targets[Tool.SPREADSHEET] = spreadsheet
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(
+        source_tool=Tool.ZOHO, db_key="client_master", external_id="zoho-1", occurred_at=NOW,
+        properties={"取引先名": "新"},
+    )
+
+    result = dispatcher.dispatch(event)
+
+    prop = result.properties[0]
+    assert prop.resolution.action == ResolutionAction.PROPAGATE_VALUE
+    assert prop.resolution.resolved_value == "新"
+    assert targets[Tool.NOTION].upsert_calls == [("CLI-001", {"取引先名": "新"})]
+    assert targets[Tool.KINTONE].upsert_calls == [("1001", {"取引先名": "新"})]
+    assert targets[Tool.ZOHO].upsert_calls == []  # 送信元へ古い値を書き戻さない
+
+
 # --- BLOCKER2: データ退避（同期ログ）・Slackアラート通知 ---------------------------------
 
 
