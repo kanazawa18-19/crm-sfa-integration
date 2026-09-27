@@ -1,0 +1,68 @@
+{
+  "http_status": 200,
+  "elapsed_seconds": 8.39,
+  "report": {
+    "schema_version": 1,
+    "observed_at": "2026-09-27T14:29:13.989706+00:00",
+    "elapsed_ms": 6529,
+    "checks": [
+      {
+        "key": "receipt_store",
+        "status": "ok",
+        "reason": "受信記録を取得しました"
+      },
+      {
+        "key": "notion_delivery",
+        "status": "pending",
+        "reason": "変更後の受信を待っています",
+        "last_received_at": "2026-09-27T14:12:25.790000+00:00",
+        "activity_at": "2026-09-27T14:21:00+00:00"
+      },
+      {
+        "key": "kintone_delivery",
+        "status": "ok",
+        "reason": "受信記録あり・最終受信後の変更は未検出",
+        "last_received_at": "2026-09-27T07:33:17.269000+00:00",
+        "activity_at": null
+      },
+      {
+        "key": "zoho_subscription",
+        "status": "ok",
+        "reason": "6モジュールの購読・通知先・期限を確認",
+        "expires_at": "2026-09-28T09:00:05+00:00"
+      },
+      {
+        "key": "zoho_delivery",
+        "status": "ok",
+        "reason": "受信記録あり・変更有無は未確認です",
+        "last_received_at": "2026-09-27T09:01:57.641000+00:00",
+        "activity_at": null
+      },
+      {
+        "key": "spreadsheet_delivery",
+        "status": "ok",
+        "reason": "受信記録あり・変更有無は未確認です",
+        "last_received_at": "2026-09-27T13:14:14.305000+00:00",
+        "activity_at": null
+      }
+    ],
+    "receipts": {
+      "notion": {
+        "last_received_at": "2026-09-27T14:12:25.790000+00:00",
+        "count": 21354
+      },
+      "zoho": {
+        "last_received_at": "2026-09-27T09:01:57.641000+00:00",
+        "count": 333
+      },
+      "kintone": {
+        "last_received_at": "2026-09-27T07:33:17.269000+00:00",
+        "count": 370
+      },
+      "spreadsheet": {
+        "last_received_at": "2026-09-27T13:14:14.305000+00:00",
+        "count": 1
+      }
+    }
+  }
+}

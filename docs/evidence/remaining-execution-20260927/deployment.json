@@ -1,0 +1,13 @@
+{
+  "commit": "4d12fa38b851f1f4d328293ba945cb81c9c260e5",
+  "deployment": "dpl_7pTygip9yGPrdkBGhMcw5M6jbqJ6",
+  "state": "READY",
+  "target": "production",
+  "ci": 36325891626,
+  "ci_status": "success",
+  "jobs": [
+    "Python tests",
+    "GAS tests",
+    "Docker image build"
+  ]
+}
