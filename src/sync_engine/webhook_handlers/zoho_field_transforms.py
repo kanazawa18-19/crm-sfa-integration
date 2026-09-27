@@ -58,6 +58,8 @@ Zoho「ステージ」列（契約済/失注/解約（処理済み）/返信な�
 from __future__ import annotations
 
 import contextvars
+import datetime
+import re
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -182,6 +184,26 @@ def _resolve_client_master_for_zoho_action(_value: Any) -> Any:
     )
     return resolved if resolved is not None else SKIP_FIELD
 
+def _next_action_date(value: Any) -> Any:
+    """自由記述の日付を検証。不明な文字列で既存の日付を消さない。"""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        return SKIP_FIELD
+    text = value.strip()
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if not match:
+        match = re.fullmatch(r"(\d{4})/(\d{1,2})/(\d{1,2})", text)
+    if not match:
+        match = re.fullmatch(r"(\d{4})年(\d{1,2})月(\d{1,2})日", text)
+    if match:
+        try:
+            return datetime.date(*(int(x) for x in match.groups())).isoformat()
+        except ValueError:
+            pass
+    return SKIP_FIELD
+
+
 # Zohoラベル -> (Notionプロパティ名, 値変換関数)
 # 対象は transform_zoho_project() が実際にNotionプロパティへ書き込んでいるフィールドのみ。
 # 以下は意図的に含めない（transform_zoho_project()のdocstring参照）:
@@ -233,6 +255,8 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
     "【Notion】ファーストタッチ": ("ファーストタッチ", _parse_first_touch),
     "【Notion】担当者名": ("担当者名", lambda v: v or None),
     "決裁者": ("決裁者名", lambda v: v or None),
+    # 2026-09-27: field31はtext型。最新200件中8件が漢字日付。
+    "【Notion】次回アクション日": ("次回アクション日", _next_action_date),
     "【Notion】次回アクション": ("次回アクション", lambda v: v or None),
     "【Notion】サービス数（施設数）": (
         "サービス数（施設数）",
@@ -249,6 +273,8 @@ _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] =
     # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
     # CustomModule3のfield10。実測2/200件で値あり
     '連絡先': ('連絡先', _relation_from_zoho_lookup('連絡先', 'contact')),
+    # 2026-09-27: CustomModule3.fieldはtext型、最新200件中6件で利用。
+    "その他": ("その他", lambda v: v or None),
     "チェーン名・グループ名": ("グループ名", lambda v: v),
     "アプローチ状況": ("アプローチ状況", normalize_approach_status),
     "施設数": ("施設数", lambda v: v or None),

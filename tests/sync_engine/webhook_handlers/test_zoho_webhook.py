@@ -426,11 +426,10 @@ def test_zoho_payload_to_sync_events_chain_approach_status_is_normalized() -> No
     assert events[0].properties == {"アプローチ状況": "アポ確定済み"}
 
 
-def test_zoho_payload_to_sync_events_chain_deliberately_excluded_field_is_skipped_with_warning(
+def test_zoho_payload_to_sync_events_chain_other_text_is_synced(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """「その他」（field）はCHAIN_SCHEMA上書き込み可能なTEXT型プロパティだが、
-    transform_zoho_chain()が一度も書き込んでいないため対象外（zoho_field_transforms.py参照）。"""
+    """実際に利用がある「その他」をAPI名から解決して同期する。"""
     payload = _payload(
         module="CustomModule3",
         affected_values=[
@@ -441,8 +440,8 @@ def test_zoho_payload_to_sync_events_chain_deliberately_excluded_field_is_skippe
     with caplog.at_level("WARNING"):
         events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=CHAIN_MODULE_MAP)
 
-    assert events[0].properties == {}
-    assert any("label='その他'" in record.getMessage() for record in caplog.records)
+    assert events[0].properties == {"その他": "リンカーン"}
+    assert not any("label='その他'" in record.getMessage() for record in caplog.records)
 
 
 # --- action（CustomModule2）のper-fieldマッピング ------------------------------------------

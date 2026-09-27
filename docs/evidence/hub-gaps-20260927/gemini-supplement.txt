@@ -1,0 +1,65 @@
+heading Gemini の回答, Value: 6
+									3785 text Gemini の回答
+								3786 container model-response-message-contentr_9ac0feb01a86e1f5
+									3787 text 静的コードレビュー結果を提示します（業務APIの実行は行っていません）。
+									3788 heading 1. scripts/backfill_prioritized_sync_gaps.py, Value: 3
+										3789 text 1.
+										3790 text scripts/backfill_prioritized_sync_gaps.py
+									3791 content list
+										3792 container
+											3793 text 読戻し検証（Readback Validation）における型の不一致リスク
+											3794 content list
+												3795 container
+													3796 text after.get(item['property']) != item['value']  の比較において、 source_value  が返す型（変換関数の戻り値）と  notion.get_page()  が返すプロパティ値の型/フォーマットに揺れが存在する場合、書き込み自体は成功していても読戻し判定で  RuntimeError('補完後の読戻し不一致')  が発生して処理が中断する可能性があります。
+												3797 container
+													3798 text 特に  _next_action_date  等の日付データで、文字列（ YYYY-MM-DD ）と辞書構造（ {"start": "YYYY-MM-DD"}  等）の差異がないか、同一の評価関数を通す等の統一を推奨します。
+										3799 container
+											3800 text 例外ハンドリング時のログ情報不足
+											3801 content list
+												3802 container
+													3803 text 最下部の  except Exception as exc:  にて  type(exc).__name__  のみを出力して停止させています。安全策としては有効ですが、実行時の想定外のエラー発生時に失敗理由の特定が難しくなるため、メッセージ（ str(exc) ）程度は出力に含めることを推奨します。
+										3804 container
+											3805 text 安全性・防御設計（確認済み・問題なし）
+											3806 content list
+												3807 container
+													3808 text 事前Hash検証（ expected_plan_sha256 ）、更新直前の両側再取得（Zoho/Notion）、Notion空値チェック、 set_actor  によるコンテキスト指定、および二重更新防止の読戻し検証が多層で機能しており、安全策は十分に講じられています。
+									3809 heading 2. scripts/report_hub_inventory.py, Value: 3
+										3810 text 2.
+										3811 text scripts/report_hub_inventory.py
+									3812 content list
+										3813 container
+											3814 text observed_at
+											3815 text  パース時の Timezone mismatch リスク
+											3816 content list
+												3817 container
+													3818 text datetime.fromisoformat(report['observed_at'])  でパースした日時に対し、 now = datetime.now(timezone.utc) （aware）で引き算を行っています。
+												3819 container
+													3820 text report['observed_at']  がタイムゾーン情報を持たない文字列（naive datetime）の場合、 TypeError: can't subtract offset-naive and offset-aware datetimes  が発生します。入力側の ISO 文字列が常に UTC オフセット（ +00:00  や  Z ）を含むか確認してください。
+										3821 container
+											3822 text 公開ログへの非表示確認（確認済み・問題なし）
+											3823 content list
+												3824 container
+													3825 text --send  オプション実行時、標準出力には  Slack受理確認済み  のみが出力され、Notion ページ ID や顧客項目がコンソールログに残らない仕様になっています。
+									3826 heading 3. .github/workflows/hub-inventory.yml, Value: 3
+										3827 text 3.
+										3828 text .github/workflows/hub-inventory.yml
+									3829 content list
+										3830 container
+											3831 text セキュリティ・公開リポジトリ配慮（確認済み・問題なし）
+											3832 content list
+												3833 container
+													3834 text if: vars.HUB_INVENTORY_ENABLED == 'true'  による既定 OFF 制御が機能しています。
+												3835 container
+													3836 text ログ出力の抑止（ --quiet ）および Artifact 保存ステップの除外により、公開リポジトリ上のログ・成果物への機密データ（ページ ID、顧客データ等）の露出リスクは排除されています。
+									3837 heading 4. _normalize_fetched_page （関数抜粋）, Value: 3
+										3838 text 4.
+										3839 text _normalize_fetched_page
+										3840 text （関数抜粋）
+									3841 content list
+										3842 container
+											3843 text ロジック評価（確認済み・問題なし）
+											3844 content list
+												3845 container
+													3846 text updated_property_ids  が指定されている場合は該当 ID のプロパティのみ抽出し、存在しない場合（フォールバック時）は  explicit_change = False  となって  ("次回アクション日", "先方担当者", "その他")  の3項目が明示的に  pop  除外されます。
+												3847 text Notion 側の未同期状態（空値）によって外部システム（kintone / Zoho 等）の実データが上書きされる事態を防御する設計として正しく機能しています。
+								3848

@@ -1,0 +1,171 @@
+heading Claudeが返答しました: 静的レビューのみです。BLOCKER は0件で、WARN 5件・INFO 8件です。, Value: 2
+										992 text Claudeが返答しました: 静的レビューのみです。BLOCKER は0件で、WARN 5件・INFO 8件です。
+									993 container Listing remaining minor gaps in installation and logging.
+										994 text Listing remaining minor gaps in installation and logging.
+										995 button (collapsed) Listing remaining minor gaps in installation and logging., Secondary Actions: Expand
+									996 text Listing remaining minor gaps in installation and logging.
+									997 container
+										998 text 静的レビューのみです。BLOCKER は0件で、WARN 5件・INFO 8件です。 次の点は安全側に作られていることを確認しました。
+										999 content list
+											1000 container
+												1001 AXListMarker •
+												1002 text 秘密値は plist・コマンド引数・ログのいずれにも出ていません
+											1003 container
+												1004 AXListMarker •
+												1005 text Slackトークンを環境変数に設定するのは子プロセス（node・inventory）の起動後なので、子プロセスには渡りません
+											1006 container
+												1007 AXListMarker •
+												1008 text preview と status には書込・送信がありません
+											1009 container
+												1010 AXListMarker •
+												1011 text 状態の読込はロックの内側で行われています
+											1012 container
+												1013 AXListMarker •
+												1014 text 状態の確定はSlackが受理した後だけです
+										1015 text WARN
+										1016 table
+											1017 row
+												1018 cell
+													1019 text ID
+												1020 cell
+													1021 text 箇所
+												1022 cell
+													1023 text 指摘
+												1024 cell
+													1025 text 対応案
+											1026 row
+												1027 cell
+													1028 text W1
+												1029 cell
+													1030 text launchd 実行環境（macOS の TCC）
+												1031 cell
+													1032 text リポジトリが「書類」「デスクトップ」「iCloud Drive」配下にある場合、launchd から起動した python はファイルを読めず、起動直後に失敗します。このときスクリプト自体が動かないため、失敗通知も送られず、無音で停止します。インストーラには初回動作の確認もありません。
+												1033 cell
+													1034 text リポジトリの配置場所を確認してください（該当する場合は移すか、フルディスクアクセスを付与）。インストール後に
+													1035 text launchctl kickstart -k gui/<uid>/<label>
+													1036 text  で実際に1回実行し、ログとDMが届くことを確認してください。
+											1037 row
+												1038 cell
+													1039 text W2
+												1040 cell
+													1041 text inventory の認証情報
+												1042 cell
+													1043 text 子プロセスの inventory は
+													1044 text config/.env
+													1045 text  を読み込み、対応表にも
+													1046 text NOTION_API_KEY
+													1047 text （同期用の書込可能なトークン）を使っています。これは「認証情報はキーチェーンのみから読む」という前提と一致しません。また、.env がない主機では毎週必ず失敗します。
+												1048 cell
+													1049 text 読み取り専用インテグレーションのトークンをキーチェーンから取得し、
+													1050 text subprocess.run(env=...)
+													1051 text  で子プロセスへ明示的に渡してください。.env を使い続けるなら、既存の保存先であること、権限が600であること、gitignore 済みであることを確認してください。
+											1052 row
+												1053 cell
+													1054 text W3
+												1055 cell
+													1056 text 最上位の失敗通知
+												1057 cell
+													1058 text 次のようなSlack以外の原因で失敗が続くと、毎時「実行失敗」のDMが送られ続けます。
+													1059 text ・nodeのパスがない
+													1060 text ・状態JSONが破損している
+													1061 text ・ディスクの問題
+													1062 text この通知には、domain.js の「2回で通知」「24時間再通知」の抑制が適用されず、復旧通知もありません。
+												1063 cell
+													1064 text 失敗通知の送信時刻を別ファイルに記録し、24時間に1回へ抑制してください。次に成功したときに復旧を1回通知してください。
+											1065 row
+												1066 cell
+													1067 text W4
+												1068 cell
+													1069 text GAS 監視との二重稼働
+												1070 cell
+													1071 text GAS への権限付与が後から承認されて両方が動くと、同じAPIを別々の状態で判定することになります。その結果、通知が重複したり、復旧・再通知の時期がずれたりします。
+												1072 cell
+													1073 text GAS を有効化する前に
+													1074 text launchctl bootout
+													1075 text  で health ジョブを停止することを、運用手順書に明記してください。どちらか一方だけが動いている状態にしてください。
+											1076 row
+												1077 cell
+													1078 text W5
+												1079 cell
+													1080 text domain.js の残課題
+												1081 cell
+													1082 text domain.js は前回から変更がないため、前回の W1 が残っています（pending のまま受信が進んでも復旧通知が出ず、24時間以内の新規障害が抑止される）。
+													1083 text 加えて、スリープから復帰した直後は StartInterval の実行間隔が不規則になるため、RECHECK_DELAY（0.8時間）による2回目の判定が1回分遅れる場合があります。
+												1084 cell
+													1085 text 前回の W1 を修正してください。
+										1086 text INFO
+										1087 table
+											1088 row
+												1089 cell
+													1090 text ID
+												1091 cell
+													1092 text 箇所
+												1093 cell
+													1094 text 指摘
+											1095 row
+												1096 cell
+													1097 text I1
+												1098 cell
+													1099 text inventory の呼出
+												1100 cell
+													1101 text --quiet
+													1102 text  引数が inventory 側で実装済みか確認してください（前回から継続）。未実装の場合、引数エラーで毎週「全件点検を完了できませんでした」になります。
+											1103 row
+												1104 cell
+													1105 text I2
+												1106 cell
+													1107 text inventory の出力
+												1108 cell
+													1109 text 子プロセスの stdout/stderr を捨てているため、失敗時の手掛かりが残りません。子プロセスは例外の種類と件数しか出力しないので、ログへの保存は安全です。
+											1110 row
+												1111 cell
+													1112 text I3
+												1113 cell
+													1114 text 前回ディレクトリの再利用
+												1115 cell
+													1116 text 失敗時は状態を保存しないため、この再利用は再送用として機能しません。一方で、既定ディレクトリに手動で一部のDBだけ実行した結果が混ざっていても、6時間以内なら週次結果として報告されます。常に新しく走査する方が単純で安全です。
+											1117 row
+												1118 cell
+													1119 text I4
+												1120 cell
+													1121 text keychain()
+												1122 cell
+													1123 text -s
+													1124 text （サービス名）だけで検索しているため、同じサービス名の項目が複数あると別の項目を取得する可能性があります。
+													1125 text -a
+													1126 text （アカウント名）も指定してください。
+											1127 row
+												1128 cell
+													1129 text I5
+												1130 cell
+													1131 text CHANNEL
+												1132 cell
+													1133 text DMのチャンネルIDを公開リポジトリに直書きしています。単独では悪用できませんが、「公開repoにIDを出さない」方針と一致しません。キーチェーンか、gitignore 済みのローカル設定へ移してください。
+											1134 row
+												1135 cell
+													1136 text I6
+												1137 cell
+													1138 text weekly_inventory
+												1139 cell
+													1140 text ページIDを含む結果が毎週リポジトリ配下に蓄積されます。gitignore 済みであることの確認と、保存期間の設定を推奨します。
+											1141 row
+												1142 cell
+													1143 text I7
+												1144 cell
+													1145 text install スクリプト
+												1146 cell
+													1147 text 次の点を改善してください。
+													1148 text ・2本目の plist が既存と異なると、1本目だけが適用された状態で止まります
+													1149 text ・停止・削除の手順がありません
+													1150 text ・ログのローテーションがありません
+													1151 text また、再起動後にログインするまで LaunchAgents は動きません。「主機停止中」だけでなく、この条件も通知文と手順書に明記してください。
+											1152 row
+												1153 cell
+													1154 text I8
+												1155 cell
+													1156 text save()
+												1157 cell
+													1158 text 一時ファイルを作成してから chmod するため、ごく短い間だけ既定の権限になります。状態に秘密値は含まれないので実害はありませんが、
+													1159 text os.open(..., 0o600)
+													1160 text  で作成すれば解消できます。
+										1161 text 実運用に入る前に確認すべき優先順位は、W1（初回の実機確認）、W2（inventory の認証経路）、W3（失敗通知の抑制）の順です。W4 は GAS を承認する時点までに手順書へ反映してください。

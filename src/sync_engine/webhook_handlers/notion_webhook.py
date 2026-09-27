@@ -358,6 +358,7 @@ def _normalize_fetched_page(
     page_id = page.get("id")
     parent = page.get("parent") or {}
     properties = dict(page.get("properties") or {})
+    explicit_change = False
     if updated_property_ids:
         wanted = set(updated_property_ids)
         changed = {
@@ -367,6 +368,7 @@ def _normalize_fetched_page(
         }
         if changed:
             properties = changed
+            explicit_change = True
         else:
             logger.warning(
                 "notion webhook: updated_properties=%r に一致するプロパティがページ側に"
@@ -374,6 +376,16 @@ def _normalize_fetched_page(
                 sorted(wanted),
                 page_id,
             )
+    if not explicit_change:
+        # 新たに同期する項目は、未同期時代の空値で外部の実値を消さない。
+        # この3項目の外向き更新は、変更した項目IDが明示された通知に限る。
+        guarded = {
+            get_schema("project").notion_database_id: ("次回アクション日",),
+            get_schema("action").notion_database_id: ("先方担当者",),
+            get_schema("chain").notion_database_id: ("その他",),
+        }
+        for name in guarded.get(parent.get("database_id"), ()):
+            properties.pop(name, None)
     return {
         "page_id": page["id"],
         "database_id": parent.get("database_id"),

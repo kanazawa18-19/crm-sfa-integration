@@ -103,6 +103,7 @@ def test_kintone_payload_to_sync_event_builds_action_event() -> None:
     assert event.properties == {
         "アクション種別": "テレアポ",
         "履歴メモ": "折り返し予定",
+        "先方担当者": "先方 太郎",
     }
     assert "cnctorMember" not in event.properties
     assert "toPerson" not in event.properties

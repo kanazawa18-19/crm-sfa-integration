@@ -100,7 +100,6 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
 #: リレーション以外の未対応（外部→Notion）。
 KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.KINTONE, 'action', 'アクション日'): "変換表に未登録（実務で必要になった時点で登録する）",
-    (Tool.KINTONE, 'action', '先方担当者'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.KINTONE, 'action', '商談回数・電話回数・メール回数（何回目）'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.KINTONE, 'action', '導入フローとスケジュール'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.KINTONE, 'action', '議事録・録画リンク'): "変換表に未登録（実務で必要になった時点で登録する）",
@@ -133,7 +132,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.KINTONE, 'project', '確度'): "選択肢。外部の選択肢とNotionの選択肢の対応が未定義",
     (Tool.KINTONE, 'project', '電話番号'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.ZOHO, 'action', '導入フローとスケジュール'): "変換表に未登録（実務で必要になった時点で登録する）",
-    (Tool.ZOHO, 'chain', 'その他'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.ZOHO, 'chain', 'その他ブランド'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.ZOHO, 'chain', 'オルト'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.ZOHO, 'chain', 'ホテラボ'): "変換表に未登録（実務で必要になった時点で登録する）",
@@ -152,7 +150,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.ZOHO, 'project', '再アプローチ日'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.ZOHO, 'project', '担当メンバー'): "担当者。外部のユーザーとNotionのユーザーの突き合わせが未実装",
     (Tool.ZOHO, 'project', '提案サービス'): "複数選択。外部の値の分割規則が未定義",
-    (Tool.ZOHO, 'project', '次回アクション日'): "変換表に未登録（実務で必要になった時点で登録する）",
     (Tool.ZOHO, 'project', '確度'): "選択肢。外部の選択肢とNotionの選択肢の対応が未定義",
 }
 

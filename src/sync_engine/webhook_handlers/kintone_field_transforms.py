@@ -186,6 +186,9 @@ _CLIENT_MASTER_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any
 # kintone Webhook通知（本番）で確認済み（GET /k/v1/app/form/fields.json?app=<action>でも
 # 再確認済み）。client_nameも同API検証済み（モジュールdocstring参照）。
 _ACTION_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    # 2026-09-27: toPersonは担当者名の自由記述。最新200件中100件で利用。
+    # kintone通知は全レコード。未同期時代の空値でNotionを消さないため、空は保留する。
+    "toPerson": ("先方担当者", lambda v: v if v not in (None, "") else SKIP_FIELD),
     "actionContent": ("アクション種別", normalize_action_type),  # ラベル: アクション内容
     "comment": ("履歴メモ", lambda v: v or None),  # ラベル: コメント
     # ラベル: 顧客名（法人・個人・施設）。自由入力テキストのため、ClientNameIndexでの

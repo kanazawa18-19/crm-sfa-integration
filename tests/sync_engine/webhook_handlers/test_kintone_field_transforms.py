@@ -154,7 +154,7 @@ def test_relation_dependent_fields_are_intentionally_excluded() -> None:
     # client_nameと同じくClientNameIndexへのSELECT一発で解決できるため
     # （下記Test_案件の取引先リレーション参照）。
     assert "cnctorMember" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 対応者
-    assert "toPerson" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 担当者名
+    assert KINTONE_FIELD_TRANSFORMS["action"]["toPerson"][0] == "先方担当者"  # 自由記述で同期
     assert "service" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 提案サービス
     assert "nextActionDate" not in KINTONE_FIELD_TRANSFORMS["action"]  # ラベル: 次回アクション日
     assert "本部名" not in KINTONE_FIELD_TRANSFORMS["client_master"]  # コード==ラベル

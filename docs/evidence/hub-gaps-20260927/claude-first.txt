@@ -1,0 +1,223 @@
+heading Claudeが返答しました: 静的レビューのみです。結果は BLOCKER 1件、WARN 6件、INFO 9件です。, Value: 2
+										424 text Claudeが返答しました: 静的レビューのみです。結果は BLOCKER 1件、WARN 6件、INFO 9件です。
+									425 container 未同期期間中の値の食い違いによる上書き危険性を検討中。
+										426 text 未同期期間中の値の食い違いによる上書き危険性を検討中。
+										427 button (collapsed) 未同期期間中の値の食い違いによる上書き危険性を検討中。, Secondary Actions: Expand
+									428 text 未同期期間中の値の食い違いによる上書き危険性を検討中。
+									429 container
+										430 text 静的レビューのみです。結果は BLOCKER 1件、WARN 6件、INFO 9件です。 問題がなかった点は次のとおりです。
+										431 content list
+											432 container
+												433 AXListMarker •
+												434 text 優先対象を実測に基づく3項目に絞っており、known_sync_gaps からの削除も対応しています。
+											435 container
+												436 AXListMarker •
+												437 text CLIは業務APIへの変更呼出を含みません。
+											438 container
+												439 AXListMarker •
+												440 text 出力はID・行番号・日時だけで、顧客項目の値を含みません。
+											441 container
+												442 AXListMarker •
+												443 text 例外は種類だけを表示するため、秘密値の漏洩もありません。
+										444 text BLOCKER
+										445 table
+											446 row
+												447 cell
+													448 text ID
+												449 cell
+													450 text 箇所
+												451 cell
+													452 text 指摘
+												453 cell
+													454 text 対応案
+											455 row
+												456 cell
+													457 text B1
+												458 cell
+													459 text 3項目の同期有効化（変換表と、テストで固定している外向き項目名）
+												460 cell
+													461 text これまで片方向または未同期だった項目を、両側の値を突き合わせないまま有効化しています。その結果、次の上書きが起こり得ます。
+													462 text ・受信側：外部の値が空のレコード（先方担当者で約半数、次回アクション日で192/200）が編集されるたびに、
+													463 text v or None
+													464 text  によってNotion側で手入力されていた値が消えます
+													465 text ・外向きが全項目送信の場合：Notion側が空や古い値のままのレコードが編集されると、kintoneの toPerson（100件）、Zohoの その他（6件）、field31（8件）が空値やNotionの値で上書きされます
+													466 text ・「来週」のような解釈できない値は受信側で SKIP_FIELD として保護されますが、外向きでは保護されず上書きされます
+												467 cell
+													468 text リリース前に、読み取り専用で3項目の両側の値を突き合わせて差分件数を出してください。そのうえで次のいずれかを決め、決めてから有効化してください。
+													469 text ・どちらの値を正とするか
+													470 text ・事前に補完（backfill）するか
+													471 text ・外向きでは「Notion側が空なら送らない」とするか
+										472 text WARN
+										473 table
+											474 row
+												475 cell
+													476 text ID
+												477 cell
+													478 text 箇所
+												479 cell
+													480 text 指摘
+												481 cell
+													482 text 対応案
+											483 row
+												484 cell
+													485 text W1
+												486 cell
+													487 text _next_action_date
+													488 text  の SKIP_FIELD
+												489 cell
+													490 text 既存コードで SKIP_FIELD を使っているのは action 系の変換だけです。project の書込経路（transform_zoho_project）がこの目印を解釈するかは、今回のテストでは確認できません。解釈しない場合、目印のオブジェクトがそのまま書込値に混入します。
+												491 cell
+													492 text transform_zoho_project を通した結合テストを追加してください。不正値のときに既存値が変わらないことを確認します。
+											493 row
+												494 cell
+													495 text W2
+												496 cell
+													497 text Notion側の型・外向きの値形式
+												498 cell
+													499 text 確認事項が3点あります。
+													500 text ・Notion側の型が想定どおりか（次回アクション日＝date、先方担当者＝テキスト（relation・people ではないこと）、その他＝テキスト）
+													501 text ・field31 へ送る値の形式。現在Zoho側はすべて漢字日付なので、ISO形式で送ると入力者の表記が書き換わります
+													502 text ・Zohoの1行テキストは文字数上限があり、Notionの長文が拒否される可能性があります
+												503 cell
+													504 text 外向きの値変換について、形式を含めたテストを追加してください。
+											505 row
+												506 cell
+													507 text W3
+												508 cell
+													509 text NotionIdMappingStore.list_by_db
+												510 cell
+													511 text 対応表もNotionにあるため、list_by_db がページ送りと1万件の上限を越えて全件を返すかが前提になります。途中で切れると、対応済みのページが大量に「未登録」と誤判定されます。あわせて、コンストラクタに自動作成などの書込処理がないかも確認が必要です。
+												512 cell
+													513 text query_all_with_keyset を使っているか確認してください。使っていなければ置き換えてください。
+											514 row
+												515 cell
+													516 text W4
+												517 cell
+													518 text classify
+												519 cell
+													520 text 3つの取りこぼしがあります。
+													521 text ・行番号で対応表に一致するが同期キーが空の行を mapped と判定しています。行の移動・挿入で別レコードが入った場合を見逃します
+													522 text ・対応表の重複（同じ行番号や同じ notion_key の複数登録）が辞書化の際に黙って1件にまとめられます
+													523 text ・対応表はあるが spreadsheet_row が空のページ（シート未登録）が数えられていません
+												524 cell
+													525 text 次の区分を追加してください。
+													526 text ・同期キーのない対応済み行
+													527 text ・対応表の重複件数
+													528 text ・シート行のない対応件数
+											529 row
+												530 cell
+													531 text W5
+												532 cell
+													533 text fetch_rows
+												534 cell
+													535 text 「同期キー」列がない場合もエラーにならず、すべてのキーを空として処理を続けます。その結果、移動・重複の照合が無効になったまま結果が出力されます。
+												536 cell
+													537 text 列が見つからない場合は例外にしてください。
+											538 row
+												539 cell
+													540 text W6
+												541 cell
+													542 text fetch_pages
+													543 text  の再試行
+												544 cell
+													545 text 再試行するのは429だけで、5xxや接続タイムアウトは即座に中断します。長時間の全件走査では一時的な障害で最初からやり直しになります。
+												546 cell
+													547 text 5xxと Timeout/ConnectionError も、回数を限って再試行してください。
+										548 text INFO
+										549 table
+											550 row
+												551 cell
+													552 text ID
+												553 cell
+													554 text 箇所
+												555 cell
+													556 text 指摘
+											557 row
+												558 cell
+													559 text I1
+												560 cell
+													561 text classify
+												562 cell
+													563 text elif key in mapped
+													564 text  にだけ
+													565 text key and
+													566 text  の条件がありません。notion_key が空の対応行があると、キーのない行が mapped_key_at_other_row に分類されます。
+											567 row
+												568 cell
+													569 text I2
+												570 cell
+													571 text main
+													572 text  の読取順
+												573 cell
+													574 text 現在は対応表→ページ→シートの順に読んでいます。対応表を最後に読めば、走査中に作られた新規ページを「未登録」と誤判定することが減ります。
+											575 row
+												576 cell
+													577 text I3
+												578 cell
+													579 text classify
+												580 cell
+													581 text 存在しないページ（削除・ゴミ箱）を指す対応行や、空の行を指す対応行が報告されません。整合性確認としては件数だけでも出す価値があります。
+											582 row
+												583 cell
+													584 text I4
+												585 cell
+													586 text _next_action_date
+													587 text  の受理範囲
+												588 cell
+													589 text 次の点が仕様として意図どおりか確認してください。
+													590 text ・「2026/9/27」は受理しますが「2026-9-27」は拒否します
+													591 text ・空白のみの値は None（消去）ではなく SKIP_FIELD（既存値を保持）になります
+													592 text ・
+													593 text \d
+													594 text  は全角数字にも一致します
+													595 text ・「2026年 9月」のような空白入りは不可です
+											596 row
+												597 cell
+													598 text I5
+												599 cell
+													600 text zoho_field_transforms.py
+												601 cell
+													602 text import datetime
+													603 text  /
+													604 text re
+													605 text  の位置が import 順を崩しています。また、同じファイル内に
+													606 text from datetime import ...
+													607 text  があると名前が上書きされ、
+													608 text datetime.date(...)
+													609 text  が TypeError（捕捉していない）になります。関数の前の空行も1行です（通常は2行）。
+											610 row
+												611 cell
+													612 text I6
+												613 cell
+													614 text 出力先
+												615 cell
+													616 text 出力先の migration_output がリポジトリ内なので、gitignore 済みか確認してください。また、
+													617 text --db
+													618 text  で一部のDBだけを実行すると、前回実行時の他DBのファイルが古い時刻のまま混在します。
+											619 row
+												620 cell
+													621 text I7
+												622 cell
+													623 text fetch_rows
+												624 cell
+													625 text 3点あります。
+													626 text ・Sheetsの429に対する再試行がありません
+													627 text ・
+													628 text _request
+													629 text  が内部でもURLエンコードする場合、二重エンコードになります
+													630 text ・spreadsheet_row が文字列で保存されている場合、行番号の照合がすべて外れます
+											631 row
+												632 cell
+													633 text I8
+												634 cell
+													635 text 集計項目
+												636 cell
+													637 text mapped_without_kintone / zoho は、対応先ツールがないDB（chain など）では意味のない数値になります。
+											638 row
+												639 cell
+													640 text I9
+												641 cell
+													642 text テスト
+												643 cell
+													644 text classify（純粋関数）の単体テストがありません。W4とI1の境界ケースが未検証です。
+										645 text 優先順位は、まずB1の突き合わせ結果を出し、同期の方針を決めることです。そのうえでW1・W2のテストを揃えてから有効化してください。CLIのほうは、W3・W4を直せば全件調査として信頼できる出力になります。

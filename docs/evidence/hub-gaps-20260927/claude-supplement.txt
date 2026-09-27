@@ -1,0 +1,181 @@
+heading Claudeが返答しました: 静的レビューのみです（業務APIの実行なし）。結果は BLOCKER 0件、WARN 6件、INFO 7件です。, Value: 2
+										674 text Claudeが返答しました: 静的レビューのみです（業務APIの実行なし）。結果は BLOCKER 0件、WARN 6件、INFO 7件です。
+									675 container 重大度別に警告と情報事項を整理中。
+										676 text 重大度別に警告と情報事項を整理中。
+										677 button (collapsed) 重大度別に警告と情報事項を整理中。, Secondary Actions: Expand
+									678 text 重大度別に警告と情報事項を整理中。
+									679 container
+										680 text 静的レビューのみです（業務APIの実行なし）。結果は BLOCKER 0件、WARN 6件、INFO 7件です。 次の点は前回の指摘への対策として妥当です。
+										681 content list
+											682 container
+												683 AXListMarker •
+												684 text 外向き同期を、変更IDが明示された通知に限定したこと
+											685 container
+												686 AXListMarker •
+												687 text 補完スクリプトの計画ハッシュ・対応表の再確認・両側の再取得・読戻しという多段の確認
+											688 container
+												689 AXListMarker •
+												690 text 定期実行を既定OFFにしたこと
+											691 container
+												692 AXListMarker •
+												693 text 調査の未完了を正常扱いしないこと
+											694 container
+												695 AXListMarker •
+												696 text 公開ログにIDや顧客項目を出さない設計
+										697 text WARN
+										698 table
+											699 row
+												700 cell
+													701 text ID
+												702 cell
+													703 text 箇所
+												704 cell
+													705 text 指摘
+												706 cell
+													707 text 対応案
+											708 row
+												709 cell
+													710 text W1
+												711 cell
+													712 text backfill：
+													713 text get_page
+													714 text  /
+													715 text update_page
+													716 text  の値の形
+												717 cell
+													718 text 「Notion側が空か」の判定と読戻しでの一致確認は、
+													719 text get_page
+													720 text  がプロパティ名から平たい値を返すことを前提にしています。
+													721 text ・生のページJSONを返す実装の場合、
+													722 text current.get(...)
+													723 text  は常に None になり、既存値があっても「空」と判定されます。dry-run の14件は実測と一致しても、この判定が正しく働いている証明にはなりません
+													724 text ・日付を
+													725 text {'start': ...}
+													726 text  の形で返す実装の場合、1件書き込んだ後に読戻しが不一致となり停止します
+												727 cell
+													728 text fake を使った単体テストで戻り値の形を固定してください。または dry-run で値そのものではなく値の型だけを出力し、想定どおりか確認してください。
+											729 row
+												730 cell
+													731 text W2
+												732 cell
+													733 text backfill → Notion通知 → 外向き同期
+												734 cell
+													735 text 補完による書込は、変更IDが明示された通知として届きます。自己書込の判定が補完スクリプトの書込を検出できない場合、そのままZohoへ外向き同期されます。その結果、field31 の漢字日付（project 8件）が外向き同期時の形式（ISOなど）に書き換わります。
+												736 cell
+													737 text 判定方式を確認してください。最終更新者のbot IDで判定しているなら同じトークンを使うため除外されますが、書込履歴の照合で判定している場合は検出されません。書き換わる場合は、許容するか事前に周知するかを決めてください。
+											738 row
+												739 cell
+													740 text W3
+												741 cell
+													742 text _normalize_fetched_page
+													743 text  の除外処理
+												744 cell
+													745 text 3項目の除外がプロパティ名だけで全DBに適用されます。他のDBにも「その他」「先方担当者」という名前の同期済み項目があると、それらの全項目同期まで止まります。
+												746 cell
+													747 text 除外の対象を（DB, プロパティ名）の組で指定してください。
+											748 row
+												749 cell
+													750 text W4
+												751 cell
+													752 text 同上：新規作成と項目IDの照合
+												753 cell
+													754 text 2点あります。
+													755 text ・page.created のように updated_properties がない通知では常に除外されます。このため、Notionで新規作成したレコードの3項目は、その項目を再度編集するまで外部へ反映されません。新規レコードには上書きの危険がないため、作成時の通知では含めてよいはずです
+													756 text ・通知の項目IDとページ側の項目IDの表記（URLエンコードの有無）がずれていると、常に全項目扱いとなり、3項目の外向き同期が事実上動きません。警告ログは約1時間で消えるため、気づけません
+												757 cell
+													758 text 作成時の通知は除外の対象外にしてください。実際の通知データで項目IDが一致するかを1回確認してください。
+											759 row
+												760 cell
+													761 text W5
+												762 cell
+													763 text workflow：タイムアウト時の通知
+												764 cell
+													765 text ジョブ単位の timeout-minutes で打ち切られると cancelled 扱いとなり、
+													766 text if: failure()
+													767 text  のステップは実行されません。この場合、未完了の通知が出ないまま点検が抜け落ちます。
+												768 cell
+													769 text 調査ステップ側に、ジョブより短い timeout-minutes を設定してください。通知ステップの条件は
+													770 text failure() || cancelled()
+													771 text  にしてください。
+											772 row
+												773 cell
+													774 text W6
+												775 cell
+													776 text workflow：定期実行の停止
+												777 cell
+													778 text 公開リポジトリの schedule は、60日間リポジトリに更新がないと自動で無効化されます。また、混雑時には実行が遅延したり欠落したりします。どちらの場合も通知は出ません。
+												779 cell
+													780 text 「月曜に週次DMが来ないこと自体を異常とみなす」旨を運用手順書に明記してください。または既存のGAS監視で最終実行時刻を確認してください。
+										781 text INFO
+										782 table
+											783 row
+												784 cell
+													785 text ID
+												786 cell
+													787 text 箇所
+												788 cell
+													789 text 指摘
+											790 row
+												791 cell
+													792 text I1
+												793 cell
+													794 text workflow → inventory
+												795 cell
+													796 text 前回レビューした inventory スクリプトには
+													797 text --quiet
+													798 text  引数がありません。追加済みか確認してください。また、
+													799 text --quiet
+													800 text  の場合でもDBごとの件数（総件数・未登録数）は公開ログに出ます。件数も事業情報とみなすなら、出力を抑止してください。
+											801 row
+												802 cell
+													803 text I2
+												804 cell
+													805 text 読み取り専用の担保
+												806 cell
+													807 text 次の方法でコードの外側から書込を不可能にできます。
+													808 text ・HUB_INVENTORY_NOTION_API_KEY は、「コンテンツの読み取り」権限だけを持つ専用のインテグレーションで発行する
+													809 text ・サービスアカウントにはシートの閲覧権限だけを付与する
+													810 text いずれも、同期エンジン用のトークンを流用しないことが前提です。
+											811 row
+												812 cell
+													813 text I3
+												814 cell
+													815 text workflow：失敗時の文言
+												816 cell
+													817 text 報告ステップの失敗（ラベル不足、Slack送信失敗など）でも「調査未完了」と通知され、原因を取り違えます。通知の文言を段階ごとに分けてください。
+											818 row
+												819 cell
+													820 text I4
+												821 cell
+													822 text workflow：Actions の固定方法
+												823 cell
+													824 text 公開リポジトリで Secrets を使うジョブのため、
+													825 text actions/*
+													826 text  はタグ指定ではなくコミットSHAでの固定を推奨します。
+											827 row
+												828 cell
+													829 text I5
+												830 cell
+													831 text backfill の変換処理
+												832 cell
+													833 text chain の変換（
+													834 text lambda v: v or None
+													835 text ）を同期用の変換表と重複して定義しています。同期用の変換表（
+													836 text ZOHO_LABEL_FIELD_MAPPINGS
+													837 text ）から参照し、定義のずれを防いでください。
+											838 row
+												839 cell
+													840 text I6
+												841 cell
+													842 text backfill と Webhook監視
+												843 cell
+													844 text 補完による書込は監査ログに記録されます。監視側の「監査ログを未着変更とみなす」問題（初回レビューのB1）が未修正の場合、補完の直後に「Notion受信」の要確認が出る可能性があります。
+											845 row
+												846 cell
+													847 text I7
+												848 cell
+													849 text 受信方向の残リスク
+												850 cell
+													851 text 今回の対策は外向き同期だけです。「Zoho空・Notion非空」の件数が0であることも確認済みかを確認してください。該当があると、Zoho側の編集時の受信処理でNotionの値が消えます。
+										852 text 補完スクリプトは W1 と W2 を確認してから実行することを推奨します。週次点検は、W5・W6 に対応してから有効化変数をONにしてください。
+								853

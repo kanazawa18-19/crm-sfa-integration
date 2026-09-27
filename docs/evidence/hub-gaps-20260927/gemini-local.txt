@@ -1,0 +1,75 @@
+heading Gemini の回答, Value: 6
+									4009 text Gemini の回答
+								4010 container model-response-message-contentr_bfff3958900431a3
+									4011 container
+										4012 text 主機 launchd 代替実行スクリプト（ run_local_sync_monitor.py  および  install_local_sync_monitor.py ）の静的コードレビュー結果をご報告します。
+									4013 container
+										4014 text キーチェーンからの認証情報取得、 fcntl  による排他制御、 --preview  時の状態・通知の非確定ロジックなど、セキュリティおよび状態破壊防止の観点は適切に実装されています。
+									4015 container
+										4016 text 一方で、週次全件点検（ inventory  ジョブ）を実行した際に必ず異常終了する致命的な問題（BLOCKER）が1点見つかりました。
+									4017 heading BLOCKER（即時修正が必要な致命的問題）, Value: 3
+										4018 text BLOCKER（即時修正が必要な致命的問題）
+									4019 heading 1. inventory_unmapped_hub_records.py 呼び出し時の未定義引数 --quiet による確定失敗, Value: 4
+										4020 text 1.
+										4021 text inventory_unmapped_hub_records.py
+										4022 text  呼び出し時の未定義引数
+										4023 text --quiet
+										4024 text  による確定失敗
+									4025 content list
+										4026 container
+											4027 text 対象コード :  scripts/run_local_sync_monitor.py  (L92)
+										4028 container
+											4029 text 問題内容 :
+ run_local_sync_monitor.py  の  inventory  ジョブ実行時、 subprocess.run  で  scripts/inventory_unmapped_hub_records.py  に  --quiet  オプションを渡して呼び出しています。
+しかし、 inventory_unmapped_hub_records.py  側の  ArgumentParser  には  --quiet  引数が定義されていません。そのため、 argparse  が  unrecognized arguments: --quiet （Exit Code 2）を返して即座にエラー終了し、週次の全件点検が毎回失敗します。
+										4030 container
+											4031 text 修正案 :
+ scripts/inventory_unmapped_hub_records.py  側の引数定義に  parser.add_argument('--quiet', action='store_true')  を追加するか、 run_local_sync_monitor.py  側の呼び出し配列から  '--quiet'  を削除してください。
+									4032 heading WARN（実行環境依存・エラー発生リスク）, Value: 3
+										4033 text WARN（実行環境依存・エラー発生リスク）
+									4034 heading 2. Node.js バイナリパスのハードコーディングによる FileNotFoundError リスク, Value: 4
+										4035 text 2. Node.js バイナリパスのハードコーディングによる
+										4036 text FileNotFoundError
+										4037 text  リスク
+									4038 content list
+										4039 container
+											4040 text 対象コード :  scripts/run_local_sync_monitor.py  ( health_plan  L47)
+										4041 container
+											4042 text 問題内容 :
+Node.js の実行パスが  str(Path.home() / '.nodebrew/current/bin/node')  と固定されています。
+主機環境において nodebrew 以外の環境（Homebrew の  /opt/homebrew/bin/node  や nvm、システム標準等）を使用している場合、 FileNotFoundError  が発生して毎時の  health  ジョブが失敗します。
+										4043 container
+											4044 text 修正案 :
+ shutil.which('node')  で PATH 上の  node  を動的に検索するか、 .nodebrew  のパスが存在しない場合のフォールバック処理を追加してください。
+									4045 heading 3. 直近6時間以上経過したデータが存在する場合の --preview 実行不可, Value: 4
+										4046 text 3. 直近6時間以上経過したデータが存在する場合の
+										4047 text --preview
+										4048 text  実行不可
+									4049 content list
+										4050 container
+											4051 text 対象コード :  scripts/run_local_sync_monitor.py  (L86-89)
+										4052 container
+											4053 text 問題内容 :
+ inventory_report()  内（ report_hub_inventory.py ）で、調査結果の  observed_at  が 6 時間以上前の場合に  ValueError('今回の調査結果ではありません')  を投げます。
+ --preview  実行時かつ前回の全件点検から6時間以上経過している場合、 if args.preview: raise RuntimeError('プレビューに必要な6DBの今回結果がありません')  により、新規スキャンを行わずにエラー終了します。
+										4054 container
+											4055 text 修正案 :
+プレビュー実行時にデータが古い場合のエラーメッセージを「直近6時間以内のスキャン結果が存在しません。全件点検を実行してください」など、次のアクションが分かりやすい内容に変更することを推奨します。
+									4056 heading INFO（仕様確認・セキュリティ評価）, Value: 3
+										4057 text INFO（仕様確認・セキュリティ評価）
+									4058 heading 4. 認証情報の非永続化・排他制御・launchd 設置の検証, Value: 4
+										4059 text 4. 認証情報の非永続化・排他制御・launchd 設置の検証
+									4060 content list
+										4061 container
+											4062 text 判定 :  要件を完全に満足
+										4063 container
+											4064 text 確認事項 :
+											4065 content list
+												4066 container
+													4067 text 認証情報 :  security find-generic-password  で macOS キーチェーンから実行時のみ読み出し、環境変数やファイルへ保存しない設計が徹底されています。
+												4068 container
+													4069 text 排他制御 :  fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  がファイルオープン直後のロックブロック内で正しく機能しており、二重実行が防がれています。
+												4070 container
+													4071 text プレビュー動作 :  --preview  実行時は Slack 通知（ send ）および状態保存（ save ）の双方が確実にスキップされます。
+												4072 container
+													4073 text launchd 設定 :  install_local_sync_monitor.py  で生成される plist に秘密値は含まれず、既存設定との不一致時に無断上書きしないガード（ RuntimeError ）が正しく機能しています。

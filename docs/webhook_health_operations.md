@@ -1,9 +1,9 @@
 # Webhook受信監視の運用
 
-GAS「CRM-SFA Webhook受信監視」が毎時、読み取り専用の診断APIを呼び、CRM専用Slack botから金沢さん本人のDMへ通知する。Vercelが止まってもGASから通知できる。業務レコード・通知購読は変更しない。
+2026-09-27現在、主機のlaunchdが毎時、読み取り専用の診断APIを呼び、CRM専用Slack botから金沢さん本人のDMへ通知する。Vercelが止まっても主機から通知できる。業務レコード・通知購読は変更しない。GAS版はコードと専用プロジェクトを用意した段階で、認証登録・OAuth同意・トリガー設置は未実施。
 
 ```
-GAS（毎時） → 診断API → 受信記録・実変更・Zoho購読
+主機（毎時） → 診断API → 受信記録・実変更・Zoho購読
    └───────────→ 本人のSlack DM
 ```
 
@@ -27,13 +27,26 @@ GAS（毎時） → 診断API → 受信記録・実変更・Zoho購読
 - **kintone受信**：対象アプリのWebhook設定・配信履歴を確認。CSV、一括REST操作、通知対象外のステータス変更でも更新日時は進むため停止とは断定しない。
 - **シート未確認**：既存の編集トリガーと配送先を確認。APIによるセル変更は編集トリガーを起動しない。`setupAll`を監視のためだけに実行しない。
 - **監視不能**：Vercelの稼働、専用トークン、外部API権限・通信を確認。秘密値やHTTP例外の原文はSlackに貼らない。
-- **日次報告が来ない**：GASの実行履歴、トリガー、Slack認証、失敗通知メールを確認。GAS自体・Slack停止をこの監視単独では通知できない。
+- **日次報告が来ない**：主機の電源・スリープ・ログイン状態、launchdログ、Slack認証を確認。主機自体・Slack停止をこの監視単独では通知できない。
 
 ## 限界
 
 受信はツール全体の集計。一部のNotion DBやkintoneアプリだけ止まり他が動くケース、同期処理の成否、Zoho/シートの変更後未着は保証しない。Notionの監査ログはNotionへの成功した実変更だけを記録する。システム自身の更新も含む。Notion最新ページ照会は1ページ/DBで、削除イベントだけの欠落は検出できない。kintoneは通知されない操作と障害を機械的に区別できない。
 
-## 設置・確認
+## 現在の主機運用
+
+主機 `/Users/cnctor/crm-sfa-integration` のみ設置。サブ機に重ねて設置しない。再起動後はログインするまで実行されず、スリープ・電源断中も止まる。
+
+- `scripts/install_local_sync_monitor.py` は既定で設定を表示し、`--apply` で登録する。秘密値はplistに入れない。
+- `jp.cnctor.crm-sfa.health`：毎時。`scripts/run_local_sync_monitor.py health --preview` で無送信確認、`--status` で最終成功を見る。
+- `jp.cnctor.crm-sfa.inventory`：月曜06:17（MacのJST設定）。週次の全6DB照合。実行上限165分。詳細は `docs/hub_inventory_and_gaps.md`。
+- 認証：監視API・Slackは既存macOSキーチェーン。全件照合は既存 `config/.env` を利用（gitignore・0600確認済み）。同期用トークンは書込権限を持つが、このスクリプトは読み取りだけ。追加のクラウド配布なし。
+- 状態：`~/Library/Application Support/crm-sfa-integration/`。Slack受理後に原子的に確定。ログ：`~/Library/Logs/crm-sfa-integration/`。同じ実行失敗のDMは24時間に1回。
+- 2026-09-27 19:31 JST、実際のlaunchd起動→キーチェーン取得→診断→本人DM受理→last_success更新を確認。所要8.5秒。手元の直接実行だけを成功根拠にしていない。
+- 停止：`launchctl bootout gui/$(id -u)/jp.cnctor.crm-sfa.health`（週次は末尾inventory）。永続停止は対応plistもLaunchAgents外へ退避する。
+- GASへ移すときは、先に主機healthを停止する。週次をActionsへ移す場合も主機inventoryを停止し、二重稼働させない。
+
+## GAS版の準備（未稼働）
 
 専用GAS ID: `1HviGFC-BG2LWys26QDxmNYBla-rZcfRIQa_l2_Nk0sbFqS91m2r_rI4d`。コードは `gas/webhook-health/`。認証情報はGASのスクリプトプロパティ（ソースに埋め込まない）。必要キーは `WEBHOOK_HEALTH_TOKEN`、`SLACK_BOT_TOKEN`、`SLACK_DM_CHANNEL`（本人DM）。Vercel productionには同じ監視専用トークンを置く。業務APIの認証とは分離。
 

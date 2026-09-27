@@ -1,0 +1,47 @@
+name: 未連携レコード週次点検
+
+# 主機から移管する場合の準備用。認証配布は未承認、現在の稼働先は主機launchd。
+on:
+  schedule:
+    - cron: '17 21 * * 0' # 月曜06:17 JST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: hub-inventory
+  cancel-in-progress: false
+jobs:
+  inventory:
+    # 認証情報の設置と初回確認が済むまで、定期実行を開始しない。
+    if: vars.HUB_INVENTORY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 6DBと対応表・シートを読み取り専用で照合
+        timeout-minutes: 165
+        env:
+          NOTION_API_KEY: ${{ secrets.HUB_INVENTORY_NOTION_API_KEY }}
+          SYNC_ID_MAPPING_NOTION_API_KEY: ${{ secrets.HUB_INVENTORY_NOTION_API_KEY }}
+          SPREADSHEET_ID: ${{ secrets.HUB_INVENTORY_SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.HUB_INVENTORY_GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python scripts/inventory_unmapped_hub_records.py --quiet --output-dir migration_output/hub_inventory
+      - name: 本人DMへ集計と最新の要確認ページを通知
+        if: success()
+        env:
+          HUB_INVENTORY_SLACK_BOT_TOKEN: ${{ secrets.HUB_INVENTORY_SLACK_BOT_TOKEN }}
+          HUB_INVENTORY_SLACK_DM_CHANNEL: ${{ secrets.HUB_INVENTORY_SLACK_DM_CHANNEL }}
+        run: python scripts/report_hub_inventory.py --send
+      - name: 未完了を正常扱いせず本人へ通知
+        if: failure() || cancelled()
+        env:
+          HUB_INVENTORY_SLACK_BOT_TOKEN: ${{ secrets.HUB_INVENTORY_SLACK_BOT_TOKEN }}
+          HUB_INVENTORY_SLACK_DM_CHANNEL: ${{ secrets.HUB_INVENTORY_SLACK_DM_CHANNEL }}
+        run: python scripts/report_hub_inventory.py --failed --send
+# 公開リポジトリのため、ページID・顧客項目をログやartifactに保存しない。

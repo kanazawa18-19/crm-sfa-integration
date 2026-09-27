@@ -1,0 +1,122 @@
+heading Gemini の回答, Value: 6
+									1494 text Gemini の回答
+								1495 container model-response-message-contentr_50f1d713ef0e4501
+									1496 container
+										1497 text CRM-SFA追加変更および未登録調査用CLIスクリプト（ inventory_unmapped_hub_records.py ）の静的コードレビュー結果をご報告します。
+									1498 text 今回追加された3項目のフィールド変換（kintone先方担当者、Zoho次回アクション日、Zoho chainその他）は要件通り適切に実装・テストされています。CLIスクリプトについても業務APIへの書き込み処理は一切なく、完全なRead-Only（読取専用）となっていることを確認しました。
+									1499 text 一方で、未登録一覧を調査するCLIスクリプト側に結果の誤判定（未検知・誤報）や実行時クラッシュにつながる重大な問題（BLOCKER）が見つかりました。
+									1500 heading BLOCKER（即時修正が必要な致命的問題）, Value: 3
+										1501 text BLOCKER（即時修正が必要な致命的問題）
+									1502 heading 1. classify でシートの同期キーが空の行を「同期済み（ mapped ）」と誤判定する, Value: 4
+										1503 text 1.
+										1504 text classify
+										1505 text  でシートの同期キーが空の行を「同期済み（
+										1506 text mapped
+										1507 text ）」と誤判定する
+									1508 content list
+										1509 container
+											1510 text 対象コード :  scripts/inventory_unmapped_hub_records.py  ( classify  関数 L46)
+										1511 container
+											1512 text 問題内容 :
+ classify  内の条件判定で、 mapping = by_row.get(row['row']) （行番号での過去のマッピング）が存在する場合、シート上の「同期キー」列の値（ key ）が空文字（ key == '' ）であっても  elif mapping:  に合致して  kind = 'mapped'  と判定されてしまいます。
+シート上の同期キーが誤って消去されていたり未入力であっても、過去の行番号マッピングさえ残っていれば「正常に同期完了」と扱われ、未登録・不整合の調査対象から完全に漏れ出します（未検知）。
+										1513 container
+											1514 text 修正案 :
+ key  が空の場合は  mapping  の有無にかかわらず  unmapped  または  missing_sync_key  として分類されるよう、条件判定の順序を見直してください。
+									1515 heading 2. ID対応表（NotionIdMapping）の辞書キー名不一致による KeyError クラッシュ, Value: 4
+										1516 text 2. ID対応表（NotionIdMapping）の辞書キー名不一致による
+										1517 text KeyError
+										1518 text  クラッシュ
+									1519 content list
+										1520 container
+											1521 text 対象コード :  scripts/inventory_unmapped_hub_records.py  ( classify  関数 L37, L45)
+										1522 container
+											1523 text 問題内容 :
+ NotionIdMapping  データクラス（および  asdict(m) ）の実際のフィールド名は  notion_page_id  ですが、コード内では  m['notion_key']  を参照しています。
+実行時に  mapped = {norm(m['notion_key']): m for m in mappings}  の箇所で即座に  KeyError: 'notion_key'  が発生し、スクリプトがクラッシュ中断します。
+										1524 container
+											1525 text 修正案 :
+ m['notion_key']  を  m['notion_page_id']  に修正してください。
+									1526 heading 3. スプレッドシートに「同期キー」列が存在しない場合に静かに全行誤判定, Value: 4
+										1527 text 3. スプレッドシートに「同期キー」列が存在しない場合に静かに全行誤判定
+									1528 content list
+										1529 container
+											1530 text 対象コード :  scripts/inventory_unmapped_hub_records.py  ( fetch_rows  関数 L76-78)
+										1531 container
+											1532 text 問題内容 :
+取得したヘッダーに「同期キー」列が存在しない場合、 key_index = None  となり例外が発生しません。そのまま後続処理が進むため、全行で  key = ''  と評価され、全データが空キーとして処理されて大量の誤判定が発生します。
+										1533 container
+											1534 text 修正案 :
+ '同期キー' not in headers  の場合は  raise RuntimeError('シートに「同期キー」列が存在しません')  を投げて即座に検知・停止させてください。
+									1535 heading 4. fetch_pages でのレスポンス削減による query_all_with_keyset のクラッシュリスク, Value: 4
+										1536 text 4.
+										1537 text fetch_pages
+										1538 text  でのレスポンス削減による
+										1539 text query_all_with_keyset
+										1540 text  のクラッシュリスク
+									1541 content list
+										1542 container
+											1543 text 対象コード :  scripts/inventory_unmapped_hub_records.py  ( fetch_pages  内  post  関数 L62)
+										1544 container
+											1545 text 問題内容 :
+ post  内で Notion API のレスポンスを  result['results'] = [{k: p[k] for k in ('id', 'created_time', 'last_edited_time')} ...]  と削り落としています。
+1万件上限回避と境界重複処理を担当する  query_all_with_keyset  の内部で、ページオブジェクトの他のフィールド（ object  や  properties  等）を参照している場合、 KeyError  が発生して 1 万件を超える DB の読み取りが失敗します。
+										1546 container
+											1547 text 修正案 :
+ post  関数内ではレスポンス構造を改変せずにそのまま返し、全件取得完了後に  classify  へ渡す段階で必要なフィールドのみを抽出してください。
+									1548 heading WARN（誤判定・エッジケースの同期漏れリスク）, Value: 3
+										1549 text WARN（誤判定・エッジケースの同期漏れリスク）
+									1550 heading 5. _next_action_date で 1 桁月日のハイフン表記（ 2026-9-1 ）が弾かれる, Value: 4
+										1551 text 5.
+										1552 text _next_action_date
+										1553 text  で 1 桁月日のハイフン表記（
+										1554 text 2026-9-1
+										1555 text ）が弾かれる
+									1556 content list
+										1557 container
+											1558 text 対象コード :  src/sync_engine/webhook_handlers/zoho_field_transforms.py  ( _next_action_date  L194)
+										1559 container
+											1560 text 問題内容 :
+ハイフン形式の正規表現が  r"(\d{4})-(\d{2})-(\d{2})" （2桁固定）となっています。スラッシュ形式や漢字形式（ \d{1,2} ）と異なり、 2026-9-1  や  2026-09-1  と入力された場合に正規表現にマッチせず  SKIP_FIELD  となり、更新がスキップされます。
+										1561 container
+											1562 text 修正案 :
+ハイフン形式も  r"(\d{4})-(\d{1,2})-(\d{1,2})"  に変更してください。
+									1563 heading 6. 対象シート名がスプレッドシートに存在しない場合の例外隠蔽, Value: 4
+										1564 text 6. 対象シート名がスプレッドシートに存在しない場合の例外隠蔽
+									1565 content list
+										1566 container
+											1567 text 対象コード :  scripts/inventory_unmapped_hub_records.py  ( fetch_rows  関数 L68)
+										1568 container
+											1569 text 問題内容 :
+ ALL_SCHEMAS  に定義された  spreadsheet_sheet_name  がスプレッドシート側に存在しない場合、 next(...)  が  StopIteration  例外を投げます。スクリプト末尾の例外処理により  調査中断: StopIteration  とだけ表示され、どのシートが見つからないのか原因特定が困難になります。
+										1570 container
+											1571 text 修正案 :
+ next((x for ...), None)  で受けて  None  の場合に「シート 'xxx' が見つかりません」と明示的なエラーを投げるようにしてください。
+									1572 heading 7. Notion API filter_properties パラメータの記述, Value: 4
+										1573 text 7. Notion API
+										1574 text filter_properties
+										1575 text  パラメータの記述
+									1576 content list
+										1577 container
+											1578 text 対象コード :  scripts/inventory_unmapped_hub_records.py  ( fetch_pages  内 L55)
+										1579 container
+											1580 text 問題内容 :
+Notion API の  filter_properties  クエリパラメータはプロパティ ID を受け取る仕様のため、文字列  'title'  を直接指定しても無視されるか、意図したペイロード削減にならない可能性があります。
+									1581 heading INFO（仕様確認・実装評価）, Value: 3
+										1582 text INFO（仕様確認・実装評価）
+									1583 heading 8. 業務API書き込みなし（Read-only CLI）の検証, Value: 4
+										1584 text 8. 業務API書き込みなし（Read-only CLI）の検証
+									1585 content list
+										1586 container
+											1587 text 判定 :  要件（Read-only CLI）を完全に満足
+										1588 container
+											1589 text 確認事項 :
+ inventory_unmapped_hub_records.py  は Notion API の query (POST) と Sheets API の GET ( /values )、および ID マッピングの参照 ( list_by_db ) のみを行っており、業務 API や DB への書き込み（INSERT / UPDATE / DELETE）処理は一切含まれていないことを確認しました。
+									1590 heading 9. フィールド追加とテストの網羅性, Value: 4
+										1591 text 9. フィールド追加とテストの網羅性
+									1592 content list
+										1593 container
+											1594 text 判定 :  適切に実装・テスト済み
+										1595 container
+											1596 text 確認事項 :
+kintone（ toPerson ）、Zoho（ 次回アクション日 、 その他 ）の 3 項目について、 known_sync_gaps.py  からの定義削除、変換ロジック、および outbound マッピングが整合しており、 test_prioritized_sync_gaps.py  でのテストも網羅されています。
