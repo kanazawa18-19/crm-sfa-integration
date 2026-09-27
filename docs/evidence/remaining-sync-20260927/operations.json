@@ -28,5 +28,29 @@
     "coql": "current OAuth scope does not permit SELECT; do not treat as no matches",
     "fallback": "regular GET records list with fields=id,Name; bounded and fail closed"
   },
-  "slack_rotation": "本人指定で全機能完成後まで延期。今回失効・交換していない"
+  "slack_rotation": "本人指定で全機能完成後まで延期。今回失効・交換していない",
+  "sheet_gas": {
+    "project": "1EIy9N7_EEShVF67ettthBN7YFnW7PHDSrmYjVQsQjLCecqj_U2sZuKQZ",
+    "source_full_readback_match": [
+      "payloadUtils.js",
+      "onEdit.js",
+      "tabDefinitions.js",
+      "registerNewRow.js"
+    ],
+    "installed_edit_triggers": 1,
+    "menu_visible": true,
+    "on_open_completed": true,
+    "setup_all_not_run": true
+  },
+  "hub_creation": {
+    "enabled_since": "2026-09-27T13:16:47+00:00",
+    "production_env_saved": true,
+    "local_env_saved": true,
+    "migration_applied": "20260928000000_add_hub_creation_attempt",
+    "real_external_creates_tested": false,
+    "activation_deployment": "dpl_gcRoBHpykcLRPjh3bdGm3kYL7SQH",
+    "activation_deployment_status": "Ready",
+    "production_env_readback_match": true,
+    "weekly_pending_preview_count": 0
+  }
 }

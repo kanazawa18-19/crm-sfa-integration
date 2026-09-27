@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-27T13:20:42.376085+00:00",
+  "elapsed_ms": 5553,
+  "checks": [
+    {
+      "key": "receipt_store",
+      "status": "ok",
+      "reason": "受信記録を取得しました"
+    },
+    {
+      "key": "notion_delivery",
+      "status": "ok",
+      "reason": "受信記録あり・最終受信後の変更は未検出",
+      "last_received_at": "2026-09-27T13:15:14.394000+00:00",
+      "activity_at": null
+    },
+    {
+      "key": "kintone_delivery",
+      "status": "ok",
+      "reason": "受信記録あり・最終受信後の変更は未検出",
+      "last_received_at": "2026-09-27T07:33:17.269000+00:00",
+      "activity_at": null
+    },
+    {
+      "key": "zoho_subscription",
+      "status": "ok",
+      "reason": "6モジュールの購読・通知先・期限を確認",
+      "expires_at": "2026-09-28T09:00:05+00:00"
+    },
+    {
+      "key": "zoho_delivery",
+      "status": "ok",
+      "reason": "受信記録あり・変更有無は未確認です",
+      "last_received_at": "2026-09-27T09:01:57.641000+00:00",
+      "activity_at": null
+    },
+    {
+      "key": "spreadsheet_delivery",
+      "status": "ok",
+      "reason": "受信記録あり・変更有無は未確認です",
+      "last_received_at": "2026-09-27T13:14:14.305000+00:00",
+      "activity_at": null
+    }
+  ]
+}

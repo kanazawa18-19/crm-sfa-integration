@@ -1,0 +1,32 @@
+{
+  "title": "CRM同期確認_20260927",
+  "phase": "cleaned",
+  "db_key": "chain",
+  "sheet": "チェーン",
+  "page_id": "3e8d8ea8-d4f3-8101-b716-d667cf97b04b",
+  "row": 225,
+  "mapping_temporarily_archived": false,
+  "memo_test": {
+    "notion_api_version": "2022-06-28",
+    "empty_page_top": true,
+    "existing_body_preserved": true,
+    "idempotent_same_block": true,
+    "category_order": true,
+    "external_mapping_disabled": true
+  },
+  "delivery": {
+    "gas_started_jst": "2026-09-27T22:14:06+09:00",
+    "gas_duration_seconds": 8.103,
+    "gas_status": "完了",
+    "sheet_value": "配送確認_20260927_実編集",
+    "notion_value": "配送確認_20260927_実編集",
+    "external_mapping_count": 0,
+    "trigger_count": 1
+  },
+  "cleanup": {
+    "sheet_test_row_cleared": true,
+    "following_rows_not_shifted": true,
+    "mapping_archived": true,
+    "notion_page_archived": true
+  }
+}
