@@ -116,6 +116,19 @@ def test_load_env_forces_notion_mapping_backend_and_no_writes_in_dry_run(env_fil
     assert "SPREADSHEET_ROW_CREATION_ENABLED" not in os.environ
 
 
+def test_load_env_parses_quoted_timestamp_and_keeps_shell_value(env_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    monkeypatch.setenv("HUB_CREATION_ENABLED_SINCE", "")
+    monkeypatch.delenv("HUB_CREATION_ENABLED_SINCE")
+    monkeypatch.setenv("NOTION_API_KEY", "shell-value")
+    with env_file.open("a") as stream:
+        stream.write("HUB_CREATION_ENABLED_SINCE='2026-09-27T13:16:47+00:00'\n")
+    mod.load_env(apply=False, env_path=env_file)
+    assert datetime.fromisoformat(os.environ["HUB_CREATION_ENABLED_SINCE"]).year == 2026
+    assert os.environ["NOTION_API_KEY"] == "shell-value"
+
+
 def test_load_env_apply_requires_database_url(env_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import os
 

@@ -1,0 +1,31 @@
+heading "Gemini の回答" [level=6]
+  - paragraph: そちらは私のプログラミングデザインに含まれておらず、お手伝いできません。テキスト生成であれば、お手伝いできます。
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+- generic: Evaluating Dotenv Implementation
+- generic: 音声入力 (⌘⇧D)

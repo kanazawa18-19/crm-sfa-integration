@@ -24,7 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Call email-reminder-check endpoint
+        env:
+          REMINDER_CRON_SECRET: ${{ secrets.EMAIL_REMINDER_CRON_SECRET }}
         run: |
-          curl -f -sS \
-            -H "Authorization: Bearer ${{ secrets.EMAIL_REMINDER_CRON_SECRET }}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          curl -f -sS --max-time 330 \
+            -H "Authorization: Bearer $REMINDER_CRON_SECRET" \
+            -o "$response_file" \
             "https://crm-sfa-integration.vercel.app/api/cron/email-reminder-check"
+          # HTTP 200でも個別配送が失敗した場合は、実行失敗として残す。再送はしない。
+          jq -e '(.disabled == 1) or ((.failed | type) == "number" and .failed == 0)' "$response_file" >/dev/null

@@ -184,12 +184,10 @@ def load_env(apply: bool, env_path: Path | None = None) -> None:
     if not env_path.exists():
         print(f"エラー: {env_path} がありません（認証情報の置き場所）", file=sys.stderr)
         raise SystemExit(2)
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"'))
+    from dotenv import load_dotenv
+
+    # 単一引用符で囲まれた開始日時も、通常起動と同じ形式で読む。
+    load_dotenv(env_path, override=False)
     missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
     if missing:
         print(f"エラー: 環境変数が足りません: {', '.join(missing)}", file=sys.stderr)

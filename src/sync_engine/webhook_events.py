@@ -95,6 +95,9 @@ def release_event(event_id: str) -> None:
 def purge_old_events(days: int = RETENTION_DAYS) -> int:
     """古いイベント記録を消す。消した件数を返す（日次バッチから呼ぶ）。"""
     with _connect() as conn, conn.cursor() as cur:
+        # 掃除のロック待ちで後続の日報を止めない。設定はこの取引内だけに限定する。
+        cur.execute("SET LOCAL lock_timeout = '2s'")
+        cur.execute("SET LOCAL statement_timeout = '10s'")
         cur.execute(
             'DELETE FROM "WebhookEvent" WHERE "receivedAt" < now() - make_interval(days => %s)',
             (days,),

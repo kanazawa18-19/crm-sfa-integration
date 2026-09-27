@@ -62,14 +62,17 @@ def run_daily_batch() -> dict[str, Any]:
 
     あわせて、Webhookの再送を弾くためのイベントID記録を掃除する
     （`src/sync_engine/webhook_events.py`。溜め続けないため、2026-09-01）。
+    掃除を先に行い、日報の時間切れでも保持期限を守る。
     掃除に失敗しても日報の配信は止めない。
     """
-    result = run_report_batch()
+    cleanup_result: dict[str, Any] = {}
     try:
-        result = {**result, "purged_webhook_events": purge_old_events()}
-    except Exception:  # noqa: BLE001 (掃除の失敗で日報を止めない)
-        logger.warning("Webhookイベント記録の掃除に失敗しました", exc_info=True)
-    return result
+        deleted = purge_old_events()
+        cleanup_result["purged_webhook_events"] = deleted
+        logger.info("Webhookイベント記録の掃除完了: deleted=%d", deleted)
+    except Exception as exc:  # noqa: BLE001 (掃除の失敗で日報を止めない)
+        logger.warning("Webhookイベント記録の掃除に失敗しました: %s", type(exc).__name__)
+    return {**run_report_batch(), **cleanup_result}
 
 
 @router.get("/api/cron/token-encryption-healthcheck", dependencies=[Depends(verify_cron_secret)])

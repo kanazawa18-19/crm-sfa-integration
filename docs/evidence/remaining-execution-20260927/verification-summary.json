@@ -1,0 +1,15 @@
+{
+  "python_passed": 3659,
+  "python_skipped": 12,
+  "workflow_cases_passed": 8,
+  "recovered_kintone": 4,
+  "sheet_key_matches": 4,
+  "memo_pages": 5,
+  "memo_body_preserved": 5,
+  "pending_relations": 588,
+  "pending_source_records": 558,
+  "facility_multiple_candidates": 26,
+  "claude_review": "completed",
+  "gemini_initial": "completed",
+  "gemini_followups": "declined"
+}
