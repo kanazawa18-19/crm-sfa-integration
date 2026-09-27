@@ -1,0 +1,248 @@
+  - heading "Gemini の回答" [level=6]
+  - paragraph: 今回の実装変更に関する独立コードレビュー結果をお報告します。
+  - heading "【BLOCKER】重大バグ（即時修正が必要）" [level=3]
+  - heading "1. _apply_pair における Notion PATCH リクエスト構造の不備" [level=4]:
+    - text: "1."
+    - code: _apply_pair
+    - text: における Notion PATCH リクエスト構造の不備
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: src/sync_engine/won_product_link.py
+      - text: (
+      - code: WonProductLinker._apply_pair
+      - text: )
+    - paragraph:
+      - text: "問題:"
+      - code: "self._clients['client_master'].update_page(client_id, {'サービス・商品': inverse})"
+      - text: において、
+      - code: inverse
+      - text: （
+      - code: list[str]
+      - text: 、UUID文字列のリスト）を直接プロパティ値として渡しています。Notion API (PATCH
+      - code: "/v1/pages/{page_id}"
+      - text: ) の Relation プロパティ更新仕様では、
+      - code: "{\"サービス・商品\": {\"relation\": [{\"id\": id1}, {\"id\": id2}]}}"
+      - text: というオブジェクト構造が必須です。
+    - paragraph:
+      - text: "影響: Notion API が"
+      - code: 400 Bad Request
+      - text: （
+      - code: invalid_json
+      - text: または
+      - code: validation_error
+      - text: ）を返し、取引先への商品追加処理が 100% 失敗します。
+    - paragraph: "対策: Notion API 形式に合わせた辞書の配列へ変換して渡してください。"
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: "self._clients['client_master'].update_page( client_id, {'サービス・商品': [{'id': pid} for pid in inverse]} )"
+  - heading "2. Notion更新失敗・反映遅延時における配送義務 (Delivery) の誤配送と削除による永久配信漏れ" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: src/sync_engine/won_product_link.py
+      - text: (
+      - code: WonProductLinker._apply_pair
+      - text: および
+      - code: __call__
+      - text: )
+    - paragraph: "問題:"
+    - list:
+      - paragraph:
+        - code: _apply_pair
+        - text: では Notion PATCH 前に
+        - code: require_delivery
+        - text: を発行して DB に配送義務を登録します。
+      - paragraph:
+        - text: その後、Notion PATCH が失敗した場合や
+        - code: INVERSE_NOT_VISIBLE
+        - text: 例外が発生して
+        - code: _apply_pair
+        - text: が中断されても、
+        - code: __call__
+        - text: は後半の
+        - code: deliveries
+        - text: ループを無条件に実行します。
+      - paragraph:
+        - code: _deliver
+        - text: はその時点の Notion データ（未更新の旧データ）を取得し、そのままスプレッドシート等へ配信した上で
+        - code: finish_delivery
+        - text: （DBから削除）を実行します。
+    - paragraph: "影響: Notion 側への反映が完了していない旧データのままスプレッドシートに書き込まれ、配送完了としてレコードが削除されます。次回リトライで Notion への反映が成功した時には配送義務が消滅しているため、スプレッドシートへ新データが永久に反映されないサイレント不整合（配信漏れ） が発生します。"
+    - paragraph: "対策:"
+    - list:
+      - paragraph:
+        - text: 当該ペアの Notion 側の反映・完了が確認（
+        - code: finish_pair
+        - text: 完了）されるまで、該当する
+        - code: Delivery
+        - text: を配送対象にしない構造に変更してください。
+      - paragraph:
+        - text: または、
+        - code: _apply_pair
+        - text: でエラー（未完了）が発生した場合は、その回の
+        - code: deliveries
+        - text: 処理をスキップしてください。
+  - heading "3. Notion 2ウェイ（双方向）関連の非同期反映ラグによる INVERSE_NOT_VISIBLE の確定発生" [level=4]:
+    - text: 3. Notion 2ウェイ（双方向）関連の非同期反映ラグによる
+    - code: INVERSE_NOT_VISIBLE
+    - text: の確定発生
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: src/sync_engine/won_product_link.py
+      - text: (
+      - code: WonProductLinker._apply_pair
+      - text: )
+    - paragraph:
+      - text: "問題:"
+      - code: client_master
+      - text: （取引先）を PATCH した直後に
+      - code: _page('product', product_id)
+      - text: を呼び出し、逆側の商品に
+      - code: client_id
+      - text: が含まれているかを
+      - code: issubset
+      - text: で確認しています。Notion サーバー内部での双方向関連の自動更新にはわずかな非同期伝播ラグがあるため、PATCH 直後の GET では高い確率で逆側の反映が間に合わず、
+      - code: INVERSE_NOT_VISIBLE
+      - text: 例外がスローされます。
+    - paragraph: "影響: 正常に更新が行われていても初回の処理でほぼ確実に失敗扱い（リトライ）となり、BLOCKER 2 の問題と組み合わさって誤配送を引き起こします。"
+    - paragraph: "対策: PATCH 直後の逆側可視性チェックで即時エラーにせず、短いリトライ（指数バックオフ付き数回のポーリング）を行うか、配送フェーズで実際の最新値を確認・伝播する設計に寄せてください。"
+  - heading "【WARN】改善が必要な項目" [level=3]
+  - heading "1. Queue の pending() SQL における evaluationHeld / held 条件判定の優先順位ミス" [level=4]:
+    - text: 1. Queue の
+    - code: pending()
+    - text: SQL における
+    - code: evaluationHeld
+    - text: /
+    - code: held
+    - text: 条件判定の優先順位ミス
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: src/sync_engine/won_product_link_queue.py
+      - text: (
+      - code: ProjectProductLinkQueue.pending
+      - text: )
+    - paragraph:
+      - text: "問題: SQL の"
+      - code: WHERE
+      - text: 条件において、
+      - code: OR EXISTS (SELECT 1 FROM ... Pair WHERE state='pending')
+      - text: などの
+      - code: OR
+      - text: 条件が
+      - code: NOT t."evaluationHeld"
+      - text: や
+      - code: held
+      - text: ガードの
+      - code: AND
+      - text: 条件と同列（または優先）になっています。
+    - generic: SQL
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: WHERE t."nextAttemptAt"<=NOW() AND ( NOT t."evaluationHeld" AND NOT EXISTS (SELECT 1 FROM ... Pair WHERE state='held') ... OR EXISTS (SELECT 1 FROM ... Pair WHERE state='pending') OR EXISTS (SELECT 1 FROM ... Delivery WHERE state='pending') )
+    - paragraph:
+      - text: "影響:"
+      - code: evaluationHeld = True
+      - text: （恒久エラー等で評価保留中）のタスクであっても、他に
+      - code: pending
+      - text: な Pair または Delivery が1件でも存在すると
+      - code: pending()
+      - text: に抽出され、手動
+      - code: resume()
+      - text: を待たずに cron 再処理で実行されてしまいます。
+    - paragraph:
+      - text: "対策: カッコの優先順位を修正し、"
+      - code: NOT t."evaluationHeld"
+      - text: を全体にかかる必須条件にしてください。
+    - generic: SQL
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: WHERE t."nextAttemptAt" <= NOW() AND NOT t."evaluationHeld" AND ( (NOT EXISTS (SELECT 1 FROM "ProjectProductLinkPair" WHERE "projectId"=t."projectId" AND state='held') AND NOT EXISTS (SELECT 1 FROM "ProjectProductLinkDelivery" WHERE "projectId"=t."projectId" AND state='held')) OR EXISTS (SELECT 1 FROM "ProjectProductLinkPair" WHERE "projectId"=t."projectId" AND state='pending') OR EXISTS (SELECT 1 FROM "ProjectProductLinkDelivery" WHERE "projectId"=t."projectId" AND state='pending') )
+  - heading "2. Cron エンドポイントでの一時的エラーによる HTTP 500 返却と誤アラート" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: src/api/routes/cron.py
+      - text: (
+      - code: run_project_product_links
+      - text: )
+    - paragraph:
+      - text: "問題:"
+      - code: result["failed"] > 0
+      - text: の場合に
+      - code: HTTPException(status_code=500)
+      - text: を送出しています。
+    - paragraph:
+      - text: "影響:"
+      - code: RecordSyncBusy
+      - text: （ロック競合）や Notion API の一時的なネットワークエラー・レートリミットなど、バックオフ再試行で回復する一次的エラーであっても Cron 実行が HTTP 500 となり、Vercel ログや外部監視で不要な障害アラートが多発します。
+    - paragraph:
+      - text: "対策: 一時的なエラーによる失敗数はレスポンス JSON（"
+      - code: 200 OK
+      - text: ）に含めて返し、500 エラーにするのは致命的なシステム例外時のみに絞ることを推奨します。
+  - heading "【INFO】設計・運用に関する参考事項" [level=3]
+  - 'heading "1. Prisma スキーマの onDelete: Cascade 設定について" [level=4]':
+    - text: 1. Prisma スキーマの
+    - code: "onDelete: Cascade"
+    - text: 設定について
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: dashboard/prisma/schema.prisma
+    - paragraph:
+      - text: "確認結果:"
+      - code: ProjectProductLinkTask
+      - text: に対し、Pair と Delivery に
+      - code: "onDelete: Cascade"
+      - text: が設定されています。アプリコード側の
+      - code: complete
+      - text: メソッドでは Delivery の残留を SQL でチェックしているため正常系での問題はありませんが、運用時の DB 手動操作や他処理から
+      - code: Task
+      - text: レコードを直接 DELETE した場合、未処理の配送義務（
+      - code: Delivery
+      - text: ）も物理削除されます。
+  - heading "2. 件数・時間上限 ( pair_limit , delivery_limit , time_budget ) と状態保持" [level=4]:
+    - text: 2. 件数・時間上限 (
+    - code: pair_limit
+    - text: ","
+    - code: delivery_limit
+    - text: ","
+    - code: time_budget
+    - text: ) と状態保持
+  - list:
+    - paragraph:
+      - text: "対象コード:"
+      - code: src/sync_engine/won_product_link.py
+    - paragraph:
+      - text: "確認結果:"
+      - code: time_budget
+      - text: （20秒）超過によりループを
+      - code: break
+      - text: した場合、
+      - code: errors
+      - text: が空であっても
+      - code: complete()
+      - text: 内の SQL（
+      - code: NOT EXISTS (state <> 'done')
+      - text: /
+      - code: NOT EXISTS (Delivery)
+      - text: ）によってタスク削除が阻止されるため、未完了データは次回 cron へ安全に持ち越されます。
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz

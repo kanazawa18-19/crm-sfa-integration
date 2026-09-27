@@ -1,0 +1,36 @@
+{
+  "won-review-v2.txt": {
+    "bytes": 43861,
+    "sha256": "a28abbc8ef492d9c37584a184b8db5accf6c4e921eaaaaa96f53f8cdf774ad02"
+  },
+  "won-review-final.txt": {
+    "bytes": 36701,
+    "sha256": "786c2ebf6d47fef36e07228bb13f9ebadbf9dc22dfa685b66aa6720f076bf989"
+  },
+  "reviewers": {
+    "Claude": {
+      "url": "https://claude.ai/chat/03cd160c-e6e6-4bbd-8547-9475a47e88a4",
+      "model": "Opus 5.5 中",
+      "method": "貼付けで自動生成されたpasted添付。プレビュー全文を空白正規化して照合。短文依頼も照合して送信。"
+    },
+    "Gemini": {
+      "url": "https://gemini.google.com/app/3c73216e34245fc3?hl=ja",
+      "model": "思考モード",
+      "method": "ブラウザ入力。全文を空白正規化して照合。追補のfillはtimeoutしたが、読戻し一致後に送信。"
+    }
+  },
+  "data_check": "依頼・製品コード・差分のみ。鍵パターン検査済み。回答CSV/顧客値/健康情報は含めない。",
+  "won-review-last.txt": {
+    "bytes": 3331,
+    "sha256": "90e908fcca1926c8d62442a3a10507c25631dfd52f7ed6073ab76ff32849e477"
+  },
+  "correction": {
+    "bytes": 418,
+    "sha256": "f365bef953e63740542d7b9aa863a9b1888909cb9bfc0d854ba858ecdb1803c4",
+    "reason": "AST関数抽出がstaticmethod decoratorを含めなかったため訂正。実コード変更なし。"
+  },
+  "final_blockers": {
+    "Claude": 0,
+    "Gemini": 0
+  }
+}

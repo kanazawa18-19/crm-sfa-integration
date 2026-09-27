@@ -287,6 +287,7 @@ PROJECT_SCHEMA = DatabaseSchema(
         ),
         PropertyDefinition(
             name="テキスト",
+            description="地域・都道府県。既存名と値を保持（2026-09-28本人確認）",
             property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,

@@ -966,7 +966,7 @@ def build_production_dispatcher(
             return False
         return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, identity_hash(event.db_key, title), event.external_id)
 
-    return Dispatcher(
+    dispatcher = Dispatcher(
         store,
         targets,
         sync_system_id=get_sync_system_id(),
@@ -974,6 +974,13 @@ def build_production_dispatcher(
         note_writer=write_notes,
         new_record_guard=pending_hub_creation,
     )
+    from src.sync_engine.won_product_link import WonProductLinker
+    from src.sync_engine.won_product_link_queue import ProjectProductLinkQueue
+    dispatcher._project_linker = WonProductLinker(
+        store, notion_clients, dispatcher.propagate_linked_relation, ProjectProductLinkQueue(),
+    )
+    return dispatcher
+
 
 
 class SkipTrackingDispatcher:
@@ -1062,7 +1069,7 @@ class SkipTrackingDispatcher:
         return [
             tool
             for tool in prop_result.skipped_tools
-            if not self._is_known_gap(tool, event.db_key, prop_result.property_name)
+            if not self._is_known_gap(tool, prop_result.related_db_key or event.db_key, prop_result.property_name)
         ]
 
     def dispatch(self, event: SyncEvent) -> DispatchResult:
@@ -1076,7 +1083,17 @@ class SkipTrackingDispatcher:
                     # 作成済みの相手には通常の更新も継続する。
                     result = self._dispatcher.dispatch(event)
                 else:
-                    result = DispatchResult(skipped=reason != "hub_creation_complete", reason=reason)
+                    related = ()
+                    if (event.db_key == "project" and event.source_tool == Tool.SPREADSHEET
+                            and reason in ("hub_creation_complete", "hub_creation_held")):
+                        attempt = self._creation_service.journal.get(
+                            "sheet:" + event.registration_key, "notion",
+                        )
+                        if attempt and attempt.get("state") == "created":
+                            related = self._dispatcher.link_created_project(attempt["externalId"])
+                    result = DispatchResult(
+                        skipped=reason != "hub_creation_complete", reason=reason, properties=related,
+                    )
                 self.last_result = result
                 return result
         result = self._dispatcher.dispatch(event)
@@ -1106,8 +1123,8 @@ class SkipTrackingDispatcher:
                     "written_tools=%s skipped_tools=%s (db_keyが解決できなかった、当該DB用の"
                     "認証情報が未設定等が原因の可能性があります。IDマッピングストアの状態・"
                     "各ツールの環境変数設定を確認してください)",
-                    event.db_key,
-                    event.external_id,
+                    prop_result.related_db_key or event.db_key,
+                    prop_result.related_notion_key or event.external_id,
                     prop_result.property_name,
                     sorted(t.value for t in prop_result.written_tools),
                     sorted(t.value for t in prop_result.skipped_tools),
@@ -1204,10 +1221,13 @@ class ProductionSyncWiring:
             from src.hub_creation.sheet_gateway import SheetRegistrationGateway
             sheet_targets = build_spreadsheet_targets_by_db()
             sheet_client = next(iter(sheet_targets.values()))._client if sheet_targets else None
+            from src.sync_engine.won_product_link_queue import ProjectProductLinkQueue
+            project_link_queue = ProjectProductLinkQueue()
             creation_service = HubCreationService(
                 store=self.id_mapping_store, journal=PostgresCreationJournal(), notion_clients=notion_clients,
                 adapters=[ZohoCreationAdapter(self.zoho_action_client), KintoneCreationAdapter(build_kintone_targets_by_db())],
                 enabled_since=since, sheet_gateway=SheetRegistrationGateway(sheet_client) if sheet_client else None,
+                project_link_prepare=lambda mapping: project_link_queue.enqueue(mapping.notion_key),
             )
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
             build_production_dispatcher(

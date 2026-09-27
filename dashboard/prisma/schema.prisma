@@ -784,3 +784,45 @@ model HubCreationAttempt {
 
   @@id([sourceKey, target])
 }
+
+// 案件の評価と、既に変更した対象への配送義務を分けて保持する。
+model ProjectProductLinkTask {
+  projectId      String   @id
+  attempts       Int      @default(0)
+  nextAttemptAt  DateTime @default(now()) @db.Timestamptz(6)
+  lastError      String?
+  errorDbKey     String?
+  errorNotionId  String?
+  evaluationHeld Boolean  @default(false)
+  updatedAt      DateTime @default(now()) @db.Timestamptz(6)
+  pairs          ProjectProductLinkPair[]
+  deliveries     ProjectProductLinkDelivery[]
+
+  @@index([nextAttemptAt])
+}
+
+model ProjectProductLinkPair {
+  projectId String
+  productId String
+  clientId  String
+  state     String @default("pending")
+  lastError String?
+  errorDbKey String?
+  errorNotionId String?
+  task      ProjectProductLinkTask @relation(fields: [projectId], references: [projectId], onDelete: Cascade)
+
+  @@id([projectId, productId, clientId])
+}
+
+model ProjectProductLinkDelivery {
+  projectId String
+  dbKey     String
+  notionId  String
+  state     String @default("pending")
+  lastError String?
+  expectedIds String[] @default([])
+  verificationAttempts Int @default(0)
+  task      ProjectProductLinkTask @relation(fields: [projectId], references: [projectId], onDelete: Cascade)
+
+  @@id([projectId, dbKey, notionId])
+}

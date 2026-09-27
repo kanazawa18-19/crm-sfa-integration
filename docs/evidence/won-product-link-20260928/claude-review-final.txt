@@ -1,0 +1,101 @@
+    - article "4件中4件目のメッセージ":
+      - 'heading "Claudeが返答しました: 最終差分では新しいBLOCKERは見当たりません。前回のB1（本体dispatchとの分離）とB2（完了判定を関連3項目に限定）は解消されています。Notion成立直後の起票、期待IDを使った配送完了判定、永続化失敗だけを伝播させる扱いも意図どおりに読めます。残るWARNは次の3件です。" [level=2]'
+      - generic "Checking for lock conflicts during new record creation paths.":
+        - generic: Checking for lock conflicts during new record creation paths.
+        - button "Checking for lock conflicts during new record creation paths.":
+          - generic: 
+      - status: Checking for lock conflicts during new record creation paths.
+      - paragraph: 最終差分では新しいBLOCKERは見当たりません。前回のB1（本体dispatchとの分離）とB2（完了判定を関連3項目に限定）は解消されています。Notion成立直後の起票、期待IDを使った配送完了判定、永続化失敗だけを伝播させる扱いも意図どおりに読めます。残るWARNは次の3件です。
+      - table:
+        - rowgroup:
+          - row "ID 箇所 要旨":
+            - columnheader "ID"
+            - columnheader "箇所"
+            - columnheader "要旨"
+        - rowgroup:
+          - row "W1 _deliver / unconfirmed 未確認回数が短時間で使い切られ、正常な反映遅延でも保留に落ちる":
+            - cell "W1"
+            - cell "_deliver / unconfirmed"
+            - cell "未確認回数が短時間で使い切られ、正常な反映遅延でも保留に落ちる"
+          - row "W2 _apply_pair ペア側の一時失敗に上限がなく、existing条件で恒久化しうる（前回W1・W2の残り）":
+            - cell "W2"
+            - cell "_apply_pair"
+            - cell "ペア側の一時失敗に上限がなく、existing条件で恒久化しうる（前回W1・W2の残り）":
+              - text: ペア側の一時失敗に上限がなく、
+              - code: existing
+              - text: 条件で恒久化しうる（前回W1・W2の残り）
+          - row "W3 schema.prisma / migration 追加列がPrismaスキーマ差分に見えない。適用済みmigrationの書換えにも注意":
+            - cell "W3"
+            - cell "schema.prisma / migration"
+            - cell "追加列がPrismaスキーマ差分に見えない。適用済みmigrationの書換えにも注意"
+      - paragraph: W1 未確認回数の消費が速すぎる
+      - paragraph:
+        - code: unconfirmed
+        - text: はdispatch経路の呼び出しごとに増えます。dispatch経路は
+        - code: nextAttemptAt
+        - text: を見ないため、案件の連続編集が8回あれば、秒単位で保留に達します。
+      - paragraph: さらに、INVERSE_NOT_VISIBLEでペアが失敗した同じ回に、配送ループが同じ商品を読んで未確認と数えます。つまり反映遅延1回につき1回ずつ消費されます。
+      - paragraph: 加えて、ペア完了後に人がNotionで関係を外した場合も、期待IDが永久に見えないため保留になります。解除手段（resume）は別残件なので、その商品の配送とタスク完了は止まったままになります。
+      - paragraph: 修正案は次のとおりです。
+      - list:
+        - text: 回数ではなく「最初に未確認になった時刻から一定時間経過」で判定するか、
+        - code: nextAttemptAt
+        - text: 到達後の試行だけを数える。
+        - text: ペアが
+        - code: done
+        - text: になった時点で商品側の可視性は検証済みなので、そのIDは以後の期待から外す。そうすれば、人手による削除後は現在値を配送して完了できます。
+        - text: 新しい期待IDをマージしたときは
+        - code: verificationAttempts
+        - text: を0に戻す。現状は古い義務の回数を引き継ぎます。
+      - paragraph: W2 ペア側の一時失敗に上限がない
+      - paragraph: 配送側には8回の上限が入りましたが、ペア側のINVERSE_NOT_VISIBLE、NOTION_WRITE_FAILED、RECORD_BUSYは今も上限なしで一時失敗扱いです。
+      - paragraph:
+        - text: また事後検証の
+        - code: set(existing + [client_id]).issubset(linked)
+        - text: がそのまま残っています。読込から検証までの間に人が商品から別の取引先を外すと、この条件は二度と成立せず、タスクが完了しなくなります。取引先側のPATCHは商品と他の取引先の関係に影響しないため、
+        - code: client_id in linked
+        - text: で十分です。ペア側にも試行上限を設けてください。
+      - paragraph: W3 Prismaスキーマとの同期
+      - paragraph:
+        - code: expectedIds
+        - text: と
+        - code: verificationAttempts
+        - text: 、およびFKの
+        - code: ON UPDATE CASCADE
+        - text: は、提示された差分ではschema.prismaに反映されていません。未反映のまま誰かが
+        - code: prisma migrate dev
+        - text: を実行すると、これらの列を削除するmigrationが生成され、配送義務の期待値が失われます。モデル側に
+        - code: expectedIds String[] @default([])
+        - text: と
+        - code: verificationAttempts Int @default(0)
+        - text: を追加してください。
+      - paragraph: また、同じmigrationファイルを書き換えています。使い捨て以外の環境に一度でも適用済みなら、チェックサム不一致になるため別のmigrationに分けてください。
+      - paragraph: 前回W10の補足
+      - paragraph:
+        - text: 前回の指摘は、Notionへの書込変換ではなく、
+        - code: propagate_linked_relation
+        - text: 経由でシート・Zoho・kintoneへ送るときの値形式についてでした。提示の
+        - code: build_notion_property_value
+        - text: は入力側の変換なので、指摘への反証にはなりません。
+      - paragraph:
+        - text: ただし「期待値を検証した現在値だけを既存のシート変換経路へ渡す」とのことなので、
+        - code: _write_values
+        - text: がシート向けの通常の変換を通るのであれば、この指摘は解消済みで構いません。
+      - paragraph: その他（判定への同意）
+      - list:
+        - code: pending()
+        - text: のOR条件（評価保留中でも発生済みの配送は続ける）は、意図どおりに動く読み方で問題ありません。
+        - listitem: cronの500応答とBUSYの別計上、既存の6時間ごとcronを前提とした頻度についても、ご説明の前提で同意します。
+      - toolbar "メッセージアクション":
+        - button "コピー":
+          - generic: 
+        - status
+        - button "読み上げ":
+          - generic: 
+        - button "良い回答":
+          - generic: 
+        - button "悪い回答":
+          - generic: 
+        - button "再試行":
+          - generic: 
+        - time: 今

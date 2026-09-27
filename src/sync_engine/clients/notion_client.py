@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote, unquote, urlencode
+
 import logging
 import os
 import time
@@ -144,6 +146,29 @@ _CREATE_RECOVERY_WINDOW_MINUTES = 5
 # 登録されないまま孤児になった）。0件のときだけ待って引き直す。
 _CREATE_RECOVERY_ATTEMPTS = 3
 _CREATE_RECOVERY_RETRY_DELAY_SECONDS = 2.0
+
+
+class NotionRelationDataError(ValueError):
+    """書き換え前に必要な関連の完全な値を確認できない。"""
+
+
+def validate_relation_items(items: Any) -> None:
+    if not isinstance(items, list):
+        raise NotionRelationDataError("relation配列がありません")
+    for item in items:
+        if not isinstance(item, dict):
+            raise NotionRelationDataError("relation要素が不正です")
+        value = item.get("id")
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise NotionRelationDataError("relation IDが不正です")
+
+
+def validate_raw_relation(prop: Any) -> None:
+    if not isinstance(prop, dict) or prop.get("type") != "relation":
+        raise NotionRelationDataError("relationプロパティがありません")
+    if type(prop.get("has_more")) is not bool:
+        raise NotionRelationDataError("relationのhas_moreが不正です")
+    validate_relation_items(prop.get("relation"))
 
 
 class HttpNotionClient:
@@ -383,6 +408,61 @@ class HttpNotionClient:
         raise_for_error(response, NotionApiError)
         page: dict[str, Any] = response.json()
         return page
+
+    def get_raw_page_with_relations(
+        self, page_id: str, property_names: set[str],
+    ) -> dict[str, Any]:
+        """必要な関連だけ全件取得する。通常のページ取得の通信量は変えない。"""
+        page = self.get_raw_page(page_id)
+        self._complete_relations(page, property_names)
+        return page
+
+    def _complete_relations(self, page: dict[str, Any], property_names: set[str]) -> None:
+        """必要な関連を厳格に検証し、25件省略を最後まで取得する。"""
+        properties = page.get("properties") if isinstance(page, dict) else None
+        if not isinstance(properties, dict):
+            raise NotionRelationDataError("ページのpropertiesがありません")
+        for name in property_names:
+            prop = properties.get(name)
+            validate_raw_relation(prop)
+            if not prop["has_more"]:
+                continue
+            raw_id = prop.get("id")
+            if not isinstance(raw_id, str) or not raw_id:
+                raise NotionRelationDataError("プロパティIDがありません")
+            property_id = quote(unquote(raw_id), safe="")
+            page_id = page["id"]
+            relations = []
+            cursor = None
+            seen = set()
+            while True:
+                params = {"page_size": 100}
+                if cursor:
+                    params["start_cursor"] = cursor
+                response = self._request(
+                    "GET", f"/pages/{page_id}/properties/{property_id}?{urlencode(params)}"
+                )
+                raise_for_error(response, NotionApiError)
+                data = response.json()
+                if (not isinstance(data, dict) or not isinstance(data.get("results"), list)
+                        or type(data.get("has_more")) is not bool):
+                    raise NotionRelationDataError("関連のページ分割応答が不正です")
+                for item in data["results"]:
+                    if not isinstance(item, dict) or item.get("type") != "relation":
+                        raise NotionRelationDataError("関連のページ分割要素が不正です")
+                    relation = item.get("relation")
+                    validate_relation_items([relation])
+                    relations.append({"id": relation["id"]})
+                if not data["has_more"]:
+                    if data.get("next_cursor") is not None:
+                        raise NotionRelationDataError("最終ページのcursorが不正です")
+                    break
+                cursor = data.get("next_cursor")
+                if not isinstance(cursor, str) or not cursor.strip() or cursor in seen:
+                    raise NotionRelationDataError("関連のcursorが不正です")
+                seen.add(cursor)
+            prop["relation"] = relations
+            prop["has_more"] = False
 
     def _recover_created_page_id(self, properties: dict[str, Any]) -> str | None:
         """`create_page()`の通信が例外で終わったあと、「実は作成されていた」ページのIDを探す。

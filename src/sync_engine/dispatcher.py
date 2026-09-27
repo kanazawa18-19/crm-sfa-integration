@@ -146,6 +146,8 @@ class PropertyDispatchResult:
     resolution: ConflictResolution | None  # コンフリクト判定を経由しなかった単純伝播の場合はNone
     written_tools: frozenset[Tool] = field(default_factory=frozenset)
     skipped_tools: frozenset[Tool] = field(default_factory=frozenset)
+    related_db_key: str | None = None
+    related_notion_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -279,7 +281,9 @@ class Dispatcher:
         slack_notifier: SlackNotifier | None = None,
         note_writer: Callable[[SyncEvent, IdMapping], None] | None = None,
         new_record_guard: Callable[[SyncEvent, dict[str, Any]], bool] | None = None,
+        project_linker: Callable[[IdMapping], tuple[PropertyDispatchResult, ...]] | None = None,
     ) -> None:
+        self._project_linker = project_linker
         self._note_writer = note_writer
         self._new_record_guard = new_record_guard
         self._store = id_mapping_store
@@ -325,6 +329,9 @@ class Dispatcher:
         if guard.rejects(event.occurred_at):
             return DispatchResult(skipped=True, reason="stale_event")
 
+        # Notion発はすでにマスターへ保存済み。他ツールへの読取・書込より先に起票する。
+        if event.source_tool is Tool.NOTION:
+            self._enqueue_project_link(mapping)
         schema = get_schema(event.db_key)
 
         # 1. Self-Exclusion：送信元ツールを対象リストから除外する。
@@ -408,6 +415,7 @@ class Dispatcher:
             ]
             if self._note_writer is not None and event.sync_notes:
                 self._note_writer(event, mapping)
+            results.extend(self._link_project(mapping))
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
             return DispatchResult(skipped=False, properties=tuple(results))
@@ -418,9 +426,10 @@ class Dispatcher:
             # その失敗（＝イベント全体のスキップ）を新たに生んでしまう。
             if self._note_writer is not None and event.sync_notes:
                 self._note_writer(event, mapping)
+            related = self._link_project(mapping)
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
-            return DispatchResult(skipped=False, properties=())
+            return DispatchResult(skipped=False, properties=related)
 
         # --- フェーズ2: 現在値の取得（ここまでで書き込みは1件も行っていない） ---
         # 5. 送信元がNotion以外の場合は、sync_scope対象の全ツールの現在値を集めて
@@ -602,6 +611,9 @@ class Dispatcher:
         payload_by_tool, new_row_properties = self._spreadsheet_properties_for_new_row(
             payload_by_tool, mapping, notion_record=notion_record, notion_record_fetched=True
         )
+        # Notionへの更新が不要（既に現在値が一致）の場合も、他の配送失敗から独立させる。
+        if Tool.NOTION not in payload_by_tool and notion_record is not None:
+            self._enqueue_project_link(mapping)
         guard.accept(event.occurred_at)
         written_by_tool, mapping = self._write_values(
             payload_by_tool, mapping, versions, new_row_properties=new_row_properties
@@ -631,9 +643,73 @@ class Dispatcher:
 
         if self._note_writer is not None and event.sync_notes:
             self._note_writer(event, mapping)
+        # 競合解決後にNotionへ送る採用値だけを見る。無関係項目の部分スキップは従来通り報告する。
+        relevant = {"営業ステータス", "サービス・商品", "取引先マスター"}
+        missing_notion = set(payload_by_tool.get(Tool.NOTION, {})) - written_by_tool.get(Tool.NOTION, frozenset())
+        if not relevant.intersection(missing_notion):
+            results.extend(self._link_project(mapping))
         guard.advance(event.occurred_at)
         self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
         return DispatchResult(skipped=False, properties=tuple(results))
+
+    def _enqueue_project_link(self, mapping: IdMapping) -> None:
+        if mapping.db_key == "project" and self._project_linker is not None:
+            prepare = getattr(self._project_linker, "prepare", None)
+            if prepare is not None:
+                prepare(mapping)
+
+    def _link_project(self, mapping: IdMapping) -> tuple[PropertyDispatchResult, ...]:
+        if mapping.db_key == "project" and self._project_linker is not None:
+            from src.sync_engine.won_product_link import ProductLinkIssue
+            try:
+                return self._project_linker(mapping)
+            except ProductLinkIssue as exc:
+                # 原因・配送義務は永続化済み。関連の再試行で正常な案件同期を巻き戻さない。
+                logger.warning("案件本体は同期済み、関連処理はキューに保持: %s", exc.code)
+        return ()
+
+    def link_created_project(self, notion_key: str) -> tuple[PropertyDispatchResult, ...]:
+        """シート新規登録は通常dispatchを通らないため、登録完了後に同じ処理へ渡す。"""
+        with acquire_record_sync_lock(self._store, "project", notion_key):
+            mapping = self._store.get(notion_key)
+            if mapping is None or mapping.db_key != "project":
+                raise RuntimeError("新規案件の対応表がありません")
+            return self._link_project(mapping)
+
+    def propagate_linked_relation(
+        self, mapping: IdMapping, property_name: str, values: list[str],
+        notion_record: dict[str, Any],
+    ) -> PropertyDispatchResult:
+        """関連追加後のNotion値を直接伝播する。呼び出し元が対象レコードを排他する。"""
+        prop = get_schema(mapping.db_key).get_property(property_name)
+        intended = frozenset(t for t in _ALL_TOOLS if t != Tool.NOTION and prop.should_sync_to(t))
+        from src.sync_engine.outbound_field_mapping import (
+            zoho_outbound_field_names, kintone_outbound_field_names,
+        )
+        tables = {Tool.ZOHO: zoho_outbound_field_names, Tool.KINTONE: kintone_outbound_field_names}
+        supported = frozenset(t for t in intended if t not in tables
+                              or property_name in tables[t]().get(mapping.db_key, {}))
+        payload = {t: {property_name: values} for t in supported}
+        payload, new_row = self._spreadsheet_properties_for_new_row(
+            payload, mapping, notion_record=notion_record, notion_record_fetched=True,
+        )
+        versions = self._version_tracker(mapping, self._fetch_versions(supported, mapping))
+        written, _ = self._write_values(payload, mapping, versions, new_row_properties=new_row)
+        result = _property_result(property_name, None, {property_name: intended}, written)
+        # 未対応は結果に残すが、版取得・書込のAPIを呼ばない。
+        for tool in result.skipped_tools:
+            if tool in tables and property_name not in tables[tool]().get(mapping.db_key, {}):
+                continue
+            target = self._targets.get(tool)
+            if target is not None and property_name in target.unsupported_properties(
+                {property_name: values}, db_key=mapping.db_key,
+            ):
+                continue
+            raise RuntimeError("案件から追加した関連を送り先へ反映できませんでした")
+        return dataclasses.replace(
+            result, written_tools=result.written_tools | {Tool.NOTION},
+            related_db_key=mapping.db_key, related_notion_key=mapping.notion_key,
+        )
 
     def _log_rejected(self, rejected: tuple[RejectedData, ...]) -> None:
         """05_同期・競合制御「データ退避」。却下データをスプレッドシート「同期ログ」タブへ記録する。
@@ -948,12 +1024,17 @@ class Dispatcher:
             db_key=event.db_key,
             kintone_id=event.external_id if event.source_tool is Tool.KINTONE else None,
             zoho_id=event.external_id if event.source_tool is Tool.ZOHO else None,
-            last_synced_at=None if self._note_writer is not None and event.sync_notes else event.occurred_at,
+            last_synced_at=None if (self._note_writer is not None and event.sync_notes) or (self._project_linker is not None and event.db_key == "project") else event.occurred_at,
         )
         registration_error = self._register_new_record_mapping(new_mapping)
         if registration_error is not None:
             self._handle_orphaned_notion_page(event, notion_target, new_notion_key, registration_error)
             return DispatchResult(skipped=True, reason="new_record_mapping_registration_failed")
+
+        # 対応表成立後、通知・シート行作成・メモより先に起票する。
+        if self._project_linker is not None and event.db_key == "project":
+            with acquire_record_sync_lock(self._store, event.db_key, new_notion_key):
+                self._enqueue_project_link(new_mapping)
 
         logger.info(
             "new record creation: created a new Notion page and registered the id mapping "
@@ -1010,8 +1091,9 @@ class Dispatcher:
                 event, new_mapping, "同期状態の確認または行追加に失敗しました。",
                 REASON_NEW_RECORD_ROW_WRITE_FAILED,
             )
-        # 初回メモも同期処理に含める。失敗は握らず再送させ、対応表は残して再作成を防ぐ。
-        if self._note_writer is not None and event.sync_notes:
+        # 初回メモ・案件関連も完了前に実行し、失敗時は既存mappingで再送する。
+        related = ()
+        if (self._note_writer is not None and event.sync_notes) or (self._project_linker is not None and event.db_key == "project"):
             with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
                 latest = self._store.get(new_notion_key)
                 watermark = guard.latest(latest.last_synced_at if latest else None)
@@ -1019,11 +1101,13 @@ class Dispatcher:
                     watermark is None or event.occurred_at >= watermark
                 ):
                     guard.accept(event.occurred_at)
-                    self._note_writer(event, latest)
+                    if self._note_writer is not None and event.sync_notes:
+                        self._note_writer(event, latest)
+                    related = self._link_project(latest)
                     guard.advance(event.occurred_at)
                     self._store.update_last_synced_at(new_notion_key, event.occurred_at)
 
-        return DispatchResult(skipped=False)
+        return DispatchResult(skipped=False, properties=related)
 
     def _append_spreadsheet_row_for_created_record(
         self, event: SyncEvent, mapping: IdMapping, properties: dict[str, Any]
@@ -1764,6 +1848,9 @@ class Dispatcher:
                         type(exc).__name__,
                     )
                 raise
+            if ok and tool is Tool.NOTION:
+                # 次のシート配送が失敗しても、Notionへ成立した案件関連を取りこぼさない。
+                self._enqueue_project_link(mapping)
             # **報告は「実際に送った項目」に合わせる**（2026-09-02、Gemini・ChatGPTが独立に
             # 指摘）。行を新規作成したときは補完した項目も書いているので、差分だけを
             # 書いたことにすると`written_tools`（APIの応答・ログ）が実態とズレる。

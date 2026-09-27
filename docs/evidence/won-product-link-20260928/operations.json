@@ -1,0 +1,11 @@
+{
+  "migration": {
+    "migration": "20260928010000_add_project_product_link_task",
+    "migration_sha256": "ed744c00c163c622a2193af156c609690f82d3daead748aa4c679803a5392584",
+    "exit_code": 0,
+    "applied": true
+  },
+  "deployment": "反映準備済み。push後に更新。",
+  "external_customer_test_writes": false,
+  "historical_backfill": false
+}

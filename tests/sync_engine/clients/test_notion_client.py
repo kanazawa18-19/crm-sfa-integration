@@ -631,3 +631,67 @@ def test_create_page_uses_longer_timeout_than_the_default(
     client.create_page({"取引先名": "株式会社サンプル"})
 
     assert captured["timeout"] > 10.0
+
+
+def test_selected_relations_are_paginated_without_reading_unrelated_properties(requests_mock, client):
+    raw = {"id": PAGE_ID, "properties": {
+        "サービス・商品": {"id": "LZ%5CI", "type": "relation", "has_more": True, "relation": [{"id": "first"}]},
+        "アクション": {"id": "ignore", "type": "relation", "has_more": True, "relation": []},
+    }}
+    requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}", json=raw)
+    requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}/properties/LZ%5CI?page_size=100", json={
+        "results": [{"type": "relation", "relation": {"id": f"c{i}"}} for i in range(100)],
+        "has_more": True, "next_cursor": "next cursor",
+    })
+    requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}/properties/LZ%5CI?page_size=100&start_cursor=next+cursor", json={
+        "results": [{"type": "relation", "relation": {"id": "last"}}], "has_more": False,
+    })
+    page = client.get_raw_page_with_relations(PAGE_ID, {"サービス・商品"})
+    assert len(page["properties"]["サービス・商品"]["relation"]) == 101
+    assert page["properties"]["サービス・商品"]["relation"][-1] == {"id": "last"}
+    assert page["properties"]["アクション"]["has_more"]
+    assert requests_mock.call_count == 3
+    # 従来の読取はページ1回のまま。
+    assert client.get_raw_page(PAGE_ID)["properties"]["サービス・商品"]["has_more"]
+    assert requests_mock.call_count == 4
+
+
+def test_relation_pagination_failure_is_not_partial_success(requests_mock, client):
+    requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}", json={"id": PAGE_ID, "properties": {
+        "サービス・商品": {"id": "rel", "type": "relation", "has_more": True, "relation": [{"id": "first"}]},
+    }})
+    requests_mock.get(f"https://api.notion.com/v1/pages/{PAGE_ID}/properties/rel", status_code=403, json={"message": "forbidden"})
+    with pytest.raises(NotionApiError):
+        client.get_raw_page_with_relations(PAGE_ID, {"サービス・商品"})
+
+
+@pytest.mark.parametrize('response', [
+    {'results': None, 'has_more': False}, {'results': [], 'has_more': None},
+    {'results': [], 'has_more': 'false'}, {'results': [], 'has_more': True, 'next_cursor': None},
+    {'results': [], 'has_more': False, 'next_cursor': 'unexpected'},
+    {'results': [{'type': 'relation', 'relation': None}], 'has_more': False},
+    {'results': [{'type': 'relation', 'relation': {'id': ''}}], 'has_more': False},
+    {'results': [{'type': 'relation', 'relation': {'id': 123}}], 'has_more': False},
+    {'results': [{'type': 'title', 'relation': {'id': 'wrong-type'}}], 'has_more': False},
+])
+def test_malformed_paginated_relation_response_is_rejected(requests_mock, client, response):
+    from src.sync_engine.clients.notion_client import NotionRelationDataError
+    requests_mock.get(f'https://api.notion.com/v1/pages/{PAGE_ID}', json={'id': PAGE_ID, 'properties': {
+        'サービス・商品': {'id': 'rel', 'type': 'relation', 'has_more': True, 'relation': [{'id': 'existing'}]},
+    }})
+    requests_mock.get(f'https://api.notion.com/v1/pages/{PAGE_ID}/properties/rel', json=response)
+    with pytest.raises(NotionRelationDataError):
+        client.get_raw_page_with_relations(PAGE_ID, {'サービス・商品'})
+
+
+def test_repeated_relation_cursor_is_rejected(requests_mock, client):
+    from src.sync_engine.clients.notion_client import NotionRelationDataError
+    requests_mock.get(f'https://api.notion.com/v1/pages/{PAGE_ID}', json={'id': PAGE_ID, 'properties': {
+        'サービス・商品': {'id': 'rel', 'type': 'relation', 'has_more': True, 'relation': [{'id': 'existing'}]},
+    }})
+    requests_mock.get(f'https://api.notion.com/v1/pages/{PAGE_ID}/properties/rel', json={
+        'results': [], 'has_more': True, 'next_cursor': 'same',
+    })
+    with pytest.raises(NotionRelationDataError, match='cursor'):
+        client.get_raw_page_with_relations(PAGE_ID, {'サービス・商品'})
+    assert requests_mock.call_count == 3

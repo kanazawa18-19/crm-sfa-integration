@@ -1,0 +1,384 @@
+    - article "2件中2件目のメッセージ":
+      - 'heading "Claudeが返答しました: 総評として、Notion成功後の配送義務をPATCH前に確定する設計、評価失敗時に古いペアを適用しない判断、relationの厳格検証とページ分割取得は妥当です。一方で、関連処理の失敗が案件本体の同期を失敗させる経路があり、ここは設計意図（PGキューとcronで再処理）と実装が食い違っています。" [level=2]'
+      - generic "リンク処理での例外送出範囲を検討中。":
+        - generic: リンク処理での例外送出範囲を検討中。
+        - button "リンク処理での例外送出範囲を検討中。":
+          - generic: 
+      - status: リンク処理での例外送出範囲を検討中。
+      - paragraph: 総評として、Notion成功後の配送義務をPATCH前に確定する設計、評価失敗時に古いペアを適用しない判断、relationの厳格検証とページ分割取得は妥当です。一方で、関連処理の失敗が案件本体の同期を失敗させる経路があり、ここは設計意図（PGキューとcronで再処理）と実装が食い違っています。
+      - table:
+        - rowgroup:
+          - row "ID 重大度 箇所 要旨":
+            - columnheader "ID"
+            - columnheader "重大度"
+            - columnheader "箇所"
+            - columnheader "要旨"
+        - rowgroup:
+          - row "B1 BLOCKER dispatcher / WonProductLinker.call 関連処理のあらゆる失敗が案件本体のdispatchを失敗させる":
+            - cell "B1"
+            - cell "BLOCKER"
+            - cell "dispatcher / WonProductLinker.call":
+              - text: dispatcher / WonProductLinker.
+              - strong: call
+            - cell "関連処理のあらゆる失敗が案件本体のdispatchを失敗させる"
+          - row "B2 BLOCKER（要確認） dispatcher 完了チェック 無関係なNotionプロパティ1件の未書込で案件同期が恒久失敗しうる":
+            - cell "B2"
+            - cell "BLOCKER（要確認）"
+            - cell "dispatcher 完了チェック"
+            - cell "無関係なNotionプロパティ1件の未書込で案件同期が恒久失敗しうる"
+          - row "W1 WARN queue.fail / 一時失敗全般 一時扱いの失敗に試行上限がなく、永久にリトライされる":
+            - cell "W1"
+            - cell "WARN"
+            - cell "queue.fail / 一時失敗全般"
+            - cell "一時扱いの失敗に試行上限がなく、永久にリトライされる"
+          - row "W2 WARN _apply_pair 事後検証 existingの部分集合チェックが人手の同時削除で恒久失敗する":
+            - cell "W2"
+            - cell "WARN"
+            - cell "_apply_pair 事後検証"
+            - cell "existingの部分集合チェックが人手の同時削除で恒久失敗する":
+              - code: existing
+              - text: の部分集合チェックが人手の同時削除で恒久失敗する
+          - row "W3 WARN _apply_pair PATCH 読込→全置換のため人手の同時追加を消しうる（削除なし要件）":
+            - cell "W3"
+            - cell "WARN"
+            - cell "_apply_pair PATCH"
+            - cell "読込→全置換のため人手の同時追加を消しうる（削除なし要件）"
+          - row "W4 WARN 全体の負荷・処理量 毎イベントで全ペアの再読込と無変更配送が発生し、処理量が追いつかない":
+            - cell "W4"
+            - cell "WARN"
+            - cell "全体の負荷・処理量"
+            - cell "毎イベントで全ペアの再読込と無変更配送が発生し、処理量が追いつかない"
+          - row "W5 WARN _deliver 期待値を検証せずに配送義務を削除する（誤成功の余地）":
+            - cell "W5"
+            - cell "WARN"
+            - cell "_deliver"
+            - cell "期待値を検証せずに配送義務を削除する（誤成功の余地）"
+          - row "W6 WARN 時間上限 実行中の処理は打ち切れず、webhook経路とcronの実行時間上限を超えうる":
+            - cell "W6"
+            - cell "WARN"
+            - cell "時間上限"
+            - cell "実行中の処理は打ち切れず、webhook経路とcronの実行時間上限を超えうる"
+          - row "W7 WARN resume 保留を解除する呼び出し元がなく、保留中は新しい案件変更も評価されない":
+            - cell "W7"
+            - cell "WARN"
+            - cell "resume"
+            - cell "保留を解除する呼び出し元がなく、保留中は新しい案件変更も評価されない"
+          - row "W8 WARN vercel.json 毎時cronはHobbyプランではデプロイ不可":
+            - cell "W8"
+            - cell "WARN"
+            - cell "vercel.json"
+            - cell "毎時cronはHobbyプランではデプロイ不可"
+          - row "W9 WARN ProjectProductLinkQueue メソッドごとにDB接続し、全案件イベントでNotion読込が増える":
+            - cell "W9"
+            - cell "WARN"
+            - cell "ProjectProductLinkQueue"
+            - cell "メソッドごとにDB接続し、全案件イベントでNotion読込が増える"
+          - row "W10 WARN（要確認） propagate_linked_relation 値形式と競合解決が通常経路と一致しているか不明":
+            - cell "W10"
+            - cell "WARN（要確認）"
+            - cell "propagate_linked_relation"
+            - cell "値形式と競合解決が通常経路と一致しているか不明"
+          - row "W11 WARN Notion API版依存 has_moreやparent.database_idの形式差で全案件が恒久保留になりうる":
+            - cell "W11"
+            - cell "WARN"
+            - cell "Notion API版依存"
+            - cell "has_moreやparent.database_idの形式差で全案件が恒久保留になりうる":
+              - code: has_more
+              - text: や
+              - code: parent.database_id
+              - text: の形式差で全案件が恒久保留になりうる
+          - row "I1〜I8 INFO 各所 計測値、例外分類、Prismaとのずれ など":
+            - cell "I1〜I8"
+            - cell "INFO"
+            - cell "各所"
+            - cell "計測値、例外分類、Prismaとのずれ など"
+      - paragraph: BLOCKER
+      - paragraph: B1 関連処理の失敗が案件本体の同期を失敗させる
+      - paragraph:
+        - code: __call__
+        - text: は最後に
+        - code: raise errors[0]
+        - text: します。dispatch経路ではこの例外が
+        - code: guard.advance
+        - text: と
+        - code: update_last_synced_at
+        - text: より前に抜けるため、案件イベント全体が失敗として扱われます。
+      - paragraph:
+        - text: 特に問題になるのは
+        - code: RecordSyncBusy
+        - text: です。同じ商品を持つ別案件の処理中や、cronが商品ロックを保持している最中、あるいは商品の通常同期中に、案件の編集が失敗扱いになります。これは同時更新時に普通に起きます。恒久保留（RELATION_LIMIT_100など）も初回だけは例外になります。
+      - paragraph: 結果として次のことが起きます。
+      - list:
+        - listitem: 非Notion起点のイベントは、書込済みの内容を再送で再実行します。
+        - listitem: ウォーターマークが進みません。
+        - listitem: 再送回数に上限がある経路では、案件本体の同期が失敗ログに落ちます。
+      - paragraph: コメントの「起票・進捗保存に失敗した場合は例外を隠さない」とも一致しません。
+      - paragraph:
+        - text: 修正案は、
+        - code: enqueue
+        - text: ・
+        - code: plan
+        - text: ・
+        - code: fail
+        - text: などキューへの永続化が成功した後の
+        - code: ProductLinkIssue
+        - text: と
+        - code: RecordSyncBusy
+        - text: は、dispatch経路では握ってwarningログに留めることです。キュー操作自体の例外だけを伝播させます。cron経路は現状どおり件数に計上すればよいので、
+        - code: __call__
+        - text: に
+        - code: raise_issues
+        - text: のような引数を設けて経路ごとに切り替えるのが簡単です。
+      - paragraph: B2 Notion完了チェックの対象が広すぎる
+      - paragraph:
+        - code: set(expected) - written_by_tool[NOTION]
+        - text: は、案件の全プロパティを対象にしています。Notion側で却下・退避された値（選択肢不一致など）が
+        - code: written
+        - text: から外れる実装の場合、関係のないプロパティ（例：テキスト）1件のために、その案件の非Notion起点イベントが毎回RuntimeErrorになります。以前は部分失敗として完了していた挙動からの退行で、ウォーターマークも進まなくなります。
+      - paragraph: 修正案は次の2点です。
+      - list:
+        - text: 判定対象を
+        - code: 営業ステータス
+        - text: ・
+        - code: サービス・商品
+        - text: ・
+        - code: 取引先マスター
+        - text: に限定します。
+        - text: 未書込の場合も例外ではなく
+        - code: enqueue
+        - text: のみ行い、評価はキュー側に任せます。linkerは常にNotionの最新値を読むので、後続イベントやcronで追随できます。
+      - paragraph:
+        - code: _write_values
+        - text: が却下した値を
+        - code: written
+        - text: に含めるかどうかで重大度が変わるため、要確認としています。
+      - paragraph: WARN
+      - paragraph: W1 一時失敗に試行上限がない
+      - paragraph:
+        - text: INVERSE_NOT_VISIBLE、DELIVERY_FAILED、PROCESSING_FAILED、NOTION_READ_FAILED（5xx/429）はすべて
+        - code: permanent=False
+        - text: です。
+        - code: attempts
+        - text: が増えても保留に移りません。
+      - paragraph: 恒常的な原因の例は次のとおりです。
+      - list:
+        - code: サービス・商品
+        - text: と
+        - code: 取引先マスター
+        - text: が実は双方向relationではない。
+        - listitem: シート側の行が恒久的に書けない。
+        - code: parse_notion_property_value
+        - text: がrelationに対応しておらずKeyErrorになる。
+      - paragraph:
+        - text: こうした場合、最大1日間隔で永久にリトライされ、タスクも完了しません。
+        - code: attempts
+        - text: が一定値（例：8）を超えたら、ペアや配送を
+        - code: held
+        - text: に移す上限を設けてください。
+      - paragraph: W2 事後検証が人手の同時削除で恒久失敗する
+      - paragraph:
+        - code: set(existing + [client_id]).issubset(linked)
+        - text: の
+        - code: existing
+        - text: 部分は不要です。取引先側のPATCHで変わるのはその取引先と商品の関係だけで、商品と他の取引先の関係は変わりません。
+      - paragraph:
+        - text: むしろ、読込から検証までの間に人がNotion上で商品から別の取引先を外すと、この検証は二度と成立しません。W1と合わせて永久リトライになります。
+        - code: client_id in linked
+        - text: だけを検証し、あわせて取引先側を再読込して「既存の商品一覧と今回の商品」が含まれることを確認する方が、既存関係保持の検証として正確です。
+      - paragraph: W3 読込→全置換による人手の同時編集の消失
+      - paragraph:
+        - code: "update_page(client_id, {'サービス・商品': inverse})"
+        - text: は、読込時点の全件で置き換えます。レコードロックはシステム内の排他であり、Notion上の人手の編集は防げません。読込からPATCHまでの間に人が追加した商品は消えます。
+      - paragraph: Notionに条件付き更新はないため完全には防げませんが、次の対策で「削除なし」要件の違反を小さくし、検知できるようにしてください。
+      - list:
+        - listitem: PATCH直前に取引先ページを再読込して窓を最小化する。
+        - listitem: PATCH後に再読込し、直前に読んだ集合が保持されているかを確認し、差異があればログに出す。
+      - paragraph: W4 毎イベント全ペア処理と無変更配送による処理量不足
+      - paragraph:
+        - code: complete
+        - text: でタスクとペアが消えるため、受注案件のどのプロパティを編集しても、全ペアが改めてpendingになります。各ペアでは次の処理が走ります。
+      - list:
+        - listitem: 商品ページの全relation取得
+        - listitem: 取引先ページの全relation取得
+        - listitem: 商品ページの再読込
+        - listitem: 両側の配送（シート書込）
+      - paragraph: これは関係が既にあってPATCHが不要なときも同じです。
+      - paragraph: 処理量の試算は次のとおりです。
+      - list:
+        - listitem: 商品10×取引先10なら100ペアになります。
+        - listitem: dispatch経路は1回5ペアまでで、cronは毎時3案件×5ペアです。
+        - listitem: 追加の編集がなければ、1案件の完了に約20時間かかります。
+      - paragraph:
+        - text: さらに、時間切れで打ち切られたタスクは
+        - code: nextAttemptAt
+        - text: が古いまま据え置かれるため、
+        - code: pending()
+        - text: の先頭に居続け、新規タスクが後回しになります。
+      - paragraph: 修正案は次のとおりです。
+      - list:
+        - code: product_id not in inverse
+        - text: で実際にPATCHする場合だけ
+        - code: require_delivery
+        - text: する。
+        - text: ただしそのままでは、INVERSE_NOT_VISIBLEで同じ回に古い値を配送して義務を消した後、再試行時にPATCH不要と判定されて配送が漏れます。そこでペアに
+        - code: written
+        - text: 状態を設け、PATCH成功後は検証完了まで配送を待たせるか、W5の期待値検証と組み合わせてください。
+        - text: 時間切れで打ち切ったタスクは
+        - code: nextAttemptAt
+        - text: を少し先へ進め、公平に回るようにする。
+      - paragraph: W5 配送の誤成功
+      - paragraph:
+        - code: _deliver
+        - text: は読んだ値をそのまま伝播し、
+        - code: finish_delivery
+        - text: で義務を削除します。PATCH直後の読込で結果整合の反映が遅れていた場合、追加前の値を配送して成功扱いになります。
+      - paragraph: Deliveryテーブルに「含まれているべきID」（相手側ID）を保持し、読込値に含まれていなければ一時失敗にしてください。人手で外された場合との区別が必要なら、一定回数後に保留とする扱いで十分です。
+      - paragraph: W6 時間上限の実効性
+      - paragraph:
+        - code: deadline
+        - text: は各処理の開始前にしか確認されないため、処理中の超過は防げません。
+      - list:
+        - listitem: 1ペアでNotionに最低4リクエスト（ページ分割時はさらに増加）かかり、429リトライが入ると、1件で数十秒になりえます。
+        - listitem: dispatch経路はwebhookの応答時間を最大20秒以上占有します。
+        - text: cronは3案件×20秒以上になるため、Vercelの
+        - code: maxDuration
+        - text: に対して余裕がありません。
+      - paragraph:
+        - text: 途中で強制終了されても、PATCH前に配送義務を確定しているのでデータは守られます。ただし
+        - code: acquire_record_sync_lock
+        - text: がリース型なら、期限切れまでロックが残って後続がBUSYになります。
+      - paragraph: 修正案は次のとおりです。
+      - list:
+        - listitem: cronは全体の残り時間を計算してlinkerに渡す。
+        - listitem: dispatch経路は予算を小さく（例：pair_limit 1〜2、数秒）するか、評価と起票だけにしてcronに回す。
+      - paragraph: W7 保留の再開手段がない
+      - paragraph:
+        - code: resume
+        - text: の呼び出し元がdiffにありません。
+        - code: evaluationHeld
+        - text: になると、その後の案件変更（商品の後付けなど）は一切評価されません。原因（mappingの復旧、ページのアーカイブ解除、取引先の100件整理）が解消されても自動では戻らず、診断APIにも出ません。
+      - paragraph: 管理用エンドポイントかCLIを用意し、保留件数をdiagnosticsに載せてください。案件ページのアーカイブによる保留は、タスク行がそのまま残り続ける点も含めて運用設計が必要です。
+      - paragraph: W8 cronの実行頻度
+      - paragraph:
+        - text: 既存のcronは日次のみです。
+        - code: 30 * * * *
+        - text: は、VercelのHobbyプランでは日次より高頻度のcronとして拒否され、デプロイ自体が失敗します。プランを確認してください。
+      - paragraph: W9 DB接続数とNotion読込の増加
+      - paragraph:
+        - text: キューの各メソッドが
+        - code: psycopg.connect
+        - text: を新しく開くため、1回の実行で6〜8回接続します。加えて、失注案件を含むすべての案件イベントで、案件ページのGETが2回増えます。
+      - paragraph: サーバーレス環境では接続上限とNotionのレート制限（3リクエスト/秒）に直接効きます。対策は次のとおりです。
+      - list:
+        - text: 1回の
+        - code: __call__
+        - text: で接続を共有する。
+        - code: _plan
+        - text: では通常の取得で営業ステータスを見て、対象ステータスのときだけ全relationを取得する（現状は同じページを2回読んでいます）。
+      - paragraph: W10 propagate_linked_relationの値形式と競合解決（要確認）
+      - paragraph: 通常の同期経路でrelationをシート・Zoho・kintoneへ出すときに、名称や外部IDへ変換している場合、ここでは生のNotion UUIDの一覧を直接渡しているため形式が変わります。また競合解決を通らないため、シート側でrelation列が手編集されていた場合も上書きします。Notionをマスターとする前提なら許容範囲ですが、通常経路と同じ変換関数を通すべきです。
+      - paragraph:
+        - code: _spreadsheet_properties_for_new_row
+        - text: によって、シートにまだ行がない商品や取引先の行が新規追加される可能性がある点も、意図どおりか確認してください。
+      - paragraph: W11 Notion APIのバージョン依存
+      - paragraph:
+        - code: validate_raw_relation
+        - text: は
+        - code: has_more
+        - text: が真偽値であることを必須にしています。
+        - code: _validate_page
+        - text: は
+        - code: parent.database_id
+        - text: を必須にしています。使用中のNotion-Versionで、
+        - code: has_more
+        - text: が省略される場合や、親が
+        - code: data_source_id
+        - text: 形式になる場合（新しいAPI版）には、全案件がINVALID_RELATIONまたはDATABASE_MISMATCHの恒久保留になり、しかも静かに止まります。
+      - paragraph: 実Notionへの書込が未検証とのことなので、少なくとも次の読込専用の確認は本番投入前に実APIで行ってください。
+      - list:
+        - listitem: 25件を超えるrelationを持つページの取得
+        - listitem: プロパティ項目エンドポイントのページ分割
+        - code: parent
+        - text: の形式
+      - paragraph: INFO
+      - paragraph:
+        - text: I1 1回の
+        - code: __call__
+        - text: でエラーの数だけ
+        - code: fail()
+        - text: が呼ばれるため、
+        - code: attempts
+        - text: が1実行で複数増えて待機時間が想定より早く伸びます。
+        - code: lastError
+        - text: も最後のエラーで上書きされます。実行単位で1回にまとめる方が追跡しやすいです。
+      - paragraph:
+        - text: I2 cronは初回の恒久保留でも500を返します。Vercelのcronは再試行しないため、監視のノイズになるだけです。保留は正常終了として件数だけ返す方がよいと思います。また
+        - code: not_applicable
+        - text: は「今回配送がなかった」件数で、時間切れで持ち越した分も含まれるため、名前と意味が一致していません。
+      - paragraph:
+        - text: I3 drainの
+        - code: IdMapping(notion_key=..., db_key=...)
+        - text: は、他のフィールドに既定値がないとTypeErrorになります。この構築は内側のtryの外にあるため、cron全体が中断します。同様に
+        - code: event.registration_key
+        - text: がNoneのときは文字列連結で落ちます。
+      - paragraph:
+        - text: I4
+        - code: _complete_relations
+        - text: の
+        - code: page["id"]
+        - text: がKeyErrorになると、汎用例外として一時失敗扱いになり、W1の永久リトライに入ります。
+      - paragraph:
+        - text: I5
+        - code: PARSEABLE_NOTION_PROPERTY_TYPES
+        - text: に
+        - code: relation
+        - text: と
+        - code: status
+        - text: が含まれていることを確認してください。含まれていないと
+        - code: values['サービス・商品']
+        - text: がKeyErrorになり、PROCESSING_FAILEDの無限リトライになります。
+      - paragraph:
+        - text: I6 手書きのmigrationは外部キーを
+        - code: REFERENCES ... ON DELETE CASCADE
+        - text: だけで定義しています。Prismaの必須relationは既定で
+        - code: ON UPDATE CASCADE
+        - text: を生成するため、
+        - code: prisma migrate diff
+        - text: でずれが出る可能性があります。
+      - paragraph:
+        - text: I7
+        - code: WonProductLinker
+        - text: を構築後に
+        - code: dispatcher._project_linker
+        - text: へ代入する形は、コンストラクタ引数を用意した意味が薄れます。cronもprivate属性を参照しています。
+        - code: next(iter(RELATIONS[db_key]))
+        - text: のように集合から1要素を取り出す書き方も、明示的な対応表にした方が安全です。
+      - paragraph: I8 良かった点として、次の設計は正しく機能しています。
+      - list:
+        - listitem: PATCH前に配送義務を確定しているため、途中で落ちても配送は失われません。
+        - listitem: 評価に失敗したときは古いペアを適用せず、配送だけ進めます。
+        - listitem: 失注後も配送を消化します。
+        - listitem: ロック順は常に商品→取引先で、デッドロックの経路はありません。
+        - code: relation=null
+        - text: は空扱いにせずエラーにしています。
+      - paragraph: 追加すると良いテスト
+      - list:
+        - listitem: 商品ロックがBUSYのときに、案件本体のdispatchが成功すること（B1修正後）。
+        - listitem: 無関係なプロパティがNotionで却下された案件イベントが完了すること（B2）。
+        - listitem: INVERSE_NOT_VISIBLEが続いたときに上限で保留になり、配送が漏れないこと。
+        - listitem: 読込から検証の間に人手で関係が外された場合の扱い（W2）。
+        - listitem: 時間切れで持ち越したタスクが新規タスクを飢餓状態にしないこと。
+        - listitem: 実Notionでの25件超のrelation取得と、100件ちょうどの取引先への追加拒否。
+      - toolbar "メッセージアクション":
+        - button "コピー":
+          - generic: 
+        - status
+        - button "読み上げ":
+          - generic: 
+        - button "良い回答":
+          - generic: 
+        - button "悪い回答":
+          - generic: 
+        - button "再試行":
+          - generic: 
+        - time: 2 分前

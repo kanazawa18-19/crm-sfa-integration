@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 class HubCreationService:
-    def __init__(self, *, store, journal, notion_clients, adapters, enabled_since, sheet_gateway=None):
+    def __init__(self, *, store, journal, notion_clients, adapters, enabled_since, sheet_gateway=None, project_link_prepare=None):
+        self.project_link_prepare = project_link_prepare
         self.store, self.journal = store, journal
         self.notion_clients, self.adapters = notion_clients, adapters
         self.enabled_since, self.sheet_gateway = enabled_since, sheet_gateway
@@ -139,6 +140,9 @@ class HubCreationService:
                     self.store.upsert(mapping, expected_last_synced_at=None)
                 if mapping.db_key != event.db_key:
                     raise CreationHeld("対応表のDBが一致しません")
+                if event.db_key == "project" and self.project_link_prepare is not None:
+                    # Notion登録・対応表成立後、CRM作成・シート配送・メモより先に保持する。
+                    self.project_link_prepare(mapping)
                 self.journal.resolve_hold(source_key, "source", page_id)
                 notes = {f"{UNAVAILABLE}|{origin}:新規登録": ""}
                 for adapter in self.adapters:

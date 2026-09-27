@@ -54,6 +54,7 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/cron/project-mirror-reconcile"),
     ("GET", "/api/cron/relation-sync-reconcile"),
     ("GET", "/api/cron/spreadsheet-outbox-drain"),
+    ("GET", "/api/cron/project-product-links"),
     ("GET", "/api/cron/sync-capacity-drain"),
     # --- dashboard(Next.js)から叩かれる読み取り系 ---
     ("GET", "/api/dashboard/summary"),

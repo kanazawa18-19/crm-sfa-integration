@@ -360,3 +360,15 @@ def run_spreadsheet_outbox_drain() -> dict[str, Any]:
     滞留の件数は`/api/diagnostics/integrations?only=spreadsheet_outbox`でも見られる。
     """
     return drain_spreadsheet_outbox()
+
+
+@router.get("/api/cron/project-product-links", dependencies=[Depends(verify_cron_secret)])
+def run_project_product_links() -> dict[str, Any]:
+    """受注案件の商品関連を最大3案件だけ再処理する。日報とは別に実行する。"""
+    from src.sync_engine.production_wiring import build_production_dispatcher
+    from src.sync_engine.won_product_link_queue import drain_project_product_links
+    dispatcher = build_production_dispatcher()
+    result = drain_project_product_links(dispatcher._store, dispatcher._project_linker)
+    if result["failed"]:
+        raise HTTPException(status_code=500, detail=result)
+    return result
