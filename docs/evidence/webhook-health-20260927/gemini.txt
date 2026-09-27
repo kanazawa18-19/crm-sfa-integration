@@ -1,0 +1,181 @@
+Gemini 3.6 Thinking。レビュー本文（AX取得）
+heading Gemini の回答, Value: 6
+								516 text Gemini の回答
+							517 container model-response-message-contentr_cfc6c880cba701f3
+								518 container
+									519 text CRM Webhook監視コードのレビュー結果をご報告します。
+秘密値の秘匿（例外のキャッチとレスポンス制御、HMAC検証）や、業務レコードへの書き込みを行わない読み取り専用設計は適切に実装されています。一方で、 誤報・未検知の発生 および GAS側での障害発生時の状態破壊 につながる重大な問題が見つかりました。
+								520 heading BLOCKER（即時修正が必要な致命的問題）, Value: 3
+									521 text BLOCKER（即時修正が必要な致命的問題）
+								522 heading 1. 診断API障害時にGAS側の監視状態が破壊され、日次報告や復旧検知が正常機能しない, Value: 4
+									523 text 1. 診断API障害時にGAS側の監視状態が破壊され、日次報告や復旧検知が正常機能しない
+								524 content list
+									525 container
+										526 text 対象コード :  gas/webhook-health/monitor.js  (L19-21),  gas/webhook-health/domain.js  ( plan )
+									527 container
+										528 text 問題内容 :
+Vercel側の診断APIが一時的に500エラーやタイムアウトになった際、
+										529 text monitor.js
+										530 text  の 
+										531 text catch
+										532 text  ブロックで 
+										533 text checks
+										534 text  が 
+										535 text [{key: 'monitor', status: 'unknown', ...}]
+										536 text  の  1要素のみ  に上書きされます。
+これをそのまま 
+										537 text plan()
+										538 text  に渡すと、以下の障害が発生します：
+										539 content list
+											540 container
+												541 text 1 .
+												542 text next.checks
+												543 text  に保存されていた各連携（
+												544 text notion_delivery
+												545 text  等）の過去状態が更新されず取り残される。
+											546 container
+												547 text 2 . このタイミングで日次報告（
+												548 text daily
+												549 text ）が重なると、
+												550 text lines
+												551 text  に 
+												552 text monitor
+												553 text  の1行しか出力されず、全連携の報告が消える。
+											554 container
+												555 text 3 . API復旧時、障害中に発生した状態変化との差分比較（
+												556 text same
+												557 text  判定）が破綻し、誤通知や復旧通知の打ち消しが起きる。
+									558 container
+										559 text 修正案 :
+API呼び出し失敗時も、 KEYS  に含まれる全連携キーに対して  status: 'unknown' （"診断API疎通不可のため観測不能"）を補完した  checks  配列を作成して  plan()  に渡すか、状態更新を行わずにAPI障害のみを記録・通知する構造に修正してください。
+								560 heading 2. VercelとGAS間の時刻ズレ（クロックスキュー）による監視の即死・誤報リスク, Value: 4
+									561 text 2. VercelとGAS間の時刻ズレ（クロックスキュー）による監視の即死・誤報リスク
+								562 content list
+									563 container
+										564 text 対象コード :  gas/webhook-health/domain.js  ( validate  L13)
+									565 container
+										566 text 問題内容 :
+ validate  内で  now - Date.parse(report.observed_at) < -60000 （1分以上の未来時刻）の場合に  Error('診断応答の時刻が不正です')  を投げます。
+Vercel（NTP時刻）とGoogle Cloud（GAS）の間でサーバー時刻に数 10 秒のズレが生じることは一般的であり、Vercel側が70秒進んでいるだけで毎時トリガーが例外終了し、2回連続発生で  monitor: unknown  の誤アラートが発報されます。
+									567 container
+										568 text 修正案 :
+時刻の許容範囲（未来方向の閾値）を  -300000 （5分）程度まで緩和してください。
+								569 heading WARN（誤報・未検知・状態遷移リスク）, Value: 3
+									570 text WARN（誤報・未検知・状態遷移リスク）
+								571 heading 3. Zoho購読判定において、過去のエントリー混在時に誤って critical （誤報）となる, Value: 4
+									572 text 3. Zoho購読判定において、過去のエントリー混在時に誤って 
+									573 text critical
+									574 text （誤報）となる
+								575 content list
+									576 container
+										577 text 対象コード :  src/diagnostics/webhook_health.py  ( evaluate_watch  L52-54)
+									578 container
+										579 text 問題内容 :
+ entries  のループ内で  if entry.get("notify_url") != callback:  が1つでも存在すると、即座に  critical  を返して処理を抜けます。
+Zoho側で古い通知URLを残したまま新しい購読を作成した場合や、別用途のエントリーが同  channel_id  に存在する場合、正しい購読が存在していても強制的に  critical  判定となります。
+									580 container
+										581 text 修正案 :
+ notify_url == callback  のエントリーのみを抽出した上で、必要なモジュール・イベント（ required ）が揃っているかを判定してください。
+								582 heading 4. _read_database で他システムの変更が Notion の first_write に混入するリスク, Value: 4
+									583 text 4. 
+									584 text _read_database
+									585 text  で他システムの変更が Notion の 
+									586 text first_write
+									587 text  に混入するリスク
+								588 content list
+									589 container
+										590 text 対象コード :  src/diagnostics/webhook_health.py  ( _read_database  L107-110,  collect_webhook_health  L147-148)
+									591 container
+										592 text 問題内容 :
+ SELECT min("createdAt") FROM "AuditLog"  で取得した日時を  notion  の  activities  に追記しています。
+もし  AuditLog  テーブルに kintone や Zoho など Notion 以外の変更ログも記録されている場合、Notion 以外の変更によって Notion の未着判定が起動し、 pending  ->  warning  へと誤通知（誤報）されるリスクがあります。
+									593 container
+										594 text 修正案 :
+ AuditLog  のクエリで Notion 関連の変更ログのみに絞り込む条件（例:  WHERE source = 'notion' ）を追加してください。
+								595 heading 5. pending から warning への遷移計算における NaN による未検知リスク, Value: 4
+									596 text 5. 
+									597 text pending
+									598 text  から 
+									599 text warning
+									600 text  への遷移計算における 
+									601 text NaN
+									602 text  による未検知リスク
+								603 content list
+									604 container
+										605 text 対象コード :  gas/webhook-health/domain.js  ( plan  L35, L40)
+									606 container
+										607 text 問題内容 :
+ now - Math.min(activity, first) >= 2 * HOUR  の計算において、仮に  activity  が  NaN （不正な日付文字列等）の場合、 Math.min  は  NaN  を返します。 now - NaN >= 2 * HOUR  は常に  false  になるため、2時間を超えても  warning  に遷移せず  pending  のまま放置されます（未検知）。
+									608 container
+										609 text 修正案 :
+ activity  の数値判定（ Number.isFinite(activity) ）を行い、不正な場合は  first  の値をフォールバックとして採用してください。
+								610 heading 6. psycopg3 における timestamp / timestamptz 比較のキャスト不備, Value: 4
+									611 text 6. psycopg3 における 
+									612 text timestamp
+									613 text  / 
+									614 text timestamptz
+									615 text  比較のキャスト不備
+								616 content list
+									617 container
+										618 text 対象コード :  src/diagnostics/webhook_health.py  ( _read_database  L108-110)
+									619 container
+										620 text 問題内容 :
+ last.replace(tzinfo=None)  でタイムゾーンを剥がし、SQLで  %s::timestamp  としてキャスト比較しています。DB側の  "createdAt"  カラムが  timestamptz  の場合、セッションタイムゾーンの影響を受けたり、インデックスが効かなくなる可能性があります。
+									621 container
+										622 text 修正案 :
+UTCの  datetime  オブジェクトをそのまま渡し、SQL側で  %s::timestamptz  として安全に比較してください。
+								623 heading 7. Python側 collect_webhook_health での now の分散生成, Value: 4
+									624 text 7. Python側 
+									625 text collect_webhook_health
+									626 text  での 
+									627 text now
+									628 text  の分散生成
+								629 content list
+									630 container
+										631 text 対象コード :  src/diagnostics/webhook_health.py  ( collect_webhook_health  各所)
+									632 container
+										633 text 問題内容 :
+関数冒頭で  now = datetime.now(timezone.utc)  を定義していますが、後続の  evaluate_delivery  呼び出し時に  datetime.now(timezone.utc)  を都度生成しています。API呼び出しのレイテンシにより時刻がズレ、判定基準にブレが生じます。
+									634 container
+										635 text 修正案 :
+冒頭で定義した  now  を一貫して引数に渡すように統一してください。
+								636 heading INFO（コード品質・運用上の改善案）, Value: 3
+									637 text INFO（コード品質・運用上の改善案）
+								638 heading 8. シート（Spreadsheet）の未確認表示の仕様確認, Value: 4
+									639 text 8. シート（Spreadsheet）の未確認表示の仕様確認
+								640 content list
+									641 container
+										642 text 判定 :  要件通り実装済み
+									643 container
+										644 text 確認事項 :
+シートの受信記録がない場合は  unverified （"受信記録がなく、生死は未確認です"）、ある場合は  ok （"受信記録あり・変更有無は未確認です"）と出力され、 abnormal （通知対象）から除外されています。GASの日次報告文面にも注記が正しく挿入されており、仕様を満たしています。
+								645 heading 9. GASトリガー再設定時の自動クリーンアップ, Value: 4
+									646 text 9. GASトリガー再設定時の自動クリーンアップ
+								647 content list
+									648 container
+										649 text 対象コード :  gas/webhook-health/monitor.js  ( installWebhookHealthMonitor )
+									650 container
+										651 text 改善案 :
+ own.length > 1  の場合に例外を投げる仕様になっていますが、既存の重複トリガーを一度削除（ ScriptApp.deleteTrigger ）してから新規作成する処理にすると、手動でのメンテナンス作業が不要になります。
+							652 checkbox Description: 良い回答, Value: 0
+							653 checkbox Description: 悪い回答, Value: 0
+							654 button やり直す
+							655 button コピー
+							656 button 他のオプションを表示
+					60 container
+						61 container
+							62 container
+								63 container
+									64 text entry area (settable) Description: Gemini へのプロンプトを入力, Value: 
+
+										657 text Gemini に相談
+										658 text encrypted
+								67 pop up button (collapsed) Description: アップロードとツール, Secondary Actions: Expand
+								73 pop up button (collapsed) Description: モード選択ツールを開く（現在のモデル: 思考モード）, Secondary Actions: Expand
+								659 container
+									660 button 音声入力 (⌘⇧D)
+						661 text CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+						79 link Description: プライバシーと Gemini 新しいウィンドウで開く, Value: support.google.com/gemini/answer/14620100
+		662 text Refining False Positive Prevention
+
+The focused UI element is 64 text entry area (settable) Description: Gemini へのプロンプトを入力, Value: 

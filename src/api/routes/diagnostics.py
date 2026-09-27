@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import hmac
+import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from src.api.auth import verify_dashboard_api_token
 from src.diagnostics.integrations import run_integration_diagnostics
@@ -38,3 +40,18 @@ def get_integration_diagnostics(
     """
     targets = tuple(name.strip() for name in only.split(",") if name.strip())
     return run_integration_diagnostics(only=targets)
+
+
+# 監視専用トークンは業務API・cronの書き込み権限を持たせない。
+def verify_webhook_health_token(authorization: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("WEBHOOK_HEALTH_TOKEN")
+    if not expected or not authorization or not hmac.compare_digest(authorization.encode(), f"Bearer {expected}".encode()):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@router.get("/api/diagnostics/webhook-health", dependencies=[Depends(verify_webhook_health_token)])
+def get_webhook_health(response: Response) -> dict[str, Any]:
+    """外部監視用。観測だけを行い、Slack送信もDB更新も行わない。"""
+    from src.diagnostics.webhook_health import collect_webhook_health
+    response.headers["Cache-Control"] = "no-store"
+    return collect_webhook_health()

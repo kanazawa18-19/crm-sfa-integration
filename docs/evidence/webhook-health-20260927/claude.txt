@@ -1,0 +1,432 @@
+- complementary "サイドバー":
+  - button "サイドバーを非表示":
+    - generic: 
+  - link "Claude":
+    - /url: /new
+    - generic: Claude
+  - radiogroup "モード":
+    - radio "チャットと Cowork" [checked]:
+      - generic: 
+    - radio [checked]
+    - radio "Code、入力待ち":
+      - generic: 
+    - radio
+  - link "新規":
+    - /url: /new
+    - generic: 
+    - generic: 新規
+    - text: ⇧
+    - generic: Shift
+    - text: ⌘
+    - generic: Command
+    - generic: O
+  - button "クイックタスク":
+    - generic: 
+  - link "プロジェクト":
+    - /url: /cowork/projects
+    - generic: 
+    - generic: プロジェクト
+  - link "Artifacts":
+    - /url: /artifacts
+    - generic: 
+    - generic: Artifacts
+  - button "テンプレートから新規作成":
+    - generic: 
+  - link "スケジュール済みタスク":
+    - /url: /scheduled-task
+    - generic: 
+    - generic: スケジュール済みタスク
+  - link "カスタマイズ":
+    - /url: /customize
+    - generic: 
+    - generic: カスタマイズ
+  - button "その他のナビゲーション項目":
+    - generic: 
+    - generic: もっと見る
+  - button "ピン留め済み" [expanded]:
+    - generic: ピン留め済み
+    - generic: 
+  - generic: 
+  - generic: ドラッグしてピン留め
+  - button "チャットとタスク" [expanded]:
+    - generic: チャットとタスク
+    - generic: 
+  - button "View all":
+    - generic: 
+  - button "最近の項目を絞り込んでグループ化":
+    - generic: 
+  - link "アイドル 資料のレビュー依頼":
+    - /url: /chat/8e1c0746-0561-4272-8d8c-33c385f6ddbf
+    - img "アイドル"
+    - generic: 資料のレビュー依頼
+  - button "資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/d2be12fc-93a9-4c1c-9ccc-46f8eec8e230
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/c41323bf-d73b-44cd-97e4-78039be10458
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル Bot deployment review and testing requirements":
+    - /url: /chat/43127c5a-961c-4194-b7c2-7c924d7f8e5e
+    - img "アイドル"
+    - generic: Bot deployment review and testing requirements
+  - button "Bot deployment review and testing requirementsのその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/17d9c6a4-1b54-4baf-aa55-d7c89c8b12c0
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/04084b26-66db-4471-9707-a7c6533510ab
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/cb79e691-46f3-4dfc-9941-fcb827256069
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/026a9830-edd7-4c6d-adc8-6bdb554053ef
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/96ba6ecd-f172-413c-9862-69f15f5eb46f
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 城山ホテル鹿児島のメッセージ開封率分析":
+    - /url: /chat/2f62a286-17cc-461e-b09d-ee1aa0c08ff6
+    - img "アイドル"
+    - generic: 城山ホテル鹿児島のメッセージ開封率分析
+  - button "城山ホテル鹿児島のメッセージ開封率分析のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/524249e3-bdd7-49e1-aeea-a9c982f5a157
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル ホテル ラ フォレスタのメッセージ開封率分析":
+    - /url: /chat/c3affbee-a3b6-4c44-85f1-f00ad452cd91
+    - img "アイドル"
+    - generic: ホテル ラ フォレスタのメッセージ開封率分析
+  - button "ホテル ラ フォレスタのメッセージ開封率分析のその他のオプション":
+    - generic: 
+  - link "アイドル 日本語レビューの依頼":
+    - /url: /chat/54d2ec3e-4a49-4b01-8c31-e3df59bbac24
+    - img "アイドル"
+    - generic: 日本語レビューの依頼
+  - button "日本語レビューの依頼のその他のオプション":
+    - generic: 
+  - link "アイドル ヴィスキオ京都の管理画面設定確認":
+    - /url: /chat/42fac52b-86c7-4152-9fbf-8eb89458cfc4
+    - img "アイドル"
+    - generic: ヴィスキオ京都の管理画面設定確認
+  - button "ヴィスキオ京都の管理画面設定確認のその他のオプション":
+    - generic: 
+  - link "アイドル 日本語レビューの依頼":
+    - /url: /chat/099d5a40-3bd0-4fd9-bb06-11dd524f5e61
+    - img "アイドル"
+    - generic: 日本語レビューの依頼
+  - button "日本語レビューの依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/dd136fef-58a2-494d-86b0-bc2f3cab7ab2
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/5b2862e7-bc09-46c1-b2fb-9c178a4f627a
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/e57e18d5-e730-483e-a1e7-0710f7af7305
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 添付資料のレビュー依頼":
+    - /url: /chat/34de6d73-b9e4-47fe-92db-d0dd1b8d836f
+    - img "アイドル"
+    - generic: 添付資料のレビュー依頼
+  - button "添付資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - link "アイドル 日本語レビューの依頼":
+    - /url: /chat/346486c1-aacc-45cb-888e-5c99fc1f49de
+    - img "アイドル"
+    - generic: 日本語レビューの依頼
+  - button "日本語レビューの依頼のその他のオプション":
+    - generic: 
+  - button "すべて表示"
+  - button "金沢裕貴 金沢裕貴 Max":
+    - img "金沢裕貴": 金
+    - generic: 金沢裕貴
+    - generic: ·
+    - generic: Max
+    - generic: 
+  - link "アプリと拡張機能を入手":
+    - /url: /downloads
+    - generic: 
+  - button "検索":
+    - generic: 
+  - separator "サイドバーのサイズを変更"
+- main:
+  - button "資料のレビュー依頼、チャット名を変更":
+    - generic: 資料のレビュー依頼
+  - button "資料のレビュー依頼のその他のオプション":
+    - generic: 
+  - button "共有":
+    - generic: 共有
+  - status: Claudeが応答を完了しました
+  - feed "チャットメッセージ":
+    - paragraph: 上下の矢印キーを使用してメッセージ間を移動します。
+    - article "2件中1件目のメッセージ":
+      - 'heading "あなたのメッセージ: 貼り付けた資料の指示に沿って、日本語でレビューしてください。" [level=2]'
+      - button "貼り付けたテキスト, pasted, 498行":
+        - paragraph: CRM Webhook監視のコードレビュー。日本語でBLOCKER/WARN/INFOを報告。誤報・未検知・通知状態の遷移・秘密値漏洩を重視。業務レコードの書込なし、専用GASが毎時専用認証APIを読み本人Slack DMへ通知。API不能2回で通知、変更後2h＋再確認、24h再通知、日次報告。ツール単位であり部分停止は対象外。シートの編集有無は未確認と表示する。API呼出/コード実行不要。 ===== src/diagnostics/webhook_health.py ===== """Webhook監視用の読み取り観測。業務データ・購読・通知状態は変更しない。""" from __fut
+        - paragraph: pasted
+      - paragraph: 貼り付けた資料の指示に沿って、日本語でレビューしてください。
+      - toolbar "メッセージアクション":
+        - time: 6 分前
+        - button "再試行":
+          - generic: 
+        - button "編集":
+          - generic: 
+        - button "コピー":
+          - generic: 
+        - status
+      - status
+    - article "2件中2件目のメッセージ":
+      - 'heading "Claudeが返答しました: 静的レビューのみです（API呼出・コード実行なし）。結果は BLOCKER 1件、WARN 6件、INFO 9件です。" [level=2]'
+      - generic "各リクエストのタイムアウト設定を検証中。":
+        - generic: 各リクエストのタイムアウト設定を検証中。
+        - button "各リクエストのタイムアウト設定を検証中。":
+          - generic: 
+      - status: 各リクエストのタイムアウト設定を検証中。
+      - paragraph: 静的レビューのみです（API呼出・コード実行なし）。結果は BLOCKER 1件、WARN 6件、INFO 9件です。
+      - paragraph: "秘密値漏洩については、実質的な問題は見つかりませんでした。Python側は外部API・DBの例外をすべて固定文言に置き換えています。Zoho購読APIの応答に含まれる token や notify_url も返していません。GAS側も、応答本文やSlackのエラー本文をログに出していません。followRedirects: false でトークンの転送も防げています。"
+      - paragraph: BLOCKER
+      - table:
+        - rowgroup:
+          - row "ID 箇所 指摘 対応案":
+            - columnheader "ID"
+            - columnheader "箇所"
+            - columnheader "指摘"
+            - columnheader "対応案"
+        - rowgroup:
+          - row "B1 webhook_health.py _read_database（AuditLog照会） AuditLog の createdAt > Notion最終受信 を、条件なしで「Notionの未着変更」として扱っています。この条件では、次のような書込もすべて対象になります。 ・Zoho/kintone/シートからの受信処理で生じた書込 ・Notionに反映されない書込 ・失敗した書込 ・Notion受信の処理自体で後から記録された監査ログ 特にNotion受信の処理でも監査ログが作られる場合、受信のたびに activity > receipt になります。夜間・休日など、その後にNotion受信がなければ2時間後に「要確認」となり、定常的な誤報になります。 対象を「Notionへの送信に成功した書込」に限定してください（送信先・成否の列で絞り込み）。あわせて、Notion受信の処理で生じた記録を除外してください。限定できない場合は、この合成をやめて last_edited_time だけに依拠することを推奨します。":
+            - cell "B1"
+            - cell "webhook_health.py _read_database（AuditLog照会）":
+              - code: webhook_health.py
+              - code: _read_database
+              - text: （AuditLog照会）
+            - cell "AuditLog の createdAt > Notion最終受信 を、条件なしで「Notionの未着変更」として扱っています。この条件では、次のような書込もすべて対象になります。 ・Zoho/kintone/シートからの受信処理で生じた書込 ・Notionに反映されない書込 ・失敗した書込 ・Notion受信の処理自体で後から記録された監査ログ 特にNotion受信の処理でも監査ログが作られる場合、受信のたびに activity > receipt になります。夜間・休日など、その後にNotion受信がなければ2時間後に「要確認」となり、定常的な誤報になります。":
+              - code: AuditLog
+              - text: の
+              - code: createdAt > Notion最終受信
+              - text: を、条件なしで「Notionの未着変更」として扱っています。この条件では、次のような書込もすべて対象になります。
+              - text: ・Zoho/kintone/シートからの受信処理で生じた書込
+              - text: ・Notionに反映されない書込
+              - text: ・失敗した書込
+              - text: ・Notion受信の処理自体で後から記録された監査ログ
+              - text: 特にNotion受信の処理でも監査ログが作られる場合、受信のたびに activity > receipt になります。夜間・休日など、その後にNotion受信がなければ2時間後に「要確認」となり、定常的な誤報になります。
+            - cell "対象を「Notionへの送信に成功した書込」に限定してください（送信先・成否の列で絞り込み）。あわせて、Notion受信の処理で生じた記録を除外してください。限定できない場合は、この合成をやめて last_edited_time だけに依拠することを推奨します。"
+      - paragraph: WARN
+      - table:
+        - rowgroup:
+          - row "ID 箇所 指摘 対応案":
+            - columnheader "ID"
+            - columnheader "箇所"
+            - columnheader "指摘"
+            - columnheader "対応案"
+        - rowgroup:
+          - row "W1 domain.js plan（通知状態の遷移） pending の状態で受信時刻が進んだ場合、same=false となり猶予がリセットされます。一方で notified は保持されたままです。このため次の2つの問題が起きます。 ・「要確認」を通知した後、受信が再開しても変更が続く限り ok にならず、復旧通知が出ません ・その後24時間以内に新たな停滞が起きても notified === 'warning' のため通知されません（未検知） pending で受信時刻が前回より進んだ場合は、受信再開として notified を解除し、復旧イベントを出してください。「警告→受信進行→再停滞」のテストも追加してください。":
+            - cell "W1"
+            - cell "domain.js plan（通知状態の遷移）":
+              - code: domain.js
+              - code: plan
+              - text: （通知状態の遷移）
+            - cell "pending の状態で受信時刻が進んだ場合、same=false となり猶予がリセットされます。一方で notified は保持されたままです。このため次の2つの問題が起きます。 ・「要確認」を通知した後、受信が再開しても変更が続く限り ok にならず、復旧通知が出ません ・その後24時間以内に新たな停滞が起きても notified === 'warning' のため通知されません（未検知）":
+              - text: pending の状態で受信時刻が進んだ場合、same=false となり猶予がリセットされます。一方で notified は保持されたままです。このため次の2つの問題が起きます。
+              - text: ・「要確認」を通知した後、受信が再開しても変更が続く限り ok にならず、復旧通知が出ません
+              - text: ・その後24時間以内に新たな停滞が起きても notified === 'warning' のため通知されません（未検知）
+            - cell "pending で受信時刻が前回より進んだ場合は、受信再開として notified を解除し、復旧イベントを出してください。「警告→受信進行→再停滞」のテストも追加してください。"
+          - row "W2 受信側の記録タイミング（範囲外コードへの依存） Notion の last_edited_time と kintone の更新日時は、同期エンジン自身の書込でも更新されます。受信側の実装次第で、次のどちらかが起きます。 ・ループ防止で通知を破棄する際に WebhookReceipt を更新しない場合：誤報 ・署名検証の前に記録している場合：偽の受信で正常に見える（未検知） また、インテグレーション自身の変更でNotionの通知が飛ぶかどうかも前提になっています。 受信記録は「署名検証の成功後、ループ防止の判定前」に行ってください。自己変更で通知が発生するかは実機で確認してください。":
+            - cell "W2"
+            - cell "受信側の記録タイミング（範囲外コードへの依存）"
+            - cell "Notion の last_edited_time と kintone の更新日時は、同期エンジン自身の書込でも更新されます。受信側の実装次第で、次のどちらかが起きます。 ・ループ防止で通知を破棄する際に WebhookReceipt を更新しない場合：誤報 ・署名検証の前に記録している場合：偽の受信で正常に見える（未検知） また、インテグレーション自身の変更でNotionの通知が飛ぶかどうかも前提になっています。":
+              - text: Notion の last_edited_time と kintone の更新日時は、同期エンジン自身の書込でも更新されます。受信側の実装次第で、次のどちらかが起きます。
+              - text: ・ループ防止で通知を破棄する際に WebhookReceipt を更新しない場合：誤報
+              - text: ・署名検証の前に記録している場合：偽の受信で正常に見える（未検知）
+              - text: また、インテグレーション自身の変更でNotionの通知が飛ぶかどうかも前提になっています。
+            - cell "受信記録は「署名検証の成功後、ループ防止の判定前」に行ってください。自己変更で通知が発生するかは実機で確認してください。"
+          - row "W3 _kintone_activity プロセス管理のステータス変更でも更新日時は変わります。しかしWebhookでは別イベントです。kintone側でそのイベントを通知対象にしていない場合、恒常的な誤報になります。 kintoneのWebhook設定を確認し、ステータス更新も通知対象に含めてください。含めない場合は理由の文言に明記してください。":
+            - cell "W3"
+            - cell "_kintone_activity":
+              - code: _kintone_activity
+            - cell "プロセス管理のステータス変更でも更新日時は変わります。しかしWebhookでは別イベントです。kintone側でそのイベントを通知対象にしていない場合、恒常的な誤報になります。"
+            - cell "kintoneのWebhook設定を確認し、ステータス更新も通知対象に含めてください。含めない場合は理由の文言に明記してください。"
+          - row "W4 evaluate_watch のイベント・通知先の照合 購読が Module.all 形式で登録されている場合、要件の create/edit/delete と一致しません。通知先URLにクエリ文字列や末尾スラッシュがある場合も同様です。いずれも恒常的な critical（誤報）になります。 購読作成側（zoho_watch_channel）と同じ正規化処理を共有してください。.all は3操作を満たすものとして扱ってください。":
+            - cell "W4"
+            - cell "evaluate_watch のイベント・通知先の照合":
+              - code: evaluate_watch
+              - text: のイベント・通知先の照合
+            - cell "購読が Module.all 形式で登録されている場合、要件の create/edit/delete と一致しません。通知先URLにクエリ文字列や末尾スラッシュがある場合も同様です。いずれも恒常的な critical（誤報）になります。":
+              - text: 購読が
+              - code: Module.all
+              - text: 形式で登録されている場合、要件の create/edit/delete と一致しません。通知先URLにクエリ文字列や末尾スラッシュがある場合も同様です。いずれも恒常的な critical（誤報）になります。
+            - cell "購読作成側（zoho_watch_channel）と同じ正規化処理を共有してください。.all は3操作を満たすものとして扱ってください。":
+              - text: 購読作成側（zoho_watch_channel）と同じ正規化処理を共有してください。
+              - code: .all
+              - text: は3操作を満たすものとして扱ってください。
+          - row "W5 購読期限の6時間警告 warning は即時通知です。購読の更新処理が1日1回などで、期限が6時間以内に入ってから更新される設計だと、毎日「要確認」が出ます。 閾値を更新周期より短くしてください。または、warning にも「再確認後に通知」を適用してください。":
+            - cell "W5"
+            - cell "購読期限の6時間警告"
+            - cell "warning は即時通知です。購読の更新処理が1日1回などで、期限が6時間以内に入ってから更新される設計だと、毎日「要確認」が出ます。"
+            - cell "閾値を更新周期より短くしてください。または、warning にも「再確認後に通知」を適用してください。"
+          - row "W6 診断API全体の所要時間 TIMEOUT=5 は接続・読取それぞれの上限で、1リクエスト全体の上限ではありません。Notionのスキーマ数、kintone3件、Zoho、DBを直列に呼ぶため、最悪時は関数の実行上限を超えます。その場合、原因が「診断API監視不能」に一括され、どの外部APIが遅いのかが分からなくなります。 全体の期限を設け、超過した項目は unknown として部分的な結果を返してください。":
+            - cell "W6"
+            - cell "診断API全体の所要時間"
+            - cell "TIMEOUT=5 は接続・読取それぞれの上限で、1リクエスト全体の上限ではありません。Notionのスキーマ数、kintone3件、Zoho、DBを直列に呼ぶため、最悪時は関数の実行上限を超えます。その場合、原因が「診断API監視不能」に一括され、どの外部APIが遅いのかが分からなくなります。"
+            - cell "全体の期限を設け、超過した項目は unknown として部分的な結果を返してください。"
+      - paragraph: INFO
+      - table:
+        - rowgroup:
+          - row "ID 箇所 指摘 対応案":
+            - columnheader "ID"
+            - columnheader "箇所"
+            - columnheader "指摘"
+            - columnheader "対応案"
+        - rowgroup:
+          - row "I1 verify_webhook_health_token hmac.compare_digest に文字列を渡しています。ヘッダに非ASCII文字が含まれると TypeError となり、401ではなく500が返ります。 bytes にエンコードしてから比較してください。":
+            - cell "I1"
+            - cell "verify_webhook_health_token":
+              - code: verify_webhook_health_token
+            - cell "hmac.compare_digest に文字列を渡しています。ヘッダに非ASCII文字が含まれると TypeError となり、401ではなく500が返ります。":
+              - code: hmac.compare_digest
+              - text: に文字列を渡しています。ヘッダに非ASCII文字が含まれると TypeError となり、401ではなく500が返ります。
+            - cell "bytes にエンコードしてから比較してください。"
+          - row "I2 24時間再通知 >= 24*HOUR を毎時トリガーで判定しているため、トリガー時刻の揺れで実際には約25時間周期にずれていきます。 RECHECK_DELAY と同様に許容幅を設けてください（例：23.5時間）。":
+            - cell "I2"
+            - cell "24時間再通知"
+            - cell ">= 24*HOUR を毎時トリガーで判定しているため、トリガー時刻の揺れで実際には約25時間周期にずれていきます。":
+              - code: ">= 24*HOUR"
+              - text: を毎時トリガーで判定しているため、トリガー時刻の揺れで実際には約25時間周期にずれていきます。
+            - cell "RECHECK_DELAY と同様に許容幅を設けてください（例：23.5時間）。"
+          - row "I3 RECHECK_DELAY=0.8h トリガー間隔が0.8時間を下回ると、2回連続の不能でも通知されず、3回目での通知になります。 仕様の「2回で通知」を厳守するなら、連続回数のカウントを併用してください。":
+            - cell "I3"
+            - cell "RECHECK_DELAY=0.8h"
+            - cell "トリガー間隔が0.8時間を下回ると、2回連続の不能でも通知されず、3回目での通知になります。"
+            - cell "仕様の「2回で通知」を厳守するなら、連続回数のカウントを併用してください。"
+          - row "I4 DB障害時 receipt_store と各受信項目の計5項目が同時に unknown になり、1つの障害で5行通知されます。理由も「変更履歴の取得に失敗」となり、原因を正しく表していません。 receipt_store が unknown のときは、派生項目の通知を抑止するか理由を分けてください。":
+            - cell "I4"
+            - cell "DB障害時"
+            - cell "receipt_store と各受信項目の計5項目が同時に unknown になり、1つの障害で5行通知されます。理由も「変更履歴の取得に失敗」となり、原因を正しく表していません。"
+            - cell "receipt_store が unknown のときは、派生項目の通知を抑止するか理由を分けてください。"
+          - row "I5 evaluate_delivery の未来時刻判定 許容幅がありません。DBの now() とVercelの時計のずれで、一時的に unknown になる可能性があります。 数十秒程度の許容幅を設けてください。":
+            - cell "I5"
+            - cell "evaluate_delivery の未来時刻判定":
+              - code: evaluate_delivery
+              - text: の未来時刻判定
+            - cell "許容幅がありません。DBの now() とVercelの時計のずれで、一時的に unknown になる可能性があります。"
+            - cell "数十秒程度の許容幅を設けてください。"
+          - row "I6 監視自体の停止 次の場合は throw するだけで、Slackには何も届きません。 ・監視用の設定不足 ・保存状態のJSON破損 ・Slackトークンの失効 GASの失敗通知メールを「すぐに」に設定してください。「日次報告が来ないこと自体を異常とみなす」旨を運用手順書に追記してください。":
+            - cell "I6"
+            - cell "監視自体の停止"
+            - cell "次の場合は throw するだけで、Slackには何も届きません。 ・監視用の設定不足 ・保存状態のJSON破損 ・Slackトークンの失効":
+              - text: 次の場合は throw するだけで、Slackには何も届きません。
+              - text: ・監視用の設定不足
+              - text: ・保存状態のJSON破損
+              - text: ・Slackトークンの失効
+            - cell "GASの失敗通知メールを「すぐに」に設定してください。「日次報告が来ないこと自体を異常とみなす」旨を運用手順書に追記してください。"
+          - row "I7 HttpZohoClient 読み取り専用の要件に関わる確認事項です。 ・トークンの取得・更新時にDBやキャッシュへ書き込まないか ・同期エンジンとアクセストークンの発行上限を共有して影響しないか 実装を確認し、該当があれば対策してください。":
+            - cell "I7"
+            - cell "HttpZohoClient"
+            - cell "読み取り専用の要件に関わる確認事項です。 ・トークンの取得・更新時にDBやキャッシュへ書き込まないか ・同期エンジンとアクセストークンの発行上限を共有して影響しないか":
+              - text: 読み取り専用の要件に関わる確認事項です。
+              - text: ・トークンの取得・更新時にDBやキャッシュへ書き込まないか
+              - text: ・同期エンジンとアクセストークンの発行上限を共有して影響しないか
+            - cell "実装を確認し、該当があれば対策してください。"
+          - row "I8 ok 時の理由文言 「6モジュール」が固定文言になっています。 DEFAULT_MODULES の件数から生成してください。":
+            - cell "I8"
+            - cell "ok 時の理由文言"
+            - cell "「6モジュール」が固定文言になっています。"
+            - cell "DEFAULT_MODULES の件数から生成してください。"
+          - row "I9 テスト 次のテストが不足しています。 ・collect_webhook_health の集約（DB失敗、読取の例外、first_write の合成） ・_read_watch の204・非200・例外 ・応答に秘密値が出ないこと ・W1 の遷移 ・validate の古い時刻の拒否 また domain.test.js の「Slack失敗で再送」は、名前に反して再送を検証していません。 上記のテストを追加してください。":
+            - cell "I9"
+            - cell "テスト"
+            - cell "次のテストが不足しています。 ・collect_webhook_health の集約（DB失敗、読取の例外、first_write の合成） ・_read_watch の204・非200・例外 ・応答に秘密値が出ないこと ・W1 の遷移 ・validate の古い時刻の拒否 また domain.test.js の「Slack失敗で再送」は、名前に反して再送を検証していません。":
+              - text: 次のテストが不足しています。
+              - text: ・collect_webhook_health の集約（DB失敗、読取の例外、first_write の合成）
+              - text: ・_read_watch の204・非200・例外
+              - text: ・応答に秘密値が出ないこと
+              - text: ・W1 の遷移
+              - text: ・validate の古い時刻の拒否
+              - text: また domain.test.js の「Slack失敗で再送」は、名前に反して再送を検証していません。
+            - cell "上記のテストを追加してください。"
+      - paragraph: 仕様との整合は次のとおりです。
+      - list:
+        - listitem: 不能2回での通知、変更後2時間＋再確認、24時間再通知、JSTでの日次報告、確認不能を復旧扱いしない点は、いずれも実装どおり満たしています（I2・I3の揺れを除く）。
+        - listitem: シートの編集有無を「未確認」と表示する要件も、理由文言の差し替えで満たしています。
+        - listitem: ツール単位での判定であることも、日次報告に明記されています。
+      - paragraph: B1を解消した後、W1とW2を実際の受信処理の順序と突き合わせて確認することを優先してください。
+      - toolbar "メッセージアクション":
+        - button "コピー":
+          - generic: 
+        - status
+        - button "読み上げ":
+          - generic: 
+        - button "良い回答":
+          - generic: 
+        - button "悪い回答":
+          - generic: 
+        - button "再試行":
+          - generic: 
+        - time: 3 分前
+  - button "最下部までスクロール":
+    - generic: 
+  - status
+  - status
+  - status
+  - generic: メッセージを入力…
+  - textbox "Claudeへのプロンプトを入力してください" [active]:
+    - paragraph
+  - status
+  - button "ファイルやコネクタなどを追加":
+    - generic: 
+  - button "音声入力":
+    - generic: 
+  - group "ボイスモードを開始":
+    - button "ボイスモードを開始":
+    - button "マイク":
+      - generic: 
+  - note:
+    - link "Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。":
+      - /url: https://support.anthropic.com/en/articles/8525154-claude-is-providing-incorrect-or-misleading-responses-what-s-going-on
+      - text: Claude は AI であり、間違えることがあります。
+      - generic: 回答は必ずご確認ください。
+  - 'button "モデル: Opus 5.5 中"':
+    - text: Opus 5.5
+    - generic: 中
+  - status
+- status
+- status
+- region "Notifications"
