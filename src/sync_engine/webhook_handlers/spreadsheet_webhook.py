@@ -67,6 +67,17 @@ def spreadsheet_payload_to_sync_event(
 
     values = dict(payload.get("values") or {})
     raw_key = values.pop("同期キー", None)
+    if isinstance(raw_key, str) and raw_key.startswith("new:"):
+        if payload.get("action") != "register_new":
+            raise ValueError("新規行は登録メニューから受け付けます")
+        try:
+            registration_key = "new:" + str(UUID(raw_key[4:]))
+        except ValueError:
+            raise ValueError("新規登録キーが不正です") from None
+        return SyncEvent(source_tool=Tool.SPREADSHEET, db_key=db_key,
+                         external_id=str(payload["row"]), occurred_at=parse_iso_datetime(payload["editedAt"]),
+                         registration_key=registration_key, properties={},
+                         sync_system_id=get_header(headers, HEADER_NAME))
     try:
         if not isinstance(raw_key, str):
             raise ValueError
@@ -118,6 +129,9 @@ def handler(
     except Exception:
         logger.exception("unexpected error while dispatching spreadsheet sync event")
         return internal_error_response()
+
+    if result is not None and result.reason == "hub_creation_disabled":
+        return {"statusCode": 503, "body": json.dumps({"error": "新規登録は現在停止中です"})}
 
     return {
         "statusCode": 200,

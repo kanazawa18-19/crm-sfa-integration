@@ -335,22 +335,13 @@ def test_zoho_payload_to_sync_events_multi_value_field_is_split() -> None:
     assert events[0].properties == {"サイトコントローラー": ["なし", "リンカーン"]}
 
 
-def test_zoho_payload_to_sync_events_deliberately_excluded_field_is_skipped_with_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """「確度」（Probability）はNotionのA/B/C/D選択肢とZoho側の0〜100%値で尺度が異なり
-    意図的にマッピングしない（transform_zoho_project()のdocstring参照）。Zohoラベルへの
-    解決自体は成功するが、per-fieldマッピングに無いため警告ログを出しつつ静かにスキップされ、
-    書き込まれず、クラッシュもしない。"""
+def test_zoho_probability_updates_only_numeric_confidence() -> None:
+    """旧A〜Dを保持し、数値専用プロパティへ書く。"""
     payload = _payload(
         affected_values=[{"record_id": DEFAULT_RECORD_ID, "values": {"Probability": "50"}}],
     )
-
-    with caplog.at_level("WARNING"):
-        events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
-
-    assert events[0].properties == {}
-    assert any("Probability" in record.getMessage() for record in caplog.records)
+    events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
+    assert events[0].properties == {"確度（数値）": 50.0}
 
 
 def test_zoho_payload_to_sync_events_transform_raising_skips_only_that_field(

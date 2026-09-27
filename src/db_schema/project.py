@@ -165,9 +165,16 @@ PROJECT_SCHEMA = DatabaseSchema(
             name="確度",
             property_type=PropertyType.SELECT,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="A=確度高い〜D=確度低い（S/A/B/Cではない）",
+            sync_scope=SyncScope.SPREADSHEET_ONLY,
+            description="従来のA〜D。数値の受注確率とは分けて保持する",
             options=CONFIDENCE_LEVELS,
+        ),
+        PropertyDefinition(
+            name="確度（数値）",
+            property_type=PropertyType.NUMBER,
+            requirement=RequirementLevel.OPTIONAL,
+            sync_scope=SyncScope.ALL_TOOLS,
+            description="受注確率（0〜100）。Zoho Probability と同じ数値",
         ),
         PropertyDefinition(
             name="ファーストタッチ",

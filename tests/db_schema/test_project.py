@@ -1,4 +1,5 @@
 import pytest
+from src.db_schema.base import PropertyType
 
 from src.db_schema.project import (
     ACTIVE_STATUSES,
@@ -125,9 +126,9 @@ def test_project_schema_status_property_options_match_real_data() -> None:
     }
 
 
-def test_project_schema_confidence_property_options_are_a_to_d() -> None:
-    confidence_prop = PROJECT_SCHEMA.get_property("確度")
-    assert confidence_prop.options == CONFIDENCE_LEVELS
+def test_project_schema_confidence_property_is_numeric() -> None:
+    confidence_prop = PROJECT_SCHEMA.get_property("確度（数値）")
+    assert confidence_prop.property_type == PropertyType.NUMBER
 
 
 def test_project_schema_notion_database_id_matches_real_data() -> None:

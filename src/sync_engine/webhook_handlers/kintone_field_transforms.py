@@ -140,6 +140,8 @@ def _resolve_client_master_for_kintone_action(client_name: Any) -> Any:
 # キーは実フィールドコード（2026-08-14、GET /k/v1/app/form/fields.json?app=<project>で検証済み。
 # コメントのラベルは検証時点の表示ラベル）。
 _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "リンク_0": ("メールアドレス", lambda v: v if isinstance(v, str) and v else SKIP_FIELD),
+    "リンク": ("電話番号", lambda v: v if isinstance(v, str) and v else SKIP_FIELD),
     "ドロップダウン_2": ("営業ステータス", normalize_project_status),  # ラベル: 契約進捗状況
     "日付_3": ("契約日 / 予想契約日", normalize_date),  # ラベル: 課金開始予定日
     # 「月額費用」「初期費用」はPROJECT_SCHEMA上NUMBER型（build_notion_property_valueは
@@ -168,6 +170,7 @@ _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any
 # と「本部名」（チェーンDBへのリレーション作成）は対象外（モジュールdocstring参照）。
 # キーは実フィールドコード（2026-08-14、GET /k/v1/app/form/fields.json?app=<client_master>で検証済み）。
 _CLIENT_MASTER_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "文字列__複数行_": ("備考", lambda v: v if isinstance(v, str) and v else SKIP_FIELD),
     "顧客名": ("取引先名", lambda v: v),  # ラベル: 顧客名（法人・個人・施設）
     "顧客種別": ("顧客種別", normalize_customer_type),  # コード==ラベル
     "郵便番号": ("郵便番号", lambda v: v or None),  # ラベル: 〒

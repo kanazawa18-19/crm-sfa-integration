@@ -380,8 +380,9 @@ def _normalize_fetched_page(
         # 新たに同期する項目は、未同期時代の空値で外部の実値を消さない。
         # この3項目の外向き更新は、変更した項目IDが明示された通知に限る。
         guarded = {
-            get_schema("project").notion_database_id: ("次回アクション日",),
-            get_schema("action").notion_database_id: ("先方担当者",),
+            get_schema("project").notion_database_id: ("次回アクション日", "確度（数値）", "【例外】粗利", "再アプローチ日", "メールアドレス", "電話番号"),
+            get_schema("client_master").notion_database_id: ("備考",),
+            get_schema("action").notion_database_id: ("先方担当者", "導入フローとスケジュール"),
             get_schema("chain").notion_database_id: ("その他",),
         }
         for name in guarded.get(parent.get("database_id"), ()):
@@ -534,6 +535,10 @@ def handler_with_proxy(
     # いくらでも作れる**（公開エンドポイントなので、偽イベントを自由に投げられる）。
     if not trusted_queue and not verify_notion_webhook_signature(headers, body_text):
         return unauthorized_response()
+
+    # 本文メモの変更はプロパティ同期の対象外。全項目の再送を発生させない。
+    if raw_payload.get("type") == "page.content_updated":
+        return {"statusCode": 200, "body": json.dumps({"skipped": "page_content_only"})}
 
     # **再送を弾く。** Notionは配信に失敗すると最大8回・およそ24時間かけて再送する
     # （2026-09-01）。同じ書き込みを繰り返さないよう、イベントIDで重複を排除する。

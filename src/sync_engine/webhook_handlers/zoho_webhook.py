@@ -84,6 +84,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from src.sync_engine.sync_notes import gap_notes, unresolved_note, resolved_notes
 from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
@@ -205,6 +206,18 @@ def zoho_payload_to_sync_events(
         # Dispatcher側（未定義プロパティのスキップ）で根本的には保護されるが、Zoho側でも
         # 早期に警告ログを出しておく（Notionのようなrollup/formula型の大量発生は想定しにくいため、
         # notion_webhook.pyのような型ホワイトリストまでは設けない簡易対応）。
+        note_values = {
+            (resolve_zoho_field_label(module, code) or "").removeprefix("【Notion】"): value
+            for code, value in matched_values.items()
+        }
+        # 担当者候補は表示名だけをメモする。NotionユーザーIDへは推測で結び付けない。
+        if db_key in ("chain", "contact") and "Owner" in matched_values:
+            owner = matched_values["Owner"]
+            display = owner.get("name") if isinstance(owner, Mapping) else owner
+            note_values["担当" if db_key == "chain" else "担当メンバー"] = (
+                "Owner（送信元の担当者）: " + str(display) if display else ""
+            )
+        sync_notes = gap_notes(Tool.ZOHO, db_key, note_values)
         properties: dict[str, Any] = {}
         # zoho_action_relation_context(): db_key="action"の「取引先」（field6）/
         # 「【Notion】取引先マスター」（field22）変更（取引先マスターリレーション自動解決）が、
@@ -263,6 +276,9 @@ def zoho_payload_to_sync_events(
                         )
                         continue
                     if transformed_value is SKIP_FIELD:
+                        if value not in (None, "", [], {}):
+                            key, note = unresolved_note(Tool.ZOHO, notion_property, value)
+                            sync_notes[key] = note
                         # 未解決のリレーション（例: 取引先マスターの名寄せが曖昧・候補なし）。
                         # 既存のNoneハンドリング（明示的にプロパティをクリアする）とは意味が異なり、
                         # このプロパティへの書き込み自体を行わない（既存の値を上書きしない）。
@@ -275,6 +291,7 @@ def zoho_payload_to_sync_events(
                         )
                         continue
                     properties[notion_property] = transformed_value
+                    sync_notes.update(resolved_notes(Tool.ZOHO, notion_property))
                     continue
 
                 # field_mappingが未整備のdb_key（ZOHO_LABEL_FIELD_MAPPINGSにエントリが無い場合。
@@ -311,6 +328,7 @@ def zoho_payload_to_sync_events(
 
         events.append(
             SyncEvent(
+                sync_notes=sync_notes,
                 source_tool=Tool.ZOHO,
                 db_key=db_key,
                 external_id=record_id,

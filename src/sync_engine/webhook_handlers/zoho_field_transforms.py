@@ -57,6 +57,7 @@ Zoho「ステージ」列（契約済/失注/解約（処理済み）/返信な�
 
 from __future__ import annotations
 
+import math
 import contextvars
 import datetime
 import re
@@ -204,6 +205,25 @@ def _next_action_date(value: Any) -> Any:
     return SKIP_FIELD
 
 
+def _finite_number(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return SKIP_FIELD
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return SKIP_FIELD
+    return number if math.isfinite(number) else SKIP_FIELD
+
+
+def _probability(value: Any) -> Any:
+    number = _finite_number(value)
+    if number is None or number is SKIP_FIELD:
+        return number
+    return number if 0 <= number <= 100 else SKIP_FIELD
+
+
 # Zohoラベル -> (Notionプロパティ名, 値変換関数)
 # 対象は transform_zoho_project() が実際にNotionプロパティへ書き込んでいるフィールドのみ。
 # 以下は意図的に含めない（transform_zoho_project()のdocstring参照）:
@@ -211,8 +231,7 @@ def _next_action_date(value: Any) -> Any:
 #   ： 取引先マスター等へのリレーション解決が必要で、1フィールド単位のWebhook部分更新には
 #   不適切な、別の複雑な処理のため対象外。
 # - `zoho_ID`: Notionのプロパティ書き込み対象ではない。
-# - `確度`: NotionのA/B/C/D選択肢とZoho側の0〜100パーセント値で尺度が異なり、機械的な
-#   変換対応表が無い。
+# - 旧`確度`（A〜D）は保持し、Probabilityは別の数値項目へ対応する。
 # - `例外スイッチ`/`ショット`: 対応するZoho列が実データと意味が一致しない。
 # - FORMULA/ROLLUP型のNotionプロパティ（粗利/個人粗利/契約スピード/失注経過日数（日）/
 #   初期フィー/フィー率/経過日数/予算組のタイミング/アクション日/決算月/チェーン本社/
@@ -228,6 +247,9 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
     # field72。実測194/200件で値あり
     '提案サービス1': ('サービス・商品', _relation_from_zoho_lookup('サービス・商品', 'product')),
     # Zohoラベル == Notionプロパティ名だが、値変換が必要なもの（"同名だから変換不要"ではない）。
+    "確度": ("確度（数値）", _probability),
+    "【Notion】【例外】粗利": ("【例外】粗利", _finite_number),
+    "【Notion】再アプローチ日": ("再アプローチ日", _next_action_date),
     "案件名": ("案件名", lambda v: v),
     "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),
     "月額費用": ("月額費用", lambda v: float(v) if v not in (None, "") else None),
@@ -313,10 +335,6 @@ _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] =
 #   フィールドマッピングには実は"アクション種別"という別列も存在するが、これはZoho側で
 #   自由記述と独立して更新されうる値であり、classify_zoho_action_type()の分類結果とは
 #   別物のため、その値をそのまま書き込むのは検証されていない判断になってしまう）。
-# - "導入フローとスケジュール": ACTION_SCHEMA上書き込み可能なTEXT型プロパティで、ライブAPIにも
-#   対応する列（"【Notion】導入フローとスケジュール"）が存在するが、transform_zoho_action()は
-#   これを一度も書き込んでいない（移行時に対象外とされた理由の記載なし）ため、既存の
-#   人手確認済み判断を踏襲する原則により、ここでも対象外のままにする。
 # - ROLLUP/CREATED_TIME/CREATED_BY型のプロパティ（決済者/担当営業/案件 担当者名/提案サービス/
 #   営業ステータス/作成日時/作成者）: 読み取り専用のため対象外。
 # - "連絡先"/"👯‍♀️ チェーンリスト": リレーションだがtransform_zoho_action()に対応する
@@ -346,6 +364,7 @@ def _zoho_action_type(value: Any) -> str | None:
 
 
 _ACTION_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "【Notion】導入フローとスケジュール": ("導入フローとスケジュール", lambda v: v if v is None or isinstance(v, str) else SKIP_FIELD),
     # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
     # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
     # field1。実測6/200件で値あり
@@ -379,6 +398,7 @@ _ACTION_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] 
 # 対象は transform_zoho_client_master() が実際にNotionプロパティへ書き込んでいるフィールドのみ
 # （src/migration/zoho_client_master.py参照）。"zoho_ID"は内部専用キーのため対象外。
 _CLIENT_MASTER_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "備考": ("備考", lambda v: v if v is None or isinstance(v, str) else SKIP_FIELD),
     "取引先名": ("取引先名", lambda v: v),
     "顧客種別": ("顧客種別", normalize_customer_type),
     "郵便番号": ("郵便番号", lambda v: v or None),

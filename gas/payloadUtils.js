@@ -40,6 +40,8 @@ function rowValuesToRecord(headers, rowValues, options) {
   var record = {};
   headers.forEach(function (name, index) {
     if (!name) return;
+    if (options.startColumn !== undefined && name !== "同期キー" &&
+        (index + 1 < options.startColumn || index + 1 >= options.startColumn + options.numColumns)) return;
     if (excludedHeaders.indexOf(name) !== -1) return;
 
     var value = index < rowValues.length ? rowValues[index] : "";

@@ -2200,3 +2200,23 @@ def test_dispatch_does_not_archive_page_when_mapping_write_actually_landed(
     # 問題としてではなく、通常の作成として通知されること。
     assert notifier.new_record_issue_calls == []
     assert notifier.new_record_created_calls
+
+
+def test_new_external_page_note_failure_is_retried_without_creating_again(monkeypatch, store):
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.KINTONE] = FakeSyncTarget(Tool.KINTONE, {"new-with-note": _kintone_client_master_record()})
+    calls=[]
+    def writer(event,mapping):
+        calls.append(mapping.notion_key)
+        if len(calls)==1: raise RuntimeError("メモの一時エラー")
+    dispatcher=Dispatcher(store,targets,note_writer=writer)
+    event=SyncEvent(Tool.KINTONE,"client_master","new-with-note",NOW,sync_notes={"メモ":"確認必要"})
+    with pytest.raises(RuntimeError,match="メモの一時エラー"):
+        dispatcher.dispatch(event)
+    mapping=store.find_by_external_id(Tool.KINTONE,"new-with-note",db_key="client_master")
+    assert mapping is not None and mapping.last_synced_at is None
+    assert not dispatcher.dispatch(event).skipped
+    assert store.get(mapping.notion_key).last_synced_at==NOW
+    assert len(targets[Tool.NOTION].upsert_calls)==1
+    assert calls==["new-id","new-id"]

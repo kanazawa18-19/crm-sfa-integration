@@ -189,3 +189,9 @@ test("tabDefinitions: 同期ログタブの列はspreadsheet_sync.pyのappend_co
     "発生日時",
   ]);
 });
+
+test("編集列だけを送り、同期キーを残す。消したセルの空文字も残す", () => {
+  assert.deepEqual(rowValuesToRecord(["案件名", "メモ", "同期キー"], ["保持", "", "key"], {
+    startColumn: 2, numColumns: 1,
+  }), {"メモ": "", "同期キー": "key"});
+});

@@ -1,0 +1,32 @@
+{
+  "monitor": {
+    "project": "1HviGFC-BG2LWys26QDxmNYBla-rZcfRIQa_l2_Nk0sbFqS91m2r_rI4d",
+    "manual_tick_jst": "2026-09-27T21:11:26+09:00",
+    "manual_slack_messages_accepted": 1,
+    "hourly_trigger_count": 1,
+    "automatic_tick_jst": "2026-09-27T21:47:58+09:00",
+    "automatic_type": "時間主導型",
+    "automatic_status": "完了",
+    "automatic_duration_seconds": 8.859,
+    "failure_email": "今すぐ通知を受け取る",
+    "local_hourly_launchagent": "bootoutおよびLaunchAgents外へ退避済み",
+    "local_weekly_launchagent": "継続"
+  },
+  "confidence": {
+    "notion_number_property": "確度（数値）",
+    "sheet": "案件管理",
+    "sheet_column": 36,
+    "old_select_preserved": true,
+    "prepared_before_code_deployment": true
+  },
+  "creation_preflight": {
+    "zoho_chain_plan": "passed",
+    "kintone_client_plan": "passed",
+    "external_record_creates": 0,
+    "zoho_chain_list_read_count": 232,
+    "zoho_chain_list_pages": 2,
+    "coql": "current OAuth scope does not permit SELECT; do not treat as no matches",
+    "fallback": "regular GET records list with fields=id,Name; bounded and fail closed"
+  },
+  "slack_rotation": "本人指定で全機能完成後まで延期。今回失効・交換していない"
+}

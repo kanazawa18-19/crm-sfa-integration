@@ -948,11 +948,31 @@ def build_production_dispatcher(
     # 通知しない（`scripts/backfill_zoho_missed_records.py` のように数百件を流す回収処理で、
     # 必須項目不足のたびに DM が飛ぶのを避ける用途）。
     notifier = WebhookSlackNotifier() if slack_notifier is _DEFAULT_SLACK_NOTIFIER else slack_notifier
+    def write_notes(event: SyncEvent, mapping: IdMapping) -> None:
+        client = notion_clients.get(event.db_key)
+        if client is None:
+            raise RuntimeError("同期メモ用のNotion接続がありません")
+        client.upsert_sync_notes(mapping.notion_key, event.sync_notes)
+
+    def pending_hub_creation(event: SyncEvent, properties: dict[str, Any]) -> bool:
+        from src.hub_creation.service import enabled_since
+        if enabled_since() is None:
+            return False
+        from src.hub_creation.domain import title_value, identity_hash, CreationHeld
+        from src.hub_creation.journal import PostgresCreationJournal
+        try:
+            _name, title = title_value(event.db_key, properties)
+        except CreationHeld:
+            return False
+        return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, identity_hash(event.db_key, title), event.external_id)
+
     return Dispatcher(
         store,
         targets,
         sync_system_id=get_sync_system_id(),
         slack_notifier=notifier,
+        note_writer=write_notes,
+        new_record_guard=pending_hub_creation,
     )
 
 
@@ -970,9 +990,10 @@ class SkipTrackingDispatcher:
     """
 
     def __init__(
-        self, dispatcher: Dispatcher, slack_notifier: SlackNotifier | None = None
+        self, dispatcher: Dispatcher, slack_notifier: SlackNotifier | None = None, creation_service=None
     ) -> None:
         self._dispatcher = dispatcher
+        self._creation_service = creation_service
         self._slack_notifier = slack_notifier
         # `last_result` はリクエストごとのコンテキスト（contextvars）に持つ。
         # このオブジェクトはプロセス内シングルトンで、2026-09-24 から Webhook ルートが
@@ -1045,7 +1066,22 @@ class SkipTrackingDispatcher:
         ]
 
     def dispatch(self, event: SyncEvent) -> DispatchResult:
+        if getattr(event, "registration_key", None) and self._creation_service is None:
+            self.last_result = DispatchResult(skipped=True, reason="hub_creation_disabled")
+            return self.last_result
+        if self._creation_service is not None:
+            reason = self._creation_service.handle(event)
+            if reason is not None:
+                if event.source_tool == Tool.NOTION and reason in ("hub_creation_complete", "hub_creation_held"):
+                    # 作成済みの相手には通常の更新も継続する。
+                    result = self._dispatcher.dispatch(event)
+                else:
+                    result = DispatchResult(skipped=reason != "hub_creation_complete", reason=reason)
+                self.last_result = result
+                return result
         result = self._dispatcher.dispatch(event)
+        if self._creation_service is not None:
+            self._creation_service.retry_after_sheet_sync(event, result)
         self.last_result = result
         if result.has_partial_skips:
             for prop_result in result.properties:
@@ -1159,6 +1195,20 @@ class ProductionSyncWiring:
             CLIENT_MASTER_SCHEMA.key
         )
         self.zoho_action_client: HttpZohoClient | None = build_zoho_client()
+        creation_service = None
+        from src.hub_creation.service import HubCreationService, enabled_since
+        since = enabled_since()
+        if since is not None:
+            from src.hub_creation.adapters import ZohoCreationAdapter, KintoneCreationAdapter
+            from src.hub_creation.journal import PostgresCreationJournal
+            from src.hub_creation.sheet_gateway import SheetRegistrationGateway
+            sheet_targets = build_spreadsheet_targets_by_db()
+            sheet_client = next(iter(sheet_targets.values()))._client if sheet_targets else None
+            creation_service = HubCreationService(
+                store=self.id_mapping_store, journal=PostgresCreationJournal(), notion_clients=notion_clients,
+                adapters=[ZohoCreationAdapter(self.zoho_action_client), KintoneCreationAdapter(build_kintone_targets_by_db())],
+                enabled_since=since, sheet_gateway=SheetRegistrationGateway(sheet_client) if sheet_client else None,
+            )
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
             build_production_dispatcher(
                 id_mapping_store=self.id_mapping_store,
@@ -1167,6 +1217,7 @@ class ProductionSyncWiring:
             ),
             # 既知のズレ以外のスキップだけをSlackへ上げる（`_unexpected_skips`参照）。
             slack_notifier=WebhookSlackNotifier(),
+            creation_service=creation_service,
         )
         # build_production_dispatcher()内で改めてNotionクライアント一式を構築しており
         # 二重にはなるが、Webhook受信のたびに毎回構築するわけではない（モジュールレベルで

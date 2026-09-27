@@ -218,6 +218,58 @@ class HttpNotionClient:
             idempotent=idempotent,
         )
 
+    def upsert_sync_notes(self, page_id: str, notes: dict[str, str]) -> None:
+        """既存本文を触らず、専用メモを先頭に1つ維持する。呼び出し元がページ単位で排他する。"""
+        from src.sync_engine.sync_notes import MARKER, parse_notes, render_notes, merge_notes
+
+        blocks = []
+        cursor = None
+        while True:
+            path = f"/blocks/{page_id}/children?page_size=100"
+            if cursor:
+                path += f"&start_cursor={cursor}"
+            response = self._request("GET", path)
+            raise_for_error(response, NotionApiError)
+            data = response.json()
+            blocks.extend(data["results"])
+            if not data.get("has_more"):
+                break
+            cursor = data["next_cursor"]
+
+        def content(block: dict[str, Any]) -> str:
+            return "".join(item.get("plain_text", item.get("text", {}).get("content", ""))
+                           for item in block.get("callout", {}).get("rich_text", []))
+
+        managed = [block for block in blocks if block.get("type") == "callout"
+                   and content(block).startswith(MARKER + "\n")]
+        merged = {}
+        for block in reversed(managed):
+            merged.update(parse_notes(content(block)))
+        merged = merge_notes(merged, notes)
+        if not merged and not managed:
+            return
+        text = render_notes(merged)
+        rich_text = [{"type": "text", "text": {"content": text[i:i + 1900]}}
+                     for i in range(0, len(text), 1900)]
+        value = {"rich_text": rich_text, "icon": {"type": "emoji", "emoji": "📝"}}
+        first = managed[0] if managed and blocks[0]["id"] == managed[0]["id"] else None
+        if first is not None:
+            if content(first) != text:
+                response = self._request("PATCH", f"/blocks/{first['id']}", json_body={"callout": value})
+                raise_for_error(response, NotionApiError)
+        else:
+            # 追加の応答が不明な場合に自動再試行しない。Webhook再送時に一覧から回収する。
+            response = self._request("PATCH", f"/blocks/{page_id}/children", idempotent=False,
+                                     json_body={"children": [{"object": "block", "type": "callout", "callout": value}],
+                                                "position": {"type": "start"}})
+            raise_for_error(response, NotionApiError)
+            first = response.json()["results"][0]
+        # 移動や前回の途中失敗で残った専用メモだけを除く。通常の本文は保持する。
+        for block in managed:
+            if block["id"] != first["id"]:
+                response = self._request("PATCH", f"/blocks/{block['id']}", json_body={"archived": True})
+                raise_for_error(response, NotionApiError)
+
     def get_page(self, page_id: str) -> dict[str, Any] | None:
         response = self._request("GET", f"/pages/{page_id}")
         if response.status_code == 404:
@@ -403,6 +455,14 @@ class HttpNotionClient:
             _CREATE_RECOVERY_ATTEMPTS,
         )
         return None
+
+    def create_page_once(self, properties: dict[str, Any]) -> str:
+        """永続予約済みの新規登録用。同名ページの推測回収も自動再POSTもしない。"""
+        response = self._request("POST", "/pages", idempotent=False, timeout=_CREATE_PAGE_TIMEOUT_SECONDS,
+                                 json_body={"parent": {"database_id": self._database_id},
+                                            "properties": build_notion_properties(properties, self._schema)})
+        raise_for_error(response, NotionApiError)
+        return str(response.json()["id"])
 
     def create_page(self, properties: dict[str, Any]) -> str:
         """ページを1件作成し、作成されたページIDを返す。

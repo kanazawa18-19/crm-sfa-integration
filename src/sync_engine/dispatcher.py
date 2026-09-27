@@ -26,7 +26,7 @@ import os
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Callable, Mapping, MutableMapping
 
 import requests
 import psycopg
@@ -277,7 +277,11 @@ class Dispatcher:
         *,
         sync_system_id: str | None = None,
         slack_notifier: SlackNotifier | None = None,
+        note_writer: Callable[[SyncEvent, IdMapping], None] | None = None,
+        new_record_guard: Callable[[SyncEvent, dict[str, Any]], bool] | None = None,
     ) -> None:
+        self._note_writer = note_writer
+        self._new_record_guard = new_record_guard
         self._store = id_mapping_store
         self._targets = targets
         self._sync_system_id = sync_system_id
@@ -402,6 +406,8 @@ class Dispatcher:
                 _property_result(property_name, None, intended_by_property, written_by_tool)
                 for property_name, _prop, _value in prepared
             ]
+            if self._note_writer is not None and event.sync_notes:
+                self._note_writer(event, mapping)
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
             return DispatchResult(skipped=False, properties=tuple(results))
@@ -410,6 +416,8 @@ class Dispatcher:
             # 実処理の対象プロパティが1つも無い（全てスキーマ未定義だった）場合は、
             # 現在値の取得自体が不要。ここで取得しに行くと、以前は発生しなかったAPI呼び出しと
             # その失敗（＝イベント全体のスキップ）を新たに生んでしまう。
+            if self._note_writer is not None and event.sync_notes:
+                self._note_writer(event, mapping)
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
             return DispatchResult(skipped=False, properties=())
@@ -621,6 +629,8 @@ class Dispatcher:
                 for rejected_item in item.resolution.rejected:
                     self._slack_notifier.notify_conflict(rejected_item)
 
+        if self._note_writer is not None and event.sync_notes:
+            self._note_writer(event, mapping)
         guard.advance(event.occurred_at)
         self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
         return DispatchResult(skipped=False, properties=tuple(results))
@@ -863,6 +873,9 @@ class Dispatcher:
             id_mapping_store=self._store,
         )
 
+        if self._new_record_guard is not None and self._new_record_guard(event, properties):
+            return DispatchResult(skipped=True, reason="hub_creation_pending_mapping")
+
         schema = get_schema(event.db_key)
         missing_required = [
             prop.name
@@ -935,7 +948,7 @@ class Dispatcher:
             db_key=event.db_key,
             kintone_id=event.external_id if event.source_tool is Tool.KINTONE else None,
             zoho_id=event.external_id if event.source_tool is Tool.ZOHO else None,
-            last_synced_at=event.occurred_at,
+            last_synced_at=None if self._note_writer is not None and event.sync_notes else event.occurred_at,
         )
         registration_error = self._register_new_record_mapping(new_mapping)
         if registration_error is not None:
@@ -957,6 +970,19 @@ class Dispatcher:
                 external_id=event.external_id,
                 notion_page_id=new_notion_key,
             )
+        # 初回メモも同期処理に含める。失敗は握らず再送させ、対応表は残して再作成を防ぐ。
+        if self._note_writer is not None and event.sync_notes:
+            with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
+                latest = self._store.get(new_notion_key)
+                watermark = guard.latest(latest.last_synced_at if latest else None)
+                if latest is not None and not guard.rejects(event.occurred_at) and (
+                    watermark is None or event.occurred_at >= watermark
+                ):
+                    guard.accept(event.occurred_at)
+                    self._note_writer(event, latest)
+                    guard.advance(event.occurred_at)
+                    self._store.update_last_synced_at(new_notion_key, event.occurred_at)
+
         # **ここでシートの行も作る**（2026-09-03）。理由は下のメソッドのdocstring参照。
         try:
             with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:

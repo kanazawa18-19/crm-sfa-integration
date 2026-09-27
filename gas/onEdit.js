@@ -64,21 +64,29 @@ function onEditSync(e) {
   var headerRow = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
   var editedAt = new Date().toISOString();
 
+  var failed = false;
   rows.forEach(function (row) {
+    try {
     var rowValues = sheet.getRange(row, 1, 1, lastColumn).getValues()[0];
     var values = rowValuesToRecord(headerRow, rowValues, {
       // 削除フラグは delete_record 専用の仕組みであり、通常編集の同期対象プロパティ
       // としてWebhookへ送るとPython側のDBスキーマに存在せずKeyErrorになるため除外する。
-      excludedHeaders: [DELETE_FLAG_COLUMN],
+      excludedHeaders: [DELETE_FLAG_COLUMN, "登録状況"],
+      startColumn: range.getColumn(),
+      numColumns: range.getNumColumns(),
       // 日付セルをJSON化する際のUTC変換によるオフバイワン日ズレを防ぐため、
       // スプレッドシートのタイムゾーンを基準にした日付文字列に明示的に変換する。
       formatDate: function (date) {
         return Utilities.formatDate(date, timeZone, "yyyy-MM-dd");
       },
     });
+    if (!String(values["同期キー"] || "").trim()) return;
     var payload = buildEditPayload(sheetName, row, editedAt, values);
+    if (String(values["同期キー"] || "").indexOf("new:") === 0) payload.action = "register_new";
     postToWebhook_(payload);
+    } catch (error) { failed = true; }
   });
+  if (failed) throw new Error("一部の行を同期受付できませんでした。該当行を確認してください。");
 }
 
 function postToWebhook_(payload) {
@@ -86,10 +94,7 @@ function postToWebhook_(payload) {
   var url = props.getProperty("SPREADSHEET_WEBHOOK_URL");
   var secret = props.getProperty("SPREADSHEET_WEBHOOK_SECRET");
   if (!url || !secret) {
-    console.error(
-      "SPREADSHEET_WEBHOOK_URL/SPREADSHEET_WEBHOOK_SECRET が未設定のためWebhook送信をスキップしました"
-    );
-    return;
+    throw new Error("同期先の接続設定が未完了のため送信できません。");
   }
 
   var response = UrlFetchApp.fetch(url, {
@@ -101,9 +106,7 @@ function postToWebhook_(payload) {
   });
 
   if (response.getResponseCode() >= 300) {
-    console.error(
-      "spreadsheet webhook failed: " + response.getResponseCode() + " " + response.getContentText()
-    );
+    throw new Error("同期受付に失敗しました（HTTP " + response.getResponseCode() + "）。");
   }
 }
 

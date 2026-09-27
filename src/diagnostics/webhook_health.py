@@ -112,7 +112,7 @@ def _notion_activity() -> list[datetime]:
     headers = {"Authorization": "Bearer " + os.environ["NOTION_API_KEY"], "Notion-Version": "2022-06-28"}
     for schema in ALL_SCHEMAS:
         response = requests.post(f"https://api.notion.com/v1/databases/{schema.notion_database_id}/query",
-                                 headers=headers, json={"page_size": 1, "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}]},
+                                 headers=headers, params={"filter_properties": "title"}, json={"page_size": 1, "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}]},
                                  timeout=TIMEOUT)
         response.raise_for_status()
         pages = response.json()["results"]

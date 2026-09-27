@@ -1,0 +1,189 @@
+heading "Gemini の回答" [level=6]
+  - paragraph: CRM同期の残項目および新規作成機能の実装についてレビューを行いました。 要件（未確定項目の先頭メモ保持、確度数値の分離、過去データの除外、必須・重複検証、永続DB予約、Webhook先着対応など）は全体として非常に美しく設計・実装されています。特に、既存本文を保持したままのメモ更新や、対応表保存失敗からの復帰ロジック、Webhook先着時の排他制御は見事です。
+  - paragraph:
+    - text: ただし、データロストに直結する致命的な不具合を含むいくつかの問題を発見しました。以下に
+    - code: BLOCKER
+    - text: /
+    - code: WARN
+    - text: /
+    - code: INFO
+    - text: の順で報告します。
+  - heading "🚨 BLOCKER（致命的な問題・データ破損リスク）" [level=3]
+  - heading "1. シートの業務データが全消去されるデータロスト" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/hub_creation/sheet_gateway.py
+    - paragraph:
+      - text: "発生条件: スプレッドシートから新規登録機能（"
+      - code: registerNewRow
+      - text: ）を実行し、登録処理が完了して「同期キー」や「登録状況」をシートに書き戻す時。
+    - paragraph:
+      - text: "問題:"
+      - code: update
+      - text: メソッド内で、
+      - code: values = [None] * len(headers)
+      - text: のように配列を作成し、該当列以外を
+      - code: None
+      - text: （API上は
+      - code: "null"
+      - text: ）にして
+      - code: batchUpdateByDataFilter
+      - text: を実行しています。Google Sheets API の仕様上、
+      - code: RAW
+      - text: で
+      - code: "null"
+      - text: を送信すると対象のセルが空文字にクリア（データ消去）されます。これにより、同期キー以外の顧客名や業務データがシート上からすべて消えてしまいます。
+    - paragraph:
+      - text: "対策:"
+      - code: read
+      - text: メソッドで取得済みの元の行データ
+      - code: _values
+      - text: をベースに配列を再構築するか、更新したい特定の列のみを狙って更新リクエストを組み立てる必要があります。
+  - heading "2. 通信エラー等の予約保留理由（reason）がDBに保存されない" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/hub_creation/journal.py
+    - paragraph:
+      - text: "発生条件:"
+      - code: HubCreationService._handle_locked
+      - text: で外部API（Zoho等）への作成処理中にタイムアウト等の例外が発生し、
+      - code: "except Exception:"
+      - text: ブロックから
+      - code: self.journal.hold
+      - text: を呼び出した時。
+    - paragraph:
+      - text: "問題:"
+      - code: hold
+      - text: メソッドのSQL内にある
+      - code: ON CONFLICT ... DO UPDATE
+      - text: に
+      - code: WHERE "HubCreationAttempt".state='blocked'
+      - text: の条件がついています。レコードは直前の
+      - code: reserve
+      - text: によってすでに
+      - code: state='reserved'
+      - text: になっているため、この
+      - code: WHERE
+      - text: 条件に合致せず更新がスキップされます。結果として「通信・保存の確認が必要です」という正確なエラー理由がDBに残らず、週次通知でも「作成結果の確認待ち」のままになってしまいます。
+    - paragraph:
+      - text: "対策:"
+      - code: WHERE
+      - text: 句を削除するか、
+      - code: state IN ('blocked', 'reserved')
+      - text: に変更して、予約状態からの失敗理由も上書きできるようにしてください。
+  - heading "⚠️ WARN（警告・潜在的な不具合やパフォーマンス悪化）" [level=3]
+  - heading "1. シート行識別用 Developer Metadata の残留" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/hub_creation/sheet_gateway.py
+      - text: および
+      - code: gas/registerNewRow.js
+    - paragraph: "発生条件: シートから新規登録を行うたび。"
+    - paragraph:
+      - text: "問題: GASで行に付与した"
+      - code: CRM_NEW_REGISTRATION
+      - text: メタデータが、登録完了後（または完全な失敗時）に削除される仕組みがありません。メタデータがシート内に蓄積し続けると、APIの取得上限エラーや動作遅延に繋がる恐れがあります。
+    - paragraph: "対策: 処理が完了し同期キーが発番されたタイミング等で、不要になったメタデータを削除するAPI呼び出しを追加することを推奨します。"
+  - heading "2. メタデータの次元（LocationType）判定不一致リスク" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/hub_creation/sheet_gateway.py
+    - paragraph:
+      - text: "発生条件: Python側で新規登録行のメタデータを検索（"
+      - code: read
+      - text: メソッド）した時。
+    - paragraph:
+      - text: "問題（※Google Sheets API仕様に基づく推測を含む）: GAS側で"
+      - code: sheet.getRange(row, 1, 1, sheet.getMaxColumns())
+      - text: という「セル範囲」に対してメタデータを付与しています。しかしPython側は
+      - code: location.get("dimension") != "ROWS"
+      - text: と、「行次元（ROW）」であることを前提に厳密な検証を行っています。APIの仕様上、セル範囲に付与したメタデータは
+      - code: dimensionRange
+      - text: を返さず、位置情報が不一致として弾かれる可能性があります。
+    - paragraph:
+      - text: "対策: GAS側で正しく行指定（例:"
+      - code: sheet.getRange(row + ':' + row)
+      - text: ）で付与するか、Python側の
+      - code: dimension
+      - text: 判定を緩和してください。
+  - heading "3. 全解決時の「メモブロック」残留" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/sync_engine/clients/notion_client.py
+    - paragraph: "発生条件: 一度作成された先頭の専用メモから、その後の業務データ更新によってすべての未確定項目（警告）が解消された時。"
+    - paragraph:
+      - text: "問題:"
+      - code: "if not merged and not managed: return"
+      - text: で新規ページ時は防がれていますが、既存メモ（
+      - code: managed
+      - text: ）がある場合は
+      - code: render_notes
+      - text: が走り、「該当する未解決値は検出されていません。」という内容のブロックとして更新され、残り続けます。
+    - paragraph: "対策: 完全に未対応項目がゼロになった場合は、空のメモで更新するのではなく、対象のブロックをアーカイブ（削除）してスッキリさせる方が要件（解決した項目の警告は削除する）の精神に合致するかと思います。"
+  - heading "ℹ️ INFO（情報・運用上の留意点）" [level=3]
+  - heading "1. GAS側のUIエラーハンドリング不足" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: gas/registerNewRow.js
+    - paragraph:
+      - text: "発生条件: ロック取得（"
+      - code: waitLock
+      - text: ）のタイムアウトや、Webhook送信（
+      - code: postToWebhook_
+      - text: ）が失敗した時。
+    - paragraph:
+      - text: "問題:"
+      - code: try/finally
+      - text: しか無いため、エラー時はシートの標準エラーダイアログが出るだけで、「登録状況」列には「登録の受付を確認中です...」の文字が残ったままになります。
+      - code: catch
+      - text: ブロックを追加し、失敗時には状況列へエラーを書き戻すと親切です。
+  - heading "2. 記号を含む名前の自動作成保留（仕様確認）" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/hub_creation/adapters.py
+      - text: (ZohoCreationAdapter)
+    - paragraph:
+      - text: "問題:"
+      - code: re.search(r"[():,\\]", title)
+      - text: により、Zohoへの登録時に特定の記号を含む名前は明示的に保留されます。安全な重複検索のための的確な措置ですが、業務上これらの記号を含む顧客（例：「株式会社（〇〇）」等）が自動作成されない仕様となるため、運用者への周知が必要です。
+  - heading "3. 旧「確度」と新「確度（数値）」の共存" [level=4]
+  - list:
+    - paragraph:
+      - text: "ファイル:"
+      - code: src/db_schema/project.py
+    - paragraph: "問題: Notionやシート上で、古いA〜Dの選択肢と新しい0〜100%の数値列が共存します。要件通り「推測換算しない」「数値だけ同期」という仕組みは完備されていますが、ユーザー入力時にどちらを触ればよいかの混乱を防ぐ運用ルールが必要です。"
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+- generic: Refining GAS Metadata

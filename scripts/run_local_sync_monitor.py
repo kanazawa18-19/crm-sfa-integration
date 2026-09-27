@@ -16,7 +16,7 @@ import sys
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import requests
-from scripts.report_hub_inventory import render_report, send
+from scripts.report_hub_inventory import render_report, send, append_creation_report
 from src.db_schema.registry import ALL_SCHEMAS
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -69,7 +69,7 @@ def health_messages(plan):
 
 
 def inventory_report(directory):
-    return render_report([json.loads((directory/f'{s.key}.json').read_text()) for s in ALL_SCHEMAS],datetime.now(timezone.utc))
+    return append_creation_report(render_report([json.loads((directory/f'{s.key}.json').read_text()) for s in ALL_SCHEMAS],datetime.now(timezone.utc)))
 
 
 def notify_failure(job):
@@ -96,6 +96,8 @@ def main():
     parser.add_argument('--preview',action='store_true')
     parser.add_argument('--status',action='store_true')
     parser.add_argument('--inventory-directory',default=str(ROOT/'migration_output/hub_inventory'))
+    from dotenv import load_dotenv
+    load_dotenv(ROOT/"config/.env", override=False)
     args=parser.parse_args();STATE.mkdir(parents=True,exist_ok=True,mode=0o700)
     state_path=STATE/(args.job+'.json')
     if args.status:
@@ -109,11 +111,12 @@ def main():
             plan=health_plan(previous.get('notification_state'));messages=health_messages(plan)
             next_state['notification_state']=plan['next']
         else:
-            directory=Path(previous.get('directory',args.inventory_directory))
-            try:message=inventory_report(directory)
-            except (OSError,ValueError,KeyError,TypeError):
-                if args.preview:raise RuntimeError('プレビューに必要な6DBの今回結果がありません')
-                directory=ROOT/'migration_output/weekly_inventory'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+            if args.preview:
+                directory=Path(previous.get('directory',args.inventory_directory))
+                try:message=inventory_report(directory)
+                except (OSError,ValueError,KeyError,TypeError):raise RuntimeError('プレビューに必要な6DBの今回結果がありません')
+            else:
+                directory=ROOT/'migration_output/weekly_inventory'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
                 result=subprocess.run([sys.executable,str(ROOT/'scripts/inventory_unmapped_hub_records.py'),
                     '--mapping-token-env','NOTION_API_KEY','--quiet','--output-dir',str(directory)],cwd=ROOT,timeout=9900,capture_output=True,text=True)
                 if result.returncode:raise RuntimeError('全件点検を完了できませんでした')

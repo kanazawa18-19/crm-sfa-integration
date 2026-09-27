@@ -150,3 +150,14 @@ def test_handler_succeeds_when_secret_matches(monkeypatch: pytest.MonkeyPatch) -
     response = handler(event, context=None)
 
     assert response["statusCode"] == 200
+
+
+def test_disabled_creation_returns_explicit_unavailable(monkeypatch):
+    from src.sync_engine.dispatcher import DispatchResult
+    from types import SimpleNamespace
+    monkeypatch.setenv('ALLOW_UNSIGNED_WEBHOOKS','true')
+    payload=_payload();payload['action']='register_new'
+    payload['values']={'同期キー':'new:11111111-1111-4111-8111-111111111111'}
+    dispatcher=SimpleNamespace(dispatch=lambda event: DispatchResult(skipped=True,reason='hub_creation_disabled'))
+    response=handler({'body':json.dumps(payload),'headers':{}},None,dispatcher=dispatcher)
+    assert response['statusCode']==503

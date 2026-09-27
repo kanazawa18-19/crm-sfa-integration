@@ -27,3 +27,5 @@ class SyncEvent:
     sync_system_id: str | None = None
     # シート行番号は並べ替えで変わるため、受信時の同期キーを別に保持する。
     source_notion_key: str | None = None
+    sync_notes: dict[str, str] = field(default_factory=dict)
+    registration_key: str | None = None

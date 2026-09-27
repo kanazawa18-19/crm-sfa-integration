@@ -769,3 +769,18 @@ model FacilityListRun {
 
   @@index([userId, createdAt])
 }
+
+// 応答不明の新規作成を再POSTしないための永続予約。
+model HubCreationAttempt {
+  sourceKey    String
+  target       String
+  dbKey        String
+  identityHash String?
+  state        String
+  reason       String   @default("")
+  externalId   String?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([sourceKey, target])
+}

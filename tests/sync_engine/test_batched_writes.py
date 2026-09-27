@@ -88,15 +88,15 @@ def test_four_properties_become_one_api_call() -> None:
 def test_unsendable_properties_are_reported_per_property() -> None:
     """まとめて書いても「どの項目が落ちたか」は個別に分かること。
 
-    `確度`はZoho側に対応する項目が無いので送れない。`案件名`は送れる。
+    `ショット`はZoho側の真偽値と型が異なるので送れない。`案件名`は送れる。
     """
     client = _ZohoClient()
 
-    result = _dispatch(client, {"案件名": "A社", "確度": "A"})
+    result = _dispatch(client, {"案件名": "A社", "ショット": 100})
 
     by_name = {p.property_name: p for p in result.properties}
     assert Tool.ZOHO in by_name["案件名"].written_tools
-    assert Tool.ZOHO in by_name["確度"].skipped_tools
+    assert Tool.ZOHO in by_name["ショット"].skipped_tools
     # 送れる項目だけが1回で送られること。
     assert len(client.updates) == 1
     assert client.updates[0][1] == {"Deal_Name": "A社"}
@@ -106,7 +106,7 @@ def test_no_call_at_all_when_nothing_can_be_sent() -> None:
     """1項目も送れないなら、APIを叩かない（空のレコードで更新しない）。"""
     client = _ZohoClient()
 
-    result = _dispatch(client, {"確度": "A"})
+    result = _dispatch(client, {"ショット": 100})
 
     assert client.updates == []
     assert Tool.ZOHO in result.properties[0].skipped_tools

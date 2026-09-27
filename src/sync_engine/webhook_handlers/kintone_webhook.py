@@ -64,6 +64,7 @@ import json
 import os
 from typing import Any, Mapping
 
+from src.sync_engine.sync_notes import gap_notes, unresolved_note, resolved_notes
 from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
 from src.sync_engine.dispatcher import Dispatcher, DispatchResult
@@ -171,6 +172,11 @@ def kintone_payload_to_sync_event(
     # した場合は、当該フィールドのみスキップしログを残す（他フィールドの処理やイベント
     # 全体は継続する）。
     field_mapping = KINTONE_FIELD_TRANSFORMS.get(db_key, {})
+    # 実APIで確認した曖昧な担当者・選択肢だけを既知項目へ対応付ける。
+    note_names = {"営業担当者": "担当メンバー", "複数選択": "提案サービス"} if db_key == "project" else {}
+    sync_notes = gap_notes(Tool.KINTONE, db_key, {
+        name: record[code].get("value") for code, name in note_names.items() if code in record
+    })
     properties: dict[str, Any] = {}
     # kintone_action_record_context(): db_key="action"の"client_name"（取引先マスター
     # リレーション解決）がRelationReviewQueueへの記録に使うレコードIDを暗黙に伝播させる
@@ -202,6 +208,9 @@ def kintone_payload_to_sync_event(
                 )
                 continue
             if value is SKIP_FIELD:
+                if field.get("value") not in (None, "", [], {}):
+                    key, note = unresolved_note(Tool.KINTONE, notion_property, field.get("value"))
+                    sync_notes[key] = note
                 # 未解決のリレーション（例: 取引先マスターの名寄せが曖昧・候補なし）。
                 # 既存のNoneハンドリング（明示的にプロパティをクリアする）とは意味が異なり、
                 # このプロパティへの書き込み自体を行わない（既存の値を上書きしない）。
@@ -213,6 +222,7 @@ def kintone_payload_to_sync_event(
                 )
                 continue
             properties[notion_property] = value
+            sync_notes.update(resolved_notes(Tool.KINTONE, notion_property))
 
     # プロパティ名はDBごとに違う（アクションは絵文字付き、案件・連絡先は素の名前）。
     # **両方を見ないと、案件・連絡先で上書き防止が効かない**（2026-08-31）。
@@ -231,6 +241,7 @@ def kintone_payload_to_sync_event(
             )
 
     return SyncEvent(
+        sync_notes=sync_notes,
         source_tool=Tool.KINTONE,
         db_key=db_key,
         external_id=record_id,

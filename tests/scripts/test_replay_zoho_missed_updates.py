@@ -295,8 +295,9 @@ def test_plan_record_classifies_stage_change_as_safe_when_notion_is_older(monkey
     assert by_api["Stage"].status == mod.FIELD_SAFE
     assert by_api["Stage"].notion_property == "営業ステータス"
     assert by_api["Stage"].converted_value == "口頭受注"
-    assert by_api["Probability"].status == mod.FIELD_UNMAPPED  # 同期対象外
-    assert [f.api_name for f in r.replayable()] == ["Stage"]
+    assert by_api["Probability"].status == mod.FIELD_SAFE
+    assert by_api["Probability"].notion_property == "確度（数値）"
+    assert [f.api_name for f in r.replayable()] == ["Probability", "Stage"]
 
 
 def test_plan_record_marks_ambiguous_when_notion_edited_later_and_synced_when_equal(monkeypatch: pytest.MonkeyPatch) -> None:

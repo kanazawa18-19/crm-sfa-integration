@@ -18,7 +18,7 @@ def render_report(reports, now):
     if len(reports)!=len(expected) or {r['db'] for r in reports}!=expected:
         raise ValueError('6DBの全件完了結果が必要です')
     labels={'client_master':'取引先マスター','chain':'チェーン','contact':'連絡先','project':'案件管理','product':'サービス・商品','action':'アクション履歴'}
-    lines=['【CRM未連携レコード：週次点検】','既存レコードも含む対応表の未登録件数です。新規作成漏れと断定せず、自動作成は行いません。']
+    lines=['【CRM未連携レコード：週次点検】','既存レコードも含む対応表の未登録件数です。この一覧から一括で自動作成は行いません。']
     for report in reports:
         age=(now-datetime.fromisoformat(report['observed_at'])).total_seconds()
         if age < -60 or age > 6*3600: raise ValueError('今回の調査結果ではありません')
@@ -49,6 +49,20 @@ def send(text):
     print('Slack受理確認済み')
 
 
+def append_creation_report(text):
+    if os.environ.get("HUB_CREATION_ENABLED_SINCE"):
+        from src.hub_creation.journal import PostgresCreationJournal
+        journal = PostgresCreationJournal()
+        counts = journal.pending_counts()
+        text += "\n【条件付き新規登録の保留】"
+        text += "\n" + (" / ".join(f"{r['target']} {r['state']}: {r['count']}件" for r in counts) or "0件")
+        for row in journal.pending_details():
+            source = row['sourceKey']
+            location = "https://www.notion.so/" + source[7:].replace("-", "") if source.startswith("notion:") else "シート登録キー " + source[6:]
+            text += f"\n{row['target']}: {row['reason']} — {location}"
+    return text
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--directory',default='migration_output/hub_inventory')
@@ -57,6 +71,7 @@ def main():
     args=p.parse_args()
     if args.failed:text='【CRM未連携レコード：調査未完了】今週の全件点検または結果通知を完了できませんでした。未登録0件・正常とは判定していません。GitHub Actionsの「未連携レコード週次点検」を確認してください。'
     else:text=render_report([json.loads((Path(args.directory)/f'{s.key}.json').read_text()) for s in ALL_SCHEMAS],datetime.now(timezone.utc))
+    if not args.failed:text=append_creation_report(text)
     if args.send:send(text)
     else:print(text)
 

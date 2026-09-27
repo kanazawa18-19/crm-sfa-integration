@@ -1,0 +1,8 @@
+{
+  "notion_api_version": "2022-06-28",
+  "empty_page_top": true,
+  "existing_body_preserved": true,
+  "idempotent_same_block": true,
+  "category_order": true,
+  "external_mapping_disabled": true
+}
