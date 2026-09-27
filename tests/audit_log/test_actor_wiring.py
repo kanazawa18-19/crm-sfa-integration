@@ -164,14 +164,14 @@ def test_spreadsheet_webhook_dispatches_with_spreadsheet_actor(
         lambda: {"案件管理": "project"},
     )
     store = SQLiteIdMappingStore(":memory:")
-    store.upsert(IdMapping(notion_key="notion-1", db_key="project", spreadsheet_row=42))
+    store.upsert(IdMapping(notion_key="11111111-1111-4111-8111-111111111111", db_key="project", spreadsheet_row=42))
     notion_target = _ActorCapturingNotionTarget()
     dispatcher = Dispatcher(store, {Tool.NOTION: notion_target})
     payload = {
         "sheet": "案件管理",
         "row": 42,
         "editedAt": "2026-08-05T09:00:00+09:00",
-        "values": {"案件ID": "MSA-PJ-001"},
+        "values": {"案件ID": "MSA-PJ-001", "同期キー": "11111111-1111-4111-8111-111111111111"},
     }
     event = {"body": json.dumps(payload), "headers": {}, "query_params": {}}
 

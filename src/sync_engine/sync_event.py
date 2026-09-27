@@ -25,3 +25,5 @@ class SyncEvent:
     # Webhookペイロードに X-Sync-System-ID ヘッダーが含まれていた場合のその値。
     # 無限ループ防止（sync_headers.is_own_system_event）の判定に使う。
     sync_system_id: str | None = None
+    # シート行番号は並べ替えで変わるため、受信時の同期キーを別に保持する。
+    source_notion_key: str | None = None

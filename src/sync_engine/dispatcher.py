@@ -467,14 +467,14 @@ class Dispatcher:
                 continue
             target = self._targets.get(tool)
             external_id = _external_id_for(tool, mapping)
-            if target is None or external_id is None:
+            if target is None or (external_id is None and not (tool is Tool.SPREADSHEET and hasattr(target, "get_record_by_sync_key"))):
                 # ツールが未接続、またはこのレコードに対する当該ツールの外部IDが
                 # まだ無い（未作成）場合は、取得の失敗ではなく「現在値が無い」正常な
                 # ケースであり、この同期イベントの中止は不要。
                 unavailable_tools.add(tool)
                 continue
             try:
-                record = target.get_record(external_id, db_key=mapping.db_key)
+                record = self._read_mapped_record(tool, target, mapping, external_id)
             except (ApiError, requests.exceptions.RequestException) as exc:
                 # 上記Notion現在値取得と同じ理由（取得失敗を「空欄」として扱って
                 # 一部のツールを無視したまま処理を続けない）でこの同期イベント全体の
@@ -709,6 +709,18 @@ class Dispatcher:
     def _resolve_mapping(self, event: SyncEvent) -> IdMapping | None:
         if event.source_tool is Tool.NOTION:
             return self._store.get(event.external_id)
+        if event.source_tool is Tool.SPREADSHEET:
+            # 行番号は移動・再利用される。キー無しや別DBのキーで旧行番号へ戻らない。
+            if not event.source_notion_key:
+                return None
+            mapping = self._store.get(event.source_notion_key)
+            if mapping is None or mapping.db_key != event.db_key:
+                return None
+            target = self._targets.get(Tool.SPREADSHEET)
+            reader = getattr(target, "get_record_by_sync_key", None)
+            if reader is not None and reader(mapping.notion_key, db_key=mapping.db_key) is None:
+                return None
+            return mapping
         # 2026-08-14、shirokuma-secレビューBLOCKER対応: db_keyを渡さない検索だと、kintoneの
         # ように外部IDがdb_key（アプリ）単位で独立採番されているツールで、別db_keyの同番号
         # レコードを取り違える事故がありえた（IdMappingStore.find_by_external_id()の
@@ -1746,6 +1758,14 @@ class Dispatcher:
     ) -> _VersionTracker:
         return _VersionTracker(self, mapping, records_by_tool or {})
 
+    @staticmethod
+    def _read_mapped_record(tool: Tool, target: Any, mapping: IdMapping, external_id: str | None) -> dict[str, Any] | None:
+        # 旧Fakeとの互換。本番のシートルーターにはこの契約を必須で実装する。
+        reader = getattr(target, "get_record_by_sync_key", None)
+        if tool is Tool.SPREADSHEET and reader is not None:
+            return reader(mapping.notion_key, db_key=mapping.db_key)
+        return target.get_record(external_id, db_key=mapping.db_key)
+
     def _fetch_one_version(self, tool: Tool, mapping: IdMapping) -> Mapping[str, Any] | None:
         """1ツールぶんの現在値を取り直す（版を取るためだけ）。
 
@@ -1757,10 +1777,10 @@ class Dispatcher:
         """
         target = self._targets.get(tool)
         external_id = _external_id_for(tool, mapping)
-        if target is None or external_id is None:
+        if target is None or (external_id is None and not (tool is Tool.SPREADSHEET and hasattr(target, "get_record_by_sync_key"))):
             return None
         try:
-            return target.get_record(external_id, db_key=mapping.db_key)
+            return self._read_mapped_record(tool, target, mapping, external_id)
         except Exception:  # noqa: BLE001 (クライアント実装依存の例外を広く受ける)
             logger.warning(
                 "版の取り直しに失敗しました。版なしで書き込みます "
@@ -1782,12 +1802,15 @@ class Dispatcher:
         """
         records: dict[Tool, Mapping[str, Any]] = {}
         for tool in tools:
+            # Sheetsには書込用の版がない。書込経路のキー検査と重複する読取をしない。
+            if tool is Tool.SPREADSHEET:
+                continue
             target = self._targets.get(tool)
             external_id = _external_id_for(tool, mapping)
-            if target is None or external_id is None:
+            if target is None or (external_id is None and not (tool is Tool.SPREADSHEET and hasattr(target, "get_record_by_sync_key"))):
                 continue
             try:
-                record = target.get_record(external_id, db_key=mapping.db_key)
+                record = self._read_mapped_record(tool, target, mapping, external_id)
             except Exception:  # noqa: BLE001 (クライアント実装依存の例外を広く受ける)
                 logger.warning(
                     "現在の版を取得できませんでした。版なしで書き込みます "
@@ -1913,7 +1936,7 @@ class Dispatcher:
         #    行番号（`IdMapping.spreadsheet_row`）より優先するのは、人が行を挿入・削除・
         #    並べ替えると行番号がずれるため。ここで引ければ、ずれていても正しい行に書ける。
         #    「追記は成功したがDBに保存できなかった」行もここで拾えるので、重複を作らずに済む。
-        row = target.find_row_by_sync_key(sync_key, db_key=db_key)
+        row = getattr(target, "find_unique_row_by_sync_key", target.find_row_by_sync_key)(sync_key, db_key=db_key)
         if row is not None and mapping.spreadsheet_row != row:
             logger.info(
                 "spreadsheet: 同期キーで行を引き直しました "
@@ -1923,19 +1946,10 @@ class Dispatcher:
                 row,
             )
 
-        # 2. 見つからず、`IdMapping`が持つ行のキーがまだ空なら、その行を引き継いでキーを埋める。
-        #    この仕組みより前に作られた行が対象。**キーが入っている行は1で見つかるはず**なので、
-        #    ここへ来る「キーが空の行」は、まだ誰のものでもない行だけ。
+        # キーが消えた既存行は所有者を確定できない。差分だけの不完全な新行も作らない。
         if row is None and mapping.spreadsheet_row is not None:
-            if target.row_matches_sync_key(mapping.spreadsheet_row, sync_key, db_key=db_key):
-                row = mapping.spreadsheet_row
-            else:
-                logger.warning(
-                    "spreadsheet: 保存されていた行が別のレコードのものになっています。"
-                    "上書きせず新しい行を作ります (notion_key=%r, row=%d)",
-                    sync_key,
-                    mapping.spreadsheet_row,
-                )
+            logger.warning("spreadsheet: 保存行の同期キーを確認できないため書込を保留します (db_key=%r)", db_key)
+            return False, mapping
 
         if row is not None:
             if append_only:
@@ -1959,7 +1973,7 @@ class Dispatcher:
                 return False, mapping
 
             # ロックを取ってから、もう一度だけ探す。待っている間に相手が作り終えている。
-            row = target.find_row_by_sync_key(sync_key, db_key=db_key)
+            row = getattr(target, "find_unique_row_by_sync_key", target.find_row_by_sync_key)(sync_key, db_key=db_key)
             if row is not None:
                 if append_only:
                     return True, self._row_already_exists(mapping, row)

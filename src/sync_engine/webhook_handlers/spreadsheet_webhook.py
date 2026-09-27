@@ -15,6 +15,7 @@ sheet はDBの表示名から末尾「DB」を除いたタブ名と仮定する�
   "row": 42,
   "editedAt": "2026-08-05T09:00:00+09:00",
   "values": {
+    "同期キー": "11111111-1111-4111-8111-111111111111",
     "案件ID": "MSA-PJ-001",
     "営業ステータス": "提案中",
     "初期費用（イニシャル）": 500000
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Mapping
+from uuid import UUID
 
 from src.audit_log.actor_context import set_actor
 from src.db_schema.base import Tool
@@ -63,13 +65,23 @@ def spreadsheet_payload_to_sync_event(
     if db_key is None:
         raise ValueError(f"unknown spreadsheet sheet name: {sheet!r}")
 
+    values = dict(payload.get("values") or {})
+    raw_key = values.pop("同期キー", None)
+    try:
+        if not isinstance(raw_key, str):
+            raise ValueError
+        notion_key = str(UUID(raw_key.strip()))
+    except (ValueError, AttributeError):
+        raise ValueError("同期キーが未設定または不正です。行番号だけでは同期しません") from None
+
     return SyncEvent(
         source_tool=Tool.SPREADSHEET,
         db_key=db_key,
         external_id=str(payload["row"]),
         occurred_at=parse_iso_datetime(payload["editedAt"]),
-        properties=dict(payload.get("values") or {}),
+        properties=values,
         sync_system_id=get_header(headers, HEADER_NAME),
+        source_notion_key=notion_key,
     )
 
 

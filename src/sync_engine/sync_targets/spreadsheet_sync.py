@@ -65,6 +65,8 @@ class SpreadsheetClient(Protocol):
 
     def find_row_by_sync_key(self, sheet: str, header: str, key: str) -> int | None: ...
 
+    def find_unique_row_by_sync_key(self, sheet: str, header: str, key: str) -> int | None: ...
+
     def remember_sync_key_row(self, sheet: str, key: str, row: int) -> None: ...
 
 
@@ -102,6 +104,21 @@ class SpreadsheetSyncTarget(SyncTarget):
     def find_row_by_sync_key(self, sync_key: str) -> int | None:
         """シートに書かれた同期キーから行番号を引く。無ければNone。"""
         return self._client.find_row_by_sync_key(self._sheet, SYNC_KEY_COLUMN, sync_key)
+
+    def find_unique_row_by_sync_key(self, sync_key: str, *, db_key: str | None = None) -> int | None:
+        return self._client.find_unique_row_by_sync_key(self._sheet, SYNC_KEY_COLUMN, sync_key)
+
+    def get_record_by_sync_key(self, sync_key: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        """並べ替えや重複を確認してから、競合判定用の現在値を読む。"""
+        from src.sync_engine.clients._http import ApiError
+        row = self.find_unique_row_by_sync_key(sync_key)
+        if row is None:
+            return None
+        record = self._client.get_row(self._sheet, row)
+        actual = str((record or {}).get(SYNC_KEY_COLUMN, "")).strip().replace("-", "").lower()
+        if actual != sync_key.replace("-", "").lower():
+            raise ApiError(409, "読取中にシートの行が変わったため同期を中止します")
+        return record
 
     def row_matches_sync_key(self, row: int, sync_key: str) -> bool:
         """その行が本当にこのレコードの行か（1セルだけ読んで照合する）。

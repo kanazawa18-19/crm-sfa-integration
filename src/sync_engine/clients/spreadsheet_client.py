@@ -365,6 +365,29 @@ class HttpSpreadsheetClient:
         rows = self._load_sync_key_rows(sheet, header)
         return rows.get(key)
 
+    def find_unique_row_by_sync_key(self, sheet: str, header: str, key: str) -> int | None:
+        """通常同期では実際のキー列を読み、複製されたキーを採用しない。
+
+        列の追加も行番号キャッシュの更新も行わない。バックフィル専用の
+        find_row_by_sync_key とは分け、読取調査でも使えるようにする。
+        """
+        headers = self._get_header_row(sheet)
+        if headers.count(header) != 1:
+            raise SpreadsheetApiError(409, "同期キー列を一意に確認できません")
+        column = column_letter(headers.index(header) + 1)
+        response = self._request(
+            "GET", f"/values/'{sheet}'!{column}:{column}",
+            params={"majorDimension": "COLUMNS", "valueRenderOption": _VALUE_RENDER_OPTION},
+        )
+        raise_for_error(response, SpreadsheetApiError)
+        columns = response.json().get("values") or [[]]
+        wanted = key.replace("-", "").lower()
+        rows = [i for i, cell in enumerate(columns[0][1:], start=2)
+                if str(cell).strip().replace("-", "").lower() == wanted]
+        if len(rows) > 1:
+            raise SpreadsheetApiError(409, "同期キーが重複しているため同期を中止します")
+        return rows[0] if rows else None
+
     def prime_sync_key_rows(self, sheet: str, header: str) -> int:
         """同期キー列を**1回だけ**読み込み、以後キャッシュを正として扱う（2026-08-31）。
 

@@ -483,6 +483,14 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
         target = self._resolve(db_key)
         return target.find_row_by_sync_key(sync_key) if target is not None else None
 
+    def find_unique_row_by_sync_key(self, sync_key: str, *, db_key: str | None = None) -> int | None:
+        target = self._resolve(db_key)
+        return target.find_unique_row_by_sync_key(sync_key) if target is not None else None
+
+    def get_record_by_sync_key(self, sync_key: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        target = self._resolve(db_key)
+        return target.get_record_by_sync_key(sync_key) if target is not None else None
+
     def row_matches_sync_key(self, row: int, sync_key: str, *, db_key: str | None = None) -> bool:
         target = self._resolve(db_key)
         # タブが解決できないならそもそも書き込まないので、照合は「一致しない」で返す。
@@ -527,6 +535,12 @@ class _MultiDbSpreadsheetSyncTarget(SyncTarget):
         target = self._resolve(db_key)
         if target is None:
             return None
+        # 検索後に並べ替えられた行へ書かない。照合と更新間の競合はSheets APIでは残る。
+        record = target.get_record(external_id, db_key=db_key)
+        actual = str((record or {}).get("同期キー", "")).strip().replace("-", "").lower()
+        if not actual or actual != sync_key.replace("-", "").lower():
+            from src.sync_engine.clients._http import ApiError
+            raise ApiError(409, "書込直前にシートの行が変わったため同期を中止します")
         return target.upsert_record(
             external_id, target.with_sync_key(properties, sync_key), db_key=db_key
         )

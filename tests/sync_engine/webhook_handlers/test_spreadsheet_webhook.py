@@ -24,6 +24,7 @@ def _payload() -> dict:
         "row": 42,
         "editedAt": "2026-08-05T09:00:00+09:00",
         "values": {
+            "同期キー": "11111111-1111-4111-8111-111111111111",
             "案件ID": "MSA-PJ-001",
             "営業ステータス": "提案中",
             "初期費用（イニシャル）": 500000,
@@ -37,6 +38,7 @@ def test_spreadsheet_payload_to_sync_event_builds_expected_event() -> None:
     assert event.source_tool is Tool.SPREADSHEET
     assert event.db_key == "project"
     assert event.external_id == "42"
+    assert event.source_notion_key == "11111111-1111-4111-8111-111111111111"
     assert event.occurred_at == datetime(
         2026, 8, 5, 9, 0, 0, tzinfo=timezone(timedelta(hours=9))
     )

@@ -65,6 +65,17 @@ class _シート:
                 return row
         return None
 
+    def find_unique_row_by_sync_key(self, sync_key: str) -> int | None:
+        from src.sync_engine.clients._http import ApiError
+        matches = [r for r, values in self.rows.items() if values.get(SYNC_KEY_COLUMN) == sync_key]
+        if len(matches) > 1:
+            raise ApiError(409, "同期キーが重複しています")
+        return self.find_row_by_sync_key(sync_key)
+
+    def get_record_by_sync_key(self, sync_key: str) -> dict[str, Any] | None:
+        row = self.find_unique_row_by_sync_key(sync_key)
+        return self.rows.get(row) if row is not None else None
+
     def row_matches_sync_key(self, row: int, sync_key: str) -> bool:
         actual = self.rows.get(row, {}).get(SYNC_KEY_COLUMN)
         # キー未設定の行（この仕組みより前に作られた行）は一致扱い。
@@ -285,19 +296,18 @@ def test_人が行を挿入して行番号がずれても別レコードを上�
     assert store.get("CLI-001").spreadsheet_row == ずれた後の行, "行番号が直っていない"
 
 
-def test_同期キーが空の行はそのまま使いキーを埋める(
+def test_同期キーが空の既存行は所有者不明なので書込も追記も保留する(
     dispatcher: Dispatcher, store: SQLiteIdMappingStore, シート: _シート
 ) -> None:
-    """この仕組みより前に作られた行（キーが空）は、取り違えではないので
-    そのまま使い、書き込みのついでにキーを埋める。"""
+    """空キーの旧行を別レコードと取り違えず、差分だけの不完全行も作らない。"""
     store.upsert(IdMapping(notion_key="CLI-001", db_key="client_master", spreadsheet_row=5))
     シート.rows[5] = {"取引先名": "旧データ"}
 
     dispatcher.dispatch(_イベント(取引先名="更新後"))
 
     assert シート.append_calls == 0
-    assert シート.rows[5]["取引先名"] == "更新後"
-    assert シート.rows[5][SYNC_KEY_COLUMN] == "CLI-001"
+    assert シート.rows[5] == {"取引先名": "旧データ"}
+    assert store.get("CLI-001").spreadsheet_row == 5
 
 
 # --- 段階的な有効化 -------------------------------------------------------------------------

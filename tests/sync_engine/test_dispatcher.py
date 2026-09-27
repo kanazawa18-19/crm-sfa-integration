@@ -171,6 +171,10 @@ class FakeSpreadsheetClient:
         self.rows: dict[str, dict[int, dict[str, Any]]] = {}
         self._next_row: dict[str, int] = {}
 
+    def find_unique_row_by_sync_key(self, sheet, header, key):
+        return next((row for row, values in self.rows.get(sheet, {}).items()
+                     if values.get(header) == key), None)
+
     def get_row(self, sheet: str, row: int) -> dict[str, Any] | None:
         return self.rows.get(sheet, {}).get(row)
 

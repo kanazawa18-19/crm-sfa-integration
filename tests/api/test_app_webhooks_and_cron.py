@@ -366,7 +366,7 @@ def test_webhook_spreadsheet_dispatches_via_injected_wiring(
         "sheet": PROJECT_SCHEMA.spreadsheet_sheet_name,
         "row": 42,
         "editedAt": "2026-08-05T09:00:00+09:00",
-        "values": {"営業ステータス": "提案中"},
+        "values": {"営業ステータス": "提案中", "同期キー": "11111111-1111-4111-8111-111111111111"},
     }
 
     response = client.post("/api/webhooks/spreadsheet", json=payload)
