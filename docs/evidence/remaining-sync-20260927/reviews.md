@@ -53,4 +53,6 @@ Claude初回回答はclaude-initial-snapshot.txt。B1は対象外分類修正済
 - 実PostgreSQLのconflicts追加5観点も成功: reserved同名はID不問で競合、created同名同IDだけ競合、created別IDは非競合、DB/target/identity別の分離、POST前保留は非競合。使い捨てDBは停止・削除済み。
 - 最終修正差分69,483 bytesを他社モデルへ再レビュー。SHA256はexternal-final-manifest.jsonに記録。Claudeはpasted 1,183行の添付プレビュー全文一致、依頼文27文字一致を確認し送信。
 
+他社最終回答を取得。Geminiは新規BLOCKERなし。Claudeは以前のBLOCKER全解消、N1（メモ失敗が初回シート行作成を止める条件付き候補）とN2（通常同期後の再判定失敗が5xxになるWARN）を追加。初回シート行作成をメモより前に移し、再判定の例外を通常同期から分離する最小修正を実施。シロクマ独立確認で新規BLOCKERなし・回帰4件成功。22:01 JSTの最終QAはPython3,654成功/12スキップ、差分形式チェック成功。GAS37成功と実DB確認は変更なしで有効。外部回答原文はgemini-final.txt / claude-final.txt。
+
 公式根拠: https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values

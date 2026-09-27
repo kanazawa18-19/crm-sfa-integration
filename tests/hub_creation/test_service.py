@@ -250,3 +250,31 @@ def test_disabled_registration_does_not_reach_normal_dispatch():
     event=SyncEvent(Tool.SPREADSHEET,'chain','9',NOW,registration_key='new:disabled')
     result=SkipTrackingDispatcher(Inner()).dispatch(event)
     assert result.skipped and result.reason=='hub_creation_disabled'
+
+
+@pytest.mark.parametrize('broken_journal', [False, True])
+def test_retry_failure_does_not_undo_normal_sheet_success(monkeypatch, caplog, broken_journal):
+    from src.sync_engine.dispatcher import DispatchResult
+    service,event,journal,notion,adapter,store=setup()
+    def fail(*args,**kwargs): raise RuntimeError('private response')
+    monkeypatch.setattr(journal,'source_for_page',lambda page:'sheet:new:retry')
+    monkeypatch.setattr(service,'handle',fail)
+    if broken_journal: monkeypatch.setattr(journal,'hold',fail)
+    edited=SyncEvent(Tool.SPREADSHEET,'chain','9',NOW,source_notion_key='created-page')
+    result=DispatchResult(skipped=False)
+    service.retry_after_sheet_sync(edited,result)
+    assert not result.skipped
+    assert 'private response' not in caplog.text
+    assert '再判定を保留' in caplog.text
+    if not broken_journal: assert journal.get('sheet:new:retry','retry')['state']=='blocked'
+
+
+def test_retry_lookup_failure_is_contained(monkeypatch,caplog):
+    from src.sync_engine.dispatcher import DispatchResult
+    service,event,journal,notion,adapter,store=setup()
+    def fail(*args): raise RuntimeError('private connection')
+    monkeypatch.setattr(journal,'source_for_page',fail)
+    edited=SyncEvent(Tool.SPREADSHEET,'chain','9',NOW,source_notion_key='created-page')
+    service.retry_after_sheet_sync(edited,DispatchResult(skipped=False))
+    assert journal.get('notion:created-page','retry')['state']=='blocked'
+    assert 'private connection' not in caplog.text

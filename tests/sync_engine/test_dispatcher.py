@@ -2211,11 +2211,18 @@ def test_new_external_page_note_failure_is_retried_without_creating_again(monkey
         calls.append(mapping.notion_key)
         if len(calls)==1: raise RuntimeError("メモの一時エラー")
     dispatcher=Dispatcher(store,targets,note_writer=writer)
+    row_calls=[]
+    def append_row(event,mapping,properties):
+        from dataclasses import replace
+        row_calls.append(mapping.notion_key)
+        store.upsert(replace(mapping,spreadsheet_row=25),expected_last_synced_at=mapping.last_synced_at)
+    monkeypatch.setattr(dispatcher,'_append_spreadsheet_row_for_created_record',append_row)
     event=SyncEvent(Tool.KINTONE,"client_master","new-with-note",NOW,sync_notes={"メモ":"確認必要"})
     with pytest.raises(RuntimeError,match="メモの一時エラー"):
         dispatcher.dispatch(event)
     mapping=store.find_by_external_id(Tool.KINTONE,"new-with-note",db_key="client_master")
     assert mapping is not None and mapping.last_synced_at is None
+    assert mapping.spreadsheet_row == 25 and row_calls == ["new-id"]
     assert not dispatcher.dispatch(event).skipped
     assert store.get(mapping.notion_key).last_synced_at==NOW
     assert len(targets[Tool.NOTION].upsert_calls)==1

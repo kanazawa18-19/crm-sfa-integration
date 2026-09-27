@@ -970,19 +970,6 @@ class Dispatcher:
                 external_id=event.external_id,
                 notion_page_id=new_notion_key,
             )
-        # 初回メモも同期処理に含める。失敗は握らず再送させ、対応表は残して再作成を防ぐ。
-        if self._note_writer is not None and event.sync_notes:
-            with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
-                latest = self._store.get(new_notion_key)
-                watermark = guard.latest(latest.last_synced_at if latest else None)
-                if latest is not None and not guard.rejects(event.occurred_at) and (
-                    watermark is None or event.occurred_at >= watermark
-                ):
-                    guard.accept(event.occurred_at)
-                    self._note_writer(event, latest)
-                    guard.advance(event.occurred_at)
-                    self._store.update_last_synced_at(new_notion_key, event.occurred_at)
-
         # **ここでシートの行も作る**（2026-09-03）。理由は下のメソッドのdocstring参照。
         try:
             with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
@@ -1023,6 +1010,19 @@ class Dispatcher:
                 event, new_mapping, "同期状態の確認または行追加に失敗しました。",
                 REASON_NEW_RECORD_ROW_WRITE_FAILED,
             )
+        # 初回メモも同期処理に含める。失敗は握らず再送させ、対応表は残して再作成を防ぐ。
+        if self._note_writer is not None and event.sync_notes:
+            with acquire_record_sync_lock(self._store, event.db_key, new_notion_key) as guard:
+                latest = self._store.get(new_notion_key)
+                watermark = guard.latest(latest.last_synced_at if latest else None)
+                if latest is not None and not guard.rejects(event.occurred_at) and (
+                    watermark is None or event.occurred_at >= watermark
+                ):
+                    guard.accept(event.occurred_at)
+                    self._note_writer(event, latest)
+                    guard.advance(event.occurred_at)
+                    self._store.update_last_synced_at(new_notion_key, event.occurred_at)
+
         return DispatchResult(skipped=False)
 
     def _append_spreadsheet_row_for_created_record(

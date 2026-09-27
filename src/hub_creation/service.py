@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import os
+import logging
 from typing import Any
 from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
@@ -14,6 +15,9 @@ from src.sync_engine.outbound_field_mapping import translate_properties, zoho_ou
 from src.sync_engine.outbound_value_mapping import translate_choice_value
 from src.sync_engine.sync_headers import is_own_system_event, get_sync_system_id
 from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value, PARSEABLE_NOTION_PROPERTY_TYPES
+
+
+logger = logging.getLogger(__name__)
 
 
 class HubCreationService:
@@ -44,12 +48,24 @@ class HubCreationService:
             return
         if any(Tool.NOTION in item.skipped_tools for item in result.properties):
             return
-        source_key = self.journal.source_for_page(event.source_notion_key)
-        if not source_key or not source_key.startswith("sheet:"):
-            return
-        retry = replace(event, source_tool=Tool.NOTION, external_id=event.source_notion_key,
-                        properties={}, registration_key=None, source_notion_key=None)
-        self.handle(retry)
+        fallback_key = "notion:" + event.source_notion_key
+        source_key = fallback_key
+        try:
+            source_key = self.journal.source_for_page(event.source_notion_key) or fallback_key
+            if not source_key.startswith("sheet:"):
+                return
+            retry = replace(event, source_tool=Tool.NOTION, external_id=event.source_notion_key,
+                            properties={}, registration_key=None, source_notion_key=None)
+            self.handle(retry)
+            self.journal.dismiss_hold(source_key, "retry")
+            self.journal.dismiss_hold(fallback_key, "retry")
+        except Exception:
+            # 通常編集は既に同期済み。再判定の障害だけで成功済み編集を5xxに戻さない。
+            logger.warning("シート編集の同期は完了しましたが、新規登録の再判定を保留しました")
+            try:
+                self.journal.hold(source_key, "retry", event.db_key, "通常編集は同期済みです。新規登録の再判定を確認してください")
+            except Exception:
+                logger.warning("新規登録の再判定保留を保存できませんでした")
 
     def _handle_locked(self, event, source_key):
         client = self.notion_clients.get(event.db_key)

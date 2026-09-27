@@ -1,0 +1,159 @@
+heading "Claudeが返答しました: 判定: 確定的な新規BLOCKERはありません。ただし条件付きのBLOCKER候補が1件あります（N1）。前回のBLOCKERはすべて解消です。" [level=2]'
+      - generic "Flagging a possible blocker in note-write failure recovery.":
+        - generic: Flagging a possible blocker in note-write failure recovery.
+        - button "Flagging a possible blocker in note-write failure recovery.":
+          - generic: 
+      - status: Flagging a possible blocker in note-write failure recovery.
+      - paragraph: "判定: 確定的な新規BLOCKERはありません。ただし条件付きのBLOCKER候補が1件あります（N1）。前回のBLOCKERはすべて解消です。"
+      - paragraph: 前回指摘の解消状況
+      - table:
+        - rowgroup:
+          - row "指摘 判定 根拠・残り":
+            - columnheader "指摘"
+            - columnheader "判定"
+            - columnheader "根拠・残り"
+        - rowgroup:
+          - row "B1 対象外・保留の区別 解消（残りはWARN） 対象外は CreationNotApplicable と dismiss_hold で週次から除外。ZohoはチェーンだけがAPI作成対象で、残り5DBの仕様保留は理由文で「対応未実装」と区別される。ただし state は blocked のままで、週次件数に入り、編集のたびに fields・layouts を再取得する。Zoho APIの消費量を確認してください":
+            - cell "B1 対象外・保留の区別"
+            - cell "解消（残りはWARN）"
+            - cell "対象外は CreationNotApplicable と dismiss_hold で週次から除外。ZohoはチェーンだけがAPI作成対象で、残り5DBの仕様保留は理由文で「対応未実装」と区別される。ただし state は blocked のままで、週次件数に入り、編集のたびに fields・layouts を再取得する。Zoho APIの消費量を確認してください"
+          - row "B2 反映順序 解消 配備前に作成済みとの事実":
+            - cell "B2 反映順序"
+            - cell "解消"
+            - cell "配備前に作成済みとの事実"
+          - row "B3 POSTの再試行 解消 idempotent=False と data[0].code の検査を確認済みとの事実":
+            - cell "B3 POSTの再試行"
+            - cell "解消"
+            - cell "idempotent=False と data[0].code の検査を確認済みとの事実"
+          - row "B4 import 解消 事実どおり":
+            - cell "B4 import"
+            - cell "解消"
+            - cell "事実どおり"
+          - row "B5 position start 解消 2022-06-28 での実API試験":
+            - cell "B5 position start"
+            - cell "解消"
+            - cell "2022-06-28 での実API試験"
+          - row "W1 保留時の5xx 解消 except 節で update の CreationHeld を捕捉":
+            - cell "W1 保留時の5xx"
+            - cell "解消"
+            - cell "except 節で update の CreationHeld を捕捉"
+          - row "W2 確定失敗と不明の区別 方針として受容 復旧手順を文書化済み":
+            - cell "W2 確定失敗と不明の区別"
+            - cell "方針として受容"
+            - cell "復旧手順を文書化済み"
+          - row "W3 対応表保存失敗 解消 mapping:<送り先> を週次へ出し、成功時に除去":
+            - cell "W3 対応表保存失敗"
+            - cell "解消"
+            - cell "mapping:<送り先> を週次へ出し、成功時に除去"
+          - row "W4 先着ガード 解消 created の行は externalId が一致した場合だけ抑止":
+            - cell "W4 先着ガード"
+            - cell "解消"
+            - cell "created の行は externalId が一致した場合だけ抑止"
+          - row "W5 変換できない値の欠落 概ね解消 dropped をメモへ記録。登録状況は「外部登録完了」のまま":
+            - cell "W5 変換できない値の欠落"
+            - cell "概ね解消"
+            - cell "dropped をメモへ記録。登録状況は「外部登録完了」のまま"
+          - row "W6 kintone 顧客種別 解消 不一致なら保留。payload がフラット形式であることもテストで裏付け":
+            - cell "W6 kintone 顧客種別"
+            - cell "解消"
+            - cell "不一致なら保留。payload がフラット形式であることもテストで裏付け"
+          - row "W7 完了後の再判定 解消 全送り先が完了または対象外なら None を返す":
+            - cell "W7 完了後の再判定"
+            - cell "解消"
+            - cell "全送り先が完了または対象外なら None を返す"
+          - row "W8 アーカイブ・削除 一部未解消 完了済みページは通常処理へ戻る。保留中のページ（5DBでは常態）はアーカイブ時も new_record_archived で通常同期を止める。get_raw_page が None の場合も未確認（推測）":
+            - cell "W8 アーカイブ・削除"
+            - cell "一部未解消"
+            - cell "完了済みページは通常処理へ戻る。保留中のページ（5DBでは常態）はアーカイブ時も new_record_archived で通常同期を止める。get_raw_page が None の場合も未確認（推測）"
+          - row "W9 入力途中の名前 未対応 仕様判断の範囲":
+            - cell "W9 入力途中の名前"
+            - cell "未対応"
+            - cell "仕様判断の範囲"
+          - row "W10 検索索引の遅延 解消 通常一覧で最大2,000件を照合し、残る競合は文書化":
+            - cell "W10 検索索引の遅延"
+            - cell "解消"
+            - cell "通常一覧で最大2,000件を照合し、残る競合は文書化"
+          - row "W11 日付 解消 SERIAL_NUMBER で取得して変換":
+            - cell "W11 日付"
+            - cell "解消"
+            - cell "SERIAL_NUMBER で取得して変換"
+          - row "W12 無効時の受付 解消 503 を返し、通常同期へ渡さない":
+            - cell "W12 無効時の受付"
+            - cell "解消"
+            - cell "503 を返し、通常同期へ渡さない"
+          - row "W13 GASの例外 解消 行ごとに捕捉。キーが空の行は送らない":
+            - cell "W13 GASの例外"
+            - cell "解消"
+            - cell "行ごとに捕捉。キーが空の行は送らない"
+          - row "W14 ロック保持 解消 POST前に解放":
+            - cell "W14 ロック保持"
+            - cell "解消"
+            - cell "POST前に解放"
+          - row "W15 Prisma の部分インデックス 文書化のみ 機械的な検査はなし":
+            - cell "W15 Prisma の部分インデックス"
+            - cell "文書化のみ"
+            - cell "機械的な検査はなし"
+          - row "W16 全ページへのメモ 一部 値の保持は改善。全イベントでの読み書きは継続":
+            - cell "W16 全ページへのメモ"
+            - cell "一部"
+            - cell "値の保持は改善。全イベントでの読み書きは継続"
+          - row "W17 Probability の外向き値 未確認 差分外（推測）":
+            - cell "W17 Probability の外向き値"
+            - cell "未確認"
+            - cell "差分外（推測）"
+      - paragraph: 新規指摘
+      - paragraph:
+        - text: N1（条件付きBLOCKER候補）. 外部起点の新規作成で、初回メモが失敗するとシート行の作成が飛ばされる
+        - text: "ファイル: src/sync_engine/dispatcher.py（新規作成経路に追加したメモ書き込み）"
+        - text: "発生条件: Zoho または kintone 起点で Notion ページと対応表を作成した後、upsert_sync_notes が失敗した場合です（Notion の 429 や一時障害など）。例外が伝わるため、その後の「ここでシートの行も作る」処理が実行されません。"
+        - text: ・再送されれば通常の更新経路でメモと完了時刻は回収されます。ただし、通常の更新経路がシート行を新規作成するかは確認できません（推測）。
+        - text: ・Zoho・kintone の Webhook に再送が無い場合、次の更新が来るまで last_synced_at は None のまま、シート行も欠けたままです。
+        - text: この経路は HUB_CREATION_ENABLED_SINCE の設定と無関係に、既存の外部起点作成すべてに適用されます。再送の有無と、シート行を回収する経路を確認してください。確認できない場合は、メモ書き込みをシート行作成の後ろに移すことを推奨します。
+      - paragraph:
+        - text: N2（WARN）. retry_after_sheet_sync の例外が、成功した通常同期を5xxにする
+        - text: "ファイル: production_wiring.py（SkipTrackingDispatcher.dispatch）"
+        - text: "発生条件: シート編集の通常同期が成功した後、再判定の中で Notion GET、DB接続、通知書き込みのいずれかが失敗した場合です。Webhook は5xxを返し、GAS は「一部の行を同期受付できませんでした」と表示します。重複作成は起きませんが、成功した編集が失敗として見えます。"
+        - text: "対応案: 再判定を try で囲み、失敗はログと保留記録にとどめます。"
+      - paragraph: "結論: N1 について、外部Webhookの再送有無とシート行の回収経路を確認してください。問題がなければ、HUB_CREATION_ENABLED_SINCE を有効化してよい状態と判断します。"
+      - toolbar "メッセージアクション":
+        - button "コピー":
+          - generic: 
+        - status
+        - button "読み上げ":
+          - generic: 
+        - button "良い回答":
+          - generic: 
+        - button "悪い回答":
+          - generic: 
+        - button "再試行":
+          - generic: 
+        - time: 1 分前
+  - button "最下部までスクロール":
+    - generic: 
+  - status
+  - status
+  - status
+  - generic: メッセージを入力…
+  - textbox "Claudeへのプロンプトを入力してください":
+    - paragraph
+  - status
+  - button "ファイルやコネクタなどを追加":
+    - generic: 
+  - button "音声入力":
+    - generic: 
+  - group "ボイスモードを開始":
+    - button "ボイスモードを開始":
+    - button "マイク":
+      - generic: 
+  - note:
+    - link "Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。":
+      - /url: https://support.anthropic.com/en/articles/8525154-claude-is-providing-incorrect-or-misleading-responses-what-s-going-on
+      - text: Claude は AI であり、間違えることがあります。
+      - generic: 回答は必ずご確認ください。
+  - 'button "モデル: Opus 5.5 中"':
+    - text: Opus 5.5
+    - generic: 中
+  - status
+- status
+- status
+- region "Notifications"
