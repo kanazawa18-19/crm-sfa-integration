@@ -5,7 +5,40 @@
     "exit_code": 0,
     "applied": true
   },
-  "deployment": "反映準備済み。push後に更新。",
+  "deployment": {
+    "id": "dpl_VKdnsoHAnRDZpxnakD4TfrZm4eRX",
+    "url": "https://crm-sfa-integration-cdypyk9k4-cnctor1.vercel.app",
+    "alias": "https://crm-sfa-integration.vercel.app",
+    "status": "Ready"
+  },
   "external_customer_test_writes": false,
-  "historical_backfill": false
+  "historical_backfill": false,
+  "feature_commit": "64dd55938fd515fc7fd073a550a0e5d911d79edd",
+  "ci": {
+    "run": 36344941979,
+    "url": "https://github.com/kanazawa18-19/crm-sfa-integration/actions/runs/36344941979",
+    "python": "success",
+    "gas": "success",
+    "docker_build_and_health": "success"
+  },
+  "production_readback": {
+    "healthz": 200,
+    "new_cron_unauthenticated": 401,
+    "webhook_health_http": 200,
+    "webhook_checks": 6,
+    "webhook_checks_ok": 6,
+    "new_tables_row_counts": [
+      0,
+      0,
+      0
+    ],
+    "error_logs_10min": 0
+  },
+  "verified_at": "2026-09-27T19:40:16.725327+00:00",
+  "not_verified": [
+    "実Notion関連書込・シート実配送",
+    "25件超の実Notionページ分割・100件超の実API反映",
+    "新cronの定刻実行",
+    "週次9/28 06:17の全件点検と実配送"
+  ]
 }
