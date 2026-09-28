@@ -29,6 +29,12 @@ def note_state(blocks):
         if managed(b): result.update(parse_notes(content(b)))
     return result
 
+def notes_complete(blocks, expected):
+    # 現在の元値に未解決項目がなければ、空の本文をそのまま完了とする。
+    if not blocks:
+        return not expected
+    return len(blocks)==1 and managed(blocks[0]) and note_state(blocks)==expected
+
 def main():
     args=argparse.ArgumentParser();args.add_argument('--apply',action='store_true');args.add_argument('--limit',type=int,default=1); opts=args.parse_args()
     previous=json.loads(RESULT.read_text()); done={r['notion_key'] for r in previous if r['status'] in {'verified','already_complete'}}
@@ -61,7 +67,7 @@ def main():
                 # 前回計画が空本文だったページだけ扱う。本文のあるものは推測せず保留。
                 if body or p['body_hash_before']!=h([]): raise ValueError('本文再確認が必要')
                 old=note_state(blocks); expected=merge_notes(old,notes)
-                complete=len([b for b in blocks if managed(b)])==1 and managed(blocks[0]) and old==expected
+                complete=notes_complete(blocks,expected)
                 if not opts.apply:
                     print(json.dumps({'index':index+1,'db':db,'notes':len(expected),'already_complete':complete,'mode':'dry-run'}),flush=True);continue
                 if not complete:
@@ -70,7 +76,7 @@ def main():
                     if latest.get('last_edited_time')!=page.get('last_edited_time') or stable_blocks(gateway.blocks(db,key))!=stable_blocks(blocks): raise ValueError('直前変更')
                     clients[db].upsert_sync_notes(key,notes)
                 after=gateway.blocks(db,key)
-                if [b for b in after if not managed(b)]!=body or len([b for b in after if managed(b)])!=1 or not managed(after[0]) or note_state(after)!=expected: raise ValueError('読戻し不一致')
+                if [b for b in after if not managed(b)]!=body or not notes_complete(after,expected): raise ValueError('読戻し不一致')
                 result={'db_key':db,'notion_key':key,'status':'already_complete' if complete else 'verified','notes_count':len(expected),'body_hash_before':p['body_hash_before'],'body_preserved':True}
                 previous.append(result)
                 temporary=RESULT.with_suffix('.pending.json');temporary.write_text(json.dumps(previous,ensure_ascii=False,indent=2));temporary.replace(RESULT)

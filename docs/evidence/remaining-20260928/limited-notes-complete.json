@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-09-28T07:15:52.269719+00:00",
+  "planned_unique": 532,
+  "completed_unique": 532,
+  "remaining": 0,
+  "status_counts": {
+    "verified": 529,
+    "already_complete": 3
+  },
+  "by_database": {
+    "project": 57,
+    "action": 67,
+    "contact": 408
+  },
+  "all_written_pages_body_preserved": true,
+  "current_authorized_remaining": 335,
+  "current_written_and_verified": 333,
+  "current_no_note_needed": 2,
+  "prior_existing_complete": 1,
+  "result_sha256": "7289d150096820ac94f0fc4751885e7684463c46650ab190a6ba679645c7aeb4",
+  "checks": "元レコード・現対応表・ページ実在・通常本文保持・専用メモ読戻し。未解決項目が空の2件は追加なし。"
+}
