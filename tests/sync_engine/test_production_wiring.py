@@ -180,6 +180,29 @@ def test_build_kintone_targets_by_db_skips_dbs_without_app_credentials(
 # --- build_zoho_targets_by_db ----------------------------------------------------------------
 
 
+def test_kintone_lookup_auth_includes_only_client_reference(monkeypatch):
+    monkeypatch.setenv("KINTONE_DOMAIN", "example.cybozu.com")
+    for suffix in ("CLIENT", "PROJECT", "ACTION"):
+        monkeypatch.setenv(f"KINTONE_APP_ID_{suffix}", "10")
+        monkeypatch.setenv(f"KINTONE_API_TOKEN_{suffix}", "token-" + suffix)
+    targets = build_kintone_targets_by_db()
+    assert targets["client_master"]._client._headers(has_json_body=False)["X-Cybozu-API-Token"] == "token-CLIENT"
+    for key in ("project", "action"):
+        assert targets[key]._client._headers(has_json_body=True)["X-Cybozu-API-Token"] == "token-" + key.upper() + ",token-CLIENT"
+    monkeypatch.setenv("KINTONE_API_TOKEN_PROJECT", "token-PROJECT, token-CLIENT")
+    assert build_kintone_targets_by_db()["project"]._client._api_token == "token-PROJECT,token-CLIENT"
+
+
+def test_kintone_lookup_auth_enforces_api_limit_without_disclosing_tokens(monkeypatch):
+    monkeypatch.setenv("KINTONE_DOMAIN", "example.cybozu.com")
+    monkeypatch.setenv("KINTONE_APP_ID_PROJECT", "10")
+    monkeypatch.setenv("KINTONE_API_TOKEN_PROJECT", ",".join("secret-" + str(i) for i in range(9)))
+    monkeypatch.setenv("KINTONE_API_TOKEN_CLIENT", "secret-client")
+    with pytest.raises(ValueError, match="9個以内") as exc:
+        build_kintone_targets_by_db()
+    assert "secret" not in str(exc.value)
+
+
 def test_build_zoho_targets_by_db_returns_empty_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
