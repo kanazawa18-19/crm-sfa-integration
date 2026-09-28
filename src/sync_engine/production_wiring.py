@@ -683,6 +683,13 @@ def build_kintone_targets_by_db() -> dict[str, KintoneSyncTarget]:
                 suffix,
             )
             continue
+        # 案件・アクションの顧客ルックアップには参照元アプリの認証も必要。
+        if db_key in {"project", "action"}:
+            lookup_token = os.environ.get("KINTONE_API_TOKEN_CLIENT", "")
+            tokens = list(dict.fromkeys(t.strip() for t in (api_token + "," + lookup_token).split(",") if t.strip()))
+            if len(tokens) > 9:
+                raise ValueError("kintoneの参照用APIトークンは9個以内に設定してください")
+            api_token = ",".join(tokens)
         client = HttpKintoneClient(domain, api_token=api_token)
         targets[db_key] = KintoneSyncTarget(client, app_id)
     return targets
