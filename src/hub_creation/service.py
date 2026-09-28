@@ -27,12 +27,12 @@ class HubCreationService:
         self.notion_clients, self.adapters = notion_clients, adapters
         self.enabled_since, self.sheet_gateway = enabled_since, sheet_gateway
 
-    def handle(self, event):
+    def handle(self, event, *, scan_journal=None):
         from src.infrastructure.http_budget import http_budget
         with http_budget(240):
-            return self._handle_with_budget(event)
+            return self._handle_with_budget(event, scan_journal=scan_journal)
 
-    def _handle_with_budget(self, event):
+    def _handle_with_budget(self, event, *, scan_journal=None):
         """通常更新はNone、新規を扱ったときは結果理由を返す。"""
         if is_own_system_event(event.sync_system_id, expected=get_sync_system_id()):
             return None
@@ -46,7 +46,21 @@ class HubCreationService:
             source_key = self.journal.source_for_page(event.external_id) or source_key
         lock_id = source_key
         with acquire_record_sync_lock(self.store, event.db_key, lock_id):
-            return self._handle_locked(event, source_key)
+            pending_targets = set()
+            try:
+                outcome = self._handle_locked(event, source_key, pending_targets)
+            except Exception as exc:
+                if scan_journal is not None and getattr(exc, 'status_code', None) == 404:
+                    scan_journal.hold(source_key, '登録元が見つかりません。確認後に登録元を再通知してください')
+                raise
+            if scan_journal is not None:
+                # 元ページの同期ロック内で確定し、後から届いた手動再通知を上書きしない。
+                attempt = self.journal.get(source_key, 'zoho')
+                if outcome in (None, 'new_record_archived') or (attempt and attempt['state'] in ('created', 'reserved')):
+                    scan_journal.done(source_key)
+                elif 'zoho' not in pending_targets:
+                    scan_journal.hold(source_key, '重複照合以外の確認待ちです。登録元のメモを確認し、解決後に再通知してください')
+            return outcome
 
     def retry_after_sheet_sync(self, event, result):
         """通常同期でNotionへ届いた後だけ、登録履歴のある行を再判定する。"""
@@ -73,7 +87,7 @@ class HubCreationService:
             except Exception:
                 logger.warning("新規登録の再判定保留を保存できませんでした")
 
-    def _handle_locked(self, event, source_key):
+    def _handle_locked(self, event, source_key, pending_targets):
         client = self.notion_clients.get(event.db_key)
         if client is None:
             return "new_record_notion_unavailable"
@@ -125,14 +139,7 @@ class HubCreationService:
                 if created < self.enabled_since:
                     return None  # 過去の未登録は週次点検だけに残す。
                 page_id = event.external_id
-                for name, value in raw.get("properties", {}).items():
-                    try:
-                        prop = get_schema(event.db_key).get_property(name)
-                    except KeyError:
-                        continue
-                    if (prop.is_writable and prop.sync_scope.synced_tools
-                            and value.get("type") in PARSEABLE_NOTION_PROPERTY_TYPES):
-                        properties[name] = parse_notion_property_value(value)
+                properties = self._creation_properties(event.db_key, raw)
                 require_notion_fields(event.db_key, properties)
                 name, title = title_value(event.db_key, properties)
                 fingerprint = identity_hash(event.db_key, title)
@@ -196,8 +203,21 @@ class HubCreationService:
                                     from src.record_merge.domain import digest
                                     latest = client.get_raw_page(page_id)
                                     if (latest.get('archived') or latest.get('in_trash')
-                                            or digest(latest.get('properties')) != digest(creation_page_snapshot.get('properties'))):
+                                            or latest.get('parent') != creation_page_snapshot.get('parent')
+                                            or digest(self._creation_properties(event.db_key, latest))
+                                            != digest(self._creation_properties(event.db_key, creation_page_snapshot))):
                                         raise CreationHeld('照合中に登録元が変更されました。現在の入力で再確認します')
+                                from src.infrastructure.http_budget import remaining, HttpBudgetExceeded
+                                from src.hub_creation.duplicate_scan import PENDING
+                                try:
+                                    left = remaining()
+                                    if left is not None and left <= 40:
+                                        raise HttpBudgetExceeded()
+                                except HttpBudgetExceeded:
+                                    if scan is not None:
+                                        scan.defer()
+                                        raise CreationHeld(PENDING) from None
+                                    raise CreationHeld('送信前に時間枠へ到達しました。登録元を再通知してください') from None
                             if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
                                 raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
                             external_id = adapter.create(event.db_key, payload)
@@ -212,6 +232,9 @@ class HubCreationService:
                         notes[note_key] = f"[{origin}:新規登録（{target}）] 対象外: {exc}。この送り先への登録は不要です。"
                     except CreationHeld as exc:
                         reason = str(exc)
+                        from src.hub_creation.duplicate_scan import PENDING
+                        if reason == PENDING:
+                            pending_targets.add(target)
                         self.journal.hold(source_key, target, event.db_key, reason)
                         notes[note_key] = f"[{origin}:新規登録（{target}）] {reason}。既存候補への自動紐付けは行っていません。"
                         held.append(target + ": " + reason)
@@ -245,6 +268,27 @@ class HubCreationService:
                 except CreationHeld:
                     pass  # 行の一意性が失われた場合は触らず、保存済みの保留を週次通知する。
             return "hub_creation_held"
+
+    @staticmethod
+    def _creation_properties(db_key, raw):
+        """作成に用いる入力だけを抽出し、直前照合にも同じ規則を使う。"""
+        properties = {}
+        for name, value in raw.get('properties', {}).items():
+            try:
+                prop = get_schema(db_key).get_property(name)
+            except KeyError:
+                continue
+            if (prop.is_writable and prop.sync_scope.synced_tools
+                    and value.get('type') in PARSEABLE_NOTION_PROPERTY_TYPES):
+                properties[name] = parse_notion_property_value(value)
+        if db_key == 'action':
+            from src.hub_creation.creation_payload import creation_rollup
+            for name in ('担当営業', '提案サービス'):
+                properties.pop(name, None)
+                value = creation_rollup(raw.get('properties', {}).get(name))
+                if value is not None:
+                    properties[name] = value
+        return properties
 
     @staticmethod
     def _check_notion_duplicates(client, name, title, self_id=None):

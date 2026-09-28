@@ -18,10 +18,9 @@ def drain_creation_scans(service, *, journal=None):
                     break
                 journal.defer(row['sourceKey'])
                 event = SyncEvent(Tool.NOTION, row['dbKey'], row['sourceId'], datetime.now(timezone.utc))
-                outcome = service.handle(event)
+                outcome = service.handle(event, scan_journal=journal)
                 attempt = service.journal.get(row['sourceKey'], 'zoho')
                 if outcome in (None, 'new_record_archived') or (attempt and attempt['state'] in ('created','reserved')):
-                    journal.done(row['sourceKey'])
                     result['completed'] += int(bool(attempt and attempt['state'] == 'created'))
                 else:
                     result['held'] += 1

@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 import re
+import requests
 
 from src.hub_creation.domain import CreationHeld, identity_hash
 from src.infrastructure.http_budget import HttpBudgetExceeded, http_budget, remaining
@@ -12,6 +13,9 @@ from src.sync_engine.clients._http import ApiError, raise_for_error
 PENDING = '外部の重複照合を分割処理中です。続きは定期処理で確認します'
 RESUME = '問題を解消した後、登録元を再通知して再開してください'
 MAX_CATCHUP_ROUNDS = 3
+OVERLAP_SECONDS = 120  # 時計ずれ・反映遅延に備えて既読部分も再照合する。完全な排他保証ではない。
+MAX_TRANSIENT_FAILURES = 3
+MAX_NO_PROGRESS_RUNS = 6
 
 
 def utc_second():
@@ -38,8 +42,10 @@ class ZohoDuplicateScan:
             return
         fingerprint = digest(context)
         row = self.journal.get(context['sourceKey'])
+        if row and row['inputHash'] == fingerprint and row['state'] == 'held':
+            return  # 手動再通知後のcheckで、保留した差分窓を正しく初期化する。
         checkpoint = (row['checkpoint'] if row and row['inputHash'] == fingerprint else
-                      {'phase': 'full', 'last_id': '0', 'since': stamp(utc_second() - timedelta(seconds=1))})
+                      {'phase': 'full', 'last_id': '0', 'since': stamp(utc_second() - timedelta(seconds=OVERLAP_SECONDS))})
         self.journal.save(context, fingerprint, checkpoint)
 
     def check(self, db_key, module, fields, matches):
@@ -50,17 +56,20 @@ class ZohoDuplicateScan:
         row = self.journal.get(context['sourceKey'])
         now = utc_second()
         if row is None or row['inputHash'] != fingerprint:
-            checkpoint = {'phase': 'full', 'last_id': '0', 'since': stamp(now - timedelta(seconds=1))}
+            checkpoint = {'phase': 'full', 'last_id': '0', 'since': stamp(now - timedelta(seconds=OVERLAP_SECONDS))}
         else:
             checkpoint = deepcopy(row['checkpoint'])
             if row['state'] == 'held':
                 checkpoint['catchup_rounds'] = 0
+                checkpoint['transient_failures'] = 0
+                checkpoint.pop('no_progress_runs', None)
                 if checkpoint['phase'] == 'delta':
                     checkpoint.update(last_id='0', until=stamp(now))
             if checkpoint['phase'] == 'verified':
                 checkpoint = {'phase': 'delta', 'last_id': '0', 'since': checkpoint['since'],
                               'until': stamp(now), 'catchup_rounds': 0}
         self.journal.save(context, fingerprint, checkpoint)
+        progressed = False
         try:
             with http_budget(self.slice_seconds):
                 while True:
@@ -81,38 +90,58 @@ class ZohoDuplicateScan:
                     if more and not records:
                         raise CreationHeld('外部の照合ページが欠けています')
                     checkpoint['last_id'] = str(prior)
+                    checkpoint.pop('transient_failures', None)
+                    checkpoint.pop('no_progress_runs', None)
+                    progressed = True
                     if not more:
                         finished = utc_second()
                         if checkpoint['phase'] == 'delta':
                             until = datetime.fromisoformat(checkpoint['until'])
                             if 0 <= (finished - until).total_seconds() <= 5:
                                 checkpoint = {'phase': 'verified', 'last_id': '0',
-                                              'since': stamp(until - timedelta(seconds=1))}
+                                              'since': stamp(until - timedelta(seconds=OVERLAP_SECONDS))}
                                 self.journal.save(context, fingerprint, checkpoint)
                                 return
                             checkpoint['catchup_rounds'] = checkpoint.get('catchup_rounds', 0) + 1
                             if checkpoint['catchup_rounds'] >= MAX_CATCHUP_ROUNDS:
                                 raise CreationHeld('変更分の照合を3巡しましたが、毎回5秒以内に追いつけません。'
                                                    'Zohoの応答速度または更新頻度を確認してください')
-                            checkpoint['since'] = stamp(until - timedelta(seconds=1))
+                            checkpoint['since'] = stamp(until - timedelta(seconds=OVERLAP_SECONDS))
                         checkpoint.update(phase='delta', last_id='0', until=stamp(finished))
                     self.journal.save(context, fingerprint, checkpoint)
         except HttpBudgetExceeded:
-            raise CreationHeld(PENDING) from None
+            # HTTP層が429待機や短縮タイムアウトを時間切れへ変換する場合も、無期限に再開しない。
+            if not progressed:
+                checkpoint['no_progress_runs'] = checkpoint.get('no_progress_runs', 0) + 1
+            held = checkpoint.get('no_progress_runs', 0) >= MAX_NO_PROGRESS_RUNS
+            reason = ('外部の重複照合が6回続けて1ページも進みませんでした。' + RESUME) if held else PENDING
+            self.journal.save(context, fingerprint, checkpoint, state='held' if held else 'pending', reason=reason)
+            raise CreationHeld(reason) from None
         except CreationHeld as exc:
             reason = str(exc) + '。' + RESUME
             self.journal.save(context, fingerprint, checkpoint, state='held', reason=reason)
             raise CreationHeld(reason) from None
         except ApiError as exc:
+            if exc.status_code == 429 or (exc.status_code is not None and 500 <= exc.status_code < 600):
+                self._transient_failure(context, fingerprint, checkpoint)
             reason = ('ZohoのCOQL読取権限または認証を確認してください' if exc.status_code in (401,403)
                       else '外部の重複照合で通信の確認が必要です')
             reason += '。' + RESUME
             self.journal.save(context, fingerprint, checkpoint, state='held', reason=reason)
             raise CreationHeld(reason) from None
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            self._transient_failure(context, fingerprint, checkpoint)
         except Exception:
             reason = '外部の重複照合を確認できません。未確認のまま作成しません。' + RESUME
             self.journal.save(context, fingerprint, checkpoint, state='held', reason=reason)
             raise CreationHeld(reason) from None
+
+    def _transient_failure(self, context, fingerprint, checkpoint):
+        checkpoint['transient_failures'] = checkpoint.get('transient_failures', 0) + 1
+        held = checkpoint['transient_failures'] >= MAX_TRANSIENT_FAILURES
+        reason = ('外部の重複照合で通信失敗が3回続きました。' + RESUME) if held else PENDING
+        self.journal.save(context, fingerprint, checkpoint, state='held' if held else 'pending', reason=reason)
+        raise CreationHeld(reason) from None
 
     def _page(self, module, fields, checkpoint):
         # モジュール・項目はスキーマ由来のAPI名だけ。ユーザーの名前をクエリに入れない。

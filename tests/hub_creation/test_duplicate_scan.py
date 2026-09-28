@@ -188,3 +188,78 @@ def test_budget_shortened_http_timeout_keeps_scan_pending(monkeypatch):
         with pytest.raises(CreationHeld,match='分割処理中'): run(ZohoDuplicateScan(client,journal))
     assert journal.row['state']=='pending'
     assert journal.row['checkpoint']['last_id']=='0'
+
+
+@pytest.mark.parametrize('status', [429, 503])
+def test_transient_failures_retry_three_times_then_hold(status):
+    journal, client = Journal(), Client()
+    client.request = lambda *a, **k: SimpleNamespace(status_code=status, ok=False, json=lambda: {'message': 'private'})
+    scan = ZohoDuplicateScan(client, journal)
+    for index in range(3):
+        with pytest.raises(CreationHeld): run(scan)
+        assert journal.row['state'] == ('held' if index == 2 else 'pending')
+        assert journal.row['checkpoint']['last_id'] == '0'
+        assert 'private' not in journal.row['reason']
+
+
+def test_connection_failure_recovers_without_losing_checkpoint():
+    import requests
+    journal, client = Journal(), Client(4001)
+    original = client.request
+    def request(*args, **kwargs):
+        if len(client.queries) == 1: raise requests.exceptions.ConnectionError('private')
+        return original(*args, **kwargs)
+    client.request = request; scan = ZohoDuplicateScan(client, journal)
+    with pytest.raises(CreationHeld, match='分割処理中'): run(scan)
+    assert journal.row['checkpoint']['last_id'] == '2000'
+    client.request = original
+    run(scan)
+    assert journal.row['checkpoint']['phase'] == 'verified'
+
+
+def test_delta_queries_overlap_two_minutes(monkeypatch):
+    initial = datetime(2026, 9, 28, tzinfo=timezone.utc)
+    monkeypatch.setattr('src.hub_creation.duplicate_scan.utc_second', lambda: initial)
+    journal, client = Journal(), Client(1); scan = ZohoDuplicateScan(client, journal)
+    run(scan); run(scan)
+    for query in (q for q in client.queries if 'Modified_Time' in q):
+        assert "Modified_Time >= '2026-09-27T23:58:00+00:00'" in query
+        assert "Modified_Time <= '2026-09-28T00:00:00+00:00'" in query
+
+
+def test_defer_preserves_held_checkpoint_for_explicit_resume():
+    journal, client = Journal(), Client()
+    scan = ZohoDuplicateScan(client, journal)
+    with candidate_context('chain', 'page', 'notion:page', {'グループ名': '対象'}):
+        scan.defer()
+        journal.row['state'] = 'held'
+        journal.row['checkpoint']['catchup_rounds'] = 3
+        before = deepcopy(journal.row)
+        scan.defer()
+        assert journal.row == before
+
+
+@pytest.mark.parametrize('failure', ['rate_limit', 'timeout'])
+def test_real_http_budget_failure_holds_after_six_runs(monkeypatch, failure):
+    import requests
+    from src.sync_engine.clients._http import request_with_retry
+    clock = [0.0]
+    monkeypatch.setattr('src.infrastructure.http_budget.time.monotonic', lambda: clock[0])
+    def request(*args, **kwargs):
+        if failure == 'timeout':
+            clock[0] += kwargs['timeout']
+            raise requests.exceptions.Timeout()
+        return SimpleNamespace(status_code=429, headers={'Retry-After': '30'})
+    def sleep(seconds): clock[0] += seconds
+    monkeypatch.setattr('src.sync_engine.clients._http.requests.request', request)
+    journal, client = Journal(), Client()
+    client.request = lambda *a, **k: request_with_retry('GET', 'https://example.test', timeout=30, sleep=sleep)
+    scan = ZohoDuplicateScan(client, journal)
+    for index in range(6):
+        with pytest.raises(CreationHeld): run(scan)
+        assert journal.row['state'] == ('held' if index == 5 else 'pending')
+        assert journal.row['checkpoint']['no_progress_runs'] == index + 1
+        assert journal.row['checkpoint']['last_id'] == '0'
+    client.request = Client(1).request
+    run(scan)
+    assert journal.row['checkpoint']['phase'] == 'verified'

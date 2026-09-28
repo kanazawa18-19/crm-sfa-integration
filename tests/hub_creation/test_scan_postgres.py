@@ -70,6 +70,15 @@ def test_candidate_hold_stops_worker_until_explicit_notification(local):
     assert scans.get('notion:page')['inputHash']=='new-input'
 
 
+def test_non_scan_hold_preserves_checkpoint_and_stops_due(local):
+    scans, _ = local
+    scans.save(CONTEXT, 'hash', {'phase': 'verified', 'last_id': '0'})
+    scans.hold('notion:page', '入力の確認待ち')
+    make_due()
+    assert scans.due() == []
+    assert scans.get('notion:page')['checkpoint']['phase'] == 'verified'
+
+
 def test_same_identity_two_sources_only_one_post_reservation(local):
     _,attempts=local
     barrier=threading.Barrier(2)

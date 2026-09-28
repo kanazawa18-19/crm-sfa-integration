@@ -34,3 +34,8 @@ class PostgresScanJournal:
     def done(self, key):
         with connect() as conn:
             conn.execute('UPDATE "HubCreationScan" SET state=\'done\',"updatedAt"=now() WHERE "sourceKey"=%s', (key,))
+
+    def hold(self, key, reason):
+        with connect() as conn:
+            conn.execute('''UPDATE "HubCreationScan" SET state='held',reason=%s,"updatedAt"=now()
+                WHERE "sourceKey"=%s AND state='pending' ''', (reason, key))
