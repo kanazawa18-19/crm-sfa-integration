@@ -167,6 +167,13 @@ def translate_choice_value(db_key: str, property_name: str, value: Any) -> Any |
     複数選択は各要素を読み替える。**1つでも読み替えられない要素があればNoneを返す**
     （読み替えられた分だけ送ると、Notionでは付いている選択肢がZohoから消えるため）。
     """
+    if db_key == "project" and property_name == "ファーストタッチ":
+        from src.sync_engine.decided_choices import choices, FIRST_TOUCH
+        values = choices(value, FIRST_TOUCH)
+        return ", ".join(values) if values else None
+    if db_key == "project" and property_name == "サイトコントローラー":
+        from src.sync_engine.decided_choices import primary_controller
+        return primary_controller(value)
     table = zoho_outbound_value_maps().get(db_key, {}).get(property_name)
     if not table:
         return None

@@ -12,6 +12,8 @@ import os
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.decided_choices import CONTROLLERS, choices, merge_choice_memo, replace_memo_body
+from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 from src.sync_engine.outbound_value_mapping import translate_choice_value
 from src.sync_engine.outbound_field_mapping import (
     translate_properties,
@@ -103,6 +105,26 @@ class ZohoSyncTarget(SyncTarget):
             # 実際には1件も書いていないので、スキップとして扱わせる。
             return None
         payload = self._to_zoho_payload(properties, db_key)
+        values = choices(properties.get("サイトコントローラー"), CONTROLLERS) if db_key == "project" else None
+        memo_edit = db_key == "project" and payload is not None and "field70" in payload
+        if values or memo_edit:
+            current = self._client.get_record(self._module, external_id) if external_id else {}
+            if current is None:
+                raise ApiError(404, "備考の読取先がありません")
+            version = current.get("Modified_Time")
+            if external_id and (not version or (expected_version is not None and version != expected_version)):
+                raise ConcurrentModificationError(409, "備考の版が変更されています")
+            try:
+                memo = current.get("field70", "")
+                if memo_edit:
+                    memo = replace_memo_body(memo, payload["field70"])
+                if values:
+                    memo = merge_choice_memo(memo, "サイトコントローラー", values, limit=2000)
+            except ValueError as exc:
+                raise ApiError(422, str(exc)) from None
+            payload = {**(payload or {}), "field70": memo}
+            if external_id:
+                expected_version = version
         if payload is None:
             # 1項目も送っていないので、更新であっても「書き込めていない」を返す。
             # ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、

@@ -513,3 +513,12 @@ def test_handler_succeeds_when_secret_matches(monkeypatch: pytest.MonkeyPatch) -
     response = handler(event, context=None)
 
     assert response["statusCode"] == 200
+
+
+@pytest.mark.parametrize("value", ["", " ", None])
+def test_project_name_empty_does_not_propagate_delete(value):
+    payload = _payload()
+    payload["record"]["店舗名"] = {"type": "SINGLE_LINE_TEXT", "value": value}
+    event = kintone_payload_to_sync_event(payload, {}, app_id_to_db_key=APP_ID_MAP)
+    assert "案件名" not in event.properties
+    assert "取引先マスター" not in event.properties

@@ -199,7 +199,7 @@ PROJECT_SCHEMA = DatabaseSchema(
             name="提案サービス",
             property_type=PropertyType.MULTI_SELECT,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
+            sync_scope=SyncScope.SPREADSHEET_ONLY,
             options=(
                 "リピッテ",
                 "メイリー",

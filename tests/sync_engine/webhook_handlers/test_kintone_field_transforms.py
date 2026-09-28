@@ -211,34 +211,13 @@ def test_action_client_name_field_passes_current_record_id_via_context(
     ]
 
 
-# --- 案件の取引先リレーション（2026-08-31） ------------------------------------------------
-
-
-class Test_案件の取引先リレーション:
-    """kintone案件管理の「店舗名」（ラベル: 施設名（会社名））から、案件管理DBの
-    「取引先マスター」リレーションを解決する。
-
-    アクション管理の`client_name`と同じく、`ClientNameIndex`（Postgresのローカルミラー）への
-    SELECT一発で完結するため、Webhookの同期応答時間内に収まる。
-    **リレーションのプロパティ名はDBごとに違う**（アクションは絵文字付き、案件は素の名前）。
-    """
-
-    def test_対応表に登録されている(self) -> None:
-        assert "店舗名" in KINTONE_FIELD_TRANSFORMS["project"]
-        notion_property, _ = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
-        assert notion_property == "取引先マスター"
-
-    def test_名寄せできたらNotionページIDを返す(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            module, "resolve_client_master_relation", lambda raw_name, **_: "notion-page-9"
-        )
-        _, transform = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
-
-        assert transform("ホテルABC") == "notion-page-9"
-
-    def test_名寄せできなければ書き込まない(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """曖昧・候補なしのまま書くと、別の取引先に紐づけてしまう。"""
-        monkeypatch.setattr(module, "resolve_client_master_relation", lambda raw_name, **_: None)
-        _, transform = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
-
-        assert transform("ホテルABC") is SKIP_FIELD
+# Q024: 同名の取引先があっても案件名として受ける。
+class Test_案件名の往復:
+    def test_取引先を名前から付け替えない(self, monkeypatch):
+        def forbidden(*args, **kwargs):
+            raise AssertionError("案件名から取引先を検索してはいけません")
+        monkeypatch.setattr(module, "resolve_client_master_relation", forbidden)
+        name, transform = KINTONE_FIELD_TRANSFORMS["project"]["店舗名"]
+        assert name == "案件名"
+        assert transform("別取引先と同じ名前") == "別取引先と同じ名前"
+        assert transform(None) is SKIP_FIELD

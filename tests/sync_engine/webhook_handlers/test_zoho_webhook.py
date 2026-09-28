@@ -325,7 +325,7 @@ def test_zoho_payload_to_sync_events_multi_value_field_is_split() -> None:
         affected_values=[
             {
                 "record_id": DEFAULT_RECORD_ID,
-                "values": {"field20": "なし, リンカーン"},
+                "values": {"field20": "なし, リンカーン", "field70": "【CRM同期:サイトコントローラー】\nなし、リンカーン\n【/CRM同期:サイトコントローラー】"},
             }
         ],
     )

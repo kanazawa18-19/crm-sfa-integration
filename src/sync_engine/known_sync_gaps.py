@@ -23,6 +23,7 @@ from src.db_schema.base import Tool
 #: 名前から相手のページを引き当てる「名寄せ」が要る（`src/relation_sync/`）。
 #: 現状これがあるのは取引先マスターへの紐付けだけ。
 KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
+    (Tool.KINTONE, "project", "取引先マスター"): "Q024で店舗名は案件名へ確定。取引先の関連IDを確定できる入力が無いため保留",
     (Tool.KINTONE, 'action', '案件名'): (
         "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
@@ -122,8 +123,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.KINTONE, 'project', '失注理由'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '担当メンバー'): "担当者。外部のユーザーとNotionのユーザーの突き合わせが未実装",
     (Tool.KINTONE, 'project', '担当者名'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
-    (Tool.KINTONE, 'project', '提案サービス'): "複数選択。外部の値の分割規則が未定義",
-    (Tool.KINTONE, 'project', '案件名'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '次回アクション'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '次回アクション日'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '決裁者名'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
@@ -142,7 +141,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.ZOHO, 'project', 'ショット'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.ZOHO, 'project', '例外スイッチ（途中解約・複数サービス提案など）'): "チェックボックス。外部側の真偽値表現が未確認",
     (Tool.ZOHO, 'project', '担当メンバー'): "担当者。外部のユーザーとNotionのユーザーの突き合わせが未実装",
-    (Tool.ZOHO, 'project', '提案サービス'): "複数選択。外部の値の分割規則が未定義",
 }
 
 

@@ -154,13 +154,9 @@ _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any
     # フィールド作成順に由来する命名で、コード文字列とラベルの対応が直感に反する）。
     "初期費用_0": ("月額費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（ランニング）
     "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（イニシャル）
-    # 2026-08-31追加。ラベルは「施設名（会社名）」。アクション管理の`client_name`と同じく
-    # `ClientNameIndex`（Postgresのローカルミラー）へのSELECT一発で解決できるため、
-    # Webhookの同期応答時間内に収まる。
-    # **案件名の組み立てにも同じ値を使うが、そちらは新規作成時だけの処理として
-    # `new_record_builder.py`に置いている**（1フィールド→1プロパティ固定のこの表では
-    # 同じフィールドから2つのプロパティへ書けないため）。
-    "店舗名": ("取引先マスター", _resolve_client_master_for_kintone_action),
+    # Q024: 案件名と同義。名前から取引先relationを再解決すると、
+    # 案件名の往復同期だけで取引先を別の会社へ付け替えてしまう。
+    "店舗名": ("案件名", lambda v: v if isinstance(v, str) and v.strip() else SKIP_FIELD),
 }
 
 # 対象は transform_client_master() が実際にNotionプロパティへ書き込んでいるフィールドのうち、

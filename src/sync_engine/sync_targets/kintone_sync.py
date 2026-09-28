@@ -6,6 +6,20 @@ import logging
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.decided_choices import FIRST_TOUCH, CONTROLLERS, choices, first_touch, merge_choice_memo
+from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
+
+
+def _choice_value(db_key, name, value):
+    return first_touch(value) if db_key == "project" and name == "ファーストタッチ" else None
+
+
+def _memo_choices(db_key, properties):
+    if db_key != "project":
+        return {}
+    return {name: values for name, allowed in (("ファーストタッチ", FIRST_TOUCH), ("サイトコントローラー", CONTROLLERS))
+            if (values := choices(properties.get(name), allowed)) is not None}
+
 from src.sync_engine.outbound_field_mapping import (
     kintone_outbound_field_names,
     translate_properties,
@@ -78,6 +92,23 @@ class KintoneSyncTarget(SyncTarget):
         expected_version: str | None = None,
     ) -> str | None:
         payload = self._to_kintone_payload(properties, db_key)
+        notes = _memo_choices(db_key, properties)
+        if notes:
+            current = self._client.get_record(self._app, external_id) if external_id else {}
+            if current is None:
+                raise ApiError(404, "備考の読取先がありません")
+            version = current.get("$revision")
+            if external_id and (version is None or (expected_version is not None and str(version) != str(expected_version))):
+                raise ConcurrentModificationError(409, "備考の版が変更されています")
+            memo = current.get("文字列__複数行_", "")
+            try:
+                for name, values in notes.items():
+                    memo = merge_choice_memo(memo, name, values, limit=65535)
+            except ValueError as exc:
+                raise ApiError(422, str(exc)) from None
+            payload = {**(payload or {}), "文字列__複数行_": memo}
+            if external_id:
+                expected_version = str(version)
         if payload is None:
             # 1項目も送っていないので、更新であっても「書き込めていない」を返す。
             # ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、
@@ -95,9 +126,9 @@ class KintoneSyncTarget(SyncTarget):
     ) -> frozenset[str]:
         """このツールへ送れないプロパティ名（`ZohoSyncTarget`と同じ理由）。"""
         _payload, unmapped = translate_properties(
-            kintone_outbound_field_names(), db_key, properties
+            kintone_outbound_field_names(), db_key, properties, _choice_value
         )
-        return frozenset(unmapped)
+        return frozenset(set(unmapped) - _memo_choices(db_key, properties).keys())
 
     def _to_kintone_payload(
         self, properties: dict[str, Any], db_key: str | None
@@ -109,7 +140,8 @@ class KintoneSyncTarget(SyncTarget):
         Notionのプロパティ名がそのまま渡っていた。詳細は
         `src/sync_engine/outbound_field_mapping.py`。
         """
-        payload, unmapped = translate_properties(kintone_outbound_field_names(), db_key, properties)
+        payload, unmapped = translate_properties(kintone_outbound_field_names(), db_key, properties, _choice_value)
+        unmapped = sorted(set(unmapped) - _memo_choices(db_key, properties).keys())
         if unmapped:
             logger.warning(
                 "KintoneSyncTarget: kintone側のフィールドコードが特定できないため送信しません "

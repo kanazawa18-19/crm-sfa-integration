@@ -237,6 +237,32 @@ def _probability(value: Any) -> Any:
 #   初期フィー/フィー率/経過日数/予算組のタイミング/アクション日/決算月/チェーン本社/
 #   アクションログ）: Notion側で自動計算される読み取り専用プロパティで、書き込もうとすると
 #   確実に失敗する。
+def _project_memo_body(value):
+    from src.sync_engine.decided_choices import split_controller_memo
+    try:
+        body, _ = split_controller_memo(value)
+        return body if body else SKIP_FIELD
+    except ValueError:
+        return SKIP_FIELD
+
+
+def _controller_with_saved_choices(value):
+    from src.sync_engine.decided_choices import controller_from_external
+    ctx = _current_zoho_action_relation_context.get()
+    # 全値保存欄が取得できない通知では、代表値だけで既存の複数選択を減らさない。
+    if ctx is None:
+        return SKIP_FIELD
+    record = ctx.changed_values
+    if "field70" not in record:
+        if ctx.zoho_client is None:
+            return SKIP_FIELD
+        record = ctx.zoho_client.get_record("Deals", ctx.record_id)
+        if not isinstance(record, Mapping) or record.get("field20") != value:
+            return SKIP_FIELD
+    result = controller_from_external(value, record.get("field70"))
+    return result if result is not None else SKIP_FIELD
+
+
 _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
     # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
     # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
@@ -253,8 +279,8 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
     "案件名": ("案件名", lambda v: v),
     "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),
     "月額費用": ("月額費用", lambda v: float(v) if v not in (None, "") else None),
-    "メモ": ("メモ", lambda v: v or None),
-    "サイトコントローラー": ("サイトコントローラー", parse_multi_value),
+    "メモ": ("メモ", _project_memo_body),
+    "サイトコントローラー": ("サイトコントローラー", _controller_with_saved_choices),
     "かつやさん": ("かつやさん", _parse_bool),
     "問合せ": ("問合せ", _parse_bool),
     "ネックポイント": ("ネックポイント", lambda v: v or None),

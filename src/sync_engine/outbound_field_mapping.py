@@ -168,6 +168,7 @@ def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
             if chosen is not None:
                 table[property_name] = chosen
         result[schema.key] = table
+    result.setdefault("project", {}).update({"サイトコントローラー": "field20", "ファーストタッチ": "field45"})
     return result
 
 
@@ -189,6 +190,8 @@ def kintone_outbound_field_names() -> dict[str, dict[str, str]]:
             if chosen is not None:
                 table[property_name] = chosen
         result[db_key] = table
+    # Q024は案件名と施設名の対応。取引先relationの逆変換とは別。
+    result.setdefault("project", {}).update({"案件名": "店舗名", "ファーストタッチ": "ドロップダウン_4"})
     return result
 
 
