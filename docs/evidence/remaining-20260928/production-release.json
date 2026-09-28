@@ -1,0 +1,36 @@
+{
+  "date": "2026-09-28",
+  "commit": "8744fd042ca58549626092c902bb5947ecea979c",
+  "deployments": [
+    {
+      "project": "crm-sfa-integration",
+      "url": "https://crm-sfa-integration-ewiozthw0-cnctor1.vercel.app",
+      "state": "READY"
+    },
+    {
+      "project": "crm-sfa-integration-dashboard",
+      "url": "https://crm-sfa-integration-dashboard-8yqv86a85-cnctor1.vercel.app",
+      "state": "READY"
+    }
+  ],
+  "ci": {
+    "run": 36391656008,
+    "conclusion": "success"
+  },
+  "http": {
+    "healthz": 200,
+    "health_body": {
+      "status": "ok"
+    },
+    "dashboard_login": 200
+  },
+  "browser": {
+    "report_delivery": "管理者で表示確認、実行記録なし",
+    "record_merge": "候補一覧と操作画面の表示のみ確認、書込操作なし",
+    "neon": "Vercel: CNCTORの4プロジェクト一覧にログイン済みでアクセス。招待承諾・設定変更なし"
+  },
+  "unverified": [
+    "新方式の日報定期配信",
+    "本番の実統合"
+  ]
+}
