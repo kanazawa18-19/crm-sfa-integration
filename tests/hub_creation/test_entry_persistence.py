@@ -128,8 +128,10 @@ def test_entry_plan_persist_and_redelivery(target, db, origin, post_timeout, jou
                  'Closing_Date': 'date', 'field51': 'date', 'Owner': 'ownerlookup',
                  'Product_Name': 'text', 'field2': 'text', 'field': 'textarea', 'field7': 'text',
                  'field6': 'lookup', 'field15': 'picklist'}
-        def get(method, path):
+        def get(method, path, **kwargs):
             assert method == 'GET'
+            if '/settings/' in path:
+                assert kwargs == ({'api_version': 'v8'} if db == 'project' else {})
             if '/settings/fields?' in path:
                 return response({'fields': [{'api_name': code, 'data_type': kind} for code, kind in types.items()]})
             if '/settings/layouts?' in path:
