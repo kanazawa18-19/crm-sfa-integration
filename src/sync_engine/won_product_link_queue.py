@@ -1,6 +1,7 @@
 """関連追加の進捗と、変更前に確定した配送義務を別々に保持する。"""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import os
 import psycopg
@@ -12,9 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 class ProjectProductLinkQueue:
+    @contextmanager
     def _connect(self):
-        return psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row,
-                              connect_timeout=10, options="-c statement_timeout=10000")
+        # pooled接続は起動引数のstatement_timeoutを拒否する。トランザクション内だけ設定する。
+        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row,
+                             connect_timeout=10) as conn:
+            conn.execute("SET LOCAL statement_timeout = '10s'")
+            yield conn
 
     def enqueue(self, project_id: str) -> None:
         with self._connect() as conn, conn.cursor() as cur:
