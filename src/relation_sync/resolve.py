@@ -59,6 +59,11 @@ def resolve_client_master_relation(
     if not raw_name or not raw_name.strip():
         return None
 
+    from src.record_merge.relation_decisions import confirmed_resolution
+    confirmed = confirmed_resolution(source_tool, source_record_id, 'client_master', raw_name)
+    if confirmed:
+        return confirmed
+
     normalized = normalize_company_name_strong(raw_name)
     matches = find_by_normalized_name(normalized)
 

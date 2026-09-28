@@ -301,6 +301,10 @@ class Dispatcher:
         if is_own_system_event(event.sync_system_id, expected=self._sync_system_id):
             return DispatchResult(skipped=True, reason="own_system_event")
 
+        from src.sync_operations.exclusions import is_excluded
+        if is_excluded(event.source_tool, event.db_key, event.external_id):
+            return DispatchResult(skipped=True, reason="approved_record_exclusion")
+
         # 3. IDマッピングストアでレコードを特定する。
         mapping = self._resolve_mapping(event)
         if mapping is None:
@@ -315,11 +319,31 @@ class Dispatcher:
                 return self._try_create_new_record(event)
             return DispatchResult(skipped=True, reason="unknown_record")
 
+        from src.record_merge.aliases import require_record_available
+        require_record_available(mapping.db_key, mapping.notion_key)
+        # 統合元Notionは保管用。アーカイブ通知や旧ページの編集を統合先へ転送しない。
+        if event.source_tool is Tool.NOTION and event.external_id != mapping.notion_key:
+            return DispatchResult(skipped=True, reason="merged_source_archived")
+        if event.source_tool is Tool.SPREADSHEET and event.source_notion_key != mapping.notion_key:
+            return DispatchResult(skipped=True, reason="merged_source_archived")
+        if event.source_tool in {Tool.ZOHO, Tool.KINTONE} and _external_id_for(event.source_tool, mapping) != event.external_id:
+            from src.record_merge.aliases import hold_alias_event
+            hold_alias_event(event, mapping)
+            return DispatchResult(skipped=True, reason="merged_old_id_review_required")
         # 判定前から最終同期時刻の保存まで、同じレコードの同期を直列化する。
-        with acquire_record_sync_lock(self._store, mapping.db_key, mapping.notion_key) as guard:
-            mapping = self._store.get(mapping.notion_key)
+        locked_key = (mapping.db_key, mapping.notion_key)
+        with acquire_record_sync_lock(self._store, *locked_key) as guard:
+            mapping = self._store.get(locked_key[1])
             if mapping is None:
                 return DispatchResult(skipped=True, reason="unknown_record")
+            if (mapping.db_key, mapping.notion_key) != locked_key:
+                # 別の正本を旧ページの鍵で書かない。再通知は入口で旧IDを再判定する。
+                raise RecordSyncBusy("統合により対応先が変わりました。入口から再確認してください")
+            require_record_available(mapping.db_key, mapping.notion_key)
+            if event.source_tool in {Tool.ZOHO, Tool.KINTONE} and _external_id_for(event.source_tool, mapping) != event.external_id:
+                from src.record_merge.aliases import hold_alias_event
+                hold_alias_event(event, mapping)
+                return DispatchResult(skipped=True, reason="merged_old_id_review_required")
             watermark = guard.latest(mapping.last_synced_at)
             mapping = dataclasses.replace(mapping, last_synced_at=watermark)
             return self._dispatch_locked(event, mapping, guard)
@@ -338,7 +362,9 @@ class Dispatcher:
         schema = get_schema(event.db_key)
 
         # 1. Self-Exclusion：送信元ツールを対象リストから除外する。
-        target_tools = [t for t in _ALL_TOOLS if t != event.source_tool]
+        from src.sync_operations.exclusions import is_excluded
+        target_tools = [t for t in _ALL_TOOLS if t != event.source_tool
+                        and not is_excluded(t, mapping.db_key, _external_id_for(t, mapping))]
 
         results: list[PropertyDispatchResult] = []
 
@@ -474,7 +500,7 @@ class Dispatcher:
             t
             for _, prop, _ in prepared
             for t in _ALL_TOOLS
-            if t is not Tool.NOTION and t is not event.source_tool and prop.should_sync_to(t)
+            if t in target_tools and t is not Tool.NOTION and prop.should_sync_to(t)
         )
         # 取得失敗の通知に載せるプロパティ名。取得はイベント単位になったため特定の
         # プロパティに紐づかないが、運用者が「どのレコードのどの更新か」を辿れるよう
@@ -864,6 +890,14 @@ class Dispatcher:
         )
 
     def _try_create_new_record(self, event: SyncEvent) -> DispatchResult:
+        # 管理画面から既存外部レコードを取り込む経路も、この鍵を共有する。
+        external_key = "external:" + event.source_tool.value + ":" + event.external_id
+        with acquire_record_sync_lock(self._store, event.db_key, external_key):
+            if self._resolve_mapping(event) is not None:
+                return DispatchResult(skipped=True, reason="new_record_concurrent_creation_detected")
+            return self._try_create_new_record_locked(event)
+
+    def _try_create_new_record_locked(self, event: SyncEvent) -> DispatchResult:
         """kintone/Zoho発の未知レコード（`IdMapping`が存在しない）に対応するNotionページを
         新規作成する（`AUTO_CREATE_NEW_RECORDS_ENABLED=true`の場合のみ呼ばれる、2026-08-25、
         Round2）。

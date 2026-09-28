@@ -181,6 +181,11 @@ def collect_webhook_health() -> dict:
         if result["status"] == "ok":
             result["reason"] = "受信記録あり・変更有無は未確認です"
         checks.append(result)
+    try:
+        from src.diagnostics.unfinished_sync import read_unfinished
+        checks.append(read_unfinished(datetime.now(timezone.utc)))
+    except Exception:
+        checks.append(check('unfinished_sync', 'unknown', '受理後の完了記録を取得できません'))
     return {"schema_version": 1, "observed_at": stamp(datetime.now(timezone.utc)),
             "elapsed_ms": round((time.monotonic() - started) * 1000), "checks": checks,
             "receipts": {s: {"last_received_at": stamp(receipts.get(s, {}).get("last")),

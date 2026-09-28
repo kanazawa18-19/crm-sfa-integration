@@ -720,3 +720,16 @@ export function listProductHolds(actor_id: string, offset: number) {
 export function resumeProductHold(body: { actor_id: string; project_id: string; expected_hash: string }) {
   return fetchBackend("/api/sync-operations/product-holds/resume", { method: "POST", body });
 }
+
+
+export function recordMergeOperation(body: Record<string, unknown>) {
+  return fetchBackend<unknown>("/api/record-merge", { method: "POST", body });
+}
+
+export type RecordExclusion = { id: string; reason: string; decision: string; acknowledgement: {actorId: string; createdAt: string} | null };
+export function listRecordExclusions(actor_id: string) {
+  return fetchBackend<{items: RecordExclusion[]}>("/api/sync-exclusions", {method: "POST", body: {actor_id, action: "list"}});
+}
+export function acknowledgeRecordExclusion(actor_id: string, external_id: string) {
+  return fetchBackend("/api/sync-exclusions", {method: "POST", body: {actor_id, external_id, action: "acknowledge"}});
+}

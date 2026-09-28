@@ -69,6 +69,9 @@ class KintoneSyncTarget(SyncTarget):
         self._app = app
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
+        from src.sync_operations.exclusions import is_excluded
+        if is_excluded(Tool.KINTONE, db_key, external_id):
+            return None
         try:
             return self._client.get_record(self._app, external_id)
         except Exception:
@@ -94,6 +97,9 @@ class KintoneSyncTarget(SyncTarget):
         db_key: str | None = None,
         expected_version: str | None = None,
     ) -> str | None:
+        from src.sync_operations.exclusions import is_excluded
+        if is_excluded(Tool.KINTONE, db_key, external_id):
+            return None
         payload = self._to_kintone_payload(properties, db_key)
         notes = _memo_choices(db_key, properties)
         if notes:

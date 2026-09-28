@@ -1,0 +1,1032 @@
+独立コードレビュー結果
+既存抽選保守の独立レビュー結果
+独立コードレビュー：受注案件関連システム
+施設メンテナンス機能追加の独立レビュー
+プラン変更とテスト削除の最終確認
+コード資料のレビュー結果報告
+楽天カタログ読取・ポップアップ判定のレビュー
+GAS外部監視と再起動抑制のコードレビュー
+SNSインサイト機能の独立コードレビュー
+OTA登録における文字差し戻しと安全性レビュー
+CRM同期の残項目・新規作成機能の実装レビュー ご提示いただいた差分と新規ファイルを確認しました。 要件（未確定項目の
+投稿別インサイトのコードレビュー
+QA記録のPythonからGASへの移行コードレビュー
+CRM Webhook監視のコードレビュー
+反応者数分析コードレビュー
+ルール別送信実績のコードレビュー
+日本語コードレビューの依頼
+GTM実装コードの日本語レビュー
+GAS時計切替のコードレビュー結果
+送信実績集計コードの日本語レビュー
+`kstep` Sparkle デザイン改修 独立レビュー 提示された差分およびコード改修内容に対し、認証、フォーム送信値、server/
+kstepリファクタリングの独立レビュー
+X自動送信機能のコードレビュー
+X自動送信機能のP3-2レビュー
+営業QA Botのschedule中断修正レビュー
+GAS時計の実装レビュー
+認証ワークフローコードレビュー
+金沢裕貴
+仕事
+•
+Pro
+Gemini との会話
+あなたのプロンプト 日本語で独立レビューしてください。BLOCKER/WARN/INFOで具体的な欠陥と修正案を短く。実データは含みません。 要件：提案サービスはNotion/シート間のみ。ファーストタッチはkinton…
+
+日本語で独立レビューしてください。BLOCKER/WARN/INFOで具体的な欠陥と修正案を短く。実データは含みません。
+
+要件：提案サービスはNotion/シート間のみ。ファーストタッチはkintone流入経路へ取得配列の先頭を対応、全選択を備考保持。サイトコントローラー単一先の優先順はリンカーン、手間いらず、ねっぱん、らく通、その他固定順。Zoho単一欄/備考2000字、kintone対応欄なし/備考へ。本文・全選択を保持し空欄削除を伝播しない。外部版で競合拒否。Zoho戻り通知の代表値で複数選択を減らさない。担当者・二段階承認など他の残区分は別実装。この範囲の往復/同時編集/型/失敗時を点検。
+
+追加小修正：商品関連キューのNeon pooled起動時options拒否をSET LOCALに変更。独立3レビュー・65テスト・実pooled読取成功、本番Ready。
+
+diff --git a/src/db_schema/project.py b/src/db_schema/project.py
+
+index 03a6806..27e9b4f 100644
+
+--- a/src/db_schema/project.py
+
++++ b/src/db_schema/project.py
+
+@@ -199,7 +199,7 @@ PROJECT_SCHEMA = DatabaseSchema(
+
+name="提案サービス",
+
+property_type=PropertyType.MULTI_SELECT,
+
+requirement=RequirementLevel.OPTIONAL,
+
+- sync_scope=SyncScope.ALL_TOOLS,
+
++ sync_scope=SyncScope.SPREADSHEET_ONLY,
+
+options=(
+
+"リピッテ",
+
+"メイリー",
+
+diff --git a/src/sync_engine/known_sync_gaps.py b/src/sync_engine/known_sync_gaps.py
+
+index cffd636..34616d2 100644
+
+--- a/src/sync_engine/known_sync_gaps.py
+
++++ b/src/sync_engine/known_sync_gaps.py
+
+@@ -122,7 +122,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
+
+(Tool.KINTONE, 'project', '失注理由'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
+
+(Tool.KINTONE, 'project', '担当メンバー'): "担当者。外部のユーザーとNotionのユーザーの突き合わせが未実装",
+
+(Tool.KINTONE, 'project', '担当者名'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
+
+- (Tool.KINTONE, 'project', '提案サービス'): "複数選択。外部の値の分割規則が未定義",
+
+(Tool.KINTONE, 'project', '案件名'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
+
+(Tool.KINTONE, 'project', '次回アクション'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
+
+(Tool.KINTONE, 'project', '次回アクション日'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
+
+@@ -142,7 +141,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
+
+(Tool.ZOHO, 'project', 'ショット'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
+
+(Tool.ZOHO, 'project', '例外スイッチ（途中解約・複数サービス提案など）'): "チェックボックス。外部側の真偽値表現が未確認",
+
+(Tool.ZOHO, 'project', '担当メンバー'): "担当者。外部のユーザーとNotionのユーザーの突き合わせが未実装",
+
+- (Tool.ZOHO, 'project', '提案サービス'): "複数選択。外部の値の分割規則が未定義",
+
+}
+
+diff --git a/src/sync_engine/outbound_field_mapping.py b/src/sync_engine/outbound_field_mapping.py
+
+index c8889aa..404b084 100644
+
+--- a/src/sync_engine/outbound_field_mapping.py
+
++++ b/src/sync_engine/outbound_field_mapping.py
+
+@@ -168,6 +168,7 @@ def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
+
+if chosen is not None:
+
+table[property_name] = chosen
+
+result[schema.key] = table
+
++ result.setdefault("project", {}).update({"サイトコントローラー": "field20", "ファーストタッチ": "field45"})
+
+return result
+
+@@ -189,6 +190,8 @@ def kintone_outbound_field_names() -> dict[str, dict[str, str]]:
+
+if chosen is not None:
+
+table[property_name] = chosen
+
+result[db_key] = table
+
++ # Q024は案件名と施設名の対応。取引先relationの逆変換とは別。
+
++ result.setdefault("project", {}).update({"案件名": "店舗名", "ファーストタッチ": "ドロップダウン_4"})
+
+return result
+
+diff --git a/src/sync_engine/outbound_value_mapping.py b/src/sync_engine/outbound_value_mapping.py
+
+index 6a29f08..1811c8f 100644
+
+--- a/src/sync_engine/outbound_value_mapping.py
+
++++ b/src/sync_engine/outbound_value_mapping.py
+
+@@ -167,6 +167,13 @@ def translate_choice_value(db_key: str, property_name: str, value: Any) -> Any |
+
+複数選択は各要素を読み替える。**1つでも読み替えられない要素があればNoneを返す**
+
+（読み替えられた分だけ送ると、Notionでは付いている選択肢がZohoから消えるため）。
+
+"""
+
++ if db_key == "project" and property_name == "ファーストタッチ":
+
++ from src.sync_engine.decided_choices import choices, FIRST_TOUCH
+
++ values = choices(value, FIRST_TOUCH)
+
++ return ", ".join(values) if values else None
+
++ if db_key == "project" and property_name == "サイトコントローラー":
+
++ from src.sync_engine.decided_choices import primary_controller
+
++ return primary_controller(value)
+
+table = zoho_outbound_value_maps().get(db_key, {}).get(property_name)
+
+if not table:
+
+return None
+
+diff --git a/src/sync_engine/sync_targets/kintone_sync.py b/src/sync_engine/sync_targets/kintone_sync.py
+
+index 085508e..6b3e560 100644
+
+--- a/src/sync_engine/sync_targets/kintone_sync.py
+
++++ b/src/sync_engine/sync_targets/kintone_sync.py
+
+@@ -6,6 +6,20 @@ import logging
+
+from typing import Any, Protocol
+
+from src.db_schema.base import Tool
+
++from src.sync_engine.decided_choices import FIRST_TOUCH, CONTROLLERS, choices, first_touch, merge_choice_memo
+
++from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
+
++
+
++
+
++def _choice_value(db_key, name, value):
+
++ return first_touch(value) if db_key == "project" and name == "ファーストタッチ" else None
+
++
+
++
+
++def _memo_choices(db_key, properties):
+
++ if db_key != "project":
+
++ return {}
+
++ return {name: values for name, allowed in (("ファーストタッチ", FIRST_TOUCH), ("サイトコントローラー", CONTROLLERS))
+
++ if (values := choices(properties.get(name), allowed)) is not None}
+
++
+
+from src.sync_engine.outbound_field_mapping import (
+
+kintone_outbound_field_names,
+
+translate_properties,
+
+@@ -78,6 +92,23 @@ class KintoneSyncTarget(SyncTarget):
+
+expected_version: str | None = None,
+
+) -> str | None:
+
+payload = self._to_kintone_payload(properties, db_key)
+
++ notes = _memo_choices(db_key, properties)
+
++ if notes:
+
++ current = self._client.get_record(self._app, external_id) if external_id else {}
+
++ if current is None:
+
++ raise ApiError(404, "備考の読取先がありません")
+
++ version = current.get("$revision")
+
++ if external_id and (version is None or (expected_version is not None and str(version) != str(expected_version))):
+
++ raise ConcurrentModificationError(409, "備考の版が変更されています")
+
++ memo = current.get("文字列__複数行_", "")
+
++ try:
+
++ for name, values in notes.items():
+
++ memo = merge_choice_memo(memo, name, values, limit=65535)
+
++ except ValueError as exc:
+
++ raise ApiError(422, str(exc)) from None
+
++ payload = {**(payload or {}), "文字列__複数行_": memo}
+
++ if external_id:
+
++ expected_version = str(version)
+
+if payload is None:
+
+# 1項目も送っていないので、更新であっても「書き込めていない」を返す。
+
+# ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、
+
+@@ -95,9 +126,9 @@ class KintoneSyncTarget(SyncTarget):
+
+) -> frozenset[str]:
+
+"""このツールへ送れないプロパティ名（`ZohoSyncTarget`と同じ理由）。"""
+
+_payload, unmapped = translate_properties(
+
+- kintone_outbound_field_names(), db_key, properties
+
++ kintone_outbound_field_names(), db_key, properties, _choice_value
+
+)
+
+- return frozenset(unmapped)
+
++ return frozenset(set(unmapped) - _memo_choices(db_key, properties).keys())
+
+def _to_kintone_payload(
+
+self, properties: dict[str, Any], db_key: str | None
+
+@@ -109,7 +140,8 @@ class KintoneSyncTarget(SyncTarget):
+
+Notionのプロパティ名がそのまま渡っていた。詳細は
+
+`src/sync_engine/outbound_field_mapping.py`。
+
+"""
+
+- payload, unmapped = translate_properties(kintone_outbound_field_names(), db_key, properties)
+
++ payload, unmapped = translate_properties(kintone_outbound_field_names(), db_key, properties, _choice_value)
+
++ unmapped = sorted(set(unmapped) - _memo_choices(db_key, properties).keys())
+
+if unmapped:
+
+logger.warning(
+
+"KintoneSyncTarget: kintone側のフィールドコードが特定できないため送信しません "
+
+diff --git a/src/sync_engine/sync_targets/zoho_sync.py b/src/sync_engine/sync_targets/zoho_sync.py
+
+index 2b557e2..245610c 100644
+
+--- a/src/sync_engine/sync_targets/zoho_sync.py
+
++++ b/src/sync_engine/sync_targets/zoho_sync.py
+
+@@ -12,6 +12,8 @@ import os
+
+from typing import Any, Protocol
+
+from src.db_schema.base import Tool
+
++from src.sync_engine.decided_choices import CONTROLLERS, choices, merge_choice_memo, replace_memo_body
+
++from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
+
+from src.sync_engine.outbound_value_mapping import translate_choice_value
+
+from src.sync_engine.outbound_field_mapping import (
+
+translate_properties,
+
+@@ -103,6 +105,26 @@ class ZohoSyncTarget(SyncTarget):
+
+# 実際には1件も書いていないので、スキップとして扱わせる。
+
+return None
+
+payload = self._to_zoho_payload(properties, db_key)
+
++ values = choices(properties.get("サイトコントローラー"), CONTROLLERS) if db_key == "project" else None
+
++ memo_edit = db_key == "project" and payload is not None and "field70" in payload
+
++ if values or memo_edit:
+
++ current = self._client.get_record(self._module, external_id) if external_id else {}
+
++ if current is None:
+
++ raise ApiError(404, "備考の読取先がありません")
+
++ version = current.get("Modified_Time")
+
++ if external_id and (not version or (expected_version is not None and version != expected_version)):
+
++ raise ConcurrentModificationError(409, "備考の版が変更されています")
+
++ try:
+
++ memo = current.get("field70", "")
+
++ if memo_edit:
+
++ memo = replace_memo_body(memo, payload["field70"])
+
++ if values:
+
++ memo = merge_choice_memo(memo, "サイトコントローラー", values, limit=2000)
+
++ except ValueError as exc:
+
++ raise ApiError(422, str(exc)) from None
+
++ payload = {**(payload or {}), "field70": memo}
+
++ if external_id:
+
++ expected_version = version
+
+if payload is None:
+
+# 1項目も送っていないので、更新であっても「書き込めていない」を返す。
+
+# ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、
+
+diff --git a/src/sync_engine/webhook_handlers/zoho_field_transforms.py b/src/sync_engine/webhook_handlers/zoho_field_transforms.py
+
+index e20204c..92bd632 100644
+
+--- a/src/sync_engine/webhook_handlers/zoho_field_transforms.py
+
++++ b/src/sync_engine/webhook_handlers/zoho_field_transforms.py
+
+@@ -237,6 +237,32 @@ def _probability(value: Any) -> Any:
+
+# 初期フィー/フィー率/経過日数/予算組のタイミング/アクション日/決算月/チェーン本社/
+
+# アクションログ）: Notion側で自動計算される読み取り専用プロパティで、書き込もうとすると
+
+# 確実に失敗する。
+
++def _project_memo_body(value):
+
++ from src.sync_engine.decided_choices import split_controller_memo
+
++ try:
+
++ body, _ = split_controller_memo(value)
+
++ return body if body else SKIP_FIELD
+
++ except ValueError:
+
++ return SKIP_FIELD
+
++
+
++
+
++def _controller_with_saved_choices(value):
+
++ from src.sync_engine.decided_choices import controller_from_external
+
++ ctx = _current_zoho_action_relation_context.get()
+
++ # 全値保存欄が取得できない通知では、代表値だけで既存の複数選択を減らさない。
+
++ if ctx is None:
+
++ return SKIP_FIELD
+
++ record = ctx.changed_values
+
++ if "field70" not in record:
+
++ if ctx.zoho_client is None:
+
++ return SKIP_FIELD
+
++ record = ctx.zoho_client.get_record("Deals", ctx.record_id)
+
++ if not isinstance(record, Mapping) or record.get("field20") != value:
+
++ return SKIP_FIELD
+
++ result = controller_from_external(value, record.get("field70"))
+
++ return result if result is not None else SKIP_FIELD
+
++
+
++
+
+_PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+
+# Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
+
+# ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
+
+@@ -253,8 +279,8 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
+
+"案件名": ("案件名", lambda v: v),
+
+"初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),
+
+"月額費用": ("月額費用", lambda v: float(v) if v not in (None, "") else None),
+
+- "メモ": ("メモ", lambda v: v or None),
+
+- "サイトコントローラー": ("サイトコントローラー", parse_multi_value),
+
++ "メモ": ("メモ", _project_memo_body),
+
++ "サイトコントローラー": ("サイトコントローラー", _controller_with_saved_choices),
+
+"かつやさん": ("かつやさん", _parse_bool),
+
+"問合せ": ("問合せ", _parse_bool),
+
+"ネックポイント": ("ネックポイント", lambda v: v or None),
+
+diff --git a/tests/sync_engine/webhook_handlers/test_zoho_webhook.py b/tests/sync_engine/webhook_handlers/test_zoho_webhook.py
+
+index eeff051..97ab4f8 100644
+
+--- a/tests/sync_engine/webhook_handlers/test_zoho_webhook.py
+
++++ b/tests/sync_engine/webhook_handlers/test_zoho_webhook.py
+
+@@ -325,7 +325,7 @@ def test_zoho_payload_to_sync_events_multi_value_field_is_split() -> None:
+
+affected_values=[
+
+{
+
+"record_id": DEFAULT_RECORD_ID,
+
+- "values": {"field20": "なし, リンカーン"},
+
++ "values": {"field20": "なし, リンカーン", "field70": ""},
+
+}
+
+],
+
+)
+
+
+
+
+FILE src/sync_engine/decided_choices.py
+
+"""2026-09-28の本人回答による選択肢の変換。外部I/Oを持たない。"""
+
+from __future__ import annotations
+
+
+
+
+FIRST_TOUCH = {
+
+"テレアポ": "営業", "メルアポ": "営業", "展示会": "展示会", "紹介": "紹介",
+
+"お問合せ": "問合せ（その他）", "横展開・追加提案": "その他",
+
+"メルマガ（CRMプロジェクト）": "問合せ（その他）", "引継ぎ": "その他",
+
+"ホワイトペーパー": "問合せ（その他）", "個別相談（先方から営業個人へ）": "営業",
+
+"パートナー": "代理店",
+
+}
+
+CONTROLLER_ORDER = ("リンカーン", "手間いらず", "ねっぱん", "らく通")
+
+CONTROLLERS = frozenset((*CONTROLLER_ORDER, "Beds24", "エアホスト", "なし", "不明"))
+
+
+
+
+
+
+
+def choices(value, allowed):
+
+"""不明値・空欄を部分的に捨てず、項目全体を保留する。"""
+
+if not isinstance(value, (list, tuple)) or not value:
+
+return None
+
+if any(not isinstance(v, str) or v not in allowed for v in value):
+
+return None
+
+return list(dict.fromkeys(value))
+
+
+
+
+
+
+
+def first_touch(value):
+
+values = choices(value, FIRST_TOUCH)
+
+return FIRST_TOUCH[values[0]] if values else None
+
+
+
+
+
+
+
+def primary_controller(value):
+
+values = choices(value, CONTROLLERS)
+
+if not values:
+
+return None
+
+return min(values, key=lambda v: (CONTROLLER_ORDER.index(v) if v in CONTROLLER_ORDER else 4, v))
+
+
+
+
+
+
+
+def merge_choice_memo(existing, name, values, *, limit):
+
+"""項目専用枠だけを差し替え、本文と他項目の枠を保持する。切詰めはしない。"""
+
+if existing is None:
+
+existing = ""
+
+if not isinstance(existing, str):
+
+raise ValueError("備考の型が不正です")
+
+begin, end = f"【CRM同期:{name}】", f"【/CRM同期:{name}】"
+
+block = begin + "\n" + "、".join(values) + "\n" + end
+
+if begin in existing or end in existing:
+
+if existing.count(begin) != 1 or existing.count(end) != 1:
+
+raise ValueError("同期メモの枠が不正です")
+
+start, finish = existing.index(begin), existing.index(end)
+
+if finish < start:
+
+raise ValueError("同期メモの枠が不正です")
+
+result = existing[:start] + block + existing[finish + len(end):]
+
+else:
+
+result = existing + ("\n\n" if existing else "") + block
+
+if len(result) > limit:
+
+raise ValueError("備考の文字数上限を超えるため保持します")
+
+return result
+
+
+
+
+
+
+
+def controller_from_external(value, memo):
+
+"""単一欄への折り畳みで失った選択を保存枠から復元する。削除は推測しない。"""
+
+aliases = {"TLリンカーン": "リンカーン", "TEMAIRAZU": "手間いらず", "ねっぱん！": "ねっぱん"}
+
+if not isinstance(value, str) or not isinstance(memo, (str, type(None))):
+
+return None
+
+values = [aliases.get(v.strip(), v.strip()) for v in value.split(",") if v.strip()]
+
+begin, end = "【CRM同期:サイトコントローラー】", "【/CRM同期:サイトコントローラー】"
+
+memo = memo or ""
+
+if begin in memo or end in memo:
+
+if memo.count(begin) != 1 or memo.count(end) != 1 or memo.index(begin) > memo.index(end):
+
+return None
+
+saved = memo.split(begin)[1].split(end)[0].strip().split("、")
+
+values = saved + values
+
+return choices(values, CONTROLLERS)
+
+
+
+
+
+
+
+def split_controller_memo(value):
+
+"""自動枠と利用者本文を分離する。不正な枠を削除と解釈しない。"""
+
+if value is None:
+
+value = ""
+
+if not isinstance(value, str):
+
+raise ValueError("備考の型が不正です")
+
+begin, end = "【CRM同期:サイトコントローラー】", "【/CRM同期:サイトコントローラー】"
+
+if begin not in value and end not in value:
+
+return value, ""
+
+if value.count(begin) != 1 or value.count(end) != 1 or value.index(begin) > value.index(end):
+
+raise ValueError("同期メモの枠が不正です")
+
+start, finish = value.index(begin), value.index(end) + len(end)
+
+prefix = value[:start]
+
+if prefix.endswith("\n\n"):
+
+prefix = prefix[:-2]
+
+return prefix + value[finish:], value[start:finish]
+
+
+
+
+
+
+
+def replace_memo_body(existing, incoming, *, limit=2000):
+
+"""本文だけの編集でも、別項目の全選択保存枠を落とさない。"""
+
+_, block = split_controller_memo(existing)
+
+body, _ = split_controller_memo(incoming)
+
+result = body + ("\n\n" if body and block else "") + block
+
+if len(result) > limit:
+
+raise ValueError("備考の文字数上限を超えるため保持します")
+
+return result
+
+
+
+
+FILE tests/sync_engine/test_decided_choices.py
+
+"""確定回答の変換と、備考本文を保持する境界。"""
+
+from unittest.mock import Mock
+
+import pytest
+
+from src.sync_engine.decided_choices import first_touch, primary_controller, merge_choice_memo
+
+from src.sync_engine.sync_targets.kintone_sync import KintoneSyncTarget
+
+from src.sync_engine.sync_targets.zoho_sync import ZohoSyncTarget
+
+from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
+
+
+
+
+
+
+
+def test_first_touch_keeps_original_order():
+
+assert first_touch(["パートナー", "テレアポ"]) == "代理店"
+
+assert first_touch(["テレアポ", "パートナー"]) == "営業"
+
+assert first_touch(["テレアポ", "未定義"]) is None
+
+assert first_touch([]) is None
+
+
+
+
+
+
+
+def test_controller_priority_is_independent_of_input_order():
+
+assert primary_controller(["ねっぱん", "手間いらず", "リンカーン"]) == "リンカーン"
+
+assert primary_controller(["エアホスト", "Beds24"]) == primary_controller(["Beds24", "エアホスト"])
+
+
+
+
+
+
+
+def test_memo_preserves_body_and_other_blocks():
+
+base = "手書き本文\n改行"
+
+memo = merge_choice_memo(base, "ファーストタッチ", ["テレアポ"], limit=2000)
+
+memo = merge_choice_memo(memo, "サイトコントローラー", ["ねっぱん"], limit=2000)
+
+new = merge_choice_memo(memo, "ファーストタッチ", ["パートナー"], limit=2000)
+
+assert new.startswith(base)
+
+assert "ねっぱん" in new and "テレアポ" not in new
+
+assert new.count("【CRM同期:ファーストタッチ】") == 1
+
+assert merge_choice_memo(new, "ファーストタッチ", ["パートナー"], limit=2000) == new
+
+with pytest.raises(ValueError):
+
+merge_choice_memo(base, "x", ["長い"], limit=1)
+
+
+
+
+
+
+
+def test_kintone_writes_first_choice_and_all_values_with_version():
+
+c = Mock()
+
+c.get_record.return_value = {"$revision": "12", "文字列__複数行_": "既存本文"}
+
+t = KintoneSyncTarget(c, "test")
+
+props = {"ファーストタッチ": ["テレアポ", "パートナー"], "サイトコントローラー": ["ねっぱん"]}
+
+assert t.unsupported_properties(props, db_key="project") == frozenset()
+
+t.upsert_record("123", props, db_key="project", expected_version="12")
+
+payload = c.update_record.call_args.args[2]
+
+assert payload["ドロップダウン_4"] == "営業"
+
+assert payload["文字列__複数行_"].startswith("既存本文")
+
+assert "パートナー" in payload["文字列__複数行_"]
+
+assert c.update_record.call_args.kwargs["expected_version"] == "12"
+
+
+
+
+
+
+
+def test_zoho_writes_scalar_and_preserves_memo():
+
+c = Mock()
+
+c.get_record.return_value = {"Modified_Time": "2026-09-28T00:00:00Z", "field70": "既存本文"}
+
+t = ZohoSyncTarget(c, "Deals", enabled=True)
+
+t.upsert_record("123", {"サイトコントローラー": ["ねっぱん", "リンカーン"]}, db_key="project")
+
+payload = c.update_record.call_args.args[2]
+
+assert payload["field20"] == "リンカーン"
+
+assert payload["field70"].startswith("既存本文")
+
+assert "ねっぱん、リンカーン" in payload["field70"]
+
+
+
+
+
+
+
+@pytest.mark.parametrize("current", [None, {"$revision": "13"}, {"$revision": "12", "文字列__複数行_": "【CRM同期:ファーストタッチ】壊れた枠"}])
+
+def test_kintone_does_not_write_on_missing_changed_or_invalid_memo(current):
+
+c = Mock()
+
+c.get_record.return_value = current
+
+with pytest.raises((ApiError, ConcurrentModificationError)):
+
+KintoneSyncTarget(c, "test").upsert_record("123", {"ファーストタッチ": ["テレアポ"]}, db_key="project", expected_version="12")
+
+c.update_record.assert_not_called()
+
+
+
+
+
+
+
+def test_simultaneous_memo_edit_is_not_reverted():
+
+c = Mock()
+
+c.get_record.return_value = {"Modified_Time": "v1", "field70": "旧本文"}
+
+ZohoSyncTarget(c, "Deals", enabled=True).upsert_record(
+
+"123", {"メモ": "新本文", "サイトコントローラー": ["ねっぱん"]}, db_key="project")
+
+payload = c.update_record.call_args.args[2]
+
+assert payload["field70"].startswith("新本文")
+
+assert "旧本文" not in payload["field70"]
+
+
+
+
+
+
+
+def test_roundtrip_restores_all_choices_and_preserves_external_addition():
+
+from src.sync_engine.decided_choices import controller_from_external
+
+memo = merge_choice_memo("本文", "サイトコントローラー", ["リンカーン", "ねっぱん"], limit=2000)
+
+assert controller_from_external("リンカーン", memo) == ["リンカーン", "ねっぱん"]
+
+assert controller_from_external("TEMAIRAZU", memo) == ["リンカーン", "ねっぱん", "手間いらず"]
+
+
+
+
+
+
+
+def test_inbound_does_not_reduce_choices_without_saved_field():
+
+from src.sync_engine.webhook_handlers.zoho_field_transforms import ZOHO_LABEL_FIELD_MAPPINGS, SKIP_FIELD, zoho_action_relation_context
+
+transform = ZOHO_LABEL_FIELD_MAPPINGS["project"]["サイトコントローラー"][1]
+
+assert transform("リンカーン") is SKIP_FIELD
+
+memo = merge_choice_memo("本文", "サイトコントローラー", ["リンカーン", "ねっぱん"], limit=2000)
+
+with zoho_action_relation_context("123", {"field70": memo}, None):
+
+assert transform("リンカーン") == ["リンカーン", "ねっぱん"]
+
+
+
+
+
+
+
+def test_memo_only_edit_keeps_choice_storage():
+
+from src.sync_engine.decided_choices import replace_memo_body, split_controller_memo
+
+old = merge_choice_memo("旧本文", "サイトコントローラー", ["リンカーン", "ねっぱん"], limit=2000)
+
+new = replace_memo_body(old, "新本文")
+
+assert split_controller_memo(new)[0] == "新本文"
+
+assert "ねっぱん" in new
+
+c = Mock()
+
+c.get_record.return_value = {"Modified_Time": "v1", "field70": old}
+
+ZohoSyncTarget(c, "Deals", enabled=True).upsert_record("123", {"メモ": "新本文"}, db_key="project")
+
+assert c.update_record.call_args.args[2]["field70"] == new
+
+Gemini の回答
+独立コードレビュー結果
+【BLOCKER】（重大なバグ・要件不備・修正漏れ）
+
+outbound_value_mapping.py でファーストタッチの生値送信
+
+欠陥: translate_choice_value 内で choices(value, FIRST_TOUCH) の返り値（Notion側の生値）をそのまま ", ".join(values) しており、FIRST_TOUCH 辞書による値変換を行っていない。
+
+修正案: ", ".join(FIRST_TOUCH[v] for v in values) に修正する。
+
+ZohoSyncTarget での「ファーストタッチ」備考保持の未実装
+
+欠陥: 要件「Zoho単一欄/全選択を備考保持」に対し、ZohoSyncTarget.upsert_record (zoho_sync.py) では サイトコントローラー のみ処理しており、ファーストタッチ の複数選択枠が Zoho の備考 (field70) に記録されない。
+
+修正案: kintone_sync.py の _memo_choices と同様に、Zoho 側でも ファーストタッチ を merge_choice_memo の対象に含める。
+
+replace_memo_body による他項目（ファーストタッチ等）同期枠の消失
+
+欠陥: replace_memo_body が サイトコントローラー の枠しか保持・分離（split_controller_memo）しないため、備考本文更新時に 【CRM同期:ファーストタッチ】 など他項目の保存枠が削ぎ落とされる。
+
+修正案: 特定項目限定の処理ではなく、任意の 【CRM同期:*】 枠を抽出し、すべての同期枠を保持したまま本文のみを差し替える汎用関数にする。
+
+Neon pooled 接続の小修正コードが diff に不在
+
+欠陥: PRサマリに「Neon pooled起動時options拒否をSET LOCALに変更」とあるが、提示された diff 内に対応するコード変更が一切含まれていない。
+
+修正案: 当該修正を行うコミットを漏れなく差分に含める。
+
+【WARN】（潜在的障害・競合検知漏れ・インバウンド未定義）
+
+zoho_field_transforms.py で ctx.changed_values が None 時の TypeError
+
+欠陥: _controller_with_saved_choices 内で record = ctx.changed_values の直後に if "field70" not in record: と判定しているため、changed_values が None の場合に例外が発生する。
+
+修正案: if not isinstance(record, Mapping) or "field70" not in record: にガード条件を変更する。
+
+Zoho -> Notion（インバウンド）の「ファーストタッチ」マッピング未定義
+
+欠陥: _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD に ファーストタッチ（field45）の変換関数が定義されておらず、Zoho 側で変更された際に Notion 側へ戻り同期されない。
+
+修正案: _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD に ファーストタッチ のインバウンド変換を追加する。
+
+expected_version=None 時の競合制御不備
+
+欠陥: kintone_sync.py / zoho_sync.py で呼び出し元が expected_version に None を渡した場合、expected_version is not None により版比較がスキップされ、競合拒否が機能しない。
+
+修正案: 呼び出し元での expected_version 指定を必須とするか、未指定時でも競合を検知するロジックに変更する。
+
+controller_from_external での備考枠パースの脆さ
+
+欠陥: memo.split(begin)[1].split(end)[0].strip().split("、") で分割する際、枠内に改行や空白が含まれると要素内に改行が残り、choices() のバリデーションで弾かれて None が返る。
+
+修正案: 分割後の各要素に対して .strip() をかけ、空文字を除外してから choices() に渡す。
+
+【INFO】（設計不整合・可読性向上）
+
+kintone_sync.py における payload 変換と memo 処理の分散
+
+指摘: _choice_value（translate_properties 用）と _memo_choices で対象プロパティの扱いが分かれており、unmapped からの控除処理（set(unmapped) - _memo_choices(...).keys()）を各所で手動処理している。
+
+改善案: 選択肢フィールドのアウトバウンド変換・未マッピング控除を一括で扱うヘルパーに集約する。
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く
+
+Refining Mapping Integration

@@ -882,3 +882,124 @@ model SyncOperationHistory {
 
   @@index([subjectId, createdAt], map: "SyncOperationHistory_subject_idx")
 }
+
+model RecordMergeJob {
+  id        String   @id
+  dbKey     String
+  sourceId  String
+  targetId  String
+  state     String   @default("draft")
+  snapshot  Json
+  steps     Json
+  planHash  String
+  progress  Json     @default("{}")
+  actorId   String
+  error     String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @default(now()) @db.Timestamptz
+  aliases   RecordMergeAlias[]
+
+  @@index([state, updatedAt], map: "RecordMergeJob_state_idx")
+}
+
+model RecordMergeAlias {
+  dbKey       String
+  tool        String
+  oldId       String
+  targetId    String
+  operationId String
+  createdAt   DateTime @default(now()) @db.Timestamptz
+  operation   RecordMergeJob @relation(fields: [operationId], references: [id])
+
+  @@id([dbKey, tool, oldId])
+  @@index([dbKey, targetId], map: "RecordMergeAlias_target_idx")
+}
+
+model RecordMergeAliasEvent {
+  id         String   @id
+  dbKey      String
+  sourceTool String
+  oldId      String
+  targetId   String
+  eventAt    DateTime @db.Timestamptz
+  properties Json
+  state      String   @default("pending")
+  createdAt  DateTime @default(now()) @db.Timestamptz
+  resolvedAt DateTime? @db.Timestamptz
+
+  @@index([state, createdAt], map: "RecordMergeAliasEvent_pending_idx")
+}
+
+model RelationReviewDecision {
+  reviewId     String @id
+  snapshot     Json
+  snapshotHash String
+  actorId      String
+  state        String @default("approved")
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @default(now()) @db.Timestamptz
+  resolutions  RelationResolution[]
+}
+
+model RelationResolution {
+  sourceTool     String
+  sourceRecordId String
+  targetDbKey     String
+  rawValue       String
+  targetNotionId String
+  reviewId       String
+  decision       RelationReviewDecision @relation(fields: [reviewId], references: [reviewId])
+
+  @@id([sourceTool, sourceRecordId, targetDbKey, rawValue])
+}
+
+model RecordCreationCandidate {
+  id               String @id
+  dbKey            String
+  sourceId         String
+  tool             String
+  externalId       String
+  snapshot         Json
+  snapshotHash     String
+  state            String @default("pending")
+  importedNotionId String?
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([state, updatedAt], map: "RecordCreationCandidate_pending_idx")
+}
+
+model ReportCollection {
+  reportDate  DateTime @id @db.Date
+  cutoff      DateTime @db.Timestamptz(6)
+  phase       String @default("project")
+  cursor      Json @default("{}")
+  error       String?
+  retryCount  Int @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+  pages       ReportCollectionPage[]
+  deliveries  ReportDelivery[]
+}
+
+model ReportCollectionPage {
+  reportDate DateTime @db.Date
+  dbKey      String
+  pageId     String
+  page       Json
+  collection ReportCollection @relation(fields: [reportDate], references: [reportDate])
+  @@id([reportDate, dbKey, pageId])
+}
+
+model ReportDelivery {
+  reportDate      DateTime @db.Date
+  kind            String
+  destinationHash String
+  state           String @default("reserved")
+  bodyHash        String
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  deliveredAt     DateTime? @db.Timestamptz(6)
+  collection     ReportCollection @relation(fields: [reportDate], references: [reportDate])
+  @@id([reportDate, kind])
+}

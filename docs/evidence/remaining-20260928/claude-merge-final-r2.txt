@@ -1,0 +1,42 @@
+Claude Opus 5.5 中 / 2026-09-28
+https://claude.ai/chat/5e555575-1942-4512-97d7-6ddd458f52d6
+判定 B0/W4、修正に着手。回答原文:
+いずれもデータ破損ではなく、途中で止まった処理から抜け出せなくなる経路です。
+
+前回のBLOCKER 2件は解消を確認しました。自己関連は、統合元・統合先の相互参照を実行前に保留するようになりました。held からの出口として、途中結果を残したまま中止する操作が二段階確認つきで追加されました。前回のWARNも解消しています。統合の排他判定に子も含めるようになり、Zohoの単一関連欄は相違があれば人が選ぶ方式になり、feature flag がOFFでも登録済みの旧IDは保護されます。
+
+区分	箇所	再現条件と欠陥	修正案
+WARN-1	aliases.history_available と operations.authorize	RecordMergeAlias テーブルがあれば、flag がOFFでも require_record_available は有効です。一方、resume・abandon・preview_abandon は authorize が flag ON を要求します。例：held の job が残っている状態で緊急停止のために flag をOFFにすると、その統合元・統合先・子の通常同期は RecordSyncBusy で止まり続け、中止もできません	flag がOFFでも、中止（preview_abandon と abandon）だけは manager の確認つきで許可する。または、OFFにする前に処理中の job が0件であることを確認する手順を設ける
+WARN-2	operations._abandon_snapshot の append_body の読取り	中止のhashに、生の blocks（署名付きURLや期限を含む）を入れています。例：統合の途中で、担当者が統合先の本文にNotion保管の画像を追加する。取得するたびにURLが変わるため、preview と abandon でhashが一致せず、中止が毎回409になります	hashには copy_block で正規化した結果を使う。正規化できないブロックは、種類とIDだけを記録する
+WARN-3	relation_decisions._execute の順序と、source_options の recordVersion	Notionの更新と propagate_linked_relation が成功した後、最後の RelationResolution・Queue・Decision の更新でDBエラーが起きた場合を考えます。外部側の版（Modified_Time や $revision）は propagate によって変わっているので、再開は必ず「確認後に元ツールの値または版が変わりました」で止まります。画面では decisionState がある候補の比較ボタンが無効になるため、この保留を処理する手段がなくなります（関連の実データ自体は正しく反映されています）	再開時は、Notionの実値が desired と一致し、外部の現在値が承認済みの選択先を指していれば、版の不一致を許して完了にする。または、関連判断にも中止の遷移を用意する
+WARN-4	creation_candidates.decide（import_creation）	state を reserved にした後、create_page_once は成功したが importedNotionId の保存前に処理が落ちた場合、候補は「結果が不明」のまま固定されます。reserved の候補は見送りもできません。hold_duplicate は reserved を見ると常に保留するので、その登録元からの該当ツールへの新規登録も止まり続けます	管理者が実物を確認したうえで、取り込まれたNotionページIDを指定して確定するか、未作成と確認して pending に戻す操作を追加する（二段階確認と履歴記録つき）
+
+INFOは3件です。
+
+history_available は呼ばれるたびに接続を開いて to_regclass を実行します。同期イベントのたびに発生するので、プロセス内で結果をキャッシュすることを勧めます。
+list_jobs の4つの一覧が同じ offset を共有しているので、ページ送りで一覧ごとの件数がずれます（前回からの持ち越し）。
+retain_relations は既存の関連に追加する方式です。単一であるべき関連欄に別の値が既に入っていると2件になるので、統合と同じく単一関連は相違時に人が選ぶ扱いに揃えると安全です。
+
+問題ないと確認した点は次のとおりです。
+
+Next と backend の両方で、manager の確認と actor_id のセッション由来化が行われています。16操作すべてに authorize がかかっています。
+統合の予約、書込み、実値の確認、完了済み手順の記録、アーカイブを最後にする制約、旧IDの対応の確定は、同じロックの中で行われています。
+関連の判断は、候補一覧にあるページか、元の外部IDと一致するページにしか関連付けできません。
+外部候補の取り込みは外部レコードを作成せず、見送りは確認した内容と同じ場合に限って有効です。
+
+
+
+
+
+今
+
+メッセージを入力…
+
+
+
+
+
+
+
+Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。
+Opus 5.5 中

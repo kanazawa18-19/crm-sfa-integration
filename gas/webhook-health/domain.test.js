@@ -47,3 +47,15 @@ test('API全体が停止しても個別の未解消警告を保持', () => {
  const failed=health.plan([{key:'monitor',status:'unknown',reason:'不能'}],prev.next,now+H);
  assert.deepEqual(failed.next.checks.zoho_subscription,prev.next.checks.zoho_subscription);
 });
+
+test('受理後の未完了は同じ対象を再観測して警告し、完了時に復旧する', () => {
+  const pending = {key:'unfinished_sync',status:'pending',reason:'完了待ち',activity_at:new Date(now).toISOString(),fingerprint:'a'.repeat(64),count:2};
+  const first=health.plan([pending],{},now);
+  assert.equal(first.events.length,0);
+  const second=health.plan([pending],first.next,now+3600000);
+  assert.equal(second.events[0].level,'warning');
+  const changed=health.plan([{...pending,fingerprint:'b'.repeat(64)}],first.next,now+3600000);
+  assert.equal(changed.events.length,0);
+  const recovered=health.plan([{key:'unfinished_sync',status:'ok',reason:'完了'}],second.next,now+7200000);
+  assert.equal(recovered.events[0].level,'recovered');
+});

@@ -289,6 +289,8 @@ class NotionIdMappingStore(IdMappingStore):
         )
 
     def get(self, notion_key: str) -> IdMapping | None:
+        from src.record_merge.aliases import resolve_alias
+        notion_key = resolve_alias(None, 'notion', notion_key) or notion_key
         page = self._query_first(_title_equals_filter(notion_key))
         return _page_to_mapping(page) if page else None
 
@@ -351,6 +353,10 @@ class NotionIdMappingStore(IdMappingStore):
         raise_for_error(response, NotionIdMappingStoreApiError)
 
     def find_by_external_id(self, tool: Tool, external_id: str, *, db_key: str) -> IdMapping | None:
+        from src.record_merge.aliases import resolve_alias
+        canonical = resolve_alias(db_key, tool.value, external_id)
+        if canonical:
+            return self.get(canonical)
         property_name = _EXTERNAL_ID_PROPERTIES.get(tool)
         if property_name is None:
             raise ValueError(f"unsupported tool for external id lookup: {tool}")

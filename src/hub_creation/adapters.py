@@ -9,6 +9,7 @@ from src.sync_engine.clients._http import raise_for_error, ApiError, request_wit
 from src.sync_engine.outbound_field_mapping import translate_properties, zoho_outbound_field_names, kintone_outbound_field_names
 from src.sync_engine.outbound_value_mapping import translate_choice_value
 from src.hub_creation.domain import CreationHeld, CreationNotApplicable, identity_hash
+from src.record_merge.creation_candidates import hold_duplicate
 
 
 def missing_required_reason(required, fields, payload, table, properties):
@@ -177,7 +178,7 @@ class ZohoCreationAdapter:
                 seen.add(identifier)
                 if ((str(record.get('Last_Name') or '').strip() == surname and str(record.get('First_Name') or '').strip() == given)
                         or (email and str(record.get('Email') or '').casefold() == email.casefold())):
-                    raise CreationHeld('外部に姓名またはメールが一致する連絡先があります。統合候補を確認してください')
+                    hold_duplicate('zoho', 'contact', identifier, record, '外部に姓名またはメールが一致する連絡先があります。統合候補を確認してください', fetch=lambda: self.client.get_record(module, identifier))
             if not info['more_records']:
                 return
             if not records:
@@ -202,7 +203,7 @@ class ZohoCreationAdapter:
                         raise CreationHeld("外部の一覧照合結果を確認できません")
                     seen.add(record["id"])
                     if identity_hash(db_key, record[title_field]) == expected:
-                        raise CreationHeld("外部に同名の候補があります。重複かどうかの確認が必要です")
+                        hold_duplicate('zoho', db_key, record['id'], record, '外部に同名の候補があります。重複かどうかの確認が必要です', fetch=lambda: self.client.get_record(module, record['id']))
                 if not info["more_records"]:
                     return
                 if not records:
@@ -323,7 +324,7 @@ class KintoneCreationAdapter:
                     same = all((sorted(value, key=str) == sorted(comparable[code], key=str) if isinstance(value, list)
                                 else value == comparable[code]) for code, value in payload.items())
                     if db_key == 'project' or same:
-                        raise CreationHeld('kintoneに同名案件があります。比較してください' if db_key == 'project' else 'kintoneに登録内容が一致する候補があります。統合候補を確認してください')
+                        hold_duplicate('kintone', db_key, identifier, record, 'kintoneに同名案件があります。比較してください' if db_key == 'project' else 'kintoneに登録内容が一致する候補があります。統合候補を確認してください', fetch=lambda: client.get_record(app, identifier))
                 if len(records) < 500:
                     return payload
             raise CreationHeld('kintoneの候補が照合上限を超えるため作成を保留します')
@@ -333,8 +334,16 @@ class KintoneCreationAdapter:
         if not isinstance(name, str) or not name:
             raise CreationHeld("顧客名が未入力です")
         escaped = name.replace("\\", "\\\\").replace('"', '\\"')
-        if get("records.json", {"app": app, "query": f'顧客名 = "{escaped}" limit 1', "fields[0]": "$id"}).get("records"):
-            raise CreationHeld("kintoneに同名の顧客があります。重複かどうかの確認が必要です")
+        duplicates = get("records.json", {"app": app, "query": f'顧客名 = "{escaped}" limit 2'}).get("records")
+        if not isinstance(duplicates, list):
+            raise CreationHeld('kintoneの候補一覧を確認できません')
+        for record in duplicates:
+            identifier = record.get('$id', {}).get('value')
+            if not isinstance(identifier, str) or not identifier.isdigit():
+                raise CreationHeld('kintoneの候補IDを確認できません')
+            # 顧客名は一意制約があるため、見送り後も同名の新規作成はできない。
+            hold_duplicate('kintone', db_key, identifier, record, 'kintoneに同名の顧客があります。重複かどうかの確認が必要です', fetch=lambda: client.get_record(app, identifier))
+            raise CreationHeld('kintoneの顧客名は重複禁止です。名前を修正して再通知してください')
         return payload
 
     def create(self, db_key, payload):

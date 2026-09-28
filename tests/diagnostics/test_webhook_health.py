@@ -81,3 +81,15 @@ def test_購読クライアントの公開インターフェースで呼ぶ(monk
             return Response()
     monkeypatch.setattr(h, 'HttpZohoClient', Client)
     assert h._read_watch(NOW)['status'] == 'ok'
+
+
+def test_未完了の古いイベント時刻だけで異常と断定しない():
+    from src.diagnostics.unfinished_sync import summarize
+    rows=[{'dbKey':'project','notionKey':'a','acceptedAt':NOW-timedelta(days=20)}]
+    first=summarize(rows,NOW)
+    second=summarize(rows+[{'dbKey':'action','notionKey':'b','acceptedAt':NOW}],NOW+timedelta(hours=1))
+    assert first['status']=='pending'
+    assert first['activity_at']==NOW.isoformat()
+    assert first['fingerprint']==second['fingerprint']
+    assert second['by_database']=={'project':1,'action':1}
+    assert summarize([],NOW)['status']=='ok'

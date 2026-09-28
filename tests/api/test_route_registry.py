@@ -30,6 +30,8 @@ _VERCEL_JSON = _REPO_ROOT / "vercel.json"
 
 # 実装されている全ルート（メソッド, パス）。増減させる場合はここも更新する。
 _EXPECTED_ROUTES = {
+    ("POST", "/api/record-merge"),
+    ("POST", "/api/sync-exclusions"),
     ("GET", "/healthz"),
     ("GET", "/api/healthz"),
     # --- 外部システムから叩かれるWebhook ---
@@ -44,6 +46,7 @@ _EXPECTED_ROUTES = {
     ("POST", "/api/webhooks/slack-interactions"),
     # --- スケジューラから叩かれるcron ---
     ("GET", "/api/cron/daily-batch"),
+    ("GET", "/api/cron/daily-batch-resume"),
     ("GET", "/api/cron/token-encryption-healthcheck"),
     ("GET", "/api/cron/gmail-sync"),
     ("GET", "/api/cron/gmail-watch-renewal"),

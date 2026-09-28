@@ -1,0 +1,44 @@
+総評：このままでは本番Readyとは判断できません。代表値の値体系ずれ、既存レコードでの複数選択の減少、要件外のZoho送信の3点がBLOCKERです。
+軽微な指摘事項を一覧にまとめ中。
+
+軽微な指摘事項を一覧にまとめ中。
+
+総評：このままでは本番Readyとは判断できません。代表値の値体系ずれ、既存レコードでの複数選択の減少、要件外のZoho送信の3点がBLOCKERです。
+
+区分	箇所	欠陥	修正案
+BLOCKER-1	outbound_value_mapping / zoho_sync	field20へNotionラベル（リンカーン等）をそのまま送っている。受信側aliasを見るとZoho値はTLリンカーン／TEMAIRAZU／ねっぱん！で、既存のzoho_outbound_value_mapsも迂回している。選択肢エラー、または値の新規作成になる	primary_controllerで代表値を決めた後に逆alias変換を通す。テストの期待値もZoho値に直す
+BLOCKER-2	_controller_with_saved_choices	field70に保存枠がない通知では、代表値だけで上書きするため複数選択が減る。移行前の既存案件すべてと、Zoho上で枠を消した案件で起きる。要件「代表値で減らさない」に違反	更新で枠がない場合はSKIPし、新規作成時のみ許可する。または有効化前に全件の枠をバックフィルする
+BLOCKER-3	zoho_outbound_field_names / translate_choice_value	ファーストタッチをZoho field45へ送っているが、これは要件外。しかも読み替え前のNotionラベルを「, 」で連結しており、型は未確認、受信側の対応も未定義	追加を削除し、KNOWN_UNMAPPEDへ戻す。必要なら要件化したうえで、値表・型・受信を揃えて別PRにする
+WARN-1	primary_controller	その他の順がコードポイント順（Beds24＜なし＜エアホスト＜不明）になっている。このため「なし」がエアホストより優先される	明示タプル（…らく通, Beds24, エアホスト, 不明, なし）を使う。「なし」と他の値が併存する場合は保留にすることも検討
+WARN-2	kintone_sync	備考にNotionメモ等が写像されている場合、次の3つが起きる。現行値でpayloadを上書きしてNotion側の編集を捨てる。notesがないときは枠ごと上書きする。受信時に枠がNotionメモへ流入する	写像の有無を確認する。写像がある場合は、Zohoと同じsplit/replaceを2種類の枠に対応させて適用する
+WARN-3	zoho_sync 版確認	Zohoには条件付き更新がなく、読取から書込までの間に競合が起きうる。またModified_Timeを文字列で比較しているため、Z／+09:00の表記差で偽の409が出る	datetimeに正規化して比較する。書込直前に再読取し、競合時は再試行する
+WARN-4	両Target	上限超過や枠の破損で422を投げると、レコード全体（field20等）も送られない。再試行対象かどうかも不明	備考だけを保留にして他の項目は送る。非再試行エラーとして通知する
+WARN-5	replace_memo_body	Notionメモが空欄だとZoho本文が削除され、送信方向では空欄削除が伝播する。受信方向はSKIPなので非対称	空欄時はfield70の本文を変更しない仕様に揃える
+WARN-6	_controller_with_saved_choices 再取得	record.get("field20") != value で比較しているが、APIがリストで返す場合は常に不一致となり、受信が恒常的にSKIPされる	分割・正規化してから比較する
+WARN-7	test_simultaneous_memo_edit_is_not_reverted	テスト名と内容が合っていない。expected_versionを渡しておらず、Zoho側の旧本文を上書きしている。Zohoで版が不一致のときの409テストもない	テスト名を修正し、版不一致で書込が行われないことを確認するテストを追加する
+WARN-8	kintone 案件名→店舗名	要件外の追加。KNOWN_UNMAPPEDに案件名が残っていて不整合	別PRに分離するか、既知ギャップを削除してテストを追加する
+WARN-9	Neon SET LOCAL	diffに含まれておらずレビューできない。SET LOCALはトランザクション外では無効で、警告が出るだけ。また「65テスト」と本diffのテスト数（約10件）の対応も取れない	BEGIN内で毎回発行されること、実行後の設定値を確認するテストを提示してもらう
+INFO-1	提案サービス	SPREADSHEET_ONLYで外部への送信は止まる	Zoho／kintoneの受信写像にも残っていないか確認する（残っていると片方向の流入になる）
+INFO-2	kintone受信	ドロップダウン_4をNotionへ戻す写像があると、「営業」等がNotionの選択肢外になる	受信写像から除外されていることを確認する
+INFO-3	両Target	同期のたびに備考を読取・書込するため、冪等ではあるが版が上がりWebhookのエコーが出る	変更がなければ書込を省略する
+INFO-4	split_controller_memo	Zohoで枠の後ろに追記した文は、次回の送信で枠の前へ移動する（欠落はしない）	仕様として明記する
+INFO-5	保存枠の手編集	枠を編集しても代表値が変わるまでNotionに反映されない。一方で、枠から値を削ると減少する	手編集の可否を運用で決めて明記する
+INFO-6	kintone_sync import	関数定義がimportの間に挟まっている（E402）	関数定義をimportの後ろへ移す
+INFO-7	テスト不足	枠のない既存レコードの受信、「なし」と他値の併存、Zoho aliasの往復、上限超過時の他項目送信が未テスト	上記の各ケースを追加する
+
+
+
+
+
+今
+
+メッセージを入力…
+
+
+
+
+
+
+
+Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。
+Opus 5.5 中

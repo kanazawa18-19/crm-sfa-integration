@@ -2292,3 +2292,34 @@ def test_external_single_owner_does_not_reduce_notion_multiple(monkeypatch):
     assert notion.upsert_calls == []
     assert result.properties[0].skipped_tools
     assert notes and any('担当メンバー' in key for key in notes[0])
+
+
+def test_old_external_alias_is_held_without_overwriting_canonical(monkeypatch):
+    store = SQLiteIdMappingStore()
+    mapping = IdMapping('alias-page', 'client_master', zoho_id='canonical-z')
+    store.upsert(mapping)
+    monkeypatch.setattr(store, 'find_by_external_id', lambda tool, external_id, **kwargs: mapping)
+    notion = FakeSyncTarget(Tool.NOTION, {'alias-page': {'取引先名': '現在名', NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=1)}})
+    zoho = FakeSyncTarget(Tool.ZOHO, {'canonical-z': {'取引先名': '以前の名'}})
+    from src.record_merge import aliases
+    held = []
+    monkeypatch.setattr(aliases, 'hold_alias_event', lambda event, mapping: held.append(event))
+    dispatcher = Dispatcher(store, {Tool.NOTION: notion, Tool.ZOHO: zoho})
+    dispatcher.dispatch(SyncEvent(Tool.ZOHO, 'client_master', 'old-z', NOW, properties={'取引先名': '現在名'}))
+    assert zoho.upsert_calls == [] and notion.upsert_calls == []
+    assert held[0].external_id == 'old-z'
+
+
+def test_merge_between_lookup_and_lock_never_writes_under_old_lock(monkeypatch):
+    from src.sync_engine.record_sync_lock import RecordSyncBusy
+    store = SQLiteIdMappingStore()
+    old = IdMapping('old-page', 'client_master', zoho_id='old-z')
+    canonical = IdMapping('new-page', 'client_master', zoho_id='new-z')
+    dispatcher = Dispatcher(store, {})
+    monkeypatch.setattr(dispatcher, '_resolve_mapping', lambda event: old)
+    monkeypatch.setattr(store, 'get', lambda key: canonical)
+    from unittest.mock import Mock
+    dispatcher._dispatch_locked = Mock()
+    with pytest.raises(RecordSyncBusy, match='対応先'):
+        dispatcher.dispatch(SyncEvent(Tool.ZOHO, 'client_master', 'old-z', NOW, properties={'取引先名': '旧名'}))
+    dispatcher._dispatch_locked.assert_not_called()

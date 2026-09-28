@@ -181,7 +181,9 @@ class HubCreationService:
                         elif attempt and attempt["state"] == "reserved":
                             raise CreationHeld("作成結果が不明です。自動で再作成せず確認を待っています")
                         else:
-                            payload = adapter.plan(event.db_key, properties)
+                            from src.record_merge.creation_candidates import candidate_context
+                            with candidate_context(event.db_key, page_id, source_key, properties):
+                                payload = adapter.plan(event.db_key, properties)
                             if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
                                 raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
                             external_id = adapter.create(event.db_key, payload)

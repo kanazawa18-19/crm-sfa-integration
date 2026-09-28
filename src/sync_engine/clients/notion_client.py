@@ -536,11 +536,14 @@ class HttpNotionClient:
         )
         return None
 
-    def create_page_once(self, properties: dict[str, Any]) -> str:
+    def create_page_once(self, properties: dict[str, Any], *, children: list[dict[str, Any]] | None = None) -> str:
         """永続予約済みの新規登録用。同名ページの推測回収も自動再POSTもしない。"""
+        body = {"parent": {"database_id": self._database_id},
+                "properties": build_notion_properties(properties, self._schema)}
+        if children is not None:
+            body["children"] = children
         response = self._request("POST", "/pages", idempotent=False, timeout=_CREATE_PAGE_TIMEOUT_SECONDS,
-                                 json_body={"parent": {"database_id": self._database_id},
-                                            "properties": build_notion_properties(properties, self._schema)})
+                                 json_body=body)
         raise_for_error(response, NotionApiError)
         return str(response.json()["id"])
 

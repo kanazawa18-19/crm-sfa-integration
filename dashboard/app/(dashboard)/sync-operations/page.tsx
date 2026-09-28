@@ -21,7 +21,9 @@ export default async function SyncOperationsPage({ searchParams }: {
   const names = new Map(actors.map(actor => [actor.id, actor.name]));
   return <div className="space-y-5 p-6">
     <h1 className="text-xl font-bold">商品関連の保留</h1>
+    <Link className="underline" href="/sync-exclusions">同期対象外のお知らせ（取引先2件）</Link>
     <p>原因を修正した案件だけ再開してください。再開後、定期処理が現在の商品・取引先を再確認して関連を配送します。</p>
+    <Link className="underline block" href="/report-delivery">日報・週報の収集と配信状況</Link>
     <HoldList items={result.items} />
     <nav className="flex gap-4">{page > 1 && <Link href={`?page=${page - 1}`}>前へ</Link>}<span>{page}ページ</span>{result.hasMore && <Link href={`?page=${page + 1}`}>次へ</Link>}</nav>
     <h2 className="font-bold">最近の再開履歴（20件）</h2>

@@ -154,3 +154,28 @@ def validate_record_sync_storage(store: Any) -> None:
                 raise RecordSyncConfigurationError('同期時刻テーブルの読み書き権限が必要です')
     finally:
         conn.close()
+
+
+@contextmanager
+def acquire_record_sync_locks(store: Any, keys) -> Iterator[None]:
+    """複数ページの同じ鍵を1本の直接接続で保持し、接続数を増やさない。"""
+    ordered = sorted(set(keys))
+    if isinstance(store, SQLiteIdMappingStore):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for db_key, notion_key in ordered:
+                stack.enter_context(acquire_record_sync_lock(store, db_key, notion_key))
+            yield
+        return
+    conn = _connect_direct()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for db_key, notion_key in ordered:
+                cur.execute('SELECT pg_try_advisory_lock(%s) AS locked', (lock_key(db_key, notion_key),))
+                if not cur.fetchone()['locked']:
+                    raise RecordSyncBusy('対象の一部を別の同期が処理中です')
+        yield
+    finally:
+        # セッションを閉じて、この処理で取得済みの全鍵を必ず解放する。
+        conn.close()

@@ -567,3 +567,9 @@ def save_revenue_target_sheet_settings(
 
 
 
+
+from src.api.routes.record_merge import router as record_merge_router
+app.include_router(record_merge_router)
+
+from src.api.routes.sync_exclusions import router as sync_exclusions_router
+app.include_router(sync_exclusions_router)

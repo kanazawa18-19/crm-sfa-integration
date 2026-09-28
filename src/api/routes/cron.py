@@ -32,7 +32,7 @@ from src.infrastructure.cron_result_log import ResultLogWriteError, WatchRenewal
 from src.incident_detection.notify import run_incident_digest
 from src.project_mirror.sync import refresh_projects_incrementally
 from src.relation_sync.sync import refresh_client_names_incrementally
-from src.reports.batch import run_report_batch
+from src.reports.durable.production import run_durable_report_batch as run_report_batch
 from src.sync_engine.spreadsheet_outbox_drain import drain_spreadsheet_outbox
 from src.sync_engine.webhook_events import purge_old_events
 from src.sync_engine.clients._http import INTERACTIVE_MAX_RATE_LIMIT_RETRIES
@@ -372,3 +372,9 @@ def run_project_product_links() -> dict[str, Any]:
     if result["failed"]:
         raise HTTPException(status_code=500, detail=result)
     return result
+
+
+@router.get("/api/cron/daily-batch-resume", dependencies=[Depends(verify_cron_secret)])
+def resume_daily_batch() -> dict[str, Any]:
+    """新しい日付を作らず、収集中/送達前の処理だけを短く進める。"""
+    return run_report_batch(start_today=False)
