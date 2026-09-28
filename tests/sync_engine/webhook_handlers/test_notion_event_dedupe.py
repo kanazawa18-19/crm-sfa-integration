@@ -117,3 +117,18 @@ def test_events_without_an_id_are_not_blocked(monkeypatch: pytest.MonkeyPatch) -
     from src.sync_engine import webhook_events
 
     assert webhook_events.claim_event("", "notion") is True
+
+
+def test_record_busy_releases_claim_so_same_notification_can_retry(claims):
+    """照合中に届いた再通知を成功扱いで捨てず、同じ通知の再送を受け入れる。"""
+    from unittest.mock import Mock
+    from src.sync_engine.record_sync_lock import RecordSyncBusy
+    dispatcher = Mock()
+    dispatcher.dispatch.side_effect = [RecordSyncBusy('同じレコードの同期が実行中です'), None]
+    client = _FakeClient()
+    first = handler_with_proxy(_event('evt_busy'), None, notion_client=client, dispatcher=dispatcher)
+    assert first['statusCode'] == 500
+    assert 'evt_busy' not in claims
+    second = handler_with_proxy(_event('evt_busy'), None, notion_client=client, dispatcher=dispatcher)
+    assert second['statusCode'] == 200
+    assert dispatcher.dispatch.call_count == 2
