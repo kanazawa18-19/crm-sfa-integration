@@ -103,3 +103,23 @@ def test_failure_classification_uses_only_safe_codes():
     assert 'HTTP 429' in safe_failure_reason('Notion収集', ApiError(429, 'private url'))
     assert 'DB処理時間切れまたは取消' in safe_failure_reason('収集ページの保存', psycopg.errors.QueryCanceled('private query'))
     assert 'private' not in safe_failure_reason('収集ページの保存', psycopg.errors.QueryCanceled('private query'))
+
+
+def test_oversized_report_is_held_before_delivery_reservation():
+    journal = Journal('ready'); send = Mock()
+    result = ReportRunner(journal, {}, Mock(return_value='あ' * 40001), send).run(journal.job, 'destination')
+    assert result['state'] == 'held'
+    assert journal.deliveries == {}
+    assert '未送信' in journal.errors[-1]
+    send.assert_not_called()
+
+
+def test_oversized_weekly_report_preserves_delivered_daily_status():
+    journal = Journal('ready'); send = Mock()
+    render = Mock(side_effect=['日報', 'あ' * 40001])
+    result = ReportRunner(journal, {}, render, send).run(journal.job, 'destination')
+    assert result['state'] == 'held'
+    assert journal.deliveries['daily']['state'] == 'delivered'
+    assert 'weekly' not in journal.deliveries
+    assert journal.errors[-1] == '週報本文がSlackの文字数上限を超えています（週報は未送信）'
+    assert send.call_count == 1

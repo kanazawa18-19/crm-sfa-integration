@@ -37,6 +37,9 @@ class ReportRunner:
                     return {'date': report_date.isoformat(), 'state': 'ready', 'daily_report_sent': bool(self.journal.delivery(report_date, 'daily'))}
                 stage = '日報の集計'
                 text = self.render(report_date, kind, self.journal)
+                if len(text) > 40000:
+                    label = '日報' if kind == 'daily' else '週報'
+                    raise ReportHeld(f'{label}本文がSlackの文字数上限を超えています（{label}は未送信）')
                 if self.clock() - started > total_budget - 15:
                     return {'date': report_date.isoformat(), 'state': 'ready', 'daily_report_sent': False}
                 # 予約が保存された後は、タイムアウトもDB保存失敗も自動再送しない。
