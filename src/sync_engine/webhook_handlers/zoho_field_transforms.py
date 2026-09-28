@@ -263,7 +263,28 @@ def _controller_with_saved_choices(value):
     return result if result is not None else SKIP_FIELD
 
 
+def _mapped_zoho_owner(value):
+    from src.sync_engine.owner_mapping import owner_from_external, UNRESOLVED_OWNER
+    result = owner_from_external(value, 'zoho')
+    return SKIP_FIELD if result is UNRESOLVED_OWNER else result
+
+
+def _dedicated_choice(db_key, name, value, *, multiple=False):
+    from src.db_schema.registry import get_schema
+    if value in (None, '', []):
+        return [] if multiple else None
+    options = get_schema(db_key).get_property(name).options
+    values = parse_multi_value(value) if multiple else [value]
+    if not values or any(not isinstance(item, str) or item not in options for item in values):
+        return SKIP_FIELD
+    return values if multiple else values[0]
+
+
 _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "案件の担当者": ("担当メンバー", _mapped_zoho_owner),
+    "種別（新規or既存）": ("新規・既存種別", lambda v: _dedicated_choice("project", "新規・既存種別", v)),
+    "リードソース1": ("リードソース1", lambda v: _dedicated_choice("project", "リードソース1", v, multiple=True)),
+    "作成日時": ("作成日", normalize_date),
     # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
     # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
     # Account_Name。実測200/200件で値あり
@@ -289,11 +310,8 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
     "メールアドレス": ("メールアドレス", lambda v: v or None),
     "電話番号": ("電話番号", lambda v: v or None),
     "契約日 / 予想契約日": ("契約日 / 予想契約日", normalize_date),
-    # Zoho標準フィールド「完了予定日」(Closing_Date)は、一括移行時に使ったカスタムフィールド
-    # 「契約日 / 予想契約日」(field50)とは別物だが、2026-08-12に金沢さんの確認を得て、どちらの
-    # 変更もNotionの同じ「契約日 / 予想契約日」プロパティへ反映する方針とした
-    # （後から更新された方が同期される。特別な優先順位付けはしない）。
-    "完了予定日": ("契約日 / 予想契約日", normalize_date),
+    # 実データで契約日と異なる値があるため、専用欄で保持する。
+    "完了予定日": ("完了予定日", normalize_date),
     # Zohoラベル != Notionプロパティ名。
     # 「ステージ」→「営業ステータス」: Zohoの生の値をそのまま書き込む（変換しない）。
     # 上記モジュールdocstring参照。値変換関数を挟むと将来"賢い変換"を誤って追加しかねないため
@@ -317,6 +335,7 @@ _PROJECT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
 # 上記モジュールdocstring参照: CustomModule3（正しいチェーンモジュール）の実際のライブAPI
 # ラベルとここで使うZohoラベルは一致することを確認済み。
 _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "チェーンの担当者": ("担当", _mapped_zoho_owner),
     # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
     # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
     # CustomModule3のfield10。実測2/200件で値あり
@@ -480,6 +499,9 @@ def _resolve_client_master_from_zoho_lookup(value: Any) -> Any:
 
 
 _CONTACT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "連絡先の担当者": ("担当メンバー", _mapped_zoho_owner),
+    "姓": ("姓", lambda v: v or None),
+    "名": ("名", lambda v: v or None),
     # Zohoラベル != Notionプロパティ名。
     # 2026-08-31追加。**これが無かったため、Zoho発の新規連絡先が1件も作られていなかった**
     # （必須プロパティ「取引先マスター」が常に欠けて missing_required_properties で中止）。
@@ -535,6 +557,8 @@ def _zoho_billing_type(value: Any) -> Any:
 
 
 _PRODUCT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "サービス・商品カテゴリー": ("商品カテゴリー", lambda v: _dedicated_choice("product", "商品カテゴリー", v)),
+    "先方担当者": ("先方担当者", _relation_from_zoho_lookup("先方担当者", "contact")),
     # Zohoのルックアップ項目 → Notionリレーション（2026-08-31追加）。
     # ルックアップの値には相手のZohoレコードidが入っているので、名寄せせずIdMappingで確定できる。
     # field12。実測10/200件で値あり

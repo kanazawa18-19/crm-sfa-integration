@@ -168,7 +168,7 @@ def zoho_outbound_field_names() -> dict[str, dict[str, str]]:
             if chosen is not None:
                 table[property_name] = chosen
         result[schema.key] = table
-    result.setdefault("project", {}).update({"サイトコントローラー": "field20", "ファーストタッチ": "field45"})
+    result.setdefault("project", {}).update({"サイトコントローラー": "field20", "ファーストタッチ": "field45", "作成日": "field42", "リードソース1": "field65"})
     return result
 
 

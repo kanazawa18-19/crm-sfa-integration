@@ -103,3 +103,18 @@ def test_get_record_logs_identifiers_and_reraises_on_client_error(
     assert "取引先マスタ" in caplog.text
     assert "1001" in caplog.text
     assert "client_master" in caplog.text
+
+
+@pytest.mark.parametrize('required', [False, True])
+def test_owner_fallback_uses_actual_required_field(required, monkeypatch):
+    import json
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified': True, 'fallback_notion_id': 'known',
+        'users': [{'notion_id': 'known', 'kintone_code': 'member', 'enabled': True}]}))
+    client = FakeKintoneClient()
+    client.get_user_field_required = lambda app, field: required
+    target = KintoneSyncTarget(client, '1')
+    payload = target._to_kintone_payload({'担当メンバー': ['unknown']}, 'project')
+    assert payload['営業担当者'] == ([{'code': 'member'}] if required else [])
+    def unavailable(*args): raise ValueError('未確認')
+    client.get_user_field_required = unavailable
+    assert target._to_kintone_payload({'担当メンバー': ['unknown']}, 'project') is None

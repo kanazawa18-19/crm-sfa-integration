@@ -234,6 +234,19 @@ def zoho_payload_to_sync_events(
                 # フィールドとしてスキップ」の警告ログへ合流させる（呼び出し元にとってはどちらも
                 # 「このフィールドは同期対象外」という同じ結果のため）。このスキップは当該レコード
                 # （イベント）のみに閉じており、バッチ内の他レコードの処理には影響しない。
+                if db_key == 'project' and api_name == 'Created_Time':
+                    continue  # 入力用の作成日はfield42。システム作成日時では上書きしない。
+                if api_name == 'Owner':
+                    from src.sync_engine.owner_mapping import OWNER_PROPERTIES, owner_from_external, UNRESOLVED_OWNER
+                    name = OWNER_PROPERTIES.get(db_key)
+                    owner = owner_from_external(value, 'zoho')
+                    if name and owner is not UNRESOLVED_OWNER:
+                        properties[name] = owner
+                        sync_notes.update(resolved_notes(Tool.ZOHO, name))
+                    elif name and value not in (None, '', [], {}):
+                        key, note = unresolved_note(Tool.ZOHO, name, value)
+                        sync_notes[key] = note
+                    continue
                 label = resolve_zoho_field_label(module, api_name)
                 if label is None:
                     logger.warning(

@@ -8,6 +8,10 @@ from src.sync_review.domain import is_blank, snapshot_hash, ReviewConflict, valu
 
 
 def external_field(tool, db_key, property_name):
+    from src.sync_engine.owner_mapping import owner_native_field
+    owner_field = owner_native_field(tool.value, db_key, property_name)
+    if owner_field:
+        return owner_field
     if tool is Tool.ZOHO:
         return zoho_outbound_field_names().get(db_key, {}).get(property_name)
     if tool is Tool.KINTONE:
@@ -27,6 +31,10 @@ UNAVAILABLE = object()
 
 def canonical_value(tool, db_key, prop, record, field):
     """復元可能な元値だけを表示する。関連IDや姓名を推測しない。"""
+    from src.sync_engine.owner_mapping import owner_native_field, owner_from_external, UNRESOLVED_OWNER
+    if owner_native_field(tool.value, db_key, prop.name):
+        value = owner_from_external(record[field], tool.value)
+        return UNAVAILABLE if value is UNRESOLVED_OWNER else value
     if tool is Tool.ZOHO and db_key == 'project' and prop.name == 'サイトコントローラー':
         from src.sync_engine.decided_choices import controller_from_external
         value = controller_from_external(record[field], record.get('field70'))
@@ -76,6 +84,12 @@ class FieldReviewService:
                 continue
             identifier = external_id(tool, mapping)
             field = external_field(tool, mapping.db_key, prop.name)
+            from src.sync_engine.owner_mapping import owner_native_field
+            if owner_native_field(tool.value, mapping.db_key, prop.name):
+                # 必須Ownerの代替割当は「空欄にする」承認とは別。通常の担当者編集で扱う。
+                result[tool.value] = {"supported": False, "id": identifier,
+                                      "error": "担当者の削除は代替担当を含む個別確認が必要です"}
+                continue
             if identifier is None and tool is not Tool.SPREADSHEET:
                 continue
             if field is None:
@@ -136,6 +150,11 @@ class FieldReviewService:
         if event.source_tool is Tool.KINTONE:
             previous = self.journal.source_values(mapping.db_key, mapping.notion_key, event.source_tool.value)
         for name, prop, value in prepared:
+            from src.sync_engine.owner_mapping import OWNER_PROPERTIES
+            if name == OWNER_PROPERTIES.get(mapping.db_key) and is_blank(value):
+                # 代替担当を伴い得る操作を「削除承認」に変換しない。既存の値を保持する。
+                held.append(name)
+                continue
             active = active_by_name.get(name)
             if active is not None and active['state'] in {'pending', 'confirmed', 'kept_blank'} and (
                 active['sourceTool'] == event.source_tool.value and not is_blank(value)

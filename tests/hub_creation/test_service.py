@@ -278,3 +278,29 @@ def test_retry_lookup_failure_is_contained(monkeypatch,caplog):
     service.retry_after_sheet_sync(edited,DispatchResult(skipped=False))
     assert journal.get('notion:created-page','retry')['state']=='blocked'
     assert 'private connection' not in caplog.text
+
+
+def test_sheet_action_reads_confirmed_rollups_after_notion_creation():
+    service, _, journal, notion, adapter, store = setup()
+    service.notion_clients = {'action': notion}
+    notion.get_raw_page = lambda page: {'properties': {
+        '担当営業': {'type': 'rollup', 'rollup': {'type': 'array', 'array': [
+            {'type': 'people', 'people': [{'id': 'confirmed-user'}]}]}},
+        '提案サービス': {'type': 'rollup', 'rollup': {'type': 'array', 'array': [
+            {'type': 'multi_select', 'multi_select': [{'name': 'メイリー'}]}]}},
+    }}
+    class Sheet:
+        def read(self, *args, **kwargs):
+            return {'商談回数・電話回数・メール回数（何回目）': '検証連絡',
+                    'アクション種別': 'テレアポ', '担当営業': '未確定入力'}, 12, 9
+        def update(self, *args, **kwargs): return 9
+    service.sheet_gateway = Sheet()
+    adapter.target = 'kintone'
+    plans = []
+    adapter.plan = lambda db, props: plans.append(dict(props)) or dict(props)
+    event = SyncEvent(Tool.SPREADSHEET, 'action', '9', NOW, registration_key='new:action-rollup')
+    assert service.handle(event) == 'hub_creation_complete'
+    assert plans[0]['担当営業'] == ['confirmed-user']
+    assert plans[0]['提案サービス'] == ['メイリー']
+    assert service.handle(event) == 'hub_creation_complete'
+    assert notion.creates == 1 and adapter.creates == 1

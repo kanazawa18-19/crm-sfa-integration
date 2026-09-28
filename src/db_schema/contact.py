@@ -32,6 +32,14 @@ CONTACT_SCHEMA = DatabaseSchema(
     spreadsheet_sheet_name="連絡先",
     notion_database_id="3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae",
     properties=(
+        PropertyDefinition(name='姓', property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.ALL_TOOLS,
+            description="外部登録の専用入力。既存値から推測して補完しない",
+        ),
+        PropertyDefinition(name='名', property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.ALL_TOOLS,
+            description="外部登録の専用入力。既存値から推測して補完しない",
+        ),
         PropertyDefinition(
             name="名前",
             property_type=PropertyType.TITLE,

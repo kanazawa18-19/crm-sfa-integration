@@ -383,11 +383,33 @@ class Dispatcher:
             prepared.append((property_name, prop, new_value))
 
         held_results = []
+        from src.sync_engine.owner_mapping import OWNER_PROPERTIES, hold_owner_inbound
+        owner_name = OWNER_PROPERTIES.get(event.db_key)
+        if event.source_tool in {Tool.ZOHO, Tool.KINTONE} and any(name == owner_name for name, _, _ in prepared):
+            try:
+                current_owner_record = self._targets[Tool.NOTION].get_record(mapping.notion_key)
+                current_owner = current_owner_record.get(owner_name) if current_owner_record is not None else None
+            except Exception:
+                current_owner = None
+            safe = []
+            for name, prop, value in prepared:
+                if name == owner_name and hold_owner_inbound(current_owner, value, event.source_tool.value):
+                    held_results.append(PropertyDispatchResult(name, None, skipped_tools=frozenset(target_tools)))
+                    from src.sync_engine.sync_notes import unresolved_note
+                    note_key, note = unresolved_note(event.source_tool, name)
+                    event = dataclasses.replace(event, sync_notes={**event.sync_notes, note_key: note})
+                else:
+                    safe.append((name, prop, value))
+            prepared = safe
         if self._field_review is not None:
             prepared, held = self._field_review.filter_properties(event, mapping, prepared)
-            held_results = [PropertyDispatchResult(name, None, skipped_tools=frozenset(
+            held_results += [PropertyDispatchResult(name, None, skipped_tools=frozenset(
                 tool for tool in target_tools if schema.get_property(name).should_sync_to(tool)
-            ), review_pending=True) for name in held]
+            ), review_pending=name != owner_name) for name in held]
+            if owner_name in held:
+                from src.sync_engine.sync_notes import unresolved_note
+                key, note = unresolved_note(event.source_tool, owner_name)
+                event = dataclasses.replace(event, sync_notes={**event.sync_notes, key: note})
 
         if event.source_tool is Tool.NOTION:
             # Notionは常にマスターであり、Notion発の変更に競合判定は不要。

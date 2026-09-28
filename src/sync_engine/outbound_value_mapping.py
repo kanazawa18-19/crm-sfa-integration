@@ -167,6 +167,12 @@ def translate_choice_value(db_key: str, property_name: str, value: Any) -> Any |
     複数選択は各要素を読み替える。**1つでも読み替えられない要素があればNoneを返す**
     （読み替えられた分だけ送ると、Notionでは付いている選択肢がZohoから消えるため）。
     """
+    if db_key == 'project' and property_name == 'リードソース1':
+        from src.db_schema.registry import get_schema
+        options = get_schema('project').get_property(property_name).options
+        if not isinstance(value, (list, tuple)) or not value or any(item not in options for item in value):
+            return None
+        return list(dict.fromkeys(value))
     if db_key == "project" and property_name == "ファーストタッチ":
         from src.sync_engine.decided_choices import choices, FIRST_TOUCH
         values = choices(value, FIRST_TOUCH)

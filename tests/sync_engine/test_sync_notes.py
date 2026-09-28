@@ -1,10 +1,10 @@
 """判断メモの順序・非漏洩・重複防止を、外部I/Oなしで検証する。"""
 from src.db_schema.base import Tool
-from src.sync_engine.sync_notes import CHOICES, UNAVAILABLE, gap_notes, parse_notes, render_notes
+from src.sync_engine.sync_notes import CHOICES, UNAVAILABLE, gap_notes, parse_notes, render_notes, unresolved_note, resolved_notes
 
 
 def test_unknown_values_are_not_copied_and_sections_keep_order():
-    notes = gap_notes(Tool.ZOHO, "project", {"担当メンバー": "token=private-value"})
+    notes = dict([unresolved_note(Tool.ZOHO, "担当メンバー", "token=private-value")])
     text = render_notes(notes)
     assert "token=private-value" not in text
     assert "[zoho:担当メンバー]" in text
@@ -20,7 +20,7 @@ def test_absent_choice_does_not_claim_value_exists():
 
 
 def test_empty_choice_removes_previous_warning():
-    notes = gap_notes(Tool.ZOHO, "project", {"担当メンバー": ""})
+    notes = resolved_notes(Tool.ZOHO, "担当メンバー")
     assert notes[f"{CHOICES}|zoho:担当メンバー"] == ""
 
 
@@ -57,7 +57,7 @@ def test_note_failure_does_not_finish_event_and_retry_runs():
 
 
 def test_business_names_remain_visible_without_user_id_or_email():
-    notes = gap_notes(Tool.ZOHO, "project", {"担当メンバー": {"name": "担当サンプル", "id": "private-id", "email": "private@example.com"}})
+    notes = dict([unresolved_note(Tool.ZOHO, "担当メンバー", {"name": "担当サンプル", "id": "private-id", "email": "private@example.com"})])
     text = render_notes(notes)
     assert "担当サンプル" in text
     assert "private-id" not in text and "private@example.com" not in text

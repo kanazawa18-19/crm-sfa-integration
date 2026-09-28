@@ -126,6 +126,16 @@ class HttpKintoneClient:
             idempotent=idempotent,
         )
 
+    def get_user_field_required(self, app: str, field_code: str) -> bool:
+        response = request_with_retry('GET', f'https://{self._domain}/k/v1/app/form/fields.json',
+            headers=self._headers(has_json_body=False), params={'app': app}, timeout=self._timeout,
+            max_retries=self._max_retries, backoff_base=self._backoff_base)
+        raise_for_error(response, KintoneApiError)
+        field = response.json().get('properties', {}).get(field_code)
+        if not isinstance(field, dict) or field.get('type') != 'USER_SELECT' or not isinstance(field.get('required'), bool):
+            raise ValueError('担当者の必須設定を確認できません')
+        return field['required']
+
     def get_record(self, app: str, record_id: str) -> dict[str, Any] | None:
         response = self._request("GET", params={"app": app, "id": record_id})
         if response.status_code == 404:

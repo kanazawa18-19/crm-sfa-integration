@@ -140,6 +140,14 @@ class HubCreationService:
                     self.store.upsert(mapping, expected_last_synced_at=None)
                 if mapping.db_key != event.db_key:
                     raise CreationHeld("対応表のDBが一致しません")
+                if event.db_key == 'action':
+                    from src.hub_creation.creation_payload import creation_rollup
+                    action_page = client.get_raw_page(page_id) if is_sheet else raw
+                    for name in ('担当営業', '提案サービス'):
+                        properties.pop(name, None)
+                        value = creation_rollup(action_page.get('properties', {}).get(name))
+                        if value is not None:
+                            properties[name] = value
                 if event.db_key == "project" and self.project_link_prepare is not None:
                     # Notion登録・対応表成立後、CRM作成・シート配送・メモより先に保持する。
                     self.project_link_prepare(mapping)

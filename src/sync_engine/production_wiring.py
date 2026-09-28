@@ -1232,7 +1232,7 @@ class ProductionSyncWiring:
             project_link_queue = ProjectProductLinkQueue()
             creation_service = HubCreationService(
                 store=self.id_mapping_store, journal=PostgresCreationJournal(), notion_clients=notion_clients,
-                adapters=[ZohoCreationAdapter(self.zoho_action_client), KintoneCreationAdapter(build_kintone_targets_by_db())],
+                adapters=[ZohoCreationAdapter(self.zoho_action_client, self.id_mapping_store), KintoneCreationAdapter(build_kintone_targets_by_db(), self.id_mapping_store)],
                 enabled_since=since, sheet_gateway=SheetRegistrationGateway(sheet_client) if sheet_client else None,
                 project_link_prepare=lambda mapping: project_link_queue.enqueue(mapping.notion_key),
             )

@@ -6,6 +6,7 @@ import logging
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.owner_mapping import owner_payload
 from src.sync_engine.decided_choices import FIRST_TOUCH, CONTROLLERS, choices, first_touch, merge_choice_memo
 from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 
@@ -39,6 +40,8 @@ class KintoneClient(Protocol):
     """kintone REST APIの最小インターフェース。実HTTP通信は本Protocolの実装側が担う。"""
 
     def get_record(self, app: str, record_id: str) -> dict[str, Any] | None: ...
+
+    def get_user_field_required(self, app: str, field_code: str) -> bool: ...
 
     def add_record(self, app: str, record: dict[str, Any]) -> str:
         """レコードを新規登録し、採番されたレコード番号を返す。"""
@@ -128,7 +131,18 @@ class KintoneSyncTarget(SyncTarget):
         _payload, unmapped = translate_properties(
             kintone_outbound_field_names(), db_key, properties, _choice_value
         )
-        return frozenset(set(unmapped) - _memo_choices(db_key, properties).keys())
+        _, handled = self._owner_payload(db_key, properties)
+        return frozenset(set(unmapped) - _memo_choices(db_key, properties).keys() - handled)
+
+    def _owner_payload(self, db_key, properties):
+        owners, handled = owner_payload(db_key, properties, "kintone")
+        if owners.get('営業担当者') == []:
+            try:
+                required = self._client.get_user_field_required(self._app, '営業担当者')
+            except Exception:
+                return {}, set()
+            return owner_payload(db_key, properties, "kintone", required=required)
+        return owners, handled
 
     def _to_kintone_payload(
         self, properties: dict[str, Any], db_key: str | None
@@ -141,7 +155,9 @@ class KintoneSyncTarget(SyncTarget):
         `src/sync_engine/outbound_field_mapping.py`。
         """
         payload, unmapped = translate_properties(kintone_outbound_field_names(), db_key, properties, _choice_value)
-        unmapped = sorted(set(unmapped) - _memo_choices(db_key, properties).keys())
+        owners, handled = self._owner_payload(db_key, properties)
+        payload.update(owners)
+        unmapped = sorted(set(unmapped) - _memo_choices(db_key, properties).keys() - handled)
         if unmapped:
             logger.warning(
                 "KintoneSyncTarget: kintone側のフィールドコードが特定できないため送信しません "

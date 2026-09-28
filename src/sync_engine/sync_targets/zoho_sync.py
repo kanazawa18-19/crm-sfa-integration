@@ -12,6 +12,7 @@ import os
 from typing import Any, Protocol
 
 from src.db_schema.base import Tool
+from src.sync_engine.owner_mapping import owner_payload
 from src.sync_engine.decided_choices import CONTROLLERS, choices, merge_choice_memo, replace_memo_body
 from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 from src.sync_engine.outbound_value_mapping import translate_choice_value
@@ -148,7 +149,19 @@ class ZohoSyncTarget(SyncTarget):
         _payload, unmapped = translate_properties(
             zoho_outbound_field_names(), db_key, properties, translate_choice_value
         )
-        return frozenset(unmapped)
+        _, handled = self._owner_payload(db_key, properties)
+        return frozenset(set(unmapped) - handled)
+
+    def _owner_payload(self, db_key, properties):
+        owners, handled = owner_payload(db_key, properties, "zoho")
+        if owners.get('Owner', 'not_sent') is None:
+            from src.sync_engine.owner_mapping import zoho_owner_required
+            try:
+                required = zoho_owner_required(self._client, self._module)
+            except Exception:
+                return {}, set()
+            return owner_payload(db_key, properties, "zoho", required=required)
+        return owners, handled
 
     def _to_zoho_payload(
         self, properties: dict[str, Any], db_key: str | None
@@ -166,6 +179,9 @@ class ZohoSyncTarget(SyncTarget):
         payload, unmapped = translate_properties(
             zoho_outbound_field_names(), db_key, properties, translate_choice_value
         )
+        owners, handled = self._owner_payload(db_key, properties)
+        payload.update(owners)
+        unmapped = sorted(set(unmapped) - handled)
         if unmapped:
             logger.warning(
                 "ZohoSyncTarget: Zoho側の項目が特定できないため送信しません "

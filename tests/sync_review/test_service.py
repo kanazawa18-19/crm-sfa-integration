@@ -157,3 +157,14 @@ def test_other_tool_snapshot_does_not_prove_delete_intent(setup, tool):
     event = replace(event, source_tool=tool)
     assert service.filter_properties(event, mapping, [(prop.name, prop, '')], observe_source=False) == ([], [])
     assert journal.rows == {}
+
+
+def test_owner_blank_does_not_create_unexecutable_delete_review():
+    journal = MemoryJournal()
+    service = FieldReviewService(journal, {})
+    mapping = IdMapping('page', 'project', zoho_id='z')
+    prop = get_schema('project').get_property('担当メンバー')
+    event = SyncEvent(Tool.NOTION, 'project', 'page', datetime.now(timezone.utc), properties={prop.name: []})
+    allowed, held = service.filter_properties(event, mapping, [(prop.name, prop, [])])
+    assert allowed == [] and held == [prop.name]
+    assert journal.rows == {}

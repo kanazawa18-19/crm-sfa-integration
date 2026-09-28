@@ -2275,3 +2275,20 @@ def test_real_review_service_does_not_raise_request_for_unproven_notion_blank(st
     dispatcher.dispatch(event)
     journal.enqueue.assert_not_called()
     assert targets[Tool.NOTION].upsert_calls == [('CLI-001', {'取引先名': '新しい会社'})]
+
+
+def test_external_single_owner_does_not_reduce_notion_multiple(monkeypatch):
+    import json
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified': True, 'users': [
+        {'notion_id': 'a', 'zoho_id': '1', 'enabled': True},
+        {'notion_id': 'b', 'zoho_id': '2', 'enabled': True}]}))
+    store = SQLiteIdMappingStore()
+    store.upsert(IdMapping('owner-page', 'project', zoho_id='1'))
+    notion = FakeSyncTarget(Tool.NOTION, {'owner-page': {'担当メンバー': ['a', 'b']}})
+    notes = []
+    dispatcher = Dispatcher(store, {Tool.NOTION: notion}, note_writer=lambda event, mapping: notes.append(event.sync_notes))
+    result = dispatcher.dispatch(SyncEvent(Tool.ZOHO, 'project', '1', datetime.now(timezone.utc),
+                                          properties={'担当メンバー': ['a']}))
+    assert notion.upsert_calls == []
+    assert result.properties[0].skipped_tools
+    assert notes and any('担当メンバー' in key for key in notes[0])

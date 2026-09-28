@@ -139,7 +139,15 @@ def _resolve_client_master_for_kintone_action(client_name: Any) -> Any:
 # うち、リレーション解決が不要なもののみ（src/migration/project_mapping.py参照）。
 # キーは実フィールドコード（2026-08-14、GET /k/v1/app/form/fields.json?app=<project>で検証済み。
 # コメントのラベルは検証時点の表示ラベル）。
+def _mapped_owner(value):
+    from src.sync_engine.owner_mapping import owner_from_external, UNRESOLVED_OWNER
+    result = owner_from_external(value, 'kintone')
+    return SKIP_FIELD if result is UNRESOLVED_OWNER else result
+
+
 _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "日付": ("契約予定日", normalize_date),
+    "日付_0": ("作成日", normalize_date),
     "リンク_0": ("メールアドレス", lambda v: v if isinstance(v, str) and v else SKIP_FIELD),
     "リンク": ("電話番号", lambda v: v if isinstance(v, str) and v else SKIP_FIELD),
     "ドロップダウン_2": ("営業ステータス", normalize_project_status),  # ラベル: 契約進捗状況
@@ -156,6 +164,7 @@ _PROJECT_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any
     "初期費用": ("初期費用", lambda v: float(v) if v not in (None, "") else None),  # ラベル: 提案料金（イニシャル）
     # Q024: 案件名と同義。名前から取引先relationを再解決すると、
     # 案件名の往復同期だけで取引先を別の会社へ付け替えてしまう。
+    "営業担当者": ("担当メンバー", lambda v: _mapped_owner(v)),
     "店舗名": ("案件名", lambda v: v if isinstance(v, str) and v.strip() else SKIP_FIELD),
 }
 

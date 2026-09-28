@@ -31,6 +31,16 @@ PRODUCT_SCHEMA = DatabaseSchema(
     spreadsheet_sheet_name="サービス・商品",
     notion_database_id="3b4d8ea8-d4f3-80ed-a431-c2e4f5561fd6",
     properties=(
+        PropertyDefinition(name='商品カテゴリー', property_type=PropertyType.SELECT,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.ALL_TOOLS,
+            description="外部登録の専用入力。既存値から推測して補完しない",
+            options=('リピッテホテル', 'メイリー', 'alt', 'フルスコ', 'ILCA', 'ホテルラボ （スタンダード）', 'LevGo（RED運用代行）', 'LevGo（Instagram運用代行）', 'ホテルラボ（ライト＋）', 'ホテルラボ レセプション（電話）', 'WEB制作（楽天CP含む）', 'LevGo（SEO運用代行）', 'ホテルラボRM', 'ホテルラボ（ライト）', 'ホテルラボ レビュー', 'LevGo（Meta広告）', 'ホテルラボ レセプション（メッセージ）', 'LevGo（LINE運用代行）', 'LevGo（MEO運用代行）', 'その他'),
+        ),
+        PropertyDefinition(name='先方担当者', property_type=PropertyType.RELATION,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.ALL_TOOLS,
+            description="外部登録の専用入力。既存値から推測して補完しない",
+            relation_target='contact',
+        ),
         PropertyDefinition(
             name="名前",
             property_type=PropertyType.TITLE,

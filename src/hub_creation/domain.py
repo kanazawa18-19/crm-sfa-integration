@@ -71,6 +71,25 @@ def sheet_properties(db_key: str, values: Mapping[str, Any]) -> dict[str, Any]:
         elif kind in (PropertyType.SELECT, PropertyType.STATUS):
             if value not in prop.options:
                 raise CreationHeld("選択肢の対応確認が必要です: " + prop.name)
+        elif kind in {PropertyType.MULTI_SELECT, PropertyType.RELATION, PropertyType.USER}:
+            import json
+            import uuid
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value) if value.lstrip().startswith('[') else [value]
+                except ValueError:
+                    raise CreationHeld('配列の形式を確認してください: ' + prop.name) from None
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise CreationHeld('選択値またはIDの配列が必要です: ' + prop.name)
+            if kind is PropertyType.MULTI_SELECT:
+                if any(item not in prop.options for item in value):
+                    raise CreationHeld('選択肢の対応確認が必要です: ' + prop.name)
+            else:
+                try:
+                    value = [str(uuid.UUID(item)) for item in value]
+                except ValueError:
+                    raise CreationHeld('名前ではなくNotionのIDを入力してください: ' + prop.name) from None
+            value = list(dict.fromkeys(value))
         elif kind == PropertyType.CHECKBOX and isinstance(value, bool):
             pass
         elif kind == PropertyType.DATE:

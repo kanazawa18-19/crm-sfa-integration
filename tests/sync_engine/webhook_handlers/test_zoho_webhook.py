@@ -284,10 +284,8 @@ def test_zoho_payload_to_sync_events_date_field_is_normalized() -> None:
     assert events[0].properties == {"失注日": "2024-05-10"}
 
 
-def test_zoho_payload_to_sync_events_closing_date_maps_to_same_property_as_contract_date() -> None:
-    """Zoho標準フィールド「完了予定日」（Closing_Date）は、カスタムフィールド
-    「契約日 / 予想契約日」（field50）と同じNotionプロパティへ同期する
-    （2026-08-12、金沢さん確認済みの方針）。"""
+def test_zoho_payload_to_sync_events_closing_date_keeps_dedicated_property() -> None:
+    """完了予定日は専用欄で保持し、契約日を上書きしない。"""
     payload = _payload(
         affected_values=[
             {"record_id": DEFAULT_RECORD_ID, "values": {"Closing_Date": "2026-08-21"}}
@@ -296,7 +294,7 @@ def test_zoho_payload_to_sync_events_closing_date_maps_to_same_property_as_contr
 
     events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)
 
-    assert events[0].properties == {"契約日 / 予想契約日": "2026-08-21"}
+    assert events[0].properties == {"完了予定日": "2026-08-21"}
 
 
 def test_zoho_payload_to_sync_events_boolean_fields_are_parsed_from_string() -> None:
@@ -917,7 +915,7 @@ def test_zoho_payload_to_sync_events_product_deliberately_excluded_field_is_skip
         events = zoho_payload_to_sync_events(payload, {}, module_to_db_key=PRODUCT_MODULE_MAP)
 
     assert events[0].properties == {}
-    assert any("Product_Category" in record.getMessage() for record in caplog.records)
+    # 実在しない選択肢は専用欄にも推測して登録しない。
 
 
 def test_zoho_payload_to_sync_events_converts_server_time_epoch_millis_to_utc_datetime() -> None:
@@ -1290,3 +1288,20 @@ def test_empty_memo_body_retains_delete_request_without_deleting_saved_choices()
     event = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)[0]
     assert event.clear_requests['メモ'] is None
     assert 'メモ' not in event.properties
+
+
+def test_unresolved_owner_is_held_with_safe_warning(monkeypatch):
+    from src.sync_engine.sync_notes import render_notes, CHOICES
+    monkeypatch.delenv('CRM_USER_MAPPING_JSON', raising=False)
+    payload = _payload(affected_values=[{'record_id': DEFAULT_RECORD_ID, 'values': {
+        'Owner': {'id': '123', 'name': '担当サンプル', 'email': 'private@example.invalid'}}}])
+    events = zoho_payload_to_sync_events(payload, {})
+    assert len(events) == 1
+    assert '担当メンバー' not in events[0].properties
+    text = render_notes(events[0].sync_notes)
+    assert '担当サンプル' in text and 'private@example.invalid' not in text
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified': True,
+        'users': [{'notion_id': 'user', 'zoho_id': '123', 'enabled': True}]}))
+    resolved = zoho_payload_to_sync_events(payload, {})[0]
+    assert resolved.properties['担当メンバー'] == ['user']
+    assert resolved.sync_notes[f'{CHOICES}|zoho:担当メンバー'] == ''

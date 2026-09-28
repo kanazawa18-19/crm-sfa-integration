@@ -30,7 +30,14 @@ class ApprovedFieldWriter:
             if is_blank(value):
                 result[tool] = value
             elif Tool(tool) is Tool.KINTONE:
-                result[tool] = [] if isinstance(value, list) else ''
+                if row['dbKey'] == 'project' and prop.name == '担当メンバー':
+                    from src.sync_engine.owner_mapping import owner_to_external, UNRESOLVED_OWNER
+                    fallback = owner_to_external([], 'kintone', required=True)
+                    if fallback is UNRESOLVED_OWNER:
+                        raise ReviewConflict('必須担当者の代替対応が未確認です')
+                    result[tool] = fallback
+                else:
+                    result[tool] = [] if isinstance(value, list) else ''
             elif Tool(tool) is Tool.SPREADSHEET:
                 result[tool] = ''
             elif Tool(tool) is Tool.NOTION:
