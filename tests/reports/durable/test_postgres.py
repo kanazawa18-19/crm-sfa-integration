@@ -57,3 +57,26 @@ def test_successful_collection_resets_consecutive_failure_count(report):
     report.error(day, '合成取得失敗')
     assert report.get(day)['retryCount'] == 1
     assert report.get(day)['phase'] == 'project'
+
+
+def test_missing_dates_are_visible_but_never_sent_automatically(report):
+    report.finish(date(2026,9,28))
+    report.ensure(date(2026,9,30), datetime(2026,9,30,10,tzinfo=timezone.utc))
+    report.detect_missing_dates(date(2026,10,1))
+    report.detect_missing_dates(date(2026,10,1))
+    assert report.get(date(2026,9,29))['phase'] == 'held'
+    assert report.get(date(2026,9,29))['error'].startswith('当日の収集')
+    assert report.next_job()['reportDate'] == date(2026,9,30)
+    assert report.get(date(2026,9,27)) is None
+    assert report.get(date(2026,10,1)) is None
+
+
+def test_missing_date_detection_is_bounded_and_does_not_backfill_initial_install(report):
+    with connect() as conn:
+        conn.execute('DELETE FROM "ReportCollection"')
+    report.detect_missing_dates(date(2026,9,28))
+    assert report.next_job() is None
+    report.ensure(date(2026,9,1), datetime(2026,9,1,10,tzinfo=timezone.utc))
+    report.detect_missing_dates(date(2026,9,28))
+    assert report.get(date(2026,9,20)) is None
+    assert report.get(date(2026,9,21))['phase'] == 'held'

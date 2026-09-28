@@ -27,10 +27,14 @@ class MergeJournal:
         operation_id = str(uuid.uuid4())
         with connect() as conn:
             require_manager(conn, actor_id)
-            conn.execute('''INSERT INTO "RecordMergeJob"
+            created = conn.execute('''INSERT INTO "RecordMergeJob"
                 (id,"dbKey","sourceId","targetId",snapshot,steps,"planHash","actorId")
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)''', (operation_id, snapshot['dbKey'],
-                snapshot['sourceId'], snapshot['targetId'], Jsonb(snapshot), Jsonb(steps), plan_hash, actor_id))
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT ("dbKey","sourceId") WHERE state NOT IN ('dismissed','done','abandoned')
+                DO NOTHING RETURNING id''', (operation_id, snapshot['dbKey'],
+                snapshot['sourceId'], snapshot['targetId'], Jsonb(snapshot), Jsonb(steps), plan_hash, actor_id)).fetchone()
+            if created is None:
+                raise MergeHeld('同じ統合元の準備が残っています。一覧から既存の準備を見送るか再開してください')
             history(conn, actor_id, operation_id, {}, {'state': 'draft', 'planHash': plan_hash})
         return self.get_authorized(operation_id, actor_id)
 

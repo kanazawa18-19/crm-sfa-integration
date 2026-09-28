@@ -4,6 +4,18 @@ from src.sync_operations.product_holds import connect
 
 
 class ReportJournal:
+    def detect_missing_dates(self, today):
+        # 運用開始後の直近7日だけ検出。当時のデータは再現できないため自動配信しない。
+        with connect() as conn:
+            conn.execute('''INSERT INTO "ReportCollection" ("reportDate",cutoff,phase,error)
+                SELECT missing::date, missing AT TIME ZONE 'Asia/Tokyo', 'held',
+                    '当日の収集が開始されていません。過去の実データと送達を確認してください（自動配信なし）'
+                FROM generate_series(
+                    GREATEST((SELECT min("reportDate") + 1 FROM "ReportCollection"), %s::date - 7),
+                    %s::date - 1, interval '1 day') AS missing
+                WHERE EXISTS (SELECT 1 FROM "ReportCollection")
+                ON CONFLICT DO NOTHING''', (today, today))
+
     def ensure(self, report_date, cutoff):
         with connect() as conn:
             conn.execute('INSERT INTO "ReportCollection" ("reportDate",cutoff) VALUES (%s,%s) ON CONFLICT DO NOTHING', (report_date, cutoff))

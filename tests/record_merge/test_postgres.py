@@ -59,6 +59,15 @@ def test_manager_only_and_all_steps_required_before_aliases(local):
         assert conn.execute('SELECT COUNT(*) AS n FROM "SyncOperationHistory"').fetchone()['n'] == 5
 
 
+def test_repeated_prepare_reports_existing_draft_without_duplicate_history(local):
+    job = prepare(local)
+    with pytest.raises(MergeHeld, match='既存の準備'):
+        local.create(job['snapshot'], job['steps'], 'manager')
+    with connect() as conn:
+        assert conn.execute('SELECT COUNT(*) AS n FROM "RecordMergeJob"').fetchone()['n'] == 1
+        assert conn.execute('SELECT COUNT(*) AS n FROM "SyncOperationHistory"').fetchone()['n'] == 2
+
+
 def test_history_failure_rolls_back_aliases_and_completion(local):
     job = prepare(local)
     local.complete_step(job['id'], 0, 'manager', None)

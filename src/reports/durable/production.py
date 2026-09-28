@@ -54,6 +54,7 @@ def run_durable_report_batch(*, start_today=True):
     local = now.astimezone(timezone(timedelta(hours=9)))
     try:
         with acquire_record_sync_lock(None, 'report', 'daily-weekly-batch'):
+            journal.detect_missing_dates(local.date())
             if start_today and local.hour >= 19:
                 journal.ensure(local.date(), now)
             job = journal.next_job()
