@@ -178,6 +178,7 @@ def kintone_payload_to_sync_event(
         name: record[code].get("value") for code, name in note_names.items() if code in record
     })
     properties: dict[str, Any] = {}
+    clear_requests = {}
     # kintone_action_record_context(): db_key="action"の"client_name"（取引先マスター
     # リレーション解決）がRelationReviewQueueへの記録に使うレコードIDを暗黙に伝播させる
     # （kintone_field_transforms.pyのモジュールdocstring参照）。他db_key/フィールドは
@@ -196,6 +197,14 @@ def kintone_payload_to_sync_event(
                 )
                 continue
             notion_property, transform = mapped
+            from src.db_schema.registry import get_schema
+            from src.db_schema.base import PropertyType
+            try:
+                prop = get_schema(db_key).get_property(notion_property)
+            except KeyError:
+                prop = None
+            if field.get("value") in (None, "", [], {}) and (prop is None or prop.property_type is not PropertyType.CHECKBOX):
+                clear_requests[notion_property] = None
             try:
                 value = transform(field["value"])
             except Exception:
@@ -241,6 +250,7 @@ def kintone_payload_to_sync_event(
             )
 
     return SyncEvent(
+        clear_requests=clear_requests,
         sync_notes=sync_notes,
         source_tool=Tool.KINTONE,
         db_key=db_key,

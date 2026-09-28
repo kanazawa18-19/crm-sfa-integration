@@ -826,3 +826,47 @@ model ProjectProductLinkDelivery {
 
   @@id([projectId, dbKey, notionId])
 }
+
+// 空欄削除の二段階承認。元値と実行進捗は完了後も保持する。
+model SyncFieldReview {
+  id           String   @id
+  dbKey        String
+  notionKey    String
+  propertyName String
+  sourceTool   String
+  eventAt      DateTime @db.Timestamptz
+  snapshot     Json
+  snapshotHash String
+  state        String   @default("pending")
+  revision     Int      @default(0)
+  progress     Json     @default("{}")
+  lastError    String?
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @default(now()) @db.Timestamptz
+  history      SyncFieldReviewHistory[]
+
+  @@unique([dbKey, notionKey, propertyName, sourceTool, eventAt])
+  @@index([state, createdAt], map: "SyncFieldReview_state_idx")
+  @@index([dbKey, notionKey, propertyName], map: "SyncFieldReview_record_idx")
+}
+
+model SyncFieldReviewHistory {
+  id        BigInt   @id @default(autoincrement())
+  reviewId  String
+  actorId   String
+  action    String
+  snapshot  Json?
+  revision  Int
+  createdAt DateTime @default(now()) @db.Timestamptz
+  review    SyncFieldReview @relation(fields: [reviewId], references: [id])
+}
+
+model SyncSourceObservation {
+  dbKey String
+  notionKey String
+  sourceTool String
+  values Json @default("{}")
+  eventAt DateTime @db.Timestamptz
+
+  @@id([dbKey, notionKey, sourceTool])
+}

@@ -148,6 +148,7 @@ class PropertyDispatchResult:
     skipped_tools: frozenset[Tool] = field(default_factory=frozenset)
     related_db_key: str | None = None
     related_notion_key: str | None = None
+    review_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -282,7 +283,9 @@ class Dispatcher:
         note_writer: Callable[[SyncEvent, IdMapping], None] | None = None,
         new_record_guard: Callable[[SyncEvent, dict[str, Any]], bool] | None = None,
         project_linker: Callable[[IdMapping], tuple[PropertyDispatchResult, ...]] | None = None,
+        field_review=None,
     ) -> None:
+        self._field_review = field_review
         self._project_linker = project_linker
         self._note_writer = note_writer
         self._new_record_guard = new_record_guard
@@ -362,7 +365,8 @@ class Dispatcher:
         # つまり**シートの行作成だけを best-effort に落としている**。黙って落とすのではなく、
         # `skipped_tools`に載せて`SkipTrackingDispatcher`経由でSlackにも上げる。
         prepared: list[tuple[str, Any, Any]] = []
-        for property_name, new_value in event.properties.items():
+        incoming_properties = ({**event.properties, **event.clear_requests} if self._field_review is not None else event.properties)
+        for property_name, new_value in incoming_properties.items():
             try:
                 prop = schema.get_property(property_name)
             except KeyError:
@@ -377,6 +381,13 @@ class Dispatcher:
                 )
                 continue
             prepared.append((property_name, prop, new_value))
+
+        held_results = []
+        if self._field_review is not None:
+            prepared, held = self._field_review.filter_properties(event, mapping, prepared)
+            held_results = [PropertyDispatchResult(name, None, skipped_tools=frozenset(
+                tool for tool in target_tools if schema.get_property(name).should_sync_to(tool)
+            ), review_pending=True) for name in held]
 
         if event.source_tool is Tool.NOTION:
             # Notionは常にマスターであり、Notion発の変更に競合判定は不要。
@@ -418,7 +429,7 @@ class Dispatcher:
             results.extend(self._link_project(mapping))
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
-            return DispatchResult(skipped=False, properties=tuple(results))
+            return DispatchResult(skipped=False, properties=tuple(results + held_results))
 
         if not prepared:
             # 実処理の対象プロパティが1つも無い（全てスキーマ未定義だった）場合は、
@@ -429,7 +440,7 @@ class Dispatcher:
             related = self._link_project(mapping)
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
-            return DispatchResult(skipped=False, properties=related)
+            return DispatchResult(skipped=False, properties=tuple(held_results) + related)
 
         # --- フェーズ2: 現在値の取得（ここまでで書き込みは1件も行っていない） ---
         # 5. 送信元がNotion以外の場合は、sync_scope対象の全ツールの現在値を集めて
@@ -581,6 +592,20 @@ class Dispatcher:
                 detected_at=event.occurred_at,
             )
 
+            if self._field_review is not None:
+                from src.sync_review.domain import is_blank
+                if is_blank(resolution.resolved_value) and resolution.action is not ResolutionAction.NO_OP:
+                    source = max((candidate for candidate in candidates if is_blank(candidate.value)),
+                                 key=lambda candidate: candidate.updated_at)
+                    blank_event = dataclasses.replace(event, source_tool=source.tool)
+                    _, held = self._field_review.filter_properties(blank_event, mapping, [(property_name, prop, source.value)], observe_source=False)
+                    if held:
+                        held_results.append(PropertyDispatchResult(property_name, resolution, skipped_tools=other_tools, review_pending=True))
+                        continue
+                    # 削除意図不明の空欄は採用せず、実値の比較と配送先は残す。
+                    resolution = resolve_conflict(mapping.notion_key, property_name, candidates,
+                        db_key=event.db_key, detected_at=event.occurred_at, allow_delete=False)
+
             if resolution.action is ResolutionAction.NO_OP:
                 no_op_results[property_name] = PropertyDispatchResult(
                     property_name=property_name, resolution=resolution
@@ -650,7 +675,7 @@ class Dispatcher:
             results.extend(self._link_project(mapping))
         guard.advance(event.occurred_at)
         self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
-        return DispatchResult(skipped=False, properties=tuple(results))
+        return DispatchResult(skipped=False, properties=tuple(results + held_results))
 
     def _enqueue_project_link(self, mapping: IdMapping) -> None:
         if mapping.db_key == "project" and self._project_linker is not None:

@@ -219,6 +219,7 @@ def zoho_payload_to_sync_events(
             )
         sync_notes = gap_notes(Tool.ZOHO, db_key, note_values)
         properties: dict[str, Any] = {}
+        clear_requests = {}
         # zoho_action_relation_context(): db_key="action"の「取引先」（field6）/
         # 「【Notion】取引先マスター」（field22）変更（取引先マスターリレーション自動解決）が、
         # 当該レコードの変更差分全体・レコードID・Zoho APIクライアントを暗黙に参照できるよう
@@ -260,6 +261,20 @@ def zoho_payload_to_sync_events(
                         )
                         continue
                     notion_property, transform = mapped
+                    from src.db_schema.base import PropertyType
+                    try:
+                        prop = get_schema(db_key).get_property(notion_property)
+                    except KeyError:
+                        prop = None
+                    if value in (None, "", [], {}) and (prop is None or prop.property_type is not PropertyType.CHECKBOX):
+                        clear_requests[notion_property] = None
+                    elif db_key == 'project' and notion_property == 'メモ':
+                        from src.sync_engine.decided_choices import split_controller_memo
+                        try:
+                            if not split_controller_memo(value)[0]:
+                                clear_requests[notion_property] = None
+                        except ValueError:
+                            pass
                     try:
                         transformed_value = transform(value)
                     except Exception:
@@ -328,6 +343,7 @@ def zoho_payload_to_sync_events(
 
         events.append(
             SyncEvent(
+                clear_requests=clear_requests,
                 sync_notes=sync_notes,
                 source_tool=Tool.ZOHO,
                 db_key=db_key,

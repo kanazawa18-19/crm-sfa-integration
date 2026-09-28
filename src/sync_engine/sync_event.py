@@ -29,3 +29,5 @@ class SyncEvent:
     source_notion_key: str | None = None
     sync_notes: dict[str, str] = field(default_factory=dict)
     registration_key: str | None = None
+    # 通常変換で抑止する空欄も、承認経路にだけ渡す。
+    clear_requests: dict[str, Any] = field(default_factory=dict)

@@ -1273,3 +1273,20 @@ def test_handler_succeeds_when_body_token_matches(monkeypatch: pytest.MonkeyPatc
     response = handler(event, context=None)
 
     assert response["statusCode"] == 200
+
+
+def test_empty_controller_retains_delete_request_for_approval():
+    from src.sync_engine.decided_choices import merge_choice_memo
+    memo = merge_choice_memo('本文', 'サイトコントローラー', ['リンカーン', 'ねっぱん'], limit=2000)
+    payload = _payload(affected_values=[{'record_id': DEFAULT_RECORD_ID, 'values': {'field20': '', 'field70': memo}}])
+    event = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)[0]
+    assert event.clear_requests['サイトコントローラー'] is None
+
+
+def test_empty_memo_body_retains_delete_request_without_deleting_saved_choices():
+    from src.sync_engine.decided_choices import merge_choice_memo
+    memo = merge_choice_memo('', 'サイトコントローラー', ['リンカーン', 'ねっぱん'], limit=2000)
+    payload = _payload(affected_values=[{'record_id': DEFAULT_RECORD_ID, 'values': {'field70': memo}}])
+    event = zoho_payload_to_sync_events(payload, {}, module_to_db_key=MODULE_MAP)[0]
+    assert event.clear_requests['メモ'] is None
+    assert 'メモ' not in event.properties

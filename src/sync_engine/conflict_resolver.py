@@ -152,6 +152,7 @@ def resolve_conflict(
     db_key: str,
     detected_at: datetime,
     important_properties: Mapping[str, frozenset[str]] | None = None,
+    allow_delete: bool = True,
 ) -> ConflictResolution:
     """【コンフリクト判定フロー】をそのまま実装する。
 
@@ -196,8 +197,10 @@ def resolve_conflict(
     #    優先し（WARN2対応）、Notionが候補に含まれない場合はTool.valueの昇順という
     #    決定的なキーで選ぶ（WARN1対応。呼び出し側のリスト順序やfrozenset由来の
     #    非決定的なイテレーション順には依存しない）。
-    latest_time = max(c.updated_at for c in candidates)
-    latest_candidates = [c for c in candidates if c.updated_at == latest_time]
+    # 削除意図を確認できない空欄は採用しない。配送先の比較には実値を残す。
+    eligible = candidates if allow_delete or not nonempty else nonempty
+    latest_time = max(c.updated_at for c in eligible)
+    latest_candidates = [c for c in eligible if c.updated_at == latest_time]
     nonempty_latest = [c for c in latest_candidates if not _is_empty(c.value)]
     tied = nonempty_latest if nonempty_latest else latest_candidates
     latest = _pick_tie_break_winner(tied)

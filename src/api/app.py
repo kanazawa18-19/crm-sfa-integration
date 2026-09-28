@@ -63,6 +63,7 @@ from src.api.routes.bulk_email import router as bulk_email_router
 from src.api.routes.facility_list import router as facility_list_router
 from src.api.routes.cron import router as cron_router
 from src.api.routes.diagnostics import router as diagnostics_router
+from src.api.routes.sync_review import router as sync_review_router
 from src.api.routes.webhooks import router as webhooks_router
 from src.sync_engine.production_wiring import ProductionSyncWiring
 from src.sync_engine.webhook_handlers.gmail_push_webhook import (
@@ -178,6 +179,7 @@ app.include_router(cron_router)
 
 # 外部連携の疎通診断（読み取りのみ）。ダッシュボードAPIトークンで保護する。
 app.include_router(diagnostics_router)
+app.include_router(sync_review_router)
 
 # 一斉配信（2026-09-03）。今はプレビューのみで、送信のエンドポイントは無い
 # （src/api/routes/bulk_email.pyのdocstring参照）。

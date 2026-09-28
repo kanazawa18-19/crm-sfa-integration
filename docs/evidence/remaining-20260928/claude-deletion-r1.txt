@@ -1,0 +1,38 @@
+判定：BLOCKERが2件あります。どちらも「通常同期は当該項目だけ保留し、他項目は継続する」という要件に直接反します。承認・権限・版検査・再開の設計は、前提とされた限界（Notion/Sheetsに原子的CASがない）の範囲で妥当と判断します。
+
+区分	箇所	欠陥と具体例	修正案
+BLOCKER-1	kintone_webhook の clear_requests と filter_properties	kintoneのWebhookは変更項目だけでなくレコード全体を送ります。そのため「今回空欄にされた」と「元から空欄」を区別できません。例えば案件のkintone側で次回アクション日が未入力で、Notionには値がある場合を考えます。kintoneで別の項目を編集しただけで、次回アクション日の削除申請が作られます。以後、Notion→kintoneのその項目は、承認されるまで保留され続けます。新しく写像したドロップダウン_4など、kintone側が未補完の項目は全件がこの状態になり、一覧が詰まり、held_resultsのSlack通知も毎回出ます	空欄を削除申請として扱う条件に、「そのツールの直前の既知値が非空欄だった」ことを加える。直前値は、最後に配送・受信した値を項目単位で記録して判定する。既知値がない場合は申請を作らず、通常どおりSKIPする
+BLOCKER-2	FieldReviewService.snapshot	try で囲まれているのは _read_record だけで、enrich_record、companion、canonical_value の ReviewConflict／ValueError は外に漏れます。例：Zohoのfield70の保存枠を利用者がコピーして二重にする、またはkintoneの保存枠に選択肢外の文字を書く。すると、そのレコードで空欄を含むイベントが来るたびに filter_properties が例外になります。その結果、同じイベントの他項目の同期も全て失敗し、Webhookが再試行されても同じく失敗し続けます	ツール単位で try を広げ、例外時は {"supported": False, "error": 型名} として当該項目だけを保留する
+WARN-1	filter_properties の「全て空欄」判定	Zoho のメモについて、生の value で判定しています。例：Notionのメモが空欄で、Zohoのfield70には保存枠しかない場合、実質全て空欄なのに削除申請が作られます。承認しても書込みが発生しないだけの空の申請になります	メモは canonical で判定する（送信元の判定と揃える）
+WARN-2	kintone の clear_requests	生の値が [] なら無条件で None に上書きしています。kintoneのチェックボックスをNotionのチェックボックスへ写像している場合、未チェックの [] は False として同期されるべきなのに削除申請になります。承認すると、Notionのチェックボックスへ None を書きに行きます	写像先がチェックボックスや数値の項目は clear_requests の対象外にする
+WARN-3	kept_blank の扱い	kept_blank は journal 上は有効な状態のままです。一方で画面では closedStates に入っているため処理待ち一覧に出ず、操作ボタンもありません。元ツールで再入力する以外に解除する方法がないため、Notion側の編集は永続的に保留されます	履歴画面に「保留を解除」操作（二段階承認付き）を追加するか、処理待ち一覧に残す
+WARN-4	companion_plan（Zohoへの復元）	merge_choice_memo の上限が65535になっていますが、Zohoのfield70は2000字です。本文が長い案件でサイトコントローラーを復元すると、配送時の422で初めて失敗が分かります	書込み先ツールの上限（Zohoは2000）で plan の段階で検査し、ReviewConflict にする
+INFO-1	routes の recheck	権限の再確認（journal.decision）より前に、外部4ツールを読み取っています。token と Next 側の検査があるため実害は小さいものの、順序が逆です	先に actor の isManager を確認してから snapshot を取る
+INFO-2	dispatcher の競合経路	blank_event の eventAt が、空欄側の更新時刻ではなく、きっかけになったイベントの時刻になっています	候補の updated_at を使う
+INFO-3	SyncFieldReview／History	snapshot にメモ本文などの全文が期限なく残り、History にも複製されます。History の reviewId にはインデックスがありません	保存期間を決める。@@index([reviewId]) を追加する
+INFO-4	Next route	プロキシ配下で host ヘッダーが内部名になると、正規の操作が403になります（安全側に倒れる挙動ではあります）	配備環境で Origin と host の実値を確認する
+
+設計上問題ないと確認した点は次のとおりです。
+
+decide は revision の一致と遷移表で制御されており、confirm を飛ばして approved に至る経路はありません。
+権限は Next（DB上の isManager）、共通 token、backend（actor_id の DB再確認）の三重で確認されています。
+配送は 'writing' の記録→実書込み→再読取で確認→'done' の順で、中断後も実際の値で再開できます。
+Zoho は If-Unmodified-Since、kintone は revision を使っています。Notion/Sheets は直前再読取とレコードロックで対応しており、前提どおりの限界内です。
+保存枠の書換えは項目別の split_block で行われ、他項目の枠を保持します。
+
+
+
+
+
+2 分前
+
+メッセージを入力…
+
+
+
+
+
+
+
+Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。
+Opus 5.5 中

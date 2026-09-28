@@ -387,6 +387,14 @@ def _normalize_fetched_page(
         }
         for name in guarded.get(parent.get("database_id"), ()):
             properties.pop(name, None)
+        # 変更項目が不明な全件通知の空欄は、今回削除した値とは断定できない。
+        from src.sync_review.domain import is_blank
+        for name, raw_value in list(properties.items()):
+            try:
+                if is_blank(parse_notion_property_value(raw_value)):
+                    properties.pop(name, None)
+            except (ValueError, TypeError, KeyError):
+                continue
     return {
         "page_id": page["id"],
         "database_id": parent.get("database_id"),

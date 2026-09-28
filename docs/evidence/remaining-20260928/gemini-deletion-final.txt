@@ -1,0 +1,31 @@
+提示された最終差分およびテストコードを点検しました。
+
+現在、コードベースに BLOCKER（重大な不具合）および WARN（潜在的な障害リスク）はともに 0件（検出なし） です。
+
+点検内容の確認
+
+削除意図未検証時の競合再解決（conflict_resolver.py / dispatcher.py）
+
+allow_delete=False の指定により、全候補の中に非空候補（nonempty）が存在する場合は空欄を勝者から除外し、非空の値を持つ最新の候補が正しく選出されます。
+
+全候補が空欄の場合（not nonempty）も eligible = candidates となり、max() で ValueError を起こすことなく安全に処理されます。
+
+元の全候補（Notionを含む）を維持して評価するため、Notionが必須である前提や、各ツールへの配送先比較ロジックが欠落しません。
+
+合成イベント（observe_source=False）の非起票（service.py）
+
+他ツールのスナップショットから生成された合成イベントにおいて、observe_source=False 時に空欄項目を allowed / held のどちらにも追加せずスキップ（continue）することで、誤った削除申請（SyncFieldReview）の起票が確実に防がれています。
+
+4ツール回帰テストと挙動
+
+実 FieldReviewService および 4ツール（Notion / Zoho / kintone / SPREADSHEET）を網羅した回帰テストが追加され、意図しない空欄削除の抑止と正常同期がすべて通過しています。
+
+すべての懸念点が解消されており、本番配備（Ready）可能な状態です。
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

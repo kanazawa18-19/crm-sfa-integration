@@ -13,6 +13,7 @@ export type CurrentUser = {
   role: "master" | "editor" | "viewer";
   name: string | null;
   avatarUrl: string | null;
+  isManager?: boolean;
 };
 
 const ROLE_ORDER = { viewer: 0, editor: 1, master: 2 } as const;
@@ -27,7 +28,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   const user = await prisma.user.findUnique({ where: { id: verified.userId } });
   if (!user) return null;
 
-  return { id: user.id, email: user.email, role: user.role, name: user.name, avatarUrl: user.avatarUrl };
+  return { id: user.id, email: user.email, role: user.role, name: user.name, avatarUrl: user.avatarUrl, isManager: user.isManager };
 }
 
 /** Server Component guard — redirects to login if signed out, or throws if the role isn't high enough. */

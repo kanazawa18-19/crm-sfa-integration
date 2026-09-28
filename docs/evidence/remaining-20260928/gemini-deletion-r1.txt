@@ -1,0 +1,59 @@
+独立コードレビュー結果
+【BLOCKER】（重大な不具合・要件不全）
+
+Zoho の「サイトコントローラー」復元元値が常に取得不能（UNAVAILABLE）になる
+
+欠陥: src/sync_review/service.py の canonical_value 関数内で Zoho の サイトコントローラー（field20）の表示値を算出する際、ZOHO_LABEL_FIELD_MAPPINGS 経由で _controller_with_saved_choices を呼び出しています。しかし、この変換関数は Webhook 実行時の _current_zoho_action_relation_context（ContextVar）に依存しており、レビュー時の単独呼び出しでは ContextVar が None となるため常に SKIP_FIELD を返し、結果として UNAVAILABLE が返却されます。
+
+影響: Zoho にサイトコントローラーの値および保存枠（field70）が存在していても、スナップショット生成時に復元不能とみなされ、ダッシュボード上に「却下してZohoの元値へ戻す」ボタンが生成されなくなります。
+
+修正案: canonical_value 内に Zoho サイトコントローラー専用の分岐を追加し、保存枠（field70）と代表値（field20）から直接全選択肢を復元してください。
+
+Python
+if tool is Tool.ZOHO and db_key == 'project' and prop.name == 'サイトコントローラー':
+    from src.sync_engine.decided_choices import controller_from_external
+    return controller_from_external(record.get(field), record.get('field70'))
+
+【WARN】（潜在的なAPIエラー・セキュリティ境界の不備）
+
+companion_plan における Zoho 備考上限（2000文字）の超過見落とし
+
+欠陥: src/sync_review/writer.py の companion_plan 内で merge_choice_memo('', prop.name, value, limit=65535) を一律で呼び出しています。
+
+影響: Zoho の field70 の文字数上限は 2000 文字ですが、65535 を指定しているため、長文メモや多数の選択肢を復元する際に Python 側のチェックを通過し、Zoho API 呼び出し時に 400 エラーが発生して実行状態が failed に落ちます。
+
+修正案: 送信先ツールに応じた上限値を渡すように修正してください。
+
+Python
+limit = 2000 if Tool(tool) is Tool.ZOHO else 65535
+result[tool] = merge_choice_memo('', prop.name, value, limit=limit)
+
+
+Next.js API ルート (route.ts) における Sec-Fetch-Site 判定の漏れ
+
+欠陥: dashboard/app/api/sync-review/route.ts 内の送出元検証で if (!sameHost || site === "cross-site" || site === "same-site") と判定しています。
+
+影響: プロキシ経由や一部ブラウザで Sec-Fetch-Site ヘッダーが付与されない場合（site が null）、上記の条件式を通り抜けてしまいます。
+
+修正案: same-origin 以外（ヘッダーが存在する場合）を明示的に拒否する構造へ変更してください。
+
+TypeScript
+if (!sameHost || (site && site !== "same-origin")) {
+  return NextResponse.json({ detail: "画面を読み直してください" }, { status: 403 });
+}
+
+【INFO】（拡張性・運用上の改善点）
+
+Spreadsheet の表示可能型制限による復元対象の限定
+
+指摘: src/sync_review/service.py の canonical_value で Spreadsheet のサポート対象を PropertyType.TEXT や TITLE など一部の型に限定しているため、数値・日付・選択肢プロパティが空欄化された際、シートからの復元ボタンが生成されません。
+
+改善案: 将来的にシート側からの復元対象を広げる場合は、PropertyType.NUMBER や DATE に対する文字列化・型変換ロジックを追加してください。
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

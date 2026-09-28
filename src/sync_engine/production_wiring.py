@@ -974,6 +974,9 @@ def build_production_dispatcher(
         note_writer=write_notes,
         new_record_guard=pending_hub_creation,
     )
+    from src.sync_review.journal import FieldReviewJournal
+    from src.sync_review.service import FieldReviewService
+    dispatcher._field_review = FieldReviewService(FieldReviewJournal(), targets)
     from src.sync_engine.won_product_link import WonProductLinker
     from src.sync_engine.won_product_link_queue import ProjectProductLinkQueue
     dispatcher._project_linker = WonProductLinker(
@@ -1103,6 +1106,10 @@ class SkipTrackingDispatcher:
         if result.has_partial_skips:
             for prop_result in result.properties:
                 if not prop_result.skipped_tools:
+                    continue
+                if prop_result.review_pending:
+                    # 管理画面に記録された承認待ちを、配送故障として繰り返しDMしない。
+                    logger.info("sync field review pending (db_key=%s property=%s)", event.db_key, prop_result.property_name)
                     continue
                 unexpected = self._unexpected_skips(event, prop_result)
                 if unexpected and self._slack_notifier is not None:

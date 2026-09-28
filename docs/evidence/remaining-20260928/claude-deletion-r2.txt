@@ -1,0 +1,38 @@
+判定：残るBLOCKERは1件です。前回のBLOCKER-1（kintoneの初回空欄）とBLOCKER-2（snapshotの例外）は、提示された方式で解消を確認しました。
+
+区分	箇所	残る不具合と具体例	修正案
+BLOCKER	dispatcher の競合経路と filter_properties(observe_source=False)	observe_source=False にすると、書込み（observe）だけでなく previous の読取りまで止まります。このため、送信元がkintoneの空欄は常に「初回空欄」とみなされて continue になり、held が空のまま呼出側でも continue されます。例：Zohoで次回アクション日に「10/5」を入力。kintoneの同じ案件では、その項目がずっと空欄のまま、別の項目が直後に編集されてレコード更新時刻が新しくなっている。この場合、解決処理は空欄側を採用し、10/5 はNotionにもシートにも配送されません。held_results にも載らないためSlackにも出ず、Zohoの入力が無記録のまま同期から落ちます。previous が非空の場合も、「全て空欄」「値が戻っている」の分岐で同じように無記録で落ちます	読取りと書込みのフラグを分け、競合経路でも previous を読む。review を起票しなかった場合は continue せず、空欄の候補を除いて解決し直す（入力された値を配送する）か、少なくとも held_results に保留として記録する
+WARN-1	kintone_webhook の clear_requests 判定	get_schema().get_property() は、dispatcher では KeyError として扱われています。そのため prop is None の分岐は通らず、写像先がスキーマ未定義の項目が1つでもあると、そのdbのkintone通知すべてがイベント生成時点で例外になります（dispatcher側ではその項目だけを飛ばす設計なのと食い違っています）	try/except KeyError で囲み、未定義の項目は clear_requests の対象外にする
+WARN-2	SyncSourceObservation	migration.sql には追加されていますが、今回の差分では schema.prisma にモデルが追加されていません。この状態で次に prisma migrate dev や db push を実行すると、ずれを検出してこのテーブルを削除するマイグレーションが作られます。観測値が消えると、削除の起票がすべて初回扱いに戻ります	schema.prisma にモデルを追加する（利用しないなら @@ignore を付ける）
+INFO-1	SyncFieldReviewHistory	reviewId のインデックスがまだありません。一覧画面は1件ごとに履歴を最新20件取るため、件数が増えると遅くなります	CREATE INDEX ON "SyncFieldReviewHistory"("reviewId", "createdAt")
+INFO-2	observe_source	Jsonb に kintone の変換後の値をそのまま渡しています。変換結果に date や Decimal が含まれると、起票の後に例外になり、同じ通知が再試行され続けます	観測対象の変換結果がJSON型に限られることをテストで固定する
+INFO-3	Notion発のイベント	Notion通知がページの全プロパティを持ってくる形式の場合、kintoneと同じく「元から空欄」でも起票されます。今回の previous 判定はkintoneだけが対象です	Notionイベントが変更差分のみかどうかを確認する
+
+前回の指摘のうち、次の点は解消を確認しました。
+
+checkbox の [] を False として保持する点
+snapshot の加工時の例外をツール単位で隔離する点（読取り失敗時は source_unavailable として起票され、recheck で再確認できる）
+メモの論理本文での空欄判定
+Zohoのcontrollerの canonical 取得
+kept_blank からの recheck の遷移と、そのボタン表示
+Zohoのfield70に対する2000字の検査（復元時のメモ経路も対象）
+
+CSRFの扱いと保存期間については、方針どおり今回の判定対象外としました。
+
+
+
+
+
+
+2 分前
+
+メッセージを入力…
+
+
+
+
+
+
+
+Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。
+Opus 5.5 中

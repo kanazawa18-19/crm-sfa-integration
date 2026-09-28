@@ -1,0 +1,57 @@
+【BLOCKER】（重大な不具合・クラッシュリスク）
+
+FieldReviewService.filter_properties における AttributeError クラッシュ
+
+対象コード: src/sync_review/service.py (171–173行目)
+
+Python
+if source is None:
+    snapshot[event.source_tool.value] = {'supported': False, 'id': event.external_id,
+                                         'error': 'source_unavailable'}
+
+
+欠陥: SyncEvent (event) オブジェクトには external_id 属性が存在しないため、送信元ツールのレコード取得失敗（source is None）時に AttributeError: 'SyncEvent' object has no attribute 'external_id' が発生し、処理が停止します。
+
+修正案: service.py 先頭で定義されているヘルパー関数 external_id を使用して ID を取得してください。
+
+Python
+if source is None:
+    snapshot[event.source_tool.value] = {'supported': False, 'id': external_id(event.source_tool, mapping),
+                                         'error': 'source_unavailable'}
+
+【WARN】（潜在的な例外ハンドリング不足）
+
+kintone_webhook.py における get_property の KeyError 例外リスク
+
+対象コード: src/sync_engine/webhook_handlers/kintone_webhook.py (200行目)
+
+Python
+prop = get_schema(db_key).get_property(notion_property)
+
+
+欠陥: get_schema(db_key).get_property(...) はプロパティ名が存在しない場合に KeyError を発生させます。未定義プロパティやスキーマ不整合のフィールドが含まれていた場合、Webhook 処理全体が 500 エラーで失敗します。
+
+修正案: properties.get() を使用して安全にプロパティを取得してください。
+
+Python
+prop = get_schema(db_key).properties.get(notion_property)
+if field.get("value") in (None, "", [], {}) and (prop is None or prop.property_type is not PropertyType.CHECKBOX):
+    clear_requests[notion_property] = None
+
+【INFO】（検出タイミングの最適化）
+
+companion_plan での Zoho 2000文字上限検証の早期化
+
+対象コード: src/sync_review/writer.py (52行目)
+
+指摘: _payload_with_companion で Zoho の 2000 文字超えをチェックして ReviewConflict を送出していますが、companion_plan 内では merge_choice_memo('', prop.name, value, limit=65535) と一律 65535 文字上限で計画を生成しています。
+
+改善案: 計画立案の段階（companion_plan）でツールごとの上限文字数（Zoho は 2000文字）を渡すことで、書き込み直前のペイロード構築時ではなく、計画評価の時点で早期検出できるようになります。
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

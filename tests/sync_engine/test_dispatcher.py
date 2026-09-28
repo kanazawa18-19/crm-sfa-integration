@@ -2227,3 +2227,51 @@ def test_new_external_page_note_failure_is_retried_without_creating_again(monkey
     assert store.get(mapping.notion_key).last_synced_at==NOW
     assert len(targets[Tool.NOTION].upsert_calls)==1
     assert calls==["new-id","new-id"]
+
+
+def test_unproven_empty_candidate_does_not_drop_nonempty_source(store, mapping):
+    from unittest.mock import Mock
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(Tool.NOTION, records={'CLI-001': {'取引先名': '古い会社', NOTION_LAST_EDITED_TIME_KEY: NOW - timedelta(hours=2)}})
+    targets[Tool.KINTONE] = FakeSyncTarget(Tool.KINTONE, records={'1001': {'取引先名': '', 'updated_at': NOW + timedelta(hours=1)}})
+    review = Mock()
+    review.filter_properties.side_effect = lambda event, mapping, prepared, **kwargs: (prepared, [])
+    dispatcher = Dispatcher(store, targets, field_review=review)
+    event = SyncEvent(source_tool=Tool.ZOHO, db_key='client_master', external_id='zoho-1',
+                      occurred_at=NOW, properties={'取引先名': '新しい会社'})
+    result = dispatcher.dispatch(event)
+    assert result.properties
+    assert targets[Tool.NOTION].upsert_calls == [('CLI-001', {'取引先名': '新しい会社'})]
+    assert not result.properties[0].review_pending
+
+
+@pytest.mark.parametrize('notion_value', ['', '新しい会社'])
+def test_unproven_blank_keeps_notion_and_blank_delivery_targets(store, mapping, notion_value):
+    from unittest.mock import Mock
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(Tool.NOTION, records={'CLI-001': {'取引先名': notion_value, NOTION_LAST_EDITED_TIME_KEY: NOW + timedelta(hours=2)}})
+    targets[Tool.KINTONE] = FakeSyncTarget(Tool.KINTONE, records={'1001': {'取引先名': '', 'updated_at': NOW + timedelta(hours=1)}})
+    review = Mock()
+    review.filter_properties.side_effect = lambda event, mapping, prepared, **kwargs: (prepared, [])
+    dispatcher = Dispatcher(store, targets, field_review=review)
+    event = SyncEvent(source_tool=Tool.ZOHO, db_key='client_master', external_id='zoho-1',
+                      occurred_at=NOW, properties={'取引先名': '新しい会社'})
+    dispatcher.dispatch(event)
+    assert targets[Tool.KINTONE].upsert_calls == [('1001', {'取引先名': '新しい会社'})]
+    if not notion_value:
+        assert targets[Tool.NOTION].upsert_calls == [('CLI-001', {'取引先名': '新しい会社'})]
+
+
+def test_real_review_service_does_not_raise_request_for_unproven_notion_blank(store, mapping):
+    from unittest.mock import Mock
+    from src.sync_review.service import FieldReviewService
+    targets = _all_targets()
+    targets[Tool.NOTION] = FakeSyncTarget(Tool.NOTION, records={'CLI-001': {'取引先名': '', NOTION_LAST_EDITED_TIME_KEY: NOW + timedelta(hours=2)}})
+    journal = Mock()
+    journal.active_for_record.return_value = {}
+    dispatcher = Dispatcher(store, targets, field_review=FieldReviewService(journal, targets))
+    event = SyncEvent(source_tool=Tool.ZOHO, db_key='client_master', external_id='zoho-1',
+                      occurred_at=NOW, properties={'取引先名': '新しい会社'})
+    dispatcher.dispatch(event)
+    journal.enqueue.assert_not_called()
+    assert targets[Tool.NOTION].upsert_calls == [('CLI-001', {'取引先名': '新しい会社'})]

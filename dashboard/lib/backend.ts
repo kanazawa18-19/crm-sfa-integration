@@ -694,3 +694,10 @@ export function exportFacilityList(
     body: payload,
   });
 }
+
+
+export function decideSyncFieldReview(body: {
+  id: string; actor_id: string; action: string; revision: number; restore_from?: string;
+}) {
+  return fetchBackend("/api/sync-review/decision", { method: "POST", body });
+}
