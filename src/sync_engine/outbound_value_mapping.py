@@ -188,6 +188,9 @@ def translate_choice_value(db_key: str, property_name: str, value: Any) -> Any |
         if any(item is None for item in translated):
             return None
         return translated
+    if db_key == 'client_master' and property_name == '都道府県' and isinstance(value, str):
+        # Notionの既存選択肢に付く外側の空白だけを許容する。未知の地名は補わない。
+        return table.get(value, table.get(value.strip()))
     return table.get(str(value))
 
 
