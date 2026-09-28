@@ -60,3 +60,9 @@ def test_unmapped_values_are_listed_for_review() -> None:
 
     assert ("project", "営業ステータス") in missing
     assert "アポ" in missing[("project", "営業ステータス")]
+
+
+def test_prefecture_outer_whitespace_uses_existing_mapping_only():
+    assert translate_choice_value('client_master', '都道府県', ' 兵庫県') == '兵庫県'
+    assert translate_choice_value('client_master', '都道府県', '東京都 ') == '東京都'
+    assert translate_choice_value('client_master', '都道府県', ' 未確定の市区町村 ') is None
