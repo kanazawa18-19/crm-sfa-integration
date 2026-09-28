@@ -109,3 +109,31 @@ def test_cursor_writers_share_real_source_lock(local):
             release.set()
         running.result()
     assert scans.get('notion:page')['checkpoint']['last_id']=='2000'
+
+
+def test_inbound_echo_uses_external_id_even_when_title_changes(local):
+    _, attempts = local
+    assert attempts.reserve('notion:action', 'kintone', 'action', 'original-title')
+    attempts.finish('notion:action', 'kintone', '123')
+    assert attempts.conflicts('action', 'kintone', '123')
+    assert not attempts.conflicts('action', 'kintone', '124')
+    assert not attempts.conflicts('project', 'kintone', '123')
+    assert not attempts.conflicts('action', 'zoho', '123')
+
+
+def test_unknown_outbound_result_defers_new_inbound_without_losing_event(local):
+    _, attempts = local
+    assert attempts.reserve('notion:action', 'kintone', 'action', 'original-title')
+    with pytest.raises(RecordSyncBusy):
+        attempts.conflicts('action', 'kintone', '123')
+    assert not attempts.conflicts('project', 'kintone', '123')
+    assert not attempts.conflicts('action', 'zoho', '123')
+
+
+def test_confirmed_echo_is_not_blocked_by_unrelated_unknown_creation(local):
+    _, attempts = local
+    assert attempts.reserve('notion:first', 'kintone', 'action', 'first')
+    attempts.finish('notion:first', 'kintone', '123')
+    assert attempts.reserve('notion:second', 'kintone', 'action', 'second')
+    assert attempts.conflicts('action', 'kintone', '123')
+    with pytest.raises(RecordSyncBusy): attempts.conflicts('action', 'kintone', '124')

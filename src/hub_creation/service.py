@@ -9,7 +9,7 @@ from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
 from src.hub_creation.domain import CreationHeld, CreationNotApplicable, title_value, require_notion_fields, identity_hash, sheet_properties
 from src.sync_engine.id_mapping import IdMapping
-from src.sync_engine.record_sync_lock import acquire_record_sync_lock
+from src.sync_engine.record_sync_lock import acquire_record_sync_lock, RecordSyncBusy
 from src.sync_engine.sync_notes import UNAVAILABLE, unresolved_note
 from src.sync_engine.outbound_field_mapping import translate_properties, zoho_outbound_field_names, kintone_outbound_field_names
 from src.sync_engine.outbound_value_mapping import translate_choice_value
@@ -149,6 +149,8 @@ class HubCreationService:
                 creation_page_snapshot = client.get_raw_page(page_id) if is_sheet else raw
                 mapping = self.store.get(page_id)
                 if mapping is None:
+                    # 対応表だけできて排他待ちになっても、再送で過去の取込済みと誤認しない。
+                    self.journal.hold(source_key, "source", event.db_key, "新規登録の外部反映を処理中です")
                     mapping = IdMapping(notion_key=page_id, db_key=event.db_key)
                     self.store.upsert(mapping, expected_last_synced_at=None)
                 if mapping.db_key != event.db_key:
@@ -185,48 +187,56 @@ class HubCreationService:
                     column = {"zoho": "zoho_id", "kintone": "kintone_id"}[target]
                     note_key = f"{UNAVAILABLE}|{origin}:新規登録（{target}）"
                     try:
-                        if getattr(mapping, column):
+                        # 外部POST直後の返信通知より先に、元ページとの対応を確定する。
+                        with acquire_record_sync_lock(self.store, event.db_key, "hub-create:" + target):
+                            mapping = self.store.get(page_id)
+                            if mapping is None or mapping.db_key != event.db_key:
+                                raise CreationHeld("作成中の対応表を確認してください")
+                            if getattr(mapping, column):
+                                notes[note_key] = ""
+                                continue
+                            attempt = self.journal.get(source_key, target)
+                            if attempt and attempt["state"] == "created":
+                                external_id = attempt["externalId"]
+                            elif attempt and attempt["state"] == "reserved":
+                                raise CreationHeld("作成結果が不明です。自動で再作成せず確認を待っています")
+                            else:
+                                from src.record_merge.creation_candidates import candidate_context
+                                with candidate_context(event.db_key, page_id, source_key, properties):
+                                    payload = adapter.plan(event.db_key, properties)
+                                    scan = getattr(adapter, 'duplicate_scan', None)
+                                    if scan is not None and scan.exists():
+                                        # 分割照合中の編集・アーカイブを、古い入力のまま送らない。
+                                        from src.record_merge.domain import digest
+                                        latest = client.get_raw_page(page_id)
+                                        if (latest.get('archived') or latest.get('in_trash')
+                                                or latest.get('parent') != creation_page_snapshot.get('parent')
+                                                or digest(self._creation_properties(event.db_key, latest))
+                                                != digest(self._creation_properties(event.db_key, creation_page_snapshot))):
+                                            raise CreationHeld('照合中に登録元が変更されました。現在の入力で再確認します')
+                                    from src.infrastructure.http_budget import remaining, HttpBudgetExceeded
+                                    from src.hub_creation.duplicate_scan import PENDING
+                                    try:
+                                        left = remaining()
+                                        if left is not None and left <= 40:
+                                            raise HttpBudgetExceeded()
+                                    except HttpBudgetExceeded:
+                                        if scan is not None:
+                                            scan.defer()
+                                            raise CreationHeld(PENDING) from None
+                                        raise CreationHeld('送信前に時間枠へ到達しました。登録元を再通知してください') from None
+                                if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
+                                    raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
+                                external_id = adapter.create(event.db_key, payload)
+                                self.journal.finish(source_key, target, external_id)
+                            updated = replace(mapping, **{column: external_id})
+                            self.store.upsert(updated, expected_last_synced_at=mapping.last_synced_at)
+                            mapping = updated
+                            self.journal.dismiss_hold(source_key, "mapping:" + target)
                             notes[note_key] = ""
-                            continue
-                        attempt = self.journal.get(source_key, target)
-                        if attempt and attempt["state"] == "created":
-                            external_id = attempt["externalId"]
-                        elif attempt and attempt["state"] == "reserved":
-                            raise CreationHeld("作成結果が不明です。自動で再作成せず確認を待っています")
-                        else:
-                            from src.record_merge.creation_candidates import candidate_context
-                            with candidate_context(event.db_key, page_id, source_key, properties):
-                                payload = adapter.plan(event.db_key, properties)
-                                scan = getattr(adapter, 'duplicate_scan', None)
-                                if scan is not None and scan.exists():
-                                    # 分割照合中の編集・アーカイブを、古い入力のまま送らない。
-                                    from src.record_merge.domain import digest
-                                    latest = client.get_raw_page(page_id)
-                                    if (latest.get('archived') or latest.get('in_trash')
-                                            or latest.get('parent') != creation_page_snapshot.get('parent')
-                                            or digest(self._creation_properties(event.db_key, latest))
-                                            != digest(self._creation_properties(event.db_key, creation_page_snapshot))):
-                                        raise CreationHeld('照合中に登録元が変更されました。現在の入力で再確認します')
-                                from src.infrastructure.http_budget import remaining, HttpBudgetExceeded
-                                from src.hub_creation.duplicate_scan import PENDING
-                                try:
-                                    left = remaining()
-                                    if left is not None and left <= 40:
-                                        raise HttpBudgetExceeded()
-                                except HttpBudgetExceeded:
-                                    if scan is not None:
-                                        scan.defer()
-                                        raise CreationHeld(PENDING) from None
-                                    raise CreationHeld('送信前に時間枠へ到達しました。登録元を再通知してください') from None
-                            if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
-                                raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
-                            external_id = adapter.create(event.db_key, payload)
-                            self.journal.finish(source_key, target, external_id)
-                        updated = replace(mapping, **{column: external_id})
-                        self.store.upsert(updated, expected_last_synced_at=mapping.last_synced_at)
-                        mapping = updated
-                        self.journal.dismiss_hold(source_key, "mapping:" + target)
-                        notes[note_key] = ""
+                    except RecordSyncBusy:
+                        # 別件の作成中は失敗保留にせず、Webhook・キューの再送へ戻す。
+                        raise
                     except CreationNotApplicable as exc:
                         self.journal.dismiss_hold(source_key, target)
                         notes[note_key] = f"[{origin}:新規登録（{target}）] 対象外: {exc}。この送り先への登録は不要です。"

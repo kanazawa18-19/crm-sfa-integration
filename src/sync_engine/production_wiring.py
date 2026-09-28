@@ -965,13 +965,9 @@ def build_production_dispatcher(
         from src.hub_creation.service import enabled_since
         if enabled_since() is None:
             return False
-        from src.hub_creation.domain import title_value, identity_hash, CreationHeld
         from src.hub_creation.journal import PostgresCreationJournal
-        try:
-            _name, title = title_value(event.db_key, properties)
-        except CreationHeld:
-            return False
-        return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, identity_hash(event.db_key, title), event.external_id)
+        # 返信時の活動タイトルは外部で組み立て直されるため、名前ではなく確定IDで照合する。
+        return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, event.external_id)
 
     dispatcher = Dispatcher(
         store,

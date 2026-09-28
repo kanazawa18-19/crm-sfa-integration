@@ -95,6 +95,8 @@ SAFE_SKIPS = frozenset({"duplicate_event", "not_a_synced_database", "page_not_fo
 def result_state(result: dict[str, Any], *, partial: bool = False) -> tuple[str, str]:
     if partial or result.get("queue_needs_attention"):
         return "needs_attention", "partial_processing"
+    if result.get("record_sync_busy") is True and result.get("statusCode") == 500:
+        return "retry", "record_sync_busy"
     if result.get("statusCode") != 200:
         return "needs_attention", "handler_error"
     try:
