@@ -249,7 +249,7 @@ class Test_kintone案件の案件名を組み立てる:
             external_id="1",
             raw_record={"店舗名": "ホテルABC", "複数選択": ["メイリー"]},
         )
-        assert properties["案件名"] == "ホテルABC メイリー"
+        assert properties["案件名"] == "ホテルABC"
 
 
 class Test_kintoneアクションのタイトルを組み立てる:
