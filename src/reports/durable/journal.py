@@ -41,8 +41,13 @@ class ReportJournal:
 
     def pages(self, report_date, db_key):
         with connect() as conn:
-            rows = conn.execute('SELECT page FROM "ReportCollectionPage" WHERE "reportDate"=%s AND "dbKey"=%s ORDER BY "pageId"', (report_date, db_key)).fetchall()
-            return [row['page'] for row in rows]
+            pages = []
+            # 大きな日報も1回の転送がDBの時間制限を超えないよう、同じ読み取りを分割する。
+            with conn.cursor(name='report_pages') as cursor:
+                cursor.execute('SELECT page FROM "ReportCollectionPage" WHERE "reportDate"=%s AND "dbKey"=%s ORDER BY "pageId"', (report_date, db_key))
+                while rows := cursor.fetchmany(1000):
+                    pages.extend(row['page'] for row in rows)
+            return pages
 
     def delivery(self, report_date, kind):
         with connect() as conn:

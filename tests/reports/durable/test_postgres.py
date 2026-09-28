@@ -99,3 +99,10 @@ def test_finish_keeps_latest_and_held_pages_and_all_deliveries(report):
     assert len(report.pages(first+timedelta(days=1), 'project')) == 1
     assert len(report.pages(first+timedelta(days=2), 'project')) == 1
     assert report.delivery(first, 'daily')['state'] == 'delivered'
+
+
+def test_collection_read_preserves_all_pages_across_fetch_boundaries(report):
+    job = report.next_job()
+    report.save_page(job, [{'id': f'p{i:05}', 'properties': {}} for i in range(2103)], {}, False)
+    pages = report.pages(job['reportDate'], 'project')
+    assert [p['id'] for p in pages] == [f'p{i:05}' for i in range(2103)]
