@@ -92,3 +92,22 @@ def test_append_conflict_log_writes_expected_columns() -> None:
         "却下元ツール": "kintone",
         "発生日時": "2026-08-05T09:00:00+00:00",
     }
+
+
+def test_won_product_relations_survive_sync_key_and_update():
+    import json
+    for key, relation in [('product', '取引先マスター'), ('client_master', 'サービス・商品')]:
+        client = FakeSpreadsheetClient()
+        target = SpreadsheetSyncTarget(client, '専用試験', key)
+        linked = ['11111111-1111-4111-8111-111111111111']
+        values = target.with_sync_key({relation: linked}, 'own-page')
+        target.upsert_record('2', values, db_key=key)
+        assert json.loads(client.rows['専用試験'][2][relation]) == linked
+        assert client.rows['専用試験'][2]['同期キー'] == 'own-page'
+        target.upsert_record('2', {relation: []}, db_key=key)
+        assert json.loads(client.rows['専用試験'][2][relation]) == []
+
+
+def test_unrelated_relation_is_still_omitted():
+    from src.sync_engine.sync_targets.spreadsheet_sync import drop_relation_properties
+    assert drop_relation_properties({'案件名': '合成案件', '取引先マスター': ['client']}, 'project') == {'案件名': '合成案件'}

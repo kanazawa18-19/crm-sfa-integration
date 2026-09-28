@@ -32,10 +32,10 @@ class ReportJournal:
     def save_page(self, job, pages, cursor, complete):
         phase = ('action' if job['phase'] == 'project' else 'ready') if complete else job['phase']
         with connect() as conn:
-            for page in pages:
-                conn.execute('''INSERT INTO "ReportCollectionPage" ("reportDate","dbKey","pageId",page) VALUES (%s,%s,%s,%s)
+            with conn.cursor() as cur:
+                cur.executemany('''INSERT INTO "ReportCollectionPage" ("reportDate","dbKey","pageId",page) VALUES (%s,%s,%s,%s)
                     ON CONFLICT ("reportDate","dbKey","pageId") DO UPDATE SET page=EXCLUDED.page''',
-                    (job['reportDate'], job['phase'], page['id'], Jsonb(report_snapshot(job['phase'], page))))
+                    [(job['reportDate'], job['phase'], page['id'], Jsonb(report_snapshot(job['phase'], page))) for page in pages])
             conn.execute('UPDATE "ReportCollection" SET phase=%s,cursor=%s,error=NULL,"retryCount"=0,"updatedAt"=now() WHERE "reportDate"=%s',
                          (phase, Jsonb({} if complete else cursor), job['reportDate']))
 

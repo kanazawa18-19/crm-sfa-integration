@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+import json
 
 from src.db_schema.base import PropertyType, Tool
 from src.db_schema.registry import get_schema
@@ -19,13 +20,19 @@ SYNC_KEY_COLUMN = "同期キー"
 # 05_同期・競合制御「データ退避」：却下データの退避先タブ名。
 SYNC_LOG_SHEET_NAME = "同期ログ"
 
+# 受注商品連携の配送対象。シートから戻せるJSON配列で保持する。
+_DELIVERED_RELATIONS = {
+    'product': {'取引先マスター'},
+    'client_master': {'サービス・商品'},
+}
+
 
 def drop_relation_properties(
     properties: dict[str, Any], db_key: str | None
 ) -> dict[str, Any]:
-    """リレーションはシートへ書かない（2026-08-31）。
+    """通常の関連は除外し、受注商品連携の2項目だけを保持する。
 
-    リレーションの値は**NotionのページID**で、シート上では
+    通常のリレーションの値は**NotionのページID**で、シート上では
     `3b9d8ea8-d4f3-8116-…, 3b9d8ea8-d4f3-8180-…` という32桁の羅列にしかならない。
     実際にバックフィルを流して確認したところ、1つの商品に25件ぶら下がっていて
     セルが完全に読めなくなった。人が見るシートに書く情報として成立していない。
@@ -35,6 +42,7 @@ def drop_relation_properties(
     意味を持つ識別子で、他のツールへ持っていっても誰も辿れない。
 
     db_keyが分からないときは何も落とさない（どれがリレーションか判断できないため）。
+    受注商品連携の2項目は例外とし、名称表示ではなく連携を保持・復元するJSON配列として残す。
     """
     if db_key is None:
         return dict(properties)
@@ -45,7 +53,9 @@ def drop_relation_properties(
     relations = {
         prop.name for prop in schema.properties if prop.property_type is PropertyType.RELATION
     }
-    return {name: value for name, value in properties.items() if name not in relations}
+    delivered = _DELIVERED_RELATIONS.get(db_key, set())
+    return {name: (json.dumps(value, ensure_ascii=False) if name in delivered and isinstance(value, list) else value)
+            for name, value in properties.items() if name not in relations or name in delivered}
 
 
 class SpreadsheetClient(Protocol):
