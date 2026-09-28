@@ -1,0 +1,579 @@
+{
+  "observed_at": "2026-09-28T10:10:29.885873+00:00",
+  "baseline": "b48c00c",
+  "preserved_commits": [
+    "dd8dd90",
+    "b48c00c"
+  ],
+  "production_writes": false,
+  "db_observations": [
+    {
+      "file": "batch-db-095201.json",
+      "observed_at": "2026-09-28T09:51:44.576983+00:00"
+    },
+    {
+      "file": "batch-db-100049.json",
+      "observed_at": "2026-09-28T10:00:25.062075+00:00"
+    },
+    {
+      "file": "batch-db-100540.json",
+      "observed_at": "2026-09-28T10:05:15.726921+00:00"
+    },
+    {
+      "file": "batch-db-100619.json",
+      "observed_at": "2026-09-28T10:05:48.723423+00:00"
+    }
+  ],
+  "latest_database": {
+    "observed_at": "2026-09-28T10:05:48.723423+00:00",
+    "relations": [
+      {
+        "targetDbKey": "client_master",
+        "sourceTool": "zoho",
+        "candidates": 0,
+        "n": 51
+      },
+      {
+        "targetDbKey": "client_master",
+        "sourceTool": "zoho",
+        "candidates": 2,
+        "n": 362
+      },
+      {
+        "targetDbKey": "client_master",
+        "sourceTool": "zoho",
+        "candidates": 3,
+        "n": 76
+      },
+      {
+        "targetDbKey": "client_master",
+        "sourceTool": "zoho",
+        "candidates": 4,
+        "n": 17
+      },
+      {
+        "targetDbKey": "client_master",
+        "sourceTool": "zoho",
+        "candidates": 5,
+        "n": 1
+      },
+      {
+        "targetDbKey": "client_master",
+        "sourceTool": "zoho",
+        "candidates": 6,
+        "n": 1
+      },
+      {
+        "targetDbKey": "contact",
+        "sourceTool": "zoho",
+        "candidates": 0,
+        "n": 24
+      },
+      {
+        "targetDbKey": "product",
+        "sourceTool": "zoho",
+        "candidates": 0,
+        "n": 58
+      }
+    ],
+    "relation_sources": [
+      {
+        "pending": 590,
+        "sources": 560,
+        "oldest": "2026-08-31 02:36:59.493000",
+        "newest": "2026-09-28 03:59:06.359000"
+      }
+    ],
+    "outbox": [
+      {
+        "status": "done",
+        "reason": "new_record_row_write_skipped",
+        "resolution": "created",
+        "lastError": "行を作った（29項目）",
+        "n": 1
+      },
+      {
+        "status": "done",
+        "reason": "new_record_row_write_failed",
+        "resolution": "already_present",
+        "lastError": "既に行があった",
+        "n": 1
+      },
+      {
+        "status": "done",
+        "reason": "new_record_row_write_skipped",
+        "resolution": "created",
+        "lastError": "行を作った（7項目）",
+        "n": 4
+      },
+      {
+        "status": "done",
+        "reason": "new_record_row_write_skipped",
+        "resolution": "created",
+        "lastError": "行を作った（11項目）",
+        "n": 4
+      },
+      {
+        "status": "done",
+        "reason": "new_record_row_write_failed",
+        "resolution": "created",
+        "lastError": "行を作った（7項目）",
+        "n": 6
+      },
+      {
+        "status": "done",
+        "reason": "new_record_row_write_skipped",
+        "resolution": "created",
+        "lastError": "行を作った（28項目）",
+        "n": 1
+      }
+    ],
+    "creation": [
+      {
+        "dbKey": "chain",
+        "target": "source",
+        "state": "created",
+        "reason": "",
+        "n": 1
+      },
+      {
+        "dbKey": "client_master",
+        "target": "kintone",
+        "state": "created",
+        "reason": "",
+        "n": 2
+      },
+      {
+        "dbKey": "client_master",
+        "target": "notion",
+        "state": "created",
+        "reason": "",
+        "n": 1
+      },
+      {
+        "dbKey": "chain",
+        "target": "zoho",
+        "state": "created",
+        "reason": "",
+        "n": 2
+      },
+      {
+        "dbKey": "chain",
+        "target": "notion",
+        "state": "created",
+        "reason": "",
+        "n": 1
+      }
+    ],
+    "review": [],
+    "candidates": [],
+    "unfinished": [
+      {
+        "dbKey": "client_master",
+        "n": 1,
+        "oldest": "2026-09-15 00:25:00+00:00",
+        "newest": "2026-09-15 00:25:00+00:00"
+      }
+    ],
+    "receipts": [
+      {
+        "source": "zoho",
+        "lastReceivedAt": "2026-09-28 03:59:15.598000",
+        "receiptCount": 341
+      },
+      {
+        "source": "kintone",
+        "lastReceivedAt": "2026-09-28 09:48:13.317000",
+        "receiptCount": 391
+      },
+      {
+        "source": "notion",
+        "lastReceivedAt": "2026-09-28 09:49:20.712000",
+        "receiptCount": 21417
+      },
+      {
+        "source": "spreadsheet",
+        "lastReceivedAt": "2026-09-27 13:14:14.305000",
+        "receiptCount": 1
+      }
+    ],
+    "exclusions": [],
+    "digests": [
+      {
+        "digestedAt": "2026-09-22 04:00:35.214000",
+        "n": 1
+      },
+      {
+        "digestedAt": "2026-09-15 04:27:33.246000",
+        "n": 1
+      },
+      {
+        "digestedAt": "2026-09-12 04:27:33.235000",
+        "n": 1
+      },
+      {
+        "digestedAt": "2026-09-09 04:27:33.242000",
+        "n": 1
+      },
+      {
+        "digestedAt": "2026-09-03 04:27:33.202000",
+        "n": 1
+      },
+      {
+        "digestedAt": "2026-09-02 04:27:33.263000",
+        "n": 1
+      },
+      {
+        "digestedAt": "2026-09-01 04:27:33.246000",
+        "n": 1
+      }
+    ],
+    "connections": [
+      {
+        "state": "idle",
+        "n": 1
+      }
+    ],
+    "connection_limit": [
+      {
+        "setting": "112"
+      }
+    ],
+    "migration_locks": [],
+    "reports": [
+      {
+        "reportDate": "2026-09-28",
+        "phase": "project",
+        "retryCount": 0,
+        "completedAt": null,
+        "updatedAt": "2026-09-28 10:02:06.548915+00:00",
+        "error": null
+      }
+    ],
+    "deliveries": [],
+    "product_tasks": [],
+    "product_pairs": [],
+    "product_delivery": []
+  },
+  "log_windows": [
+    {
+      "since": "2026-09-27T09:50:00Z",
+      "until": "2026-09-27T15:50:00Z",
+      "limit": 50,
+      "rows": 50,
+      "unique": 50,
+      "oldest": "2026-09-27T11:32:51.638000+00:00",
+      "newest": "2026-09-27T15:48:00.406000+00:00",
+      "limit_reached": true,
+      "unverified_before_oldest": true,
+      "statuses": {
+        "200": 50
+      }
+    },
+    {
+      "since": "2026-09-27T15:50:00Z",
+      "until": "2026-09-27T21:50:00Z",
+      "limit": 50,
+      "rows": 37,
+      "unique": 37,
+      "oldest": "2026-09-27T15:54:41.717000+00:00",
+      "newest": "2026-09-27T21:47:59.257000+00:00",
+      "limit_reached": false,
+      "unverified_before_oldest": false,
+      "statuses": {
+        "200": 32,
+        "404": 1,
+        "500": 2,
+        "401": 2
+      }
+    },
+    {
+      "since": "2026-09-27T21:50:00Z",
+      "until": "2026-09-28T03:50:00Z",
+      "limit": 50,
+      "rows": 50,
+      "unique": 50,
+      "oldest": "2026-09-28T03:26:05.285000+00:00",
+      "newest": "2026-09-28T03:49:42.657000+00:00",
+      "limit_reached": true,
+      "unverified_before_oldest": true,
+      "statuses": {
+        "200": 50
+      }
+    },
+    {
+      "since": "2026-09-28T03:50:00Z",
+      "until": "2026-09-28T09:50:00Z",
+      "limit": 50,
+      "rows": 50,
+      "unique": 50,
+      "oldest": "2026-09-28T08:59:03.752000+00:00",
+      "newest": "2026-09-28T09:49:20.590000+00:00",
+      "limit_reached": true,
+      "unverified_before_oldest": true,
+      "statuses": {
+        "200": 50
+      }
+    }
+  ],
+  "api_four_windows": {
+    "unique": 187,
+    "statuses": {
+      "200": 182,
+      "404": 1,
+      "500": 2,
+      "401": 2
+    },
+    "complete_24h": false
+  },
+  "old_failed": {
+    "rows": 5,
+    "same_name_candidates": 0,
+    "prefix_candidates": 0,
+    "missing_required": [
+      "住所",
+      "郵便番号",
+      "都道府県"
+    ],
+    "classification": {
+      "confirmed_existing_link": 0,
+      "confirmed_new_required": 0,
+      "insufficient_business_evidence": 5
+    },
+    "scope": "既存原本・対応表・Accounts必須定義・各2条件の検索。任意の別名全件照合ではない"
+  },
+  "past_digest": [
+    {
+      "date": "2026-09-01",
+      "window": "前日00:00〜翌々日00:00 JST（72時間）",
+      "pages": 2,
+      "unique_messages": 151,
+      "all_pages": true,
+      "digest_heading_matches": 0,
+      "delivery": "unverified"
+    },
+    {
+      "date": "2026-09-02",
+      "window": "前日00:00〜翌々日00:00 JST（72時間）",
+      "pages": 3,
+      "unique_messages": 223,
+      "all_pages": true,
+      "digest_heading_matches": 0,
+      "delivery": "unverified"
+    },
+    {
+      "date": "2026-09-03",
+      "window": "前日00:00〜翌々日00:00 JST（72時間）",
+      "pages": 3,
+      "unique_messages": 213,
+      "all_pages": true,
+      "digest_heading_matches": 0,
+      "delivery": "unverified"
+    },
+    {
+      "date": "2026-09-09",
+      "window": "前日00:00〜翌々日00:00 JST（72時間）",
+      "pages": 2,
+      "unique_messages": 111,
+      "all_pages": true,
+      "digest_heading_matches": 0,
+      "delivery": "unverified"
+    },
+    {
+      "date": "2026-09-12",
+      "window": "前日00:00〜翌々日00:00 JST（72時間）",
+      "pages": 1,
+      "unique_messages": 66,
+      "all_pages": true,
+      "digest_heading_matches": 0,
+      "delivery": "unverified"
+    }
+  ],
+  "tests": {
+    "new": 36,
+    "existing_relevant": 42,
+    "new_final_qa_seconds": 1.58,
+    "postgres": "127.0.0.1:55443/crm_field_review_test",
+    "postgres_stopped": true,
+    "external_services": "fake",
+    "http_entry_and_live_delivery": "unverified",
+    "independent_review": {
+      "security": {
+        "blocker": 0,
+        "warn": 0
+      },
+      "quality": {
+        "blocker": 0,
+        "warn": 0
+      },
+      "qa": {
+        "blocker": 0,
+        "warn": 0
+      }
+    }
+  },
+  "chrome": {
+    "tab_listing": "succeeded",
+    "page_read": "timeout",
+    "official_diagnostics": "4 passed",
+    "new_window": "approval_pending",
+    "other_model_final_review": "not_completed"
+  },
+  "private_evidence_manifest": [
+    {
+      "file": "batch-api-logs-private.jsonl",
+      "bytes": 784921,
+      "sha256": "4dd91685278161db619dbd759cac17e144e28152fae9542a10e6075f44bb28c4"
+    },
+    {
+      "file": "batch-current-slack-private.json",
+      "bytes": 27476,
+      "sha256": "bb4bbe77ebfce00a13520ae29ba4ec03ca01b6ed374d36bb098553c61acb1f4d"
+    },
+    {
+      "file": "batch-daily-window-private.jsonl",
+      "bytes": 4758,
+      "sha256": "e7071c5fcac2fb7d90834c6940ddec3c2e36ac52c025c4aa7561d03d91b4ed7c"
+    },
+    {
+      "file": "batch-dashboard-logs-private.jsonl",
+      "bytes": 30011,
+      "sha256": "de6d610a718ddadb892b566be91e2059348c77ff6f6282ec7813b653a0a59cc1"
+    },
+    {
+      "file": "batch-db-095201.json",
+      "bytes": 4459,
+      "sha256": "e12539fdf37209daff1504a615b504e51b5c37dd6b8671c57001f5eaa8447007"
+    },
+    {
+      "file": "batch-db-100049.json",
+      "bytes": 4647,
+      "sha256": "62e5db50728960c24c88eb05aff3c83a4a1501714998808dbcca717f995d36d6"
+    },
+    {
+      "file": "batch-db-100540.json",
+      "bytes": 4498,
+      "sha256": "b1928d8e28009ca03592c0d8c09720cbd2da95de472163e8c722243d9b1bcdef"
+    },
+    {
+      "file": "batch-db-100619.json",
+      "bytes": 4659,
+      "sha256": "095167d51a063a0862653aedb4546ce3345ae0c2c36c6723bb2f584b6ca6f615"
+    },
+    {
+      "file": "batch-detail-private.json",
+      "bytes": 3154,
+      "sha256": "b7ed7ec48e876901e5dd481b187f6b8ccd69f6c58790f2cd952b9959a5027987"
+    },
+    {
+      "file": "batch-health-readonly.json",
+      "bytes": 2466,
+      "sha256": "a19454367228afb9516f04b06b511d3e3e55f8fce5a698570094ece49d688348"
+    },
+    {
+      "file": "batch-last-slack-private.json",
+      "bytes": 1927,
+      "sha256": "5501218d4be1179ee97161e11d247ce5340c322074743dba10a1ec7d35d1149e"
+    },
+    {
+      "file": "batch-logs-window1-private.jsonl",
+      "bytes": 25314,
+      "sha256": "d3f67beb1fefdc3185803f9098aee5301d1b4e2f720e168209d224976480f7e9"
+    },
+    {
+      "file": "batch-logs-window2-private.jsonl",
+      "bytes": 127600,
+      "sha256": "51da3c8390f4297d2b4f17f48f415307ed4d85be3a2d273b3c14fda3f062dd0e"
+    },
+    {
+      "file": "batch-logs-window3-private.jsonl",
+      "bytes": 30315,
+      "sha256": "a9f095455f3475c233983773ebdfbc524c8c8aef4a6acf42f299835019f22ea6"
+    },
+    {
+      "file": "batch-logs-window4-private.jsonl",
+      "bytes": 39250,
+      "sha256": "55358cf20b81f6c039c244558ff5f33da0aa5bb4b48816a5855a099566e8b760"
+    },
+    {
+      "file": "batch-monitor-logs-private.jsonl",
+      "bytes": 20036,
+      "sha256": "2ba727b0630f6fdffd21408d810ad39dd12d0d133b0d96be20d53d391c47890a"
+    },
+    {
+      "file": "batch-monitor-window-private.jsonl",
+      "bytes": 6442,
+      "sha256": "5a69c6d8e5c628361303af30c8b55cdfdf3133f9195687a9a91e632b1605bbe7"
+    },
+    {
+      "file": "batch-old-failed-private.json",
+      "bytes": 14104,
+      "sha256": "041c3eefcc8ebd58871190013873c625eb3c508a6d4045fd387b01bcd42f7e6f"
+    },
+    {
+      "file": "batch-old-repair-plan-private.json",
+      "bytes": 4146,
+      "sha256": "457b7857470f3f01eff9e459568c19e7f4dc4218dbaac73c4c741cbae8d637f4"
+    },
+    {
+      "file": "batch-product-logs-private.jsonl",
+      "bytes": 103532,
+      "sha256": "ea8aa0555adad2a5a98500f22aa452712ca5330ae8783d065eb81f8fa0d4f280"
+    },
+    {
+      "file": "batch-slack-2026-09-01-page2-private.json",
+      "bytes": 36384,
+      "sha256": "1234de026c690272212015243204a4504772bbde9a9d3628131f1d49c73b91a3"
+    },
+    {
+      "file": "batch-slack-2026-09-01-private.json",
+      "bytes": 61600,
+      "sha256": "4325f01cc48101466daeb5841f2f5829894abd341609bc96cded1b524db093c8"
+    },
+    {
+      "file": "batch-slack-2026-09-02-page2-private.json",
+      "bytes": 81688,
+      "sha256": "4cf444960d18585a41d0bc191635d7f9ece30f769830152770cde6b55b09421b"
+    },
+    {
+      "file": "batch-slack-2026-09-02-page3-private.json",
+      "bytes": 11761,
+      "sha256": "22b26b1bf98a1c691883fb06151c23dee3f40ebe27c6dada2acbdaff172b6a25"
+    },
+    {
+      "file": "batch-slack-2026-09-02-private.json",
+      "bytes": 68055,
+      "sha256": "97f4d2ca8e537c17951502a8a1557c846ee33d80cf4658956568591bd711d019"
+    },
+    {
+      "file": "batch-slack-2026-09-03-page2-private.json",
+      "bytes": 77262,
+      "sha256": "ee28edd83c130be5b6ba4bbdeaaf4c342da65ef9574d0eb29af2bfcd8636f7ee"
+    },
+    {
+      "file": "batch-slack-2026-09-03-page3-private.json",
+      "bytes": 7360,
+      "sha256": "77306537e29490061fa9b64d299824b20a5ac21995d8463488811b54f3631580"
+    },
+    {
+      "file": "batch-slack-2026-09-03-private.json",
+      "bytes": 75202,
+      "sha256": "453d9bb851d8166fa03456abc5ce71fb12ff5c77f9df08eda160f35366cc9403"
+    },
+    {
+      "file": "batch-slack-2026-09-09-page2-private.json",
+      "bytes": 10137,
+      "sha256": "894d6e7ea760722ef5548bc19da049c948852e47926d31576df48c9b832f0a75"
+    },
+    {
+      "file": "batch-slack-2026-09-09-private.json",
+      "bytes": 58113,
+      "sha256": "60e9f238ec4d43004cd6b23af7c598f1558dde666d4d61c212e573407ddcfd58"
+    },
+    {
+      "file": "batch-slack-2026-09-12-private.json",
+      "bytes": 44983,
+      "sha256": "baa782ea0eca50f4842ee0241800ff8baf9e3d74344198f7b4ffbc19f83d48d4"
+    }
+  ]
+}
