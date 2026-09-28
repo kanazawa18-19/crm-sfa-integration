@@ -70,7 +70,7 @@ def safe_failure_reason(stage, exc):
         status = getattr(exc, 'status_code', None)
         if type(status) is int and 400 <= status <= 599:
             category = f'HTTP {status}'
-        elif getattr(exc, 'sqlstate', None) in {'57014', '40001', '40P01', '08001', '08006'}:
+        elif getattr(exc, 'sqlstate', None) in {'57014', '40001', '40P01', '08001', '08006', '53100'}:
             category = {'57014': 'DB処理時間切れまたは取消', '40001': 'DB更新競合',
-                        '40P01': 'DB相互待機', '08001': 'DB接続失敗', '08006': 'DB接続切断'}[exc.sqlstate]
+                        '40P01': 'DB相互待機', '08001': 'DB接続失敗', '08006': 'DB接続切断', '53100': 'DB保存容量不足'}[exc.sqlstate]
     return f'{stage}で{category}。3回続けて失敗した場合は保留します。送達記録を確認するまで手動再送しないでください'
