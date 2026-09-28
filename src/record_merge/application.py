@@ -63,6 +63,7 @@ class MergeService:
                     if self.gateway.read(step) != step['desired']:
                         raise MergeHeld('統合結果の実値を確認できません')
                     self.journal.complete_step(operation_id, index, actor_id, None)
+                job = self.journal.get_authorized(operation_id, actor_id)
                 self.gateway.verify_archive_ready(job)
                 self.journal.finish_with_aliases(operation_id, actor_id)
             except Exception as exc:

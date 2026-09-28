@@ -133,3 +133,33 @@ def test_body_post_timeout_recovers_by_exact_readback_without_second_append():
     bodies['target'][0] = original
     service.execute('op', 'manager')
     assert calls == ['target'] and source['archived'] and journal.aliases
+
+
+def test_archived_source_with_unreadable_body_finishes_only_with_saved_progress():
+    import pytest
+    from src.record_merge.domain import MergeHeld
+    source = raw('client_master', 'source', {'取引先名': '合成施設'})
+    target = raw('client_master', 'target', {'取引先名': '合成施設'})
+    clients = {schema.key: Client(schema.key, {}) for schema in ALL_SCHEMAS}
+    client = clients['client_master']; client.pages = {'source': source, 'target': target}
+    original_request = client._request
+    def request(method, path):
+        if path.startswith('/blocks/source/') and source['archived']:
+            raise AssertionError('アーカイブ後の原本本文は取得できない')
+        return original_request(method, path)
+    client._request = request
+    store = SQLiteIdMappingStore(); store.upsert(IdMapping('target', 'client_master'))
+    gateway = NotionMergeGateway(clients, store)
+    snapshot = gateway.snapshot('client_master', 'source', 'target')
+    journal = Journal(gateway.plan(snapshot, {}))
+    journal.job.update(dbKey='client_master', sourceId='source', targetId='target', snapshot=snapshot)
+    assert MergeService(journal, gateway, lambda job: nullcontext()).execute('op', 'manager')['state'] == 'done'
+    gateway.verify_archive_ready(journal.job)
+    # 履歴がない外部アーカイブを、今回の成功として回収しない。
+    unproven = deepcopy(journal.job); unproven['progress'] = {}
+    with pytest.raises(MergeHeld, match='アーカイブ前'):
+        gateway.verify_identity(unproven)
+    # 統合先への第三者変更は、原本がアーカイブ済みでも検出する。
+    client.update_page('target', {'取引先名': '第三者変更'})
+    with pytest.raises(MergeHeld, match='統合後の値'):
+        gateway.verify_archive_ready(journal.job)
