@@ -50,6 +50,13 @@ def sheet_properties(db_key: str, values: Mapping[str, Any]) -> dict[str, Any]:
             continue
         kind = prop.property_type
         if kind in (PropertyType.TITLE, PropertyType.TEXT, PropertyType.EMAIL, PropertyType.PHONE, PropertyType.URL):
+            if db_key == "chain" and prop.name == "施設数" and not isinstance(value, str):
+                # Sheetsの非書式値では、文字列欄の施設数も数値として返る。
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise CreationHeld("施設数は非負の整数で入力してください")
+                if value < 0 or isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+                    raise CreationHeld("施設数は非負の整数で入力してください")
+                value = str(int(value))
             if not isinstance(value, str):
                 raise CreationHeld("文字の形式を確認してください: " + prop.name)
         elif kind in (PropertyType.NUMBER, PropertyType.CURRENCY):
