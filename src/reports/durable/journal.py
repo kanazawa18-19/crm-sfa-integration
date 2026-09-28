@@ -1,6 +1,7 @@
 """ページ保存としおりは同じトランザクションで進める。"""
 from psycopg.types.json import Jsonb
 from src.sync_operations.product_holds import connect
+from src.reports.durable.snapshot import report_snapshot
 
 
 class ReportJournal:
@@ -34,7 +35,7 @@ class ReportJournal:
             for page in pages:
                 conn.execute('''INSERT INTO "ReportCollectionPage" ("reportDate","dbKey","pageId",page) VALUES (%s,%s,%s,%s)
                     ON CONFLICT ("reportDate","dbKey","pageId") DO UPDATE SET page=EXCLUDED.page''',
-                    (job['reportDate'], job['phase'], page['id'], Jsonb(page)))
+                    (job['reportDate'], job['phase'], page['id'], Jsonb(report_snapshot(job['phase'], page))))
             conn.execute('UPDATE "ReportCollection" SET phase=%s,cursor=%s,error=NULL,"retryCount"=0,"updatedAt"=now() WHERE "reportDate"=%s',
                          (phase, Jsonb({} if complete else cursor), job['reportDate']))
 
@@ -59,6 +60,10 @@ class ReportJournal:
     def finish(self, report_date):
         with connect() as conn:
             conn.execute('UPDATE "ReportCollection" SET phase=\'done\',"completedAt"=now(),"updatedAt"=now(),error=NULL WHERE "reportDate"=%s', (report_date,))
+            # 今回より古い完了分を整理する。収集中・保留中の原本と配送台帳は残す。
+            conn.execute('''DELETE FROM "ReportCollectionPage" p USING "ReportCollection" c
+                WHERE p."reportDate"=c."reportDate" AND c.phase='done'
+                  AND c."reportDate" < %s''', (report_date,))
 
     def error(self, report_date, reason, *, held=False):
         with connect() as conn:
