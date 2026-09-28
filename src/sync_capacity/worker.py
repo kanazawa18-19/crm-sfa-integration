@@ -11,6 +11,7 @@ from src.sync_capacity.deadline import Deadline, WORKER_SECONDS, current_deadlin
 from src.sync_capacity.application import drain_one
 from src.sync_capacity.domain import Claim, SAFE_SKIPS
 from src.sync_capacity.firestore_store import get_store
+from src.sync_engine.record_sync_lock import RecordSyncBusy
 
 # 同じプロセスのsingleton dispatcherに同時に触れない。全配備の上限はFirestoreが担当。
 _WORKER_LOCK = threading.Lock()
@@ -21,9 +22,18 @@ class ObservedDispatcher:
         self.source = source
         self.dispatcher = dispatcher
         self.partial = False
+        self.sync_busy = False
+        self.other_failure = False
 
     def dispatch(self, event):
-        result = self.dispatcher.dispatch(event)
+        try:
+            result = self.dispatcher.dispatch(event)
+        except RecordSyncBusy:
+            self.sync_busy = True
+            raise
+        except Exception:
+            self.other_failure = True
+            raise
         if (result.has_partial_skips
                 or (result.skipped and (result.reason not in SAFE_SKIPS
                     or (self.source == "notion" and result.reason == "stale_event")))):
@@ -74,6 +84,9 @@ def prepare(claim: Claim):
             result = handler(claim.event, **kwargs)
         else:
             raise ValueError("unknown job source")
+        if observed.sync_busy and not observed.other_failure:
+            # ハンドラの汎用500だけでは、再試行可能な排他待ちと結果不明を区別できない。
+            result = {**result, "record_sync_busy": True}
         return result, observed.partial
     return execute
 

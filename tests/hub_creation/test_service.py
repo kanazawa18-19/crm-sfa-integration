@@ -221,7 +221,7 @@ def test_completed_destinations_do_not_revalidate_creation_required_fields():
     assert service.handle(event)=='hub_creation_complete'
     notion.title=''
     assert service.handle(event) is None
-    assert journal.get('notion:page','source') is None
+    assert journal.get('notion:page','source')['state'] == 'created'
 
 
 def test_unmapped_business_value_is_visible_in_source_note(monkeypatch):
@@ -304,3 +304,34 @@ def test_sheet_action_reads_confirmed_rollups_after_notion_creation():
     assert plans[0]['提案サービス'] == ['メイリー']
     assert service.handle(event) == 'hub_creation_complete'
     assert notion.creates == 1 and adapter.creates == 1
+
+
+def test_outbound_post_and_inbound_echo_share_creation_lock():
+    from src.sync_engine.dispatcher import Dispatcher
+    from src.sync_engine.record_sync_lock import RecordSyncBusy
+    service, event, journal, notion, adapter, store = setup()
+    incoming = Dispatcher(store, {})
+    echo = SyncEvent(Tool.ZOHO, 'chain', 'external-1', NOW, properties={})
+    original_create = adapter.create
+    observed = []
+    def create(db, payload):
+        with pytest.raises(RecordSyncBusy):
+            incoming._try_create_new_record(echo)
+        observed.append('返信は予約と対応表の間に入れない')
+        return original_create(db, payload)
+    adapter.create = create
+    service.handle(SyncEvent(Tool.NOTION, 'chain', 'page', NOW, properties={}))
+    assert observed and adapter.creates == 1
+    assert incoming._try_create_new_record(echo).reason == 'new_record_concurrent_creation_detected'
+
+
+def test_other_outbound_creation_busy_is_retried_without_holding_source():
+    from src.sync_engine.record_sync_lock import acquire_record_sync_lock, RecordSyncBusy
+    service, event, journal, notion, adapter, store = setup()
+    with acquire_record_sync_lock(store, 'chain', 'hub-create:zoho'):
+        with pytest.raises(RecordSyncBusy):
+            service.handle(event)
+    assert adapter.creates == 0
+    assert not journal.get('notion:page', 'zoho')
+    assert service.handle(event) == "hub_creation_complete"
+    assert adapter.creates == 1

@@ -13,6 +13,16 @@ from src.sync_engine.outbound_value_mapping import (
 )
 
 
+def test_lead_source_api_values_round_trip_without_losing_unknowns():
+    from src.sync_engine.webhook_handlers.zoho_field_transforms import _dedicated_choice, SKIP_FIELD
+    labels = ['テレアポ', 'メール営業', '紹介']
+    actual = translate_choice_value('project', 'リードソース1', labels)
+    assert actual == ['選択肢1', '選択肢2', '紹介']
+    assert _dedicated_choice('project', 'リードソース1', actual, multiple=True) == labels
+    assert _dedicated_choice('project', 'リードソース1', ['選択肢1', '未知'], multiple=True) is SKIP_FIELD
+    assert translate_choice_value('project', 'リードソース1', ['テレアポ', '未知']) is None
+
+
 def test_billing_type_is_inverted_from_the_inbound_table() -> None:
     """課金形態の取り込みは辞書なので、そのまま反転できる。"""
     table = zoho_outbound_value_maps()["product"]["課金形態"]
@@ -60,3 +70,9 @@ def test_unmapped_values_are_listed_for_review() -> None:
 
     assert ("project", "営業ステータス") in missing
     assert "アポ" in missing[("project", "営業ステータス")]
+
+
+def test_prefecture_outer_whitespace_uses_existing_mapping_only():
+    assert translate_choice_value('client_master', '都道府県', ' 兵庫県') == '兵庫県'
+    assert translate_choice_value('client_master', '都道府県', '東京都 ') == '東京都'
+    assert translate_choice_value('client_master', '都道府県', ' 未確定の市区町村 ') is None

@@ -712,3 +712,28 @@ def test_http_store_deadline_error_remains_unconfirmed(gate, monkeypatch):
     assert response.status_code == 503
     store.enqueue.assert_called_once()
     assert events.call_args.kwargs["outcome"] == "save_unconfirmed"
+
+
+@pytest.mark.parametrize('partial,other_failure,expected', [(False,False,'retry'), (True,False,'needs_attention'), (False,True,'needs_attention')])
+def test_busy_dispatch_result_is_retried_only_without_other_failure(monkeypatch,partial,other_failure,expected):
+    from src.sync_capacity import worker
+    from src.sync_engine.record_sync_lock import RecordSyncBusy
+    from src.sync_engine.webhook_handlers import kintone_webhook
+    wiring = SimpleNamespace(dispatcher=Mock(dispatch=Mock(side_effect=RecordSyncBusy('処理中'))),
+        id_mapping_store=None,any_db_page_client=None)
+    monkeypatch.setattr('src.sync_engine.production_wiring.get_production_wiring',lambda:wiring)
+    monkeypatch.setattr('src.sync_engine.webhook_receipts.record_webhook_receipt',lambda *_:None)
+    def handler(event, **kw):
+        observed=kw['dispatcher']
+        try: observed.dispatch(None)
+        except RecordSyncBusy: pass
+        observed.partial=partial
+        if other_failure:
+            wiring.dispatcher.dispatch.side_effect=RuntimeError('結果不明')
+            try: observed.dispatch(None)
+            except RuntimeError: pass
+        return {'statusCode':500,'body':'{}'}
+    monkeypatch.setattr(kintone_webhook,'handler',handler)
+    result, was_partial=worker.prepare(SimpleNamespace(source='kintone',event={}))()
+    assert result_state(result,partial=was_partial)[0]==expected
+    assert result_state({'statusCode':500,'body':'{"record_sync_busy":true}'})[0]=='needs_attention'

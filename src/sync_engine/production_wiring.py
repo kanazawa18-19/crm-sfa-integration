@@ -683,6 +683,13 @@ def build_kintone_targets_by_db() -> dict[str, KintoneSyncTarget]:
                 suffix,
             )
             continue
+        # 案件・アクションの顧客ルックアップには参照元アプリの認証も必要。
+        if db_key in {"project", "action"}:
+            lookup_token = os.environ.get("KINTONE_API_TOKEN_CLIENT", "")
+            tokens = list(dict.fromkeys(t.strip() for t in (api_token + "," + lookup_token).split(",") if t.strip()))
+            if len(tokens) > 9:
+                raise ValueError("kintoneの参照用APIトークンは9個以内に設定してください")
+            api_token = ",".join(tokens)
         client = HttpKintoneClient(domain, api_token=api_token)
         targets[db_key] = KintoneSyncTarget(client, app_id)
     return targets
@@ -958,13 +965,9 @@ def build_production_dispatcher(
         from src.hub_creation.service import enabled_since
         if enabled_since() is None:
             return False
-        from src.hub_creation.domain import title_value, identity_hash, CreationHeld
         from src.hub_creation.journal import PostgresCreationJournal
-        try:
-            _name, title = title_value(event.db_key, properties)
-        except CreationHeld:
-            return False
-        return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, identity_hash(event.db_key, title), event.external_id)
+        # 返信時の活動タイトルは外部で組み立て直されるため、名前ではなく確定IDで照合する。
+        return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, event.external_id)
 
     dispatcher = Dispatcher(
         store,

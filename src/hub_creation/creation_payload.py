@@ -10,6 +10,20 @@ ZOHO_RELATIONS = {
 }
 
 
+def validate_lead_source_metadata(payload, fields):
+    """表示名と内部値の実設定が変わっていたら、既知の対応で作成しない。"""
+    from src.sync_engine.webhook_handlers.zoho_field_transforms import LEAD_SOURCE_API_LABELS
+    for code in payload.get('field65', []):
+        if code not in LEAD_SOURCE_API_LABELS:
+            continue
+        metadata = [field for field in fields if field.get('api_name') == 'field65']
+        options = metadata[0].get('pick_list_values', []) if len(metadata) == 1 else []
+        matches = [item for item in options if item.get('actual_value') == code]
+        if (len(matches) != 1 or matches[0].get('display_value') != LEAD_SOURCE_API_LABELS[code]
+                or matches[0].get('type') == 'unused'):
+            raise CreationHeld('リードソースの表示名と内部値の設定が変わっています。対応を確認してください')
+
+
 def complete_zoho_payload(db_key, properties, payload, *, get_mapping):
     result = dict(payload)
     if db_key == 'client_master':

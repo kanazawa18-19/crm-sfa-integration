@@ -61,3 +61,65 @@ def test_missing_destination_is_not_reported_as_sent():
     result=ReportRunner(journal,{},Mock(),send).run(journal.job,None)
     assert result['state']=='not_configured' and not result['daily_report_sent']
     send.assert_not_called()
+
+
+def test_collection_timeout_records_stage_without_exception_body():
+    import requests
+    journal = Journal(); send = Mock()
+    client = SimpleNamespace(query_raw=Mock(side_effect=requests.exceptions.Timeout('secret-url/private-body')))
+    result = ReportRunner(journal, {'project': client}, Mock(), send).run(journal.job, 'destination')
+    assert result['state'] == 'retry_pending'
+    assert journal.errors[-1].startswith('Notion収集で時間切れ。')
+    assert 'secret' not in journal.errors[-1] and 'private' not in journal.errors[-1]
+    send.assert_not_called()
+
+
+def test_page_save_failure_is_distinguished_from_notion_failure():
+    journal = Journal(); send = Mock()
+    journal.save_page = Mock(side_effect=RuntimeError('private page body'))
+    client = SimpleNamespace(query_raw=lambda body: {'results': [page()], 'has_more': False})
+    ReportRunner(journal, {'project': client}, Mock(), send).run(journal.job, 'destination')
+    assert journal.errors[-1].startswith('収集ページの保存で処理エラー。')
+    assert 'private' not in journal.errors[-1]
+    send.assert_not_called()
+
+
+def test_delivery_save_failure_keeps_reservation_and_does_not_resend():
+    journal = Journal('ready'); send = Mock()
+    journal.delivered = Mock(side_effect=RuntimeError('secret db connection'))
+    runner = ReportRunner(journal, {}, Mock(return_value='合成日報'), send)
+    runner.run(journal.job, 'destination')
+    assert journal.errors[-1].startswith('送達結果の保存で処理エラー。')
+    assert 'secret' not in journal.errors[-1]
+    assert journal.deliveries['daily']['state'] == 'reserved'
+    runner.run(journal.job, 'destination')
+    assert send.call_count == 1
+
+
+def test_failure_classification_uses_only_safe_codes():
+    from src.reports.durable.application import safe_failure_reason
+    from src.sync_engine.clients._http import ApiError
+    import psycopg
+    assert 'HTTP 429' in safe_failure_reason('Notion収集', ApiError(429, 'private url'))
+    assert 'DB処理時間切れまたは取消' in safe_failure_reason('収集ページの保存', psycopg.errors.QueryCanceled('private query'))
+    assert 'private' not in safe_failure_reason('収集ページの保存', psycopg.errors.QueryCanceled('private query'))
+
+
+def test_oversized_report_is_held_before_delivery_reservation():
+    journal = Journal('ready'); send = Mock()
+    result = ReportRunner(journal, {}, Mock(return_value='あ' * 40001), send).run(journal.job, 'destination')
+    assert result['state'] == 'held'
+    assert journal.deliveries == {}
+    assert '未送信' in journal.errors[-1]
+    send.assert_not_called()
+
+
+def test_oversized_weekly_report_preserves_delivered_daily_status():
+    journal = Journal('ready'); send = Mock()
+    render = Mock(side_effect=['日報', 'あ' * 40001])
+    result = ReportRunner(journal, {}, render, send).run(journal.job, 'destination')
+    assert result['state'] == 'held'
+    assert journal.deliveries['daily']['state'] == 'delivered'
+    assert 'weekly' not in journal.deliveries
+    assert journal.errors[-1] == '週報本文がSlackの文字数上限を超えています（週報は未送信）'
+    assert send.call_count == 1

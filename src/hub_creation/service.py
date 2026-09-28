@@ -9,7 +9,7 @@ from src.db_schema.base import Tool
 from src.db_schema.registry import get_schema
 from src.hub_creation.domain import CreationHeld, CreationNotApplicable, title_value, require_notion_fields, identity_hash, sheet_properties
 from src.sync_engine.id_mapping import IdMapping
-from src.sync_engine.record_sync_lock import acquire_record_sync_lock
+from src.sync_engine.record_sync_lock import acquire_record_sync_lock, RecordSyncBusy
 from src.sync_engine.sync_notes import UNAVAILABLE, unresolved_note
 from src.sync_engine.outbound_field_mapping import translate_properties, zoho_outbound_field_names, kintone_outbound_field_names
 from src.sync_engine.outbound_value_mapping import translate_choice_value
@@ -136,6 +136,7 @@ class HubCreationService:
             with acquire_record_sync_lock(self.store, event.db_key, page_id):
                 mapping = self.store.get(page_id)
                 if mapping is None:
+                    self.journal.hold(source_key, "source", event.db_key, "新規登録を処理中です")
                     mapping = IdMapping(notion_key=page_id, db_key=event.db_key)
                     self.store.upsert(mapping, expected_last_synced_at=None)
                 if mapping.db_key != event.db_key:
@@ -172,27 +173,33 @@ class HubCreationService:
                     column = {"zoho": "zoho_id", "kintone": "kintone_id"}[target]
                     note_key = f"{UNAVAILABLE}|{origin}:新規登録（{target}）"
                     try:
-                        if getattr(mapping, column):
+                        with acquire_record_sync_lock(self.store, event.db_key, "hub-create:" + target):
+                            mapping = self.store.get(page_id)
+                            if mapping is None or mapping.db_key != event.db_key:
+                                raise CreationHeld("対応表のDBが一致しません")
+                            if getattr(mapping, column):
+                                notes[note_key] = ""
+                                continue
+                            attempt = self.journal.get(source_key, target)
+                            if attempt and attempt["state"] == "created":
+                                external_id = attempt["externalId"]
+                            elif attempt and attempt["state"] == "reserved":
+                                raise CreationHeld("作成結果が不明です。自動で再作成せず確認を待っています")
+                            else:
+                                from src.record_merge.creation_candidates import candidate_context
+                                with candidate_context(event.db_key, page_id, source_key, properties):
+                                    payload = adapter.plan(event.db_key, properties)
+                                if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
+                                    raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
+                                external_id = adapter.create(event.db_key, payload)
+                                self.journal.finish(source_key, target, external_id)
+                            updated = replace(mapping, **{column: external_id})
+                            self.store.upsert(updated, expected_last_synced_at=mapping.last_synced_at)
+                            mapping = updated
+                            self.journal.dismiss_hold(source_key, "mapping:" + target)
                             notes[note_key] = ""
-                            continue
-                        attempt = self.journal.get(source_key, target)
-                        if attempt and attempt["state"] == "created":
-                            external_id = attempt["externalId"]
-                        elif attempt and attempt["state"] == "reserved":
-                            raise CreationHeld("作成結果が不明です。自動で再作成せず確認を待っています")
-                        else:
-                            from src.record_merge.creation_candidates import candidate_context
-                            with candidate_context(event.db_key, page_id, source_key, properties):
-                                payload = adapter.plan(event.db_key, properties)
-                            if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
-                                raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
-                            external_id = adapter.create(event.db_key, payload)
-                            self.journal.finish(source_key, target, external_id)
-                        updated = replace(mapping, **{column: external_id})
-                        self.store.upsert(updated, expected_last_synced_at=mapping.last_synced_at)
-                        mapping = updated
-                        self.journal.dismiss_hold(source_key, "mapping:" + target)
-                        notes[note_key] = ""
+                    except RecordSyncBusy:
+                        raise
                     except CreationNotApplicable as exc:
                         self.journal.dismiss_hold(source_key, target)
                         notes[note_key] = f"[{origin}:新規登録（{target}）] 対象外: {exc}。この送り先への登録は不要です。"

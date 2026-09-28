@@ -172,7 +172,9 @@ def translate_choice_value(db_key: str, property_name: str, value: Any) -> Any |
         options = get_schema('project').get_property(property_name).options
         if not isinstance(value, (list, tuple)) or not value or any(item not in options for item in value):
             return None
-        return list(dict.fromkeys(value))
+        from src.sync_engine.webhook_handlers.zoho_field_transforms import LEAD_SOURCE_API_LABELS
+        actual = {label: code for code, label in LEAD_SOURCE_API_LABELS.items()}
+        return list(dict.fromkeys(actual.get(item, item) for item in value))
     if db_key == "project" and property_name == "ファーストタッチ":
         from src.sync_engine.decided_choices import choices, FIRST_TOUCH
         values = choices(value, FIRST_TOUCH)
@@ -188,6 +190,9 @@ def translate_choice_value(db_key: str, property_name: str, value: Any) -> Any |
         if any(item is None for item in translated):
             return None
         return translated
+    if db_key == 'client_master' and property_name == '都道府県' and isinstance(value, str):
+        # Notionの既存選択肢に付く外側の空白だけを許容する。未知の地名は補わない。
+        return table.get(value, table.get(value.strip()))
     return table.get(str(value))
 
 

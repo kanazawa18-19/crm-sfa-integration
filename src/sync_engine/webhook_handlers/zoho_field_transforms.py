@@ -269,12 +269,18 @@ def _mapped_zoho_owner(value):
     return SKIP_FIELD if result is UNRESOLVED_OWNER else result
 
 
+# 2026-09-29に設定APIで実読。表示名変更後も内部値は元の選択肢名を保持している。
+LEAD_SOURCE_API_LABELS = {'選択肢1': 'テレアポ', '選択肢2': 'メール営業'}
+
+
 def _dedicated_choice(db_key, name, value, *, multiple=False):
     from src.db_schema.registry import get_schema
     if value in (None, '', []):
         return [] if multiple else None
     options = get_schema(db_key).get_property(name).options
     values = parse_multi_value(value) if multiple else [value]
+    if db_key == 'project' and name == 'リードソース1':
+        values = [LEAD_SOURCE_API_LABELS.get(item, item) if isinstance(item, str) else item for item in values]
     if not values or any(not isinstance(item, str) or item not in options for item in values):
         return SKIP_FIELD
     return values if multiple else values[0]

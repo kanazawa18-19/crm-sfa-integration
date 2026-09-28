@@ -52,6 +52,25 @@ def _mock_token(requests_mock, *, access_token: str = "access-token-1", expires_
     )
 
 
+def test_v8_pipeline_operations_keep_same_host_and_auth_cache(requests_mock, client):
+    _mock_token(requests_mock)
+    pipeline_url = 'https://www.zohoapis.com/crm/v8/settings/pipeline?layout_id=123'
+    requests_mock.get(pipeline_url, json={'pipeline': []})
+    requests_mock.post('https://www.zohoapis.com/crm/v8/Deals', json={
+        'data': [{'status': 'success', 'code': 'SUCCESS', 'details': {'id': '123'}}]})
+    requests_mock.get(RECORD_URL, json={'data': [{'id': '12345'}]})
+    client._request('GET', '/settings/pipeline?layout_id=123', api_version='v8')
+    assert client.insert_record('Deals', {'Pipeline': '標準'}, api_version='v8') == '123'
+    assert client.get_record('Deals', '12345')['id'] == '12345'
+    assert sum(r.url.startswith(TOKEN_URL) for r in requests_mock.request_history) == 1
+    assert client._api_base_url == 'https://www.zohoapis.com/crm/v2'
+
+
+def test_unknown_api_version_is_rejected_without_request(client):
+    with pytest.raises(ValueError, match='API版'):
+        client._request('GET', '/Deals', api_version='https://example.invalid')
+
+
 # --- アクセストークン取得・キャッシュ ---------------------------------------------------------
 
 

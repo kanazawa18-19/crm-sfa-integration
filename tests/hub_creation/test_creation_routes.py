@@ -26,9 +26,9 @@ def response(data):
 def test_zoho_six_creation_routes(db, properties, required):
     # 任意項目を混ぜず、実必須の対応とlookupのID解決を確認する。
     fields = [{'api_name':code,'data_type':kind,'system_mandatory':True,
-               'pick_list_values':[{'actual_value':'テレアポ'}]} for code,kind in required.items()]
+               'pick_list_values':[{'actual_value':'選択肢1', 'display_value':'テレアポ'}]} for code,kind in required.items()]
     class Client:
-        def _request(self, method, path):
+        def _request(self, method, path, **kwargs):
             if '/settings/fields?' in path:
                 return response({'fields':fields})
             if '/settings/layouts?' in path:
@@ -75,7 +75,7 @@ def test_kintone_three_creation_routes(db, properties, fields, monkeypatch):
 def test_contact_matching_email_holds_even_when_name_differs():
     from src.hub_creation.domain import CreationHeld
     class Client:
-        def _request(self, method, path):
+        def _request(self, method, path, **kwargs):
             return response({'data':[{'id':'123','Last_Name':'別','First_Name':'氏名','Email':'QA@example.invalid'}], 'info':{'more_records':False}})
     with pytest.raises(CreationHeld, match='メール'):
         ZohoCreationAdapter(Client())._check_contact_duplicates('Contacts', {'姓':'検証','名':'姓名','メールアドレス':'qa@example.invalid'})
@@ -84,7 +84,7 @@ def test_contact_matching_email_holds_even_when_name_differs():
 def test_contact_empty_given_name_representations_do_not_bypass_duplicates():
     from src.hub_creation.domain import CreationHeld
     class Client:
-        def _request(self, method, path):
+        def _request(self, method, path, **kwargs):
             return response({'data':[{'id':'123','Last_Name':'同姓','First_Name':None}], 'info':{'more_records':False}})
     with pytest.raises(CreationHeld, match='姓名'):
         ZohoCreationAdapter(Client())._check_contact_duplicates('Contacts', {'姓':'同姓','名':''})
@@ -93,7 +93,7 @@ def test_contact_empty_given_name_representations_do_not_bypass_duplicates():
 def test_zoho_creation_preserves_all_controller_choices_and_memo():
     from src.sync_engine.decided_choices import controller_from_external
     class Client:
-        def _request(self, method, path):
+        def _request(self, method, path, **kwargs):
             if '/settings/fields?' in path:
                 return response({'fields': [{'api_name': code, 'data_type': kind}
                     for code, kind in [('Deal_Name', 'text'), ('field20', 'picklist'), ('field70', 'textarea')]]})
@@ -137,7 +137,7 @@ def test_zoho_optional_unmapped_single_owner_is_omitted_after_verified_lookup(mo
     monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified': True,
         'users': [{'notion_id': 'known', 'zoho_id': '123', 'enabled': True}]}))
     class Client:
-        def _request(self, method, path):
+        def _request(self, method, path, **kwargs):
             if '/settings/fields?' in path:
                 return response({'fields': [{'api_name': 'Name', 'data_type': 'text'},
                     {'api_name': 'Owner', 'data_type': 'ownerlookup', 'system_mandatory': False}]})

@@ -892,7 +892,8 @@ class Dispatcher:
     def _try_create_new_record(self, event: SyncEvent) -> DispatchResult:
         # 管理画面から既存外部レコードを取り込む経路も、この鍵を共有する。
         external_key = "external:" + event.source_tool.value + ":" + event.external_id
-        with acquire_record_sync_lock(self._store, event.db_key, external_key):
+        with (acquire_record_sync_lock(self._store, event.db_key, external_key),
+              acquire_record_sync_lock(self._store, event.db_key, "hub-create:" + event.source_tool.value)):
             if self._resolve_mapping(event) is not None:
                 return DispatchResult(skipped=True, reason="new_record_concurrent_creation_detected")
             return self._try_create_new_record_locked(event)

@@ -1,6 +1,7 @@
 """ページ保存としおりは同じトランザクションで進める。"""
 from psycopg.types.json import Jsonb
 from src.sync_operations.product_holds import connect
+from src.reports.durable.snapshot import report_snapshot
 
 
 class ReportJournal:
@@ -31,17 +32,22 @@ class ReportJournal:
     def save_page(self, job, pages, cursor, complete):
         phase = ('action' if job['phase'] == 'project' else 'ready') if complete else job['phase']
         with connect() as conn:
-            for page in pages:
-                conn.execute('''INSERT INTO "ReportCollectionPage" ("reportDate","dbKey","pageId",page) VALUES (%s,%s,%s,%s)
+            with conn.cursor() as cur:
+                cur.executemany('''INSERT INTO "ReportCollectionPage" ("reportDate","dbKey","pageId",page) VALUES (%s,%s,%s,%s)
                     ON CONFLICT ("reportDate","dbKey","pageId") DO UPDATE SET page=EXCLUDED.page''',
-                    (job['reportDate'], job['phase'], page['id'], Jsonb(page)))
+                    [(job['reportDate'], job['phase'], page['id'], Jsonb(report_snapshot(job['phase'], page))) for page in pages])
             conn.execute('UPDATE "ReportCollection" SET phase=%s,cursor=%s,error=NULL,"retryCount"=0,"updatedAt"=now() WHERE "reportDate"=%s',
                          (phase, Jsonb({} if complete else cursor), job['reportDate']))
 
     def pages(self, report_date, db_key):
         with connect() as conn:
-            rows = conn.execute('SELECT page FROM "ReportCollectionPage" WHERE "reportDate"=%s AND "dbKey"=%s ORDER BY "pageId"', (report_date, db_key)).fetchall()
-            return [row['page'] for row in rows]
+            pages = []
+            # 大きな日報も1回の転送がDBの時間制限を超えないよう、同じ読み取りを分割する。
+            with conn.cursor(name='report_pages') as cursor:
+                cursor.execute('SELECT page FROM "ReportCollectionPage" WHERE "reportDate"=%s AND "dbKey"=%s ORDER BY "pageId"', (report_date, db_key))
+                while rows := cursor.fetchmany(1000):
+                    pages.extend(row['page'] for row in rows)
+            return pages
 
     def delivery(self, report_date, kind):
         with connect() as conn:
@@ -59,6 +65,10 @@ class ReportJournal:
     def finish(self, report_date):
         with connect() as conn:
             conn.execute('UPDATE "ReportCollection" SET phase=\'done\',"completedAt"=now(),"updatedAt"=now(),error=NULL WHERE "reportDate"=%s', (report_date,))
+            # 今回より古い完了分を整理する。収集中・保留中の原本と配送台帳は残す。
+            conn.execute('''DELETE FROM "ReportCollectionPage" p USING "ReportCollection" c
+                WHERE p."reportDate"=c."reportDate" AND c.phase='done'
+                  AND c."reportDate" < %s''', (report_date,))
 
     def error(self, report_date, reason, *, held=False):
         with connect() as conn:

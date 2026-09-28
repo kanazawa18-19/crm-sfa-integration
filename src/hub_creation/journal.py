@@ -16,6 +16,7 @@ class PostgresCreationJournal:
             return cur.fetchone()
 
     def has_source(self, source_key):
+        """新規登録の経路を通った印。対応表保存後の中断も再開対象にする。"""
         with connect() as conn, conn.cursor() as cur:
             cur.execute('SELECT 1 FROM "HubCreationAttempt" WHERE "sourceKey"=%s LIMIT 1', (source_key,))
             return cur.fetchone() is not None
@@ -47,11 +48,19 @@ class PostgresCreationJournal:
             if cur.rowcount != 1:
                 raise RuntimeError("作成予約の確定に失敗しました")
 
-    def conflicts(self, db_key, target, fingerprint, external_id):
+    def conflicts(self, db_key, target, external_id):
         with connect() as conn, conn.cursor() as cur:
             cur.execute('''SELECT 1 FROM "HubCreationAttempt" WHERE "dbKey"=%s AND target=%s
-                AND "identityHash"=%s AND (state='reserved' OR (state='created' AND "externalId"=%s)) LIMIT 1''', (db_key,target,fingerprint,str(external_id)))
-            return cur.fetchone() is not None
+                AND state='created' AND "externalId"=%s LIMIT 1''', (db_key,target,str(external_id)))
+            if cur.fetchone() is not None:
+                return True
+            # 作成結果不明の間は、新規受信を再送させる。名前が変換されても二重作成しない。
+            cur.execute('''SELECT 1 FROM "HubCreationAttempt" WHERE "dbKey"=%s AND target=%s
+                AND state='reserved' LIMIT 1''', (db_key, target))
+            if cur.fetchone() is not None:
+                from src.sync_engine.record_sync_lock import RecordSyncBusy
+                raise RecordSyncBusy("外部への作成結果を確認してから新規通知を再処理します")
+            return False
 
     def source_for_page(self, page_id):
         with connect() as conn, conn.cursor() as cur:

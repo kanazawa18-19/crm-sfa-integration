@@ -208,7 +208,18 @@ class NotionMergeGateway:
                 expected_source[name] = [identifier for identifier in expected_source.get(name, []) if identifier not in removed]
         if self.values(job['dbKey'], source) != expected_source:
             raise MergeHeld('比較後に統合元の内容が変わりました')
-        if [copy_block(block) for block in self.blocks(job['dbKey'], job['sourceId'])] != snapshot['sourceBlocks']:
+        if source.get('archived') or source.get('in_trash'):
+            # Notionはアーカイブ後の本文取得に404を返す。事前検証を経た予約と、
+            # それより前の全手順の完了記録がある場合だけ統合先の検証へ進む。
+            steps = job['steps']
+            archive = steps[-1] if steps else {}
+            progress = job.get('progress', {})
+            if (archive.get('kind') != 'archive' or archive.get('id') != job['sourceId']
+                    or archive.get('desired') is not True
+                    or progress.get(str(len(steps)-1), {}).get('state') not in {'reserved', 'done'}
+                    or any(progress.get(str(i), {}).get('state') != 'done' for i in range(len(steps)-1))):
+                raise MergeHeld('アーカイブ前の保持確認と実行予約を確認できません')
+        elif [copy_block(block) for block in self.blocks(job['dbKey'], job['sourceId'])] != snapshot['sourceBlocks']:
             raise MergeHeld('比較後に統合元の本文が変わりました')
 
     def read(self, step):

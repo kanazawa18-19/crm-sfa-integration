@@ -19,15 +19,15 @@ def report(local):
 
 def test_duplicate_page_upsert_and_cursor_are_atomic(report):
     job = report.next_job()
-    report.save_page(job, [{'id':'p','version':1}], {'cursor':'next'}, False)
+    report.save_page(job, [{'id':'p','properties':{'案件名':{'type':'title','title':[]}}}], {'cursor':'next'}, False)
     job = report.next_job()
-    report.save_page(job, [{'id':'p','version':2}], {'cursor':'last'}, False)
-    assert report.pages(job['reportDate'], 'project') == [{'id':'p','version':2}]
+    report.save_page(job, [{'id':'p','created_time':None,'properties':{'案件名':{'type':'title','title':[{'plain_text':'更新'}]}}}], {'cursor':'last'}, False)
+    assert report.pages(job['reportDate'], 'project') == [{'id':'p','created_time':None,'properties':{'案件名':{'type':'title','title':[{'plain_text':'更新'}]}}}]
     with connect() as conn:
         conn.execute('ALTER TABLE "ReportCollection" ADD CONSTRAINT synthetic_stop CHECK (false) NOT VALID')
     with pytest.raises(psycopg.errors.CheckViolation):
-        report.save_page(report.next_job(), [{'id':'q'}], {}, True)
-    assert report.pages(job['reportDate'], 'project') == [{'id':'p','version':2}]
+        report.save_page(report.next_job(), [{'id':'q','properties':{}}], {}, True)
+    assert report.pages(job['reportDate'], 'project') == [{'id':'p','created_time':None,'properties':{'案件名':{'type':'title','title':[{'plain_text':'更新'}]}}}]
     assert report.next_job()['cursor'] == {'cursor':'last'}
 
 
@@ -53,7 +53,7 @@ def test_repeated_failure_does_not_block_later_dates(report):
 def test_successful_collection_resets_consecutive_failure_count(report):
     day = date(2026,9,28)
     for _ in range(2): report.error(day, '合成取得失敗')
-    report.save_page(report.get(day), [{'id': 'recovered'}], {'cursor': 'next'}, False)
+    report.save_page(report.get(day), [{'id': 'recovered','properties':{}}], {'cursor': 'next'}, False)
     report.error(day, '合成取得失敗')
     assert report.get(day)['retryCount'] == 1
     assert report.get(day)['phase'] == 'project'
@@ -80,3 +80,29 @@ def test_missing_date_detection_is_bounded_and_does_not_backfill_initial_install
     report.detect_missing_dates(date(2026,9,28))
     assert report.get(date(2026,9,20)) is None
     assert report.get(date(2026,9,21))['phase'] == 'held'
+
+
+def test_finish_keeps_latest_and_held_pages_and_all_deliveries(report):
+    from datetime import timedelta
+    first = date(2026,9,28)
+    for offset in range(3):
+        day = first + timedelta(days=offset)
+        report.ensure(day, datetime(2026,9,28,10,tzinfo=timezone.utc))
+        report.save_page(report.get(day), [{'id':str(offset),'properties':{}}], {}, False)
+        if offset != 1:
+            report.reserve(day, 'daily', 'destination', 'body')
+            report.delivered(day, 'daily')
+            report.finish(day)
+        else:
+            report.error(day, '保留', held=True)
+    assert report.pages(first, 'project') == []
+    assert len(report.pages(first+timedelta(days=1), 'project')) == 1
+    assert len(report.pages(first+timedelta(days=2), 'project')) == 1
+    assert report.delivery(first, 'daily')['state'] == 'delivered'
+
+
+def test_collection_read_preserves_all_pages_across_fetch_boundaries(report):
+    job = report.next_job()
+    report.save_page(job, [{'id': f'p{i:05}', 'properties': {}} for i in range(2103)], {}, False)
+    pages = report.pages(job['reportDate'], 'project')
+    assert [p['id'] for p in pages] == [f'p{i:05}' for i in range(2103)]

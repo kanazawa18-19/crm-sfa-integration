@@ -1,7 +1,7 @@
-// web-engagement-toolのprisma.config.tsと同じ構成(2026-08-15、Prisma 7ではmigrate系
-// コマンドがこのファイルからdatasource URLを読むようになったため必須)。
+// マイグレーションのセッションロックは、通常アプリ用のpooled接続では保持できない。
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
+import { migrationDatabaseUrl } from "./prisma/migrationDatabaseUrl";
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -9,6 +9,6 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    url: migrationDatabaseUrl(process.env),
   },
 });
