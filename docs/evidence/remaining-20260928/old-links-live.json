@@ -11,7 +11,7 @@
   "business_values_written": false,
   "post_to_create_external_records": false,
   "source_date_differences_preserved_count": 3,
-  "spreadsheet_delivery_verified": false,
+  "spreadsheet_delivery_verified": true,
   "private_evidence": [
     {
       "file": "old-links-result-private.json",
@@ -25,6 +25,7 @@
     }
   ],
   "spreadsheet_key_lookup_complete": true,
-  "spreadsheet_rows_present": 0,
-  "spreadsheet_rows_missing": 6
+  "spreadsheet_rows_present": 6,
+  "spreadsheet_rows_missing": 0,
+  "spreadsheet_result": "old-sheet-live.json"
 }

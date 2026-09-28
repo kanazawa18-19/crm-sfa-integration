@@ -1,0 +1,20 @@
+{
+  "planned_rows": 6,
+  "existing_sheet_rows": 0,
+  "columns_per_row": [
+    7,
+    8,
+    11,
+    7,
+    7,
+    7
+  ],
+  "omitted_empty_column": "担当メンバー",
+  "business_values_source": "Notion現在値",
+  "write_input_option": "RAW",
+  "notion_business_values_write": false,
+  "zoho_kintone_write": false,
+  "plan_digest": "ec247709cf032428727eb684713a28cc3d92a711c715f2ab0b1476b44f666eb2",
+  "file_sha256": "bb85a9147bf379f96f1d958c13c13d50c9e93c1b520d1b24baa4dd4e85679ba7",
+  "execution": "verified_all_6"
+}

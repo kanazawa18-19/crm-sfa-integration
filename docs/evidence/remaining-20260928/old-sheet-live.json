@@ -1,0 +1,17 @@
+{
+  "restored_rows": 6,
+  "db_counts": {
+    "action": 4,
+    "contact": 1,
+    "client_master": 1
+  },
+  "readback_verified_rows": 6,
+  "mapping_verified_rows": 6,
+  "notion_page_unchanged_verified_rows": 6,
+  "write_input_option": "RAW",
+  "omitted_empty_column": "担当メンバー",
+  "existing_business_rows_updated": false,
+  "zoho_kintone_record_writes": 0,
+  "plan_digest": "ec247709cf032428727eb684713a28cc3d92a711c715f2ab0b1476b44f666eb2",
+  "private_result_sha256": "4fc0c836f518017d54f7a4b31b7d53539825046d58ee74827d171364ee62869f"
+}
