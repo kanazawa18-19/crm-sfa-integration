@@ -158,7 +158,7 @@ export default function FacilityListPageClient() {
       }
       if (result.unchecked_count > 0) {
         notes.push(
-          `CRM突合を完了できなかった ${result.unchecked_count}件（この行は新規リストに入っていません）`
+          `CRM突合を完了できなかった ${result.unchecked_count}件（この行は新規リストに入っていません）${Object.entries(result.unchecked_reasons ?? {}).map(([reason, count]) => ` / ${reason}: ${count}件`).join("")}`
         );
       }
       if (!result.contacts_available) {

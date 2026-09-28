@@ -305,6 +305,7 @@ def find_client_pages_by_normalized_names(
                 SELECT "normalizedName", "notionPageId", "rawName"
                   FROM "ClientNameIndex"
                  WHERE "normalizedName" = ANY(%s)
+                 ORDER BY "rawName", "notionPageId"
                 """,
                 (unique,),
             )

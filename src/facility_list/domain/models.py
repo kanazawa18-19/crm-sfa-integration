@@ -231,6 +231,7 @@ class CrmMatch:
     contracted_services: tuple[str, ...] = ()  # 取引中サービス
     contacts: tuple[CrmContact, ...] = ()
     candidate_names: tuple[str, ...] = ()  # AMBIGUOUSのときの候補
+    not_checked_reason: str | None = None  # 未照合の理由。判定そのものとは分離する。
     # どの強さの名前候補で当たったか。MATCHEDのときだけ入る。
     matched_by: "NameMatchStrength | None" = None
     evidence: tuple[str, ...] = ()  # 照合根拠。住所だけ・電話だけの候補もここに残す。

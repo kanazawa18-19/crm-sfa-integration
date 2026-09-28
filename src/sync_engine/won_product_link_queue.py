@@ -156,13 +156,18 @@ class ProjectProductLinkQueue:
     def resume(self, project_id: str) -> None:
         """原因を修正後、案件ロック内で明示的に再開する。配送義務は捨てない。"""
         with self._connect() as conn, conn.cursor() as cur:
-            for table in ('ProjectProductLinkPair', 'ProjectProductLinkDelivery'):
-                cur.execute(f'''UPDATE "{table}" SET state='pending' WHERE "projectId"=%s AND state='held' ''',
-                            (project_id,))
-            cur.execute('UPDATE "ProjectProductLinkDelivery" SET "verificationAttempts"=0 WHERE "projectId"=%s', (project_id,))
-            cur.execute('''UPDATE "ProjectProductLinkTask" SET "evaluationHeld"=false, attempts=0,
-                "nextAttemptAt"=NOW(), "lastError"=NULL, "errorDbKey"=NULL, "errorNotionId"=NULL
-                WHERE "projectId"=%s''', (project_id,))
+            self.resume_with_cursor(cur, project_id)
+
+    @staticmethod
+    def resume_with_cursor(cur, project_id: str) -> None:
+        """管理画面の判断履歴と同じDBトランザクションで再開できる。案件ロックは呼出元が取得する。"""
+        for table in ('ProjectProductLinkPair', 'ProjectProductLinkDelivery'):
+            cur.execute(f'''UPDATE "{table}" SET state='pending' WHERE "projectId"=%s AND state='held' ''',
+                        (project_id,))
+        cur.execute('UPDATE "ProjectProductLinkDelivery" SET "verificationAttempts"=0 WHERE "projectId"=%s', (project_id,))
+        cur.execute('''UPDATE "ProjectProductLinkTask" SET "evaluationHeld"=false, attempts=0,
+            "nextAttemptAt"=NOW(), "lastError"=NULL, "errorDbKey"=NULL, "errorNotionId"=NULL
+            WHERE "projectId"=%s''', (project_id,))
 
     def pending(self, limit: int = 3) -> list[str]:
         with self._connect() as conn, conn.cursor() as cur:

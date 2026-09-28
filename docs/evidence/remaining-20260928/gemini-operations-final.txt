@@ -1,0 +1,25 @@
+提示された最終差分および対論（ハッシュ比較キーの除外定義、409時の画面リカバリ、ロック共用によるcronとの競合制御、CSV出力フォーマットの改善）を独立点検しました。
+
+現在、コードベースに BLOCKER（重大な不具合）および WARN（潜在的な障害・データ競合リスク）はともに 0件（検出なし） です。
+
+点検・評価結果
+
+保留比較ハッシュの最適化 (hold_snapshot_hash)
+
+再試行カウンタや次回実行予定時刻（attempts, nextAttemptAt, updatedAt, verificationAttempts）の自然変動を比較対象から除外しつつ、業務判断に必要な要素（projectId, state, lastError, 各種関連ID）はすべて保持されています。
+
+これにより、管理者が画面を開いている最中にバックグラウンドのタイマー更新が入っても、無駄な 409 コンフリクトエラーを発生させずに安全に再開要求が通るようになりました。
+
+フロントエンドの 409 競合リカバリ (hold-list.tsx)
+
+万が一上位の業務ステータス自体が変更されて 409 エラーが返された場合、即座に選択状態を解除して router.refresh() を呼ぶことで、画面上の旧スナップショットを最新化する設計が確認できました。
+
+管理画面 API と Cron ワーカーの完全排他制御
+
+resume_product_hold と drain_project_product_links（Cron）の雙方が同一の acquire_record_sync_lock(store, "project", project_id) を獲得して処理を行うため、確認・更新・Queue再開の間に Cron 側の割り込みやデータの二重更新は発生しません。
+
+CSV 未照合理由の明示化 (exporters.py)
+
+未照合理由:  接頭辞の付与により、エクスポートされた CSV 上で照合根拠（evidence）と未照合理由（not_checked_reason）が区別できるようになりました。
+
+すべての自動テスト（Python 3856 件、TS 8 件、型検査、ローカル DB での二段階再開試験）が通過しており、本番配備（Ready）可能な状態です。

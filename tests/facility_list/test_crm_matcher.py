@@ -176,3 +176,28 @@ class TestTimeBudget:
         results = matcher.match_all([Facility(hotel_no=1, name="テスト旅館")])
         assert results[1].state is CrmMatchState.NOT_CHECKED
         assert matcher.skipped_by_budget == 0
+
+
+def test_unchecked_reasons_distinguish_budget_from_database_failure(monkeypatch):
+    facility = Facility(hotel_no=1, name='検証旅館')
+    matcher = CrmMatcher(notion_api_key=None, time_budget_seconds=0)
+    assert matcher.match_all([facility])[1].not_checked_reason == '時間切れ'
+    assert matcher.unchecked_reasons == {'時間切れ': 1}
+    matcher = CrmMatcher(notion_api_key=None, time_budget_seconds=60)
+    def fail(names):
+        raise RuntimeError('合成DB障害')
+    monkeypatch.setattr(module, 'find_client_pages_by_normalized_names', fail)
+    assert matcher.match_all([facility])[1].not_checked_reason == '名前索引の取得失敗'
+    assert matcher.unchecked_reasons == {'名前索引の取得失敗': 1}
+
+
+def test_candidates_stable_and_same_name_different_ids_preserved(monkeypatch):
+    hits = [{'notion_page_id': 'z', 'raw_name': '旅館乙'},
+            {'notion_page_id': 'b', 'raw_name': '旅館甲'},
+            {'notion_page_id': 'a', 'raw_name': '旅館甲'}]
+    monkeypatch.setattr(module, 'find_by_normalized_name', lambda _: hits)
+    matcher = CrmMatcher(notion_api_key=None)
+    first = matcher.match(Facility(hotel_no=1, name='検証旅館'))
+    hits.reverse()
+    second = matcher.match(Facility(hotel_no=1, name='検証旅館'))
+    assert first.candidate_names == second.candidate_names == ('旅館乙', '旅館甲', '旅館甲')

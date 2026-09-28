@@ -42,6 +42,7 @@ const NAV_GROUPS: NavGroup[] = [
     links: [
       { href: "/alerts", label: "マネージャー通知" },
       { href: "/sync-review", label: "同期の確認待ち" },
+      { href: "/sync-operations", label: "商品関連の保留" },
       { href: "/reports", label: "日報" },
       { href: "/members", label: "メンバー実績" },
       { href: "/tasks", label: "タスク" },

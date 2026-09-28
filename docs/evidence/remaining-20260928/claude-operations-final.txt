@@ -1,0 +1,11 @@
+判定：残るBLOCKERとWARNはありません。
+
+前回のWARN-1（hashに含まれる変動列）は解消しています。hashから除いたのは、attempts・nextAttemptAt・updatedAt・verificationAttempts という再試行の時刻と回数だけです。状態・理由・expectedIds などの業務判断に関わる変化は、引き続き409になることがテストで固定されています。
+
+前回のWARN-2（行ロックなし）も解消です。提示された drain_project_product_links は、linker の実行と queue.contains による再確認を、管理画面と同じ acquire_record_sync_lock(store, "project", project_id) の中で行っています。このため、hash確認から UPDATE までの間にcronの変更が割り込むことはありません。
+
+pending() の条件も確認しました。held だけの案件はcronに拾われず、held と pending が混在する案件だけが処理対象になります。後者でcronが pending 行を done や held に進めた場合は業務上の変化なので、409 で読み直させる今回の挙動が正しい動きです。
+
+INFO-3（409時のrefresh）とINFO-4（CSVの接頭辞）も反映を確認しました。
+
+1点だけ確認をお願いします（変更要求ではありません）。混在案件をcronが処理するとき、pair や delivery の行で、除外した4列以外の時刻列（例えば行単位の updatedAt）も更新されていないかどうかです。もし更新されていれば、混在案件でだけ409が繰り返されるので、その列も除外対象に加えてください。

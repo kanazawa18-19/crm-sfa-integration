@@ -669,6 +669,7 @@ export interface FacilityListExport {
   // 時間予算を使い切って突合を打ち切った件数。0でなければ、そのぶんは
   // 「未突合」として扱われ、新規リストには載っていない。
   unchecked_count: number;
+  unchecked_reasons?: Record<string, number>;
   csv: string;
   crm_checked: boolean;
   run_id: string;
@@ -700,4 +701,22 @@ export function decideSyncFieldReview(body: {
   id: string; actor_id: string; action: string; revision: number; restore_from?: string;
 }) {
   return fetchBackend("/api/sync-review/decision", { method: "POST", body });
+}
+
+export interface ProductHold {
+  projectId: string;
+  hash: string;
+  snapshot: {
+    task: { evaluationHeld: boolean; lastError: string | null };
+    pairs: { productId: string; clientId: string; state: string; lastError: string | null }[];
+    deliveries: { dbKey: string; notionId: string; state: string; lastError: string | null }[];
+  };
+}
+export function listProductHolds(actor_id: string, offset: number) {
+  return fetchBackend<{ items: ProductHold[]; hasMore: boolean }>("/api/sync-operations/product-holds/list", {
+    method: "POST", body: { actor_id, offset },
+  });
+}
+export function resumeProductHold(body: { actor_id: string; project_id: string; expected_hash: string }) {
+  return fetchBackend("/api/sync-operations/product-holds/resume", { method: "POST", body });
 }

@@ -870,3 +870,15 @@ model SyncSourceObservation {
 
   @@id([dbKey, notionKey, sourceTool])
 }
+
+model SyncOperationHistory {
+  id String @id
+  actorId String
+  kind String
+  subjectId String
+  beforeState Json
+  afterState Json
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  @@index([subjectId, createdAt], map: "SyncOperationHistory_subject_idx")
+}

@@ -235,6 +235,7 @@ def export_facility_list(request: ExportRequest) -> dict:
         # 取得失敗・取り込み途中・材料不足・時間切れを含む未突合件数。そのぶんの行は
         # 「未突合」であり、新規リストには載っていない。
         "unchecked_count": matcher.unchecked_count,
+        "unchecked_reasons": matcher.unchecked_reasons,
         "csv": to_csv(result, created_by=request.created_by),
         "crm_checked": True,
         # Notionを読めていない場合、取引先名までは分かっても提案済みサービスや

@@ -137,6 +137,7 @@ class _StubMatcher:
         self.has_notion_access = has_notion_access
         self.skipped_by_budget = skipped
         self.unchecked_count = skipped
+        self.unchecked_reasons = {"時間切れ": skipped} if skipped else {}
 
     def match_all(self, facilities):  # noqa: ANN001
         return {f.hotel_no: CrmMatch(state=CrmMatchState.NO_NAME_MATCH) for f in facilities}

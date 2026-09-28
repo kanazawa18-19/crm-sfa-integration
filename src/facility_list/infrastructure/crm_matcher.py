@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import logging
 import os
 import re
@@ -174,11 +175,13 @@ class CrmMatcher:
         # 予算切れで突合を打ち切った施設数。呼び出し元が画面に出す。
         self.skipped_by_budget = 0
         self.unchecked_count = 0
+        self.unchecked_reasons: dict[str, int] = {}
         self._client_cache: dict[str, dict[str, Any]] = {}
         self._contacts_by_client: dict[str, tuple[CrmContact, ...]] = {}
         # `match_all()`が先にまとめて引いた結果。Noneなら1件ずつ引く(単発の`match()`用)。
         self._name_index: dict[str, list[dict[str, str]]] | None = None
         self._identity_index: ClientIdentityIndex | None = None
+        self._identity_failure = False
         self._batch = False
 
     @property
@@ -273,22 +276,27 @@ class CrmMatcher:
         try:
             result = self._match(facility)
             self._check_budget()
-            return result
         except _BudgetExpired:
             self.skipped_by_budget += 1
-            return CrmMatch(state=CrmMatchState.NOT_CHECKED)
+            result = CrmMatch(state=CrmMatchState.NOT_CHECKED, not_checked_reason="時間切れ")
         except Exception:  # 取得失敗は営業対象にしない。個人情報やレスポンス本文はログに残さない。
             logger.warning("CRM突合を完了できなかった: hotelNo=%s", facility.hotel_no)
-            return CrmMatch(state=CrmMatchState.NOT_CHECKED)
+            result = CrmMatch(state=CrmMatchState.NOT_CHECKED, not_checked_reason="取得失敗")
+        if not self._batch:
+            self.unchecked_count = int(result.state is CrmMatchState.NOT_CHECKED)
+            self.unchecked_reasons = {result.not_checked_reason or "未分類": 1} if self.unchecked_count else {}
+        return result
 
     def _prepare_identity(self, facilities: list[Facility]) -> None:
         self._check_budget()
+        self._identity_failure = False
         try:
             self._identity_index = find_client_identity_candidates(
                 [key for f in facilities if (key := normalize_address(f.address, f.prefecture))],
                 [key for f in facilities if (key := normalize_phone(f.telephone))],
             )
         except Exception:
+            self._identity_failure = True
             logger.warning("住所・電話の照合用ミラーを読み取れなかった")
             self._identity_index = ClientIdentityIndex()
         self._check_budget()
@@ -310,7 +318,7 @@ class CrmMatcher:
                 hits = find_by_normalized_name(normalized)
             self._check_budget()
             if hits:
-                candidates = hits
+                candidates = sorted(hits, key=lambda row: (row["raw_name"], row["notion_page_id"]))
                 strength = variant_strength
                 break
 
@@ -335,7 +343,7 @@ class CrmMatcher:
                      if value and r[key] == value}
                 ))
                 return CrmMatch(state=CrmMatchState.AMBIGUOUS,
-                                candidate_names=tuple(h["raw_name"] for h in all_hits.values()),
+                                candidate_names=tuple(h["raw_name"] for h in sorted(all_hits.values(), key=lambda row: (row["raw_name"], row["notion_page_id"]))),
                                 evidence=reasons + (("候補間または登録値に矛盾",) if len(all_hits) > 1 or conflicting else ("二次項目の同期未完了",)))
             # 名前の裏付けがない住所単独・電話単独は同居会社や代表電話の可能性が残る。
             if len(evidence) < 2 and not candidates:
@@ -343,7 +351,7 @@ class CrmMatcher:
                                 candidate_names=(hit["raw_name"],), evidence=evidence)
             # 二次キーが一致していても、Notion上の現行値を確かめる。
             if not self._api_key:
-                return CrmMatch(state=CrmMatchState.NOT_CHECKED)
+                return CrmMatch(state=CrmMatchState.NOT_CHECKED, not_checked_reason="Notion接続未設定")
             page = self._load_client_page(hit["notion_page_id"])
             props = page.get("properties") or {}
             current_address = normalize_address(_plain_text(props.get("住所")), _plain_text(props.get("都道府県")))
@@ -361,7 +369,7 @@ class CrmMatcher:
             # 追加項目が未取り込み・古い・施設側の照合材料なしなら不一致と断定しない。
             state = (CrmMatchState.NO_NAME_MATCH if self._identity_index.complete and (address or phone)
                      else CrmMatchState.NOT_CHECKED)
-            return CrmMatch(state=state, evidence=("名前・登録済み住所/電話で一致なし",) if state is CrmMatchState.NO_NAME_MATCH else ())
+            return CrmMatch(state=state, not_checked_reason=("照合材料不足" if not (address or phone) else "住所・電話索引の取得失敗" if self._identity_failure else "二次項目の同期未完了") if state is CrmMatchState.NOT_CHECKED else None, evidence=("名前・登録済み住所/電話で一致なし",) if state is CrmMatchState.NO_NAME_MATCH else ())
         return self._resolved_match(facility, candidates, strength, ("名前一致",))
 
     def _resolved_match(
@@ -433,6 +441,7 @@ class CrmMatcher:
         self._deadline = time.monotonic() + self._time_budget
         self.skipped_by_budget = 0
         self.unchecked_count = 0
+        self.unchecked_reasons: dict[str, int] = {}
         self._batch = True
         self._client_cache.clear()
         self._contacts_by_client.clear()
@@ -452,19 +461,21 @@ class CrmMatcher:
             self._check_budget()
             self._name_index = find_client_pages_by_normalized_names(all_names)
             self._check_budget()
-        except Exception:
+        except Exception as exc:
             # 失敗したDBへ件数分の再接続をしない。0件という正常結果にも置き換えない。
             self.unchecked_count = len(facilities)
-            if self._budget_exhausted():
+            reason = "時間切れ" if isinstance(exc, _BudgetExpired) else "名前索引の取得失敗"
+            self.unchecked_reasons = {reason: len(facilities)} if facilities else {}
+            if reason == "時間切れ":
                 self.skipped_by_budget = len(facilities)
             self._batch = False
-            logger.warning("名前の一括照合を完了できなかった: %d施設", len(facilities))
-            return {f.hotel_no: CrmMatch(state=CrmMatchState.NOT_CHECKED) for f in facilities}
+            logger.warning("名前の一括照合を完了できなかった: %s / %d施設", reason, len(facilities))
+            return {f.hotel_no: CrmMatch(state=CrmMatchState.NOT_CHECKED, not_checked_reason=reason) for f in facilities}
 
         results: dict[int, CrmMatch] = {}
         for facility in facilities:
             if self._budget_exhausted():
-                results[facility.hotel_no] = CrmMatch(state=CrmMatchState.NOT_CHECKED)
+                results[facility.hotel_no] = CrmMatch(state=CrmMatchState.NOT_CHECKED, not_checked_reason="時間切れ")
                 self.skipped_by_budget += 1
                 continue
             try:
@@ -473,8 +484,8 @@ class CrmMatcher:
                 # **NOT_FOUNDにしない。** 突合できなかっただけの施設を「未取引」として
                 # 返すと、Notionが一時的に落ちただけで既存顧客が新規開拓リストに
                 # 混ざる(obasan-qualityレビュー指摘、2026-09-11)。
-                logger.exception("CRM突合に失敗した: hotelNo=%s", facility.hotel_no)
-                results[facility.hotel_no] = CrmMatch(state=CrmMatchState.NOT_CHECKED)
+                logger.warning("CRM突合に失敗した: hotelNo=%s", facility.hotel_no)
+                results[facility.hotel_no] = CrmMatch(state=CrmMatchState.NOT_CHECKED, not_checked_reason="取得失敗")
         matched = sum(1 for m in results.values() if m.state is CrmMatchState.MATCHED)
         ambiguous = sum(1 for m in results.values() if m.state is CrmMatchState.AMBIGUOUS)
         failed = sum(1 for m in results.values() if m.state is CrmMatchState.NOT_CHECKED)
@@ -495,6 +506,7 @@ class CrmMatcher:
                 self._time_budget,
                 self.skipped_by_budget,
             )
+        self.unchecked_reasons = dict(sorted(Counter(m.not_checked_reason or "未分類" for m in results.values() if m.state is CrmMatchState.NOT_CHECKED).items()))
         self.unchecked_count = failed
         self._batch = False
         return results

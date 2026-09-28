@@ -1,0 +1,35 @@
+判定：BLOCKERはありません。WARNが2件ありますが、どちらも実装側の前提（cronの挙動）次第で、確認だけで閉じられる可能性があります。
+
+区分	箇所	具体的な欠陥	修正案
+WARN-1	read_product_hold と hash	to_jsonb(t) で、task・pair・delivery の全列（attempts、nextAttemptAt、updatedAt、verificationAttempts など）をhashに含めています。例えばdeliveryだけがheldでtaskのevaluationHeldはfalseの案件を、cronが通常どおり拾って attempts や updatedAt を更新している場合を考えます。この場合、表示からクリックまでの間にhashが変わるため、再開は毎回409になり、画面から再開できません	hashの対象を、判断に関係する列（state、evaluationHeld、lastError、各ID）に限定する。または、held中の案件をcronが一切更新しないことをテストで固定する
+WARN-2	resume_product_hold	hashを確認した読取と、resume_with_cursor の UPDATE の間で、行ロックを取っていません。cronが同じ record_sync_lock を使わずにpairやdeliveryを held に変える場合、例えば読取の直後に別のdeliveryが新たにheldになると、UPDATE ... WHERE state='held' がマネージャーの見ていないその保留まで解除します。しかも履歴のbeforeStateにはその行が含まれません	Task行を SELECT ... FOR UPDATE で取得してから読取とhashの確認を行う。または、cronのheld化が同じ案件ロック内で行われていることを確認する
+INFO-1	crm_matcher	理由付きになったのは、時間切れ・取得失敗・名前索引・住所電話索引・照合材料不足・Notion接続未設定の各経路です。_resolved_match など、差分に含まれないNOT_CHECKEDの経路は「未分類」として集計されます	未分類が0件になることを、既存のNOT_CHECKEDの全経路を網羅するテストで確認する
+INFO-2	hold-list の「管理者向けの詳細」	全列のJSONをそのままブラウザに渡して表示しています。内部のリース情報やエラー本文の列が将来追加されると、それも画面に出ます	表示用に列を明示して選ぶ
+INFO-3	hold-list の resume	409（hashの不一致）のときに router.refresh() が呼ばれないため、古いhashのまま再操作して409を繰り返します	失敗時も refresh するか、「読み直す」ボタンを出す
+INFO-4	exporters	未照合の理由を、照合根拠と同じ列に連結しています。CSVの利用者から見ると、根拠と理由の区別がつきません	別の列にするか、「未照合理由:」という接頭辞を付ける
+
+問題ないと確認した点は次のとおりです。
+
+権限は、Next（DB上のisManager）、共通token、backendでのactor_idのDB再確認の三段階で確認されています。
+再開は、案件ロック→manager確認→hash照合→状態更新→履歴記録を、同一トランザクションで行っています。外部への配送はcronに委ねています。
+二重確認UIと、「配送完了ではない」という文言も入っています。
+容量試験のガードは、上限段階でも cost_refresh_required で予約を拒否し、台帳を変更しないことがテストで固定されています。
+施設候補は、名前・ページIDの順で並ぶ安定順序になっています。同名で別IDの候補も統合されずに残ります。
+時間切れと名前索引の障害は、理由として区別して集計されます。
+
+
+
+
+
+1 分前
+
+メッセージを入力…
+
+
+
+
+
+
+
+Claude は AI であり、間違えることがあります。 回答は必ずご確認ください。
+Opus 5.5 中

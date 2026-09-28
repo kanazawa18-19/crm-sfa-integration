@@ -181,7 +181,7 @@ def row_to_values(
         contact.name if contact and contact.name else "",
         contact.title if contact and contact.title else "",
         " / ".join(row.products),
-        " / ".join(crm.evidence),
+        " / ".join((*crm.evidence, *(("未照合理由: " + crm.not_checked_reason,) if crm.not_checked_reason else ()))),
     ]
 
 

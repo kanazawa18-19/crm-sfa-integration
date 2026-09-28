@@ -62,6 +62,8 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/diagnostics/integrations"),
     ("GET", "/api/diagnostics/webhook-health"),
     ("POST", "/api/sync-review/decision"),
+    ("POST", "/api/sync-operations/product-holds/list"),
+    ("POST", "/api/sync-operations/product-holds/resume"),
     # 一斉配信のプレビュー（2026-09-03追加）。読み取りのみだが、本文テンプレート
     # （改行を含む長文）を送るためPOST。送信のエンドポイントはまだ無い。
     ("POST", "/api/bulk-email/preview"),

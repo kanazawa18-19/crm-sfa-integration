@@ -180,6 +180,8 @@ app.include_router(cron_router)
 # 外部連携の疎通診断（読み取りのみ）。ダッシュボードAPIトークンで保護する。
 app.include_router(diagnostics_router)
 app.include_router(sync_review_router)
+from src.api.routes.sync_operations import router as sync_operations_router
+app.include_router(sync_operations_router)
 
 # 一斉配信（2026-09-03）。今はプレビューのみで、送信のエンドポイントは無い
 # （src/api/routes/bulk_email.pyのdocstring参照）。

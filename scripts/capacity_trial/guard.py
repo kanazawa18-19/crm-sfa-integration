@@ -313,7 +313,8 @@ class Ledger:
                 if (stage not in (1, 2) or upper.get("usd") != (8 if stage == 2 else 4)
                         or (stage == 2 and not data.get("upper_bound_transition"))):
                     raise Refused("推定上限の段階証跡が不正")
-                cost_stopped = upper["usd"] + (cost or {}).get("usd", 0) >= 10
+                cost_stopped = (data.get("cost_refresh_required")
+                                or upper["usd"] + (cost or {}).get("usd", 0) >= 10)
             else:
                 cost_stopped = (data.get("cost_refresh_required") or not cost
                     or not 0 <= now-cost["observed_at"] <= 3600

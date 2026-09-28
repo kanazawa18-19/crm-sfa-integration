@@ -1,0 +1,29 @@
+提示された追加実装（商品関連付け保留のマネージャー限定個別再開、容量試験ガードの費用更新要求制御、施設リストの未照合理由分類・安定順序化）について独立コードレビューを実施しました。
+
+現在、提示されたコードベースに BLOCKER（重大な不具合）および WARN（潜在的な障害・セキュリティリスク）はともに 0件（検出なし） です。
+
+点検結果の要点確認
+
+商品関連付け保留の再開制御（sync_operations）
+
+権限・CSRFガード: FastAPI/Next.js APIルート双方でセッションから抽出した actor_id と DB上の isManager 権限を厳密に再確認しており、オリジン検証 (sameHost / Sec-Fetch-Site) も正常に機能しています。
+
+楽観的排他制御 (CAS) と同一トランザクション: 表示時のスナップショットハッシュ (expected_hash) と案件ロック (acquire_record_sync_lock) を用いて直前照合を行っており、キューの復旧処理 (resume_with_cursor) と監査履歴 (SyncOperationHistory) の記録が同一の PostgreSQL トランザクション内でアトミックに完了することを確認しました。
+
+容量試験ガードの費用再確認要求（guard.py）
+
+upper_bound 評価分岐内においても data.get("cost_refresh_required") が正しく評価されるよう論理式が修正され、費用更新が未完了な状態での予約試行 (reserve) が安全に拒否（Refused）される構造になっています。
+
+施設候補の安定順序化と同一施設統合防止（crm_matcher.py / db.py / exporters.py）
+
+Postgres 検索 (ORDER BY "rawName", "notionPageId") および Python 側での整列ルール定義により、同名かつ別 ID の施設候補が意図せず自動統合・除外されることなく、決定論的な順序で保持・出力されることを確認しました。
+
+未照合理由（not_checked_reason）が試行単位・一括処理単位で適切に分類・集計され、画面表示および CSV エクスポートへ安全に伝播しています。
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

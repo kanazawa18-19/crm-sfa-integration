@@ -1090,3 +1090,14 @@ def test_small_local_refusal_never_gets_rpc_origin(upper_ledger):
             name=BASE + "/documents/sync_capacity_scopes/trial-smoke"))]})
     assert "origin" not in failure_record(caught.value)
     assert not raw.mock_calls
+
+
+@pytest.mark.parametrize("stage", [1, 2])
+def test_upper_bound_requires_cost_refresh_before_reservation(upper_ledger, stage):
+    if stage == 2:
+        upper_ledger.advance_upper_bound("合成証跡", confirmed=True)
+    upper_ledger.transact(lambda data: data.update(cost_refresh_required=True))
+    before = upper_ledger.path.read_bytes()
+    with pytest.raises(Refused):
+        upper_ledger.reserve(reads=1, rpc=True)
+    assert upper_ledger.path.read_bytes() == before
