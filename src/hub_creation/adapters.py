@@ -94,8 +94,8 @@ class ZohoCreationAdapter:
         self.client = client
         self.store = store
 
-    def _get(self, path):
-        response = self.client._request("GET", path)
+    def _get(self, path, *, api_version=None):
+        response = self.client._request("GET", path, **({'api_version': api_version} if api_version is not None else {}))
         if response.status_code == 204:
             return {}
         raise_for_error(response, ApiError)
@@ -115,16 +115,43 @@ class ZohoCreationAdapter:
                     payload['field70'] = merge_choice_memo(payload.get('field70', ''), 'サイトコントローラー', selected, limit=2000)
                 except ValueError as exc:
                     raise CreationHeld(str(exc)) from None
-        fields = self._get("/settings/fields?" + urlencode({"module": module})).get("fields")
-        layouts = self._get("/settings/layouts?" + urlencode({"module": module})).get("layouts")
+        # v2の案件メタデータはPipelineを返さない。作成と同じ版で必須項目を読む。
+        metadata_version = 'v8' if db_key == 'project' else None
+        fields = self._get("/settings/fields?" + urlencode({"module": module}), api_version=metadata_version).get("fields")
+        layouts = self._get("/settings/layouts?" + urlencode({"module": module}), api_version=metadata_version).get("layouts")
         if not fields or not layouts:
             raise CreationHeld("外部の必須項目を確認できません")
+        if db_key == 'project':
+            from src.hub_creation.creation_payload import validate_lead_source_metadata
+            validate_lead_source_metadata(payload, fields)
         if any(not isinstance(layout.get("sections"), list) for layout in layouts):
             raise CreationHeld("レイアウトの必須項目を確認できません")
         required = {f["api_name"] for f in fields if f.get("system_mandatory")}
         for layout in layouts:
             for section in layout.get("sections", []):
                 required.update(f["api_name"] for f in section.get("fields", []) if f.get("required") or f.get("system_mandatory"))
+        pipeline_layout = None
+        if db_key == 'project' and 'Pipeline' in required:
+            from src.hub_creation.zoho_pipeline import default_pipeline
+            pipeline_sets = []
+            for layout in layouts:
+                layout_id = layout.get('id')
+                if not isinstance(layout_id, str) or not layout_id.isdigit():
+                    raise CreationHeld('案件レイアウトの設定を確認できません')
+                response = self.client._request('GET', '/settings/pipeline?' + urlencode({'layout_id': layout_id}), api_version='v8')
+                if response.status_code == 204:
+                    pipelines = []
+                else:
+                    raise_for_error(response, ApiError)
+                    pipelines = response.json().get('pipeline')
+                pipeline_sets.append((layout_id, pipelines))
+            payload['Pipeline'], pipeline_layout = default_pipeline(pipeline_sets, payload.get('Stage'))
+            required = {f['api_name'] for f in fields if f.get('system_mandatory')}
+            selected = [layout for layout in layouts if layout['id'] == pipeline_layout]
+            if len(selected) != 1:
+                raise CreationHeld('案件レイアウトが一意ではありません')
+            for section in selected[0]['sections']:
+                required.update(f['api_name'] for f in section.get('fields', []) if f.get('required') or f.get('system_mandatory'))
         from src.sync_engine.owner_mapping import owner_payload
         from src.sync_engine.owner_mapping import OWNER_PROPERTIES
         owner_properties = dict(properties)
@@ -153,6 +180,8 @@ class ZohoCreationAdapter:
         from src.hub_creation.creation_payload import ZOHO_RELATIONS
         payload = normalize_creation_payload(payload, {f["api_name"]: f for f in fields},
                                              lookup_fields=frozenset(ZOHO_RELATIONS.get(db_key, {})) | {"Owner"})
+        if pipeline_layout is not None:
+            payload['Layout'] = {'id': pipeline_layout}
         if db_key == 'contact':
             self._check_contact_duplicates(module, properties)
             return payload
@@ -215,7 +244,8 @@ class ZohoCreationAdapter:
         raise CreationHeld("外部の一覧が2000件の照合上限を超えるため作成を保留します")
 
     def create(self, db_key, payload):
-        return self.client.insert_record(get_schema(db_key).zoho_api_module, payload)
+        version = {'api_version': 'v8'} if db_key == 'project' and 'Pipeline' in payload else {}
+        return self.client.insert_record(get_schema(db_key).zoho_api_module, payload, **version)
 
 
 class KintoneCreationAdapter:

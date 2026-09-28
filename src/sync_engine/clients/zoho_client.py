@@ -190,10 +190,18 @@ class HttpZohoClient:
         json_body: Any | None = None,
         idempotent: bool = True,
         extra_headers: dict[str, str] | None = None,
+        api_version: str | None = None,
     ) -> requests.Response:
+        api_base = self._api_base_url
+        if api_version is not None:
+            root, separator, previous = api_base.rpartition('/crm/')
+            if api_version != 'v8' or not separator or not previous.startswith('v') or not previous[1:].isdigit():
+                raise ValueError('Zoho API版の指定を確認してください')
+            # 同じ接続先・認証キャッシュのまま、必要な操作だけ新しい版を使う。
+            api_base = root + '/crm/' + api_version
         return request_with_retry(
             method,
-            f"{self._api_base_url}{path}",
+            f"{api_base}{path}",
             headers={**self._headers(), **(extra_headers or {})},
             json_body=json_body,
             timeout=self._timeout,
@@ -243,10 +251,11 @@ class HttpZohoClient:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
 
-    def insert_record(self, module: str, record: dict[str, Any]) -> str:
+    def insert_record(self, module: str, record: dict[str, Any], *, api_version: str | None = None) -> str:
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複レコード作成を避けリトライしない。
         response = self._request(
-            "POST", f"/{module}", json_body={"data": [record]}, idempotent=False
+            "POST", f"/{module}", json_body={"data": [record]}, idempotent=False,
+            **({'api_version': api_version} if api_version is not None else {}),
         )
         raise_for_error(response, ZohoApiError)
         try:
