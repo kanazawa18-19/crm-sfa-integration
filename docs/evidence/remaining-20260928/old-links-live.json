@@ -1,0 +1,30 @@
+{
+  "restored_mapping_count": 6,
+  "db_counts": {
+    "action": 4,
+    "contact": 1,
+    "client_master": 1
+  },
+  "status_counts": {
+    "verified": 6
+  },
+  "business_values_written": false,
+  "post_to_create_external_records": false,
+  "source_date_differences_preserved_count": 3,
+  "spreadsheet_delivery_verified": false,
+  "private_evidence": [
+    {
+      "file": "old-links-result-private.json",
+      "sha256": "1bb1664444d94a0b47ab95a54bfde9f6d9e7f7221b20bbca51f50cd6bd861961",
+      "count": 3
+    },
+    {
+      "file": "old-action-links-result-private.json",
+      "sha256": "233aa83af6f98f7d71ec63323814d0a36b5a6d55b2e6dcb2db29593a7c7fc633",
+      "count": 3
+    }
+  ],
+  "spreadsheet_key_lookup_complete": true,
+  "spreadsheet_rows_present": 0,
+  "spreadsheet_rows_missing": 6
+}

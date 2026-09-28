@@ -1,0 +1,14 @@
+{
+  "planned_pairs": 23,
+  "archive_pages": 23,
+  "relation_changes": 10,
+  "body_blocks": 0,
+  "source_mapping_present": 0,
+  "plan_digest": "89269e2eaffeaab663764d45ec52837ce26cf82c40d4e9a1120b01817dc881a4",
+  "file_sha256": "29b76cb762eec356dc014b6018a4ffd6ac96dec2aaf9de31e8a883ddffa502f0",
+  "executed": false,
+  "approval_state": "specific_scope_requested_after_auto_review_denial",
+  "accessible_database_count": 12,
+  "reverse_relation_fields": 5,
+  "unmanaged_reverse_relation_fields": 0
+}

@@ -1,0 +1,9 @@
+{
+  "observed_at": "2026-09-28T07:55:58.194288+00:00",
+  "status": "verified",
+  "notion_nonempty_count": 30,
+  "notion_property_identity_preserved": true,
+  "notion_values_preserved": true,
+  "sheet_headers_and_values_preserved": true,
+  "description": "地域・都道府県。既存の項目名「テキスト」と値を保持し、備考へ統合しない。"
+}
