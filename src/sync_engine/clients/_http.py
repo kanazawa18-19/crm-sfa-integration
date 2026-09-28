@@ -132,10 +132,18 @@ def request_with_retry(
     2026-08-19）。呼び出し元がどちらか一方のみを指定すること。
     """
     effective_max_retries = max_retries if idempotent else 0
-    _sleep = sleep if sleep is not None else time.sleep
+    from src.infrastructure.http_budget import remaining, HttpBudgetExceeded
+    base_sleep = sleep if sleep is not None else time.sleep
+    def _sleep(seconds):
+        left = remaining()
+        if left is not None and seconds >= left:
+            raise HttpBudgetExceeded('再試行待機の時間予算がありません')
+        base_sleep(seconds)
     attempt = 0
     rate_limit_attempt = 0
     while True:
+        left = remaining()
+        bounded_timeout = timeout if left is None else min(timeout, max(0.001, left / 2))
         try:
             response = requests.request(
                 method,
@@ -144,9 +152,12 @@ def request_with_retry(
                 json=json_body,
                 data=data,
                 params=dict(params) if params is not None else None,
-                timeout=timeout,
+                timeout=bounded_timeout,
             )
         except requests.exceptions.Timeout:
+            if left is not None and bounded_timeout < timeout:
+                # 読取りの再開と、通常の通信障害を区別する。非冪等POSTは呼出し側の予約を保持する。
+                raise HttpBudgetExceeded('残り時間に合わせた通信が時間切れになりました') from None
             attempt += 1
             if attempt > effective_max_retries:
                 raise

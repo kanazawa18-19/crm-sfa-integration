@@ -1230,12 +1230,16 @@ class ProductionSyncWiring:
             sheet_client = next(iter(sheet_targets.values()))._client if sheet_targets else None
             from src.sync_engine.won_product_link_queue import ProjectProductLinkQueue
             project_link_queue = ProjectProductLinkQueue()
+            from src.hub_creation.duplicate_scan import ZohoDuplicateScan
+            from src.hub_creation.scan_journal import PostgresScanJournal
+            duplicate_scan = ZohoDuplicateScan(self.zoho_action_client, PostgresScanJournal())
             creation_service = HubCreationService(
                 store=self.id_mapping_store, journal=PostgresCreationJournal(), notion_clients=notion_clients,
-                adapters=[ZohoCreationAdapter(self.zoho_action_client, self.id_mapping_store), KintoneCreationAdapter(build_kintone_targets_by_db(), self.id_mapping_store)],
+                adapters=[ZohoCreationAdapter(self.zoho_action_client, self.id_mapping_store, duplicate_scan), KintoneCreationAdapter(build_kintone_targets_by_db(), self.id_mapping_store)],
                 enabled_since=since, sheet_gateway=SheetRegistrationGateway(sheet_client) if sheet_client else None,
                 project_link_prepare=lambda mapping: project_link_queue.enqueue(mapping.notion_key),
             )
+        self.creation_service = creation_service
         self.dispatcher: SkipTrackingDispatcher = SkipTrackingDispatcher(
             build_production_dispatcher(
                 id_mapping_store=self.id_mapping_store,

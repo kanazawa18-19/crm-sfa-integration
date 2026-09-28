@@ -90,9 +90,10 @@ def normalize_creation_payload(payload, fields, *, kintone=False, lookup_fields=
 class ZohoCreationAdapter:
     target = "zoho"
 
-    def __init__(self, client, store=None):
+    def __init__(self, client, store=None, duplicate_scan=None):
         self.client = client
         self.store = store
+        self.duplicate_scan = duplicate_scan
 
     def _get(self, path):
         response = self.client._request("GET", path)
@@ -102,6 +103,17 @@ class ZohoCreationAdapter:
         return response.json()
 
     def plan(self, db_key, properties):
+        from src.infrastructure.http_budget import http_budget, HttpBudgetExceeded
+        from src.hub_creation.duplicate_scan import PENDING
+        try:
+            with http_budget(60):
+                return self._plan(db_key, properties)
+        except HttpBudgetExceeded:
+            if self.duplicate_scan is not None:
+                self.duplicate_scan.defer()
+            raise CreationHeld(PENDING) from None
+
+    def _plan(self, db_key, properties):
         module = get_schema(db_key).zoho_api_module
         payload, _ = translate_properties(zoho_outbound_field_names(), db_key, dict(properties), translate_choice_value)
         from src.hub_creation.creation_payload import complete_zoho_payload
@@ -164,6 +176,9 @@ class ZohoCreationAdapter:
         return payload
 
     def _check_contact_duplicates(self, module, properties):
+        from src.hub_creation.duplicate_scan import contact_matcher
+        if self.duplicate_scan is not None and self.duplicate_scan.exists():
+            return self.duplicate_scan.check('contact', module, ['Last_Name','First_Name','Email'], contact_matcher(properties))
         seen = set()
         surname, given, email = (properties.get('姓') or '').strip(), (properties.get('名') or '').strip(), properties.get('メールアドレス')
         for page in range(1, 11):
@@ -183,10 +198,15 @@ class ZohoCreationAdapter:
                 return
             if not records:
                 break
+        if self.duplicate_scan is not None:
+            return self.duplicate_scan.check('contact', module, ['Last_Name','First_Name','Email'], contact_matcher(properties))
         raise CreationHeld('連絡先の重複を最後まで確認できません')
 
     def _check_list_duplicates(self, db_key, module, title_field, title):
         """検索索引の遅延を避け、上限内の通常一覧を最後まで照合する。"""
+        from src.hub_creation.duplicate_scan import title_matcher
+        if self.duplicate_scan is not None and self.duplicate_scan.exists():
+            return self.duplicate_scan.check(db_key, module, [title_field], title_matcher(db_key, title_field, title))
         expected = identity_hash(db_key, title)
         seen = set()
         for page in range(1, 11):
@@ -210,8 +230,15 @@ class ZohoCreationAdapter:
                     raise CreationHeld("外部の一覧照合結果を確認できません")
             except CreationHeld:
                 raise
+            except TimeoutError as exc:
+                from src.infrastructure.http_budget import HttpBudgetExceeded
+                if isinstance(exc, HttpBudgetExceeded):
+                    raise
+                raise CreationHeld("外部の一覧を最後まで取得できません。作成を保留します") from None
             except Exception:
                 raise CreationHeld("外部の一覧を最後まで取得できません。作成を保留します") from None
+        if self.duplicate_scan is not None:
+            return self.duplicate_scan.check(db_key, module, [title_field], title_matcher(db_key, title_field, title))
         raise CreationHeld("外部の一覧が2000件の照合上限を超えるため作成を保留します")
 
     def create(self, db_key, payload):

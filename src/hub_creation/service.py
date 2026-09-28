@@ -28,6 +28,11 @@ class HubCreationService:
         self.enabled_since, self.sheet_gateway = enabled_since, sheet_gateway
 
     def handle(self, event):
+        from src.infrastructure.http_budget import http_budget
+        with http_budget(240):
+            return self._handle_with_budget(event)
+
+    def _handle_with_budget(self, event):
         """通常更新はNone、新規を扱ったときは結果理由を返す。"""
         if is_own_system_event(event.sync_system_id, expected=get_sync_system_id()):
             return None
@@ -134,6 +139,7 @@ class HubCreationService:
                 self._check_notion_duplicates(client, name, title, page_id)
 
             with acquire_record_sync_lock(self.store, event.db_key, page_id):
+                creation_page_snapshot = client.get_raw_page(page_id) if is_sheet else raw
                 mapping = self.store.get(page_id)
                 if mapping is None:
                     mapping = IdMapping(notion_key=page_id, db_key=event.db_key)
@@ -184,6 +190,14 @@ class HubCreationService:
                             from src.record_merge.creation_candidates import candidate_context
                             with candidate_context(event.db_key, page_id, source_key, properties):
                                 payload = adapter.plan(event.db_key, properties)
+                                scan = getattr(adapter, 'duplicate_scan', None)
+                                if scan is not None and scan.exists():
+                                    # 分割照合中の編集・アーカイブを、古い入力のまま送らない。
+                                    from src.record_merge.domain import digest
+                                    latest = client.get_raw_page(page_id)
+                                    if (latest.get('archived') or latest.get('in_trash')
+                                            or digest(latest.get('properties')) != digest(creation_page_snapshot.get('properties'))):
+                                        raise CreationHeld('照合中に登録元が変更されました。現在の入力で再確認します')
                             if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
                                 raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
                             external_id = adapter.create(event.db_key, payload)

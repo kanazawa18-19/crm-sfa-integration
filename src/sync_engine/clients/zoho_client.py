@@ -138,7 +138,12 @@ class HttpZohoClient:
             and now < self._access_token_expires_at
         ):
             return self._access_token
-        with self._token_lock:
+        from src.infrastructure.http_budget import remaining, HttpBudgetExceeded
+        left = remaining()
+        acquired = self._token_lock.acquire() if left is None else self._token_lock.acquire(timeout=left)
+        if not acquired:
+            raise HttpBudgetExceeded('認証更新の待機時間を超えました')
+        try:
             # ロック取得待ちの間に他スレッドがリフレッシュ済みの可能性があるため再確認する。
             now = datetime.now(timezone.utc)
             if (
@@ -148,6 +153,8 @@ class HttpZohoClient:
             ):
                 return self._access_token
             return self._refresh_access_token(now)
+        finally:
+            self._token_lock.release()
 
     def _refresh_access_token(self, now: datetime) -> str:
         response = request_with_retry(

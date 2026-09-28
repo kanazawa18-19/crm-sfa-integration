@@ -1,0 +1,33 @@
+{
+  "final_review_file": "/private/tmp/crm-creation-scan-final-review.txt",
+  "bytes": 119203,
+  "sha256": "97383e452aa4846d98e8baa61272ec5f6e84e5973943de1842042e5d3fdbdb40",
+  "internal_review": {
+    "security": {
+      "blocker": 0,
+      "warn": 0
+    },
+    "quality": {
+      "blocker": 0,
+      "warn": 0
+    },
+    "qa_initial_pass": 189,
+    "qa_followup_pass": 99
+  },
+  "coql_live_probe": {
+    "http_status": 401,
+    "error_code": "OAUTH_SCOPE_MISMATCH",
+    "query_limit": 1,
+    "record_writes": 0
+  },
+  "external_review": {
+    "gemini_initial_sent": true,
+    "gemini_answer_retrieved": false,
+    "claude_sent": false,
+    "final_version_sent": false,
+    "reason": "ブラウザ連携の復旧用ウィンドウ許可待ち"
+  },
+  "production_migration_applied": false,
+  "production_code_deployed": false,
+  "credential_pattern_matches": 0
+}

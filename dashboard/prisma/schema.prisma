@@ -785,6 +785,19 @@ model HubCreationAttempt {
   @@id([sourceKey, target])
 }
 
+// 大規模Zohoの重複照合を実行時間内で分割する。
+model HubCreationScan {
+  sourceKey     String   @id
+  sourceId      String
+  dbKey         String
+  inputHash     String
+  state         String   @default("pending")
+  checkpoint    Json
+  reason        String   @default("")
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @db.Timestamptz(6)
+}
+
 // 案件の評価と、既に変更した対象への配送義務を分けて保持する。
 model ProjectProductLinkTask {
   projectId      String   @id

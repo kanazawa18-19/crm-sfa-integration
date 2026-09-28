@@ -30,6 +30,7 @@ _VERCEL_JSON = _REPO_ROOT / "vercel.json"
 
 # 実装されている全ルート（メソッド, パス）。増減させる場合はここも更新する。
 _EXPECTED_ROUTES = {
+    ("GET", "/api/cron/hub-creation-resume"),
     ("POST", "/api/record-merge"),
     ("POST", "/api/sync-exclusions"),
     ("GET", "/healthz"),

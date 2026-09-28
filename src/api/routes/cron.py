@@ -51,6 +51,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get('/api/cron/hub-creation-resume', dependencies=[Depends(verify_cron_secret)])
+def run_hub_creation_resume(wiring: ProductionSyncWiring = Depends(wiring_dependency)) -> dict[str, Any]:
+    """新規登録の大規模重複照合を保存済みの位置から再開する。"""
+    from src.hub_creation.worker import drain_creation_scans
+    return drain_creation_scans(wiring.creation_service)
+
+
 # --- 定期実行バッチ（日報・週報） -----------------------------------------------------------
 
 

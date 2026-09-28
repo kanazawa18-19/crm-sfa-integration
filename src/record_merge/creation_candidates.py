@@ -11,6 +11,11 @@ from src.sync_operations.product_holds import connect
 _context = ContextVar('creation_candidate', default=None)
 
 
+def creation_context():
+    """照合のしおりを登録元・現在入力へ結び付ける。"""
+    return _context.get()
+
+
 @contextmanager
 def candidate_context(db_key, source_id, source_key, properties):
     token = _context.set({'dbKey': db_key, 'sourceId': source_id, 'sourceKey': source_key,
