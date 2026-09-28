@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from copy import deepcopy
 import pytest
 from src.record_merge.application import MergeService, validate_plan
 from src.record_merge.domain import MergeHeld
@@ -7,10 +8,14 @@ from src.record_merge.domain import MergeHeld
 class Journal:
     def __init__(self, steps):
         self.job = {'state': 'approved', 'steps': steps}; self.states = {}; self.aliases = False
-    def get_authorized(self, *args): return self.job
+    def get_authorized(self, *args): return deepcopy(self.job)
     def step_state(self, op, index): return self.states.get(index)
-    def reserve_step(self, op, index, actor): self.states[index] = 'reserved'
-    def complete_step(self, op, index, actor, receipt): self.states[index] = 'done'
+    def reserve_step(self, op, index, actor):
+        self.states[index] = 'reserved'
+        self.job.setdefault('progress', {})[str(index)] = {'state': 'reserved'}
+    def complete_step(self, op, index, actor, receipt):
+        self.states[index] = 'done'
+        self.job.setdefault('progress', {})[str(index)] = {'state': 'done'}
     def finish_with_aliases(self, *args): self.aliases = True; self.job['state'] = 'done'
     def hold(self, *args): self.job['state'] = 'held'
 
@@ -68,3 +73,18 @@ def test_plan_cannot_archive_target_or_write_unseen_page():
     with pytest.raises(MergeHeld, match='比較していない'):
         validate_plan(snapshot, [{'kind': 'properties', 'id': 'other', 'dbKey': 'project'},
                                   {'kind': 'archive', 'id': 's', 'dbKey': 'project'}])
+
+
+def test_final_verification_reads_fresh_progress_from_journal():
+    journal = Journal([{'kind': 'archive', 'before': False, 'desired': True}])
+
+    class ProgressGateway(Gateway):
+        value = False
+        def verify_archive_ready(self, job):
+            if self.value is True:
+                assert job['progress']['0']['state'] == 'done'
+
+    gateway = ProgressGateway()
+    service = MergeService(journal, gateway, lambda job: nullcontext())
+    assert service.execute('op', 'manager')['state'] == 'done'
+    assert gateway.calls == 1 and journal.aliases
