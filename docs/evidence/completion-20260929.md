@@ -1,6 +1,19 @@
-# 残件の実稼働復旧（2026-09-29、本人認証・業務情報待ち）
+# 残件の実稼働復旧（2026-09-29、業務情報待ち）
 
 本人の一括許可 `docs/handoff_completion_20260929.md` に基づく。完了済み処理を再実行せず、本人認証と未確定の業務事実を最後に分ける。非公開の原本・比較・操作台帳は git除外の `migration_output/completion-20260929/` に保存する。
+
+## 11:34時点の更新：Zoho認証とmain本番反映も完了
+
+本人がAPI Consoleへログイン後、既存設定とのID照合で **Self Client** が対象と確定。NotionLinkGASは別クライアントだった。組織90001966327を選び、既存の `ZohoCRM.modules.ALL` / `ZohoCRM.settings.ALL` / `ZohoCRM.notifications.ALL` を維持し、`ZohoCRM.coql.READ` を追加して再認可した。更新用トークンはmacOSキーチェーン `crm-sfa-zoho-refresh-token` に保存し、本番APIの認証3項目へ設定。新しい秘密値はリポジトリ・Vaultへ置いていない。ローカル `config/.env` の旧トークンは変更していないため、COQLをローカル再検証する場合はキーチェーンの新値をプロセス内で渡す。
+
+- 実製品コードから6モジュールすべてでCOQLのID比較・昇順・次ページ・更新日時条件が成功。取引先37,496件を19ページ＋更新差分1ページで照合し、6.81秒・1回でverified。しおりはメモリだけ、外部書込み0。更新差分は観測窓に対象0件だった。
+- 独立QA：Python全体4,032成功/79skip、関連追加48成功（実PG44＋既存の大規模照合4）。重複を除く4,076成功/35未実施。環境由来の初回7失敗は該当試験だけ調整して全成功。本番接続なし、試験スキーマ残0・専用PG停止済み。
+- mainの18コミットをpushし `d742105` をAPI・管理画面とも本番READYと確認。API `dpl_3Pc6NCT2a6sztcJsQJFfPWhe5LwN`、管理画面URL `https://crm-sfa-integration-dashboard-daiptvavu-cnctor1.vercel.app`。両方の配備メタデータが同一コミット。
+- [CI 36512765225](https://github.com/kanazawa18-19/crm-sfa-integration/actions/runs/36512765225) は全ジョブ成功。Python4,028成功/83skip、GAS・Docker/health成功。API本番healthz 200。
+- 本番管理画面からZoho診断を実行し **11:33:43 JST、1.5秒、参照確認済み**。本番API自身からZohoへの接続成功を確認した。手元の旧管理用トークンによる診断401は、既存Googleログインを使った正規の管理画面から確認して解消した。診断成功を全Webhookの配送確認とは扱わない。
+- 非公開証跡：`coql-live-readback.json` / `coql-full-scan-readback.json` / `main-deployment-readback.json`。API Consoleの秘密値を含み得る全画面出力は自動審査で拒否されたため、値を出さない一致判定と非機密項目だけの確認へ縮小して実施した。
+
+以下の配備・認証待ちは上記更新前の経緯。残りはFIRSTfit深井店・DEARの所在地と異名3施設の営業上の判断だけ。完了した実配送・日報・施設23組の処理は再実行していない。
 
 ## 実物まで確認できたこと
 
@@ -73,4 +86,4 @@ Zoho試験6件、kintone試験3件＋追加アクション1件を、実ID・名�
 
 追加アクションから自然通知で発生した未作成Zoho保留1件は、原本archive・対応表なし・シートなしを確認して退避後に解消。作成済み監査履歴は保持した。完了済み業務データの再作成・日報再送・監視再設定は行っていない。
 
-本人にまとめて必要なものは、(1) Zoho API Console再認証、(2) FIRSTfit深井店の確定住所とDEARの対象拠点・確定住所、(3) 斉木別館・千年亭・松涛園を営業上同じ相手に統合するか別の契約先として残すか。COQL追加権限と依存コード配備は(1)の後に実施する。それ以外の実行・修復・読戻し・記録は完了した。
+本人に必要な情報は、FIRSTfit深井店の確定住所、DEARの対象拠点・確定住所、斉木別館・千年亭・松涛園を営業上同じ相手に統合するか別の契約先として残すか。Zoho本人認証・COQL権限・main反映は上記11:34の更新で完了した。
