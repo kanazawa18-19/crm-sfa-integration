@@ -1,0 +1,28 @@
+{
+  "observed_at": "2026-09-29T21:35:21.747870+00:00",
+  "cohort": 476,
+  "verified": 476,
+  "original_batch": {
+    "pending": 114,
+    "resolved": 476,
+    "dismissed": 2
+  },
+  "decisions": {
+    "done": 476
+  },
+  "target_dbs": {
+    "client_master": 469,
+    "contact": 3,
+    "product": 4
+  },
+  "all_pending": 114,
+  "new_pending": 0,
+  "reserved": 0,
+  "outbox": [
+    {
+      "status": "done",
+      "n": 17
+    }
+  ],
+  "issue_count": 0
+}
