@@ -29,7 +29,7 @@ function registerNewRow() {
     if (!key) {
       key = "new:" + Utilities.getUuid();
       // 行に付けた識別情報は並べ替え・行移動に追随し、サーバーは行番号で書き込まない。
-      sheet.getRange(row, 1, 1, sheet.getMaxColumns())
+      sheet.getRange(row + ":" + row)
         .addDeveloperMetadata("CRM_NEW_REGISTRATION", key, SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT);
       keyCell.setValue(key);
     }

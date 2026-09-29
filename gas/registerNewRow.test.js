@@ -18,7 +18,12 @@ function environment(key = "") {
     getRange(row, col, height, width) {
       return {getValues: () => [headers], getValue: () => key,
         setValue(value) {calls.push(["set", row, col, value]);},
-        addDeveloperMetadata(name, value, visibility) {calls.push(["metadata", name, value, visibility]);},
+        addDeveloperMetadata(name, value, visibility) {
+          // Google側はセル範囲ではなく行全体の指定を要求する。
+          assert.equal(row, "7:7");
+          assert.equal(col, undefined);
+          calls.push(["metadata", name, value, visibility]);
+        },
       };
     },
   };

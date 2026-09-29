@@ -1,5 +1,6 @@
 """旧保留は元の現在値と項目を特定できた場合だけ個別に再開する。"""
 from contextlib import ExitStack
+from ast import literal_eval
 from psycopg.types.json import Jsonb
 from src.db_schema.base import Tool, PropertyType
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
@@ -11,6 +12,20 @@ from src.sync_operations.product_holds import connect, require_manager
 from src.sync_engine.outbound_field_mapping import zoho_outbound_field_names, kintone_outbound_field_names
 from src.sync_engine.record_sync_lock import acquire_record_sync_lock
 from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
+
+
+def matches_pending_value(raw, value):
+    label = value.get('name') or value.get('id') if isinstance(value, dict) else value
+    if str(label or '').strip() == raw.strip():
+        return True
+    # 旧台帳はルックアップ辞書全体を文字列で保存していた。IDが同じ場合だけ扱う。
+    if not isinstance(value, dict) or not value.get('id') or len(raw) > 4096:
+        return False
+    try:
+        old = literal_eval(raw)
+    except (ValueError, SyntaxError, RecursionError):
+        return False
+    return isinstance(old, dict) and str(old.get('id', '')) == str(value['id'])
 
 
 def confirmed_resolution(source_tool, source_record_id, target_db_key, raw_value):
@@ -49,7 +64,7 @@ class RelationDecisions:
             raise MergeHeld('未処理の関連保留がありません')
         return row
 
-    def source_options(self, row, *, match_raw=True):
+    def source_options(self, row, *, match_raw=True, source_db=''):
         tool = Tool(row['sourceTool'])
         target = self.dispatcher._targets.get(tool)
         if tool not in {Tool.ZOHO, Tool.KINTONE} or target is None:
@@ -57,6 +72,8 @@ class RelationDecisions:
         options = []
         tables = zoho_outbound_field_names() if tool == Tool.ZOHO else kintone_outbound_field_names()
         for schema in ALL_SCHEMAS:
+            if source_db and schema.key != source_db:
+                continue
             mapping = self.store.find_by_external_id(tool, row['sourceRecordId'], db_key=schema.key)
             if mapping is None: continue
             native = target.get_record(row['sourceRecordId'], db_key=schema.key)
@@ -68,12 +85,14 @@ class RelationDecisions:
                 if tool == Tool.ZOHO:
                     for code, (name, _) in ZOHO_RELATIONS.get(schema.key, {}).items():
                         if prop.name == name: field = code
+                    # 新規作成の必須関連とは別に、既存案件の提案サービスを照合する。
+                    if schema.key == 'project' and prop.name == 'サービス・商品':
+                        field = 'field72'
                 elif schema.key == 'action' and prop.name == '👨‍👩‍👧‍👦 取引先マスター':
                     field = 'client_name'
                 if not field or field not in native: continue
                 value = native[field]
-                label = value.get('name') or value.get('id') if isinstance(value, dict) else value
-                if match_raw and str(label or '').strip() != row['rawValue'].strip(): continue
+                if match_raw and not matches_pending_value(row['rawValue'], value): continue
                 options.append({'dbKey': schema.key, 'notionId': mapping.notion_key, 'property': prop.name,
                                 'field': field, 'native': value, 'recordVersion': native.get('Modified_Time') or native.get('$revision'),
                                 'externalId': row['sourceRecordId'], 'tool': row['sourceTool']})
@@ -83,7 +102,7 @@ class RelationDecisions:
 
     def compare(self, actor_id, review_id, target_id, source_db='', property_name=''):
         row = self.queue_row(actor_id, review_id)
-        options = self.source_options(row)
+        options = self.source_options(row, source_db=source_db) if source_db else self.source_options(row)
         chosen = [item for item in options if (not source_db or item['dbKey'] == source_db)
                   and (not property_name or item['property'] == property_name)]
         if len(chosen) != 1:
@@ -143,7 +162,7 @@ class RelationDecisions:
         if native_id and (target_mapping is None or str(target_mapping.zoho_id) != str(native_id)):
             raise MergeHeld('確認後に選択先の外部ID対応が変わりました')
         row = self.queue_row(actor_id, review_id)
-        current_sources = self.source_options(row, match_raw=False)
+        current_sources = self.source_options(row, match_raw=False, source_db=source['dbKey'])
         mapping = self.store.get(source['notionId'])
         page = self.gateway.page(source['dbKey'], source['notionId'])
         if page.get('archived') or page.get('in_trash') or mapping is None:
