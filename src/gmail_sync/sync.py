@@ -19,12 +19,14 @@ import itertools
 import logging
 import os
 import time
+import psycopg
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Callable
 
 from src.audit_log.actor_context import set_actor
+from src.db_utils import ensure_utc
 from src.db_schema.registry import get_schema
 from src.gmail_sync import db, gmail_client
 from src.gmail_sync.matcher import find_contact_page_id
@@ -168,19 +170,48 @@ def _process_message_ref(
         return False
 
     message = gmail_client.get_message(access_token, message_id)
-    classified = classify_message(
-        message,
-        rep_email=rep_email,
-        internal_domains=internal_domains,
-        resolve_contact=lambda addr: find_contact_page_id(contact_client, addr),
-    )
-    if classified is None:
-        return False
+    return record_message(message, rep_email, contact_client, internal_domains=internal_domains)
 
-    matched_contact_id = classified.contact_page_id
-    matched_email = classified.contact_email
-    direction = classified.direction
-    sent_at = classified.sent_at
+
+def record_message(
+    message: gmail_client.GmailMessage,
+    rep_email: str,
+    contact_client: HttpNotionClient,
+    *,
+    internal_domains: frozenset[str],
+    atomic_insert: bool = False,
+    resolve_contact: Callable[[str], str | None] | None = None,
+) -> bool:
+    """Gmail取得後の共通判定・保存・通知。GAS側は原子的に重複を抑える。"""
+    previous_effect = db.gmail_ingest_effect_status(message.id) if atomic_insert else None
+    existing_log = db.get_email_log(message.id) if previous_effect else None
+    if existing_log:
+        matched_contact_id = existing_log['contactPageId']
+        matched_email = existing_log['contactEmail']
+        rep_email = existing_log['repEmail']
+        direction = existing_log['direction']
+        sent_at = ensure_utc(existing_log['sentAt'])
+        incident_score = existing_log['incidentScore']
+        incident_priority = existing_log['incidentPriority']
+        subject = existing_log['subject']
+        snippet = existing_log['snippet']
+        thread_id = message.thread_id
+    else:
+        classified = classify_message(
+            message,
+            rep_email=rep_email,
+            internal_domains=internal_domains,
+            resolve_contact=resolve_contact or (lambda addr: find_contact_page_id(contact_client, addr)),
+        )
+        if classified is None:
+            return False
+        matched_contact_id = classified.contact_page_id
+        matched_email = classified.contact_email
+        direction = classified.direction
+        sent_at = classified.sent_at
+        subject = message.subject
+        snippet = message.snippet
+        thread_id = classified.thread_id
 
     # インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。顧客からの
     # 受信メールのみを対象とする(outboundは自社側の発信文面であり検知対象外)。
@@ -191,57 +222,89 @@ def _process_message_ref(
     # 中核機能全体(EmailLog記録)が止まってしまう。失敗時は(None, None)にフォールバックして
     # メイン処理を継続させる(notify_managers_immediate()と同じ「副次機能は失敗してもメインを
     # 止めない」方針)。
-    incident_score: int | None = None
-    incident_priority: str | None = None
-    if direction == "inbound":
+    incident_score = incident_score if existing_log else None
+    incident_priority = incident_priority if existing_log else None
+    if not existing_log and direction == "inbound":
         try:
-            incident_score, incident_priority = score_email(message.subject, message.snippet)
+            incident_score, incident_priority = score_email(subject, snippet)
         except Exception:
             logger.exception("gmail_sync: failed to score incident for %s", matched_email)
 
-    db.insert_email_log(
+    insert_values = dict(
         contact_page_id=matched_contact_id,
         contact_email=matched_email,
         rep_email=rep_email,
         gmail_message_id=message.id,
         direction=direction,
-        subject=message.subject,
-        snippet=message.snippet,
+        subject=subject,
+        snippet=snippet,
         sent_at=sent_at,
         incident_score=incident_score,
         incident_priority=incident_priority,
-        gmail_thread_id=classified.thread_id,
+        gmail_thread_id=thread_id,
     )
+    if atomic_insert:
+        inserted = db.insert_email_log_once(**insert_values)
+        effect = db.gmail_ingest_effect_status(message.id)
+        if effect is None:
+            return False
+        if not inserted and not existing_log:
+            saved = db.get_email_log(message.id)
+            if saved is None:
+                raise RuntimeError('保存済みメールを読めません')
+            matched_contact_id = saved['contactPageId']
+            matched_email = saved['contactEmail']
+            rep_email = saved['repEmail']
+            direction = saved['direction']
+            sent_at = ensure_utc(saved['sentAt'])
+            incident_score = saved['incidentScore']
+            incident_priority = saved['incidentPriority']
+            subject = saved['subject']
+            snippet = saved['snippet']
+    else:
+        try:
+            db.insert_email_log(**insert_values)
+        except psycopg.errors.UniqueViolation:
+            return False
     # rep_email（同期対象の営業担当）をactorLabelとして記録する（obasan-qualityレビュー
     # WARN対応、2026-08-17。db.insert_email_log()に既に渡している値と同じ）。
-    with set_actor("gmail_sync", label=rep_email):
-        contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: sent_at.isoformat()})
-
-    if incident_priority == "high":
+    if incident_priority == "high" and (
+        not atomic_insert or db.claim_gmail_ingest_notification(message.id, 'incidentAttempted')
+    ):
         # 副次通知は失敗してもメイン処理(EmailLog記録)に影響させない
         # (notify_web_engagement_toolと同じ方針。notify_managers_immediate自体も内部で
         # try/exceptしているが、ここでも隔離しておくことで呼び出し側の想定漏れに備える)。
         try:
             notify_managers_immediate(
-                subject=message.subject,
-                snippet=message.snippet,
+                subject=subject,
+                snippet=snippet,
                 contact_email=matched_email,
                 rep_email=rep_email,
                 score=incident_score or 0,
             )
         except Exception:
             logger.exception("gmail_sync: failed to notify managers of incident for %s", matched_email)
+    elif atomic_insert and incident_priority != "high":
+        db.claim_gmail_ingest_notification(message.id, 'incidentAttempted')
 
-    notify_web_engagement_tool(
-        contact_email=matched_email,
-        direction=direction,
-        sent_at=sent_at,
-        subject=message.subject,
-        snippet=message.snippet,
-        rep_email=rep_email,
-    )
+    if not atomic_insert or not effect['notionDone']:
+        with db.locked_latest_email_at(matched_contact_id) as latest:
+            with set_actor("gmail_sync", label=rep_email):
+                contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: ensure_utc(latest).isoformat()})
+        if atomic_insert:
+            db.mark_gmail_ingest_effect(message.id, 'notionDone')
 
-    return True
+    if not atomic_insert or db.claim_gmail_ingest_notification(message.id, 'engagementAttempted'):
+        notify_web_engagement_tool(
+            contact_email=matched_email,
+            direction=direction,
+            sent_at=sent_at,
+            subject=subject,
+            snippet=snippet,
+            rep_email=rep_email,
+        )
+
+    return inserted if atomic_insert else True
 
 
 def _process_message_ref_or_skip(

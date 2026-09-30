@@ -43,8 +43,10 @@ _EXPECTED_ROUTES = {
     ("POST", "/api/webhooks/web-engagement"),
     ("POST", "/api/webhooks/web-engagement-meeting"),
     ("POST", "/api/webhooks/gmail-push"),
+    ("POST", "/api/webhooks/gmail-ingest"),
     ("POST", "/api/webhooks/lead-inquiry"),
     ("POST", "/api/webhooks/slack-interactions"),
+    ("POST", "/api/webhooks/slack-crm-command"),
     # --- スケジューラから叩かれるcron ---
     ("GET", "/api/cron/daily-batch"),
     ("GET", "/api/cron/daily-batch-resume"),

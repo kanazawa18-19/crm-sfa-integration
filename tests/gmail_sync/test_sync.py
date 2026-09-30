@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
+
+import pytest
 
 from src.gmail_sync import db, sync
 from src.gmail_sync.gmail_client import GmailApiError, GmailMessage, GmailMessageRef, HistoryIdExpiredError
+
+
+@pytest.fixture(autouse=True)
+def _latest_email_time(monkeypatch):
+    @contextmanager
+    def locked(_contact_id):
+        yield sync._parse_sent_at(_message())
+    monkeypatch.setattr(sync.db, 'locked_latest_email_at', locked)
 
 
 def test_extract_addresses_parses_name_and_plain_forms() -> None:

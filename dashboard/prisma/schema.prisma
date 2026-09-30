@@ -617,6 +617,26 @@ model RecordSyncWatermark {
   @@id([dbKey, notionKey])
 }
 
+// Notion差分通知の項目別時刻。別項目が同じページ時刻でも両方を処理する。
+model RecordSyncFieldWatermark {
+  dbKey        String
+  notionKey    String
+  propertyName String
+  acceptedAt   DateTime  @db.Timestamptz(6)
+  completedAt  DateTime? @db.Timestamptz(6)
+
+  @@id([dbKey, notionKey, propertyName])
+}
+
+// GAS経由メールの保存後処理。失敗後の再送で未完了処理を再開する。
+model GmailIngestEffect {
+  gmailMessageId String   @id
+  notionDone     Boolean  @default(false)
+  incidentAttempted   Boolean  @default(false)
+  engagementAttempted Boolean  @default(false)
+  updatedAt      DateTime @default(now())
+}
+
 // ---------------------------------------------------------------------------
 // リスト作成マシーン(2026-09-11)
 //

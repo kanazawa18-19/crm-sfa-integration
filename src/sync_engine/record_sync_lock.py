@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from collections.abc import Iterator
 from typing import Any
 
@@ -54,6 +54,81 @@ class RecordSyncGuard:
         """mappingと永続化済みの完了時刻のうち、新しい方を返す。"""
         values = [db_utils.ensure_utc(v) for v in (previous, self.state.get('completedAt')) if v is not None]
         return max(values) if values else None
+
+    def ensure_field_baseline(self, previous: datetime | None) -> None:
+        """旧台帳の行が無いレコードも、初回通知より前の時刻を固定する。"""
+        accepted_values = [db_utils.ensure_utc(value) for value in (previous, self.state.get('acceptedAt')) if value]
+        completed_values = [db_utils.ensure_utc(value) for value in (previous, self.state.get('completedAt')) if value]
+        accepted = max(accepted_values) if accepted_values else datetime(1970, 1, 1, tzinfo=timezone.utc)
+        completed = max(completed_values) if completed_values else None
+        if self.conn is not None:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    'INSERT INTO "RecordSyncFieldWatermark" '
+                    '("dbKey", "notionKey", "propertyName", "acceptedAt", "completedAt") '
+                    'VALUES (%s, %s, %s, %s, %s) '
+                    'ON CONFLICT ("dbKey", "notionKey", "propertyName") DO NOTHING',
+                    (self.db_key, self.notion_key, '__baseline__', accepted, completed),
+                )
+        else:
+            self.state.setdefault('field:__baseline__', {'acceptedAt': accepted, 'completedAt': completed})
+
+    def eligible_fields(self, names: list[str], occurred_at: datetime) -> list[str]:
+        """Notion差分の項目ごとの時刻を調べる。同時刻の未完了分は再試行する。"""
+        if not names:
+            return []
+        if self.conn is not None:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    'SELECT "propertyName", "acceptedAt", "completedAt" '
+                    'FROM "RecordSyncFieldWatermark" WHERE "dbKey" = %s '
+                    'AND "notionKey" = %s AND "propertyName" = ANY(%s)',
+                    (self.db_key, self.notion_key, names + ['__baseline__']),
+                )
+                rows = {row['propertyName']: row for row in cur.fetchall()}
+        else:
+            rows = {name: self.state.get(f'field:{name}', {}) for name in names + ['__baseline__']}
+        baseline = rows.get('__baseline__', {})
+        eligible = []
+        for name in names:
+            row = rows.get(name, {})
+            accepted = row.get('acceptedAt')
+            completed = row.get('completedAt')
+            baseline_accepted = baseline.get('acceptedAt')
+            baseline_completed = baseline.get('completedAt')
+            if not row and baseline_accepted is not None and occurred_at < db_utils.ensure_utc(baseline_accepted):
+                continue
+            if not row and baseline_completed is not None and occurred_at <= db_utils.ensure_utc(baseline_completed):
+                continue
+            if accepted is not None and occurred_at < db_utils.ensure_utc(accepted):
+                continue
+            if completed is not None and occurred_at <= db_utils.ensure_utc(completed):
+                continue
+            eligible.append(name)
+        return eligible
+
+    def save_fields(self, names: list[str], occurred_at: datetime, *, completed: bool) -> None:
+        """外部書込の前に受理を確定し、成功後に完了を確定する。"""
+        if self.conn is not None:
+            with self.conn.cursor() as cur:
+                for name in names:
+                    cur.execute(
+                        'INSERT INTO "RecordSyncFieldWatermark" '
+                        '("dbKey", "notionKey", "propertyName", "acceptedAt", "completedAt") '
+                        'VALUES (%s, %s, %s, %s, %s) '
+                        'ON CONFLICT ("dbKey", "notionKey", "propertyName") DO UPDATE SET '
+                        '"acceptedAt" = GREATEST("RecordSyncFieldWatermark"."acceptedAt", EXCLUDED."acceptedAt"), '
+                        '"completedAt" = GREATEST("RecordSyncFieldWatermark"."completedAt", EXCLUDED."completedAt")',
+                        (self.db_key, self.notion_key, name, occurred_at, occurred_at if completed else None),
+                    )
+        for name in names:
+            key = f'field:{name}'
+            row = self.state.setdefault(key, {})
+            accepted = row.get('acceptedAt')
+            row['acceptedAt'] = max(occurred_at, db_utils.ensure_utc(accepted)) if accepted else occurred_at
+            if completed:
+                previous = row.get('completedAt')
+                row['completedAt'] = max(occurred_at, db_utils.ensure_utc(previous)) if previous else occurred_at
 
     def rejects(self, occurred_at: datetime) -> bool:
         accepted = self.state.get('acceptedAt')
@@ -143,11 +218,18 @@ def validate_record_sync_storage(store: Any) -> None:
                 'FROM "RecordSyncWatermark" LIMIT 0'
             )
             cur.execute(
+                'SELECT "dbKey", "notionKey", "propertyName", "acceptedAt", "completedAt" '
+                'FROM "RecordSyncFieldWatermark" LIMIT 0'
+            )
+            cur.execute(
                 "SELECT has_table_privilege(%s, 'SELECT') "
                 "AND has_table_privilege(%s, 'INSERT') "
                 "AND has_table_privilege(%s, 'UPDATE') "
+                "AND has_table_privilege(%s, 'SELECT') "
+                "AND has_table_privilege(%s, 'INSERT') "
+                "AND has_table_privilege(%s, 'UPDATE') "
                 "AND current_setting('transaction_read_only') = 'off' AS ready",
-                ('"RecordSyncWatermark"',) * 3,
+                ('"RecordSyncWatermark"',) * 3 + ('"RecordSyncFieldWatermark"',) * 3,
             )
             row = cur.fetchone()
             if not row or not row['ready']:

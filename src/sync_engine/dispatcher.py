@@ -345,16 +345,23 @@ class Dispatcher:
                 hold_alias_event(event, mapping)
                 return DispatchResult(skipped=True, reason="merged_old_id_review_required")
             watermark = guard.latest(mapping.last_synced_at)
+            guard.ensure_field_baseline(mapping.last_synced_at)
             mapping = dataclasses.replace(mapping, last_synced_at=watermark)
             return self._dispatch_locked(event, mapping, guard)
 
     def _dispatch_locked(self, event: SyncEvent, mapping: IdMapping, guard: RecordSyncGuard) -> DispatchResult:
         # 差分更新の原則：last_synced_atより新しいイベントのみ処理する。
-        if mapping.last_synced_at is not None and event.occurred_at <= mapping.last_synced_at:
+        if event.source_tool is not Tool.NOTION and mapping.last_synced_at is not None and event.occurred_at <= mapping.last_synced_at:
             return DispatchResult(skipped=True, reason="stale_event")
 
-        if guard.rejects(event.occurred_at):
+        if event.source_tool is not Tool.NOTION and guard.rejects(event.occurred_at):
             return DispatchResult(skipped=True, reason="stale_event")
+
+        if event.source_tool is Tool.NOTION and not event.properties and not event.clear_requests:
+            if mapping.last_synced_at is not None and event.occurred_at <= mapping.last_synced_at:
+                return DispatchResult(skipped=True, reason="stale_event")
+            if guard.rejects(event.occurred_at):
+                return DispatchResult(skipped=True, reason="stale_event")
 
         # Notion発はすでにマスターへ保存済み。他ツールへの読取・書込より先に起票する。
         if event.source_tool is Tool.NOTION:
@@ -407,6 +414,12 @@ class Dispatcher:
                 )
                 continue
             prepared.append((property_name, prop, new_value))
+
+        if event.source_tool is Tool.NOTION and prepared:
+            eligible = set(guard.eligible_fields([name for name, _, _ in prepared], event.occurred_at))
+            prepared = [item for item in prepared if item[0] in eligible]
+            if not prepared:
+                return DispatchResult(skipped=True, reason="stale_event")
 
         held_results = []
         from src.sync_engine.owner_mapping import OWNER_PROPERTIES, hold_owner_inbound
@@ -464,6 +477,8 @@ class Dispatcher:
             payload_by_tool, new_row_properties = self._spreadsheet_properties_for_new_row(
                 payload_by_tool, mapping, notion_record=None, notion_record_fetched=False
             )
+            field_names = [name for name, _, _ in prepared]
+            guard.save_fields(field_names, event.occurred_at, completed=False)
             guard.accept(event.occurred_at)
             written_by_tool, mapping = self._write_values(
                 payload_by_tool, mapping, versions, new_row_properties=new_row_properties
@@ -474,9 +489,13 @@ class Dispatcher:
             ]
             if self._note_writer is not None and event.sync_notes:
                 self._note_writer(event, mapping)
+            completed_field_names = [item.property_name for item in results if not item.skipped_tools]
             results.extend(self._link_project(mapping))
             guard.advance(event.occurred_at)
-            self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
+            guard.save_fields(completed_field_names, event.occurred_at, completed=True)
+            self._store.update_last_synced_at(
+                mapping.notion_key, max(event.occurred_at, mapping.last_synced_at or event.occurred_at)
+            )
             return DispatchResult(skipped=False, properties=tuple(results + held_results))
 
         if not prepared:
@@ -687,6 +706,8 @@ class Dispatcher:
         # Notionへの更新が不要（既に現在値が一致）の場合も、他の配送失敗から独立させる。
         if Tool.NOTION not in payload_by_tool and notion_record is not None:
             self._enqueue_project_link(mapping)
+        field_names = [name for name, _, _ in prepared]
+        guard.save_fields(field_names, event.occurred_at, completed=False)
         guard.accept(event.occurred_at)
         written_by_tool, mapping = self._write_values(
             payload_by_tool, mapping, versions, new_row_properties=new_row_properties
@@ -722,7 +743,11 @@ class Dispatcher:
         if not relevant.intersection(missing_notion):
             results.extend(self._link_project(mapping))
         guard.advance(event.occurred_at)
-        self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
+        completed_field_names = [item.property_name for item in results if not item.skipped_tools]
+        guard.save_fields(completed_field_names, event.occurred_at, completed=True)
+        self._store.update_last_synced_at(
+            mapping.notion_key, max(event.occurred_at, mapping.last_synced_at or event.occurred_at)
+        )
         return DispatchResult(skipped=False, properties=tuple(results + held_results))
 
     def _enqueue_project_link(self, mapping: IdMapping) -> None:

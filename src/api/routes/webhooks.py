@@ -28,6 +28,7 @@ from src.sync_engine.production_wiring import ProductionSyncWiring
 from src.sync_engine.webhook_handlers.gmail_push_webhook import (
     handler as gmail_push_webhook_handler,
 )
+from src.sync_engine.webhook_handlers.gmail_ingest_webhook import handler as gmail_ingest_webhook_handler
 from src.sync_engine.webhook_handlers.kintone_webhook import handler as kintone_webhook_handler
 from src.sync_engine.webhook_handlers.lead_inquiry_webhook import (
     handler as lead_inquiry_webhook_handler,
@@ -38,6 +39,7 @@ from src.sync_engine.webhook_handlers.notion_webhook import (
 from src.sync_engine.webhook_handlers.slack_interaction_webhook import (
     handler as slack_interaction_webhook_handler,
 )
+from src.sync_engine.webhook_handlers.slack_crm_command import handler as slack_crm_command_handler
 from src.sync_engine.webhook_handlers.spreadsheet_webhook import (
     handler as spreadsheet_webhook_handler,
 )
@@ -375,6 +377,16 @@ async def webhook_gmail_push(request: Request) -> Response:
     return _lambda_result_to_response(outcome.result)
 
 
+@router.post("/api/webhooks/gmail-ingest")
+async def webhook_gmail_ingest(request: Request) -> Response:
+    event = await _lambda_event_from_request(request)
+    outcome = await _run_off_event_loop(
+        gmail_ingest_webhook_handler, event, receipt_source="gmail_ingest",
+        handler_kwargs=dict(context=None),
+    )
+    return _lambda_result_to_response(outcome.result)
+
+
 @router.post("/api/webhooks/lead-inquiry")
 async def webhook_lead_inquiry(request: Request) -> Response:
     """lead-researcher（別リポジトリ、問い合わせメール自動調査Slackボット）からの
@@ -401,5 +413,14 @@ async def webhook_slack_interactions(request: Request) -> Response:
     event = await _lambda_event_from_request(request)
     outcome = await _run_off_event_loop(
         slack_interaction_webhook_handler, event, handler_kwargs=dict(context=None)
+    )
+    return _lambda_result_to_response(outcome.result)
+
+
+@router.post("/api/webhooks/slack-crm-command")
+async def webhook_slack_crm_command(request: Request) -> Response:
+    event = await _lambda_event_from_request(request)
+    outcome = await _run_off_event_loop(
+        slack_crm_command_handler, event, handler_kwargs=dict(context=None),
     )
     return _lambda_result_to_response(outcome.result)

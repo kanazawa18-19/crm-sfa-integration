@@ -1,0 +1,363 @@
+- article "2件中2件目のメッセージ":
+      - 'heading "Claudeが返答しました: 対象差分を確認しました。未配備・未実物検証が前提のため、コードから確定できない点は「要確認」と明記しています。" [level=2]'
+      - generic: ファイルを読み取りました, コマンドを実行しました
+      - button "ファイルを読み取りました, コマンドを実行しました":
+        - generic: 
+      - status: ファイルを読み取りました, コマンドを実行しました
+      - paragraph: 対象差分を確認しました。未配備・未実物検証が前提のため、コードから確定できない点は「要確認」と明記しています。
+      - paragraph: BLOCKER（配備前に修正が必要）
+      - table:
+        - rowgroup:
+          - row "ID 対象ファイル 指摘・理由 最小修正案":
+            - columnheader "ID"
+            - columnheader "対象ファイル"
+            - columnheader "指摘・理由"
+            - columnheader "最小修正案"
+        - rowgroup:
+          - row "B1 src/gmail_sync/sync.py（record_message）、gmail_ingest_webhook.py Notionの最終メール日時が過去へ巻き戻ります。Gmailのmessages.listは新しい順に返すため、1バッチ内でも、ページをまたいでも古いメールが後から処理され、update_pageで古いsent_atに上書きされます。2時間の重複取得やPushとの並走でも同じことが起きます。 Notionへ書き込む値を、そのメールのsent_atではなくSELECT max(\"sentAt\") FROM \"EmailLog\" WHERE \"contactPageId\"=%sの結果に変えます。冪等かつ単調になり、再開時にも安全です。":
+            - cell "B1"
+            - cell "src/gmail_sync/sync.py（record_message）、gmail_ingest_webhook.py"
+            - cell "Notionの最終メール日時が過去へ巻き戻ります。Gmailのmessages.listは新しい順に返すため、1バッチ内でも、ページをまたいでも古いメールが後から処理され、update_pageで古いsent_atに上書きされます。2時間の重複取得やPushとの並走でも同じことが起きます。":
+              - text: Notionの最終メール日時が過去へ巻き戻ります。Gmailの
+              - code: messages.list
+              - text: は新しい順に返すため、1バッチ内でも、ページをまたいでも古いメールが後から処理され、
+              - code: update_page
+              - text: で古い
+              - code: sent_at
+              - text: に上書きされます。2時間の重複取得やPushとの並走でも同じことが起きます。
+            - cell "Notionへ書き込む値を、そのメールのsent_atではなくSELECT max(\"sentAt\") FROM \"EmailLog\" WHERE \"contactPageId\"=%sの結果に変えます。冪等かつ単調になり、再開時にも安全です。":
+              - text: Notionへ書き込む値を、そのメールの
+              - code: sent_at
+              - text: ではなく
+              - code: SELECT max("sentAt") FROM "EmailLog" WHERE "contactPageId"=%s
+              - text: の結果に変えます。冪等かつ単調になり、再開時にも安全です。
+          - 'row "B2 gmail_ingest_webhook.py、gas/gmail-ingest/ingest.js 1通で恒久的な失敗（アーカイブ済み連絡先へのNotion 404など）が起きると、バッチ全体が500になります。GASは同じ範囲を5分ごとに再試行し続け、その担当者の取込みと、後続メールの即時通知がすべて止まります。 ハンドラ内でメール単位にtry/exceptをかけ、失敗したメールはstatus: ''effect_failed''として返し、全体は200で応答します。2時間の重複取得によって同じメールが再送されるので、その範囲内では自然に再試行されます。それを過ぎた分はnotionDone=falseの行を拾う定期回収で処理します。"':
+            - cell "B2"
+            - cell "gmail_ingest_webhook.py、gas/gmail-ingest/ingest.js"
+            - cell "1通で恒久的な失敗（アーカイブ済み連絡先へのNotion 404など）が起きると、バッチ全体が500になります。GASは同じ範囲を5分ごとに再試行し続け、その担当者の取込みと、後続メールの即時通知がすべて止まります。"
+            - 'cell "ハンドラ内でメール単位にtry/exceptをかけ、失敗したメールはstatus: ''effect_failed''として返し、全体は200で応答します。2時間の重複取得によって同じメールが再送されるので、その範囲内では自然に再試行されます。それを過ぎた分はnotionDone=falseの行を拾う定期回収で処理します。"':
+              - text: ハンドラ内でメール単位に
+              - code: try/except
+              - text: をかけ、失敗したメールは
+              - code: "status: 'effect_failed'"
+              - text: として返し、全体は200で応答します。2時間の重複取得によって同じメールが再送されるので、その範囲内では自然に再試行されます。それを過ぎた分は
+              - code: notionDone=false
+              - text: の行を拾う定期回収で処理します。
+          - row "B3 src/sync_engine/dispatcher.py（705〜745行付近の2つ目の経路） 1つ目の経路と扱いが異なります。(1) 配送に失敗した項目も含めてsave_fields(field_names, completed=True)しているため、has_partial_skipsで500を返しても、再送は同時刻完了扱いでstale_eventとして捨てられます。(2) update_last_synced_atがmaxを取っていないため、古い項目イベントでlast_synced_atが後退し、他ツール発イベントの古さ判定が緩みます。 1つ目の経路と同様に、完了扱いはskipped_toolsのない項目に限定します。update_last_synced_atもmax(event.occurred_at, mapping.last_synced_at or event.occurred_at)にします。":
+            - cell "B3"
+            - cell "src/sync_engine/dispatcher.py（705〜745行付近の2つ目の経路）"
+            - cell "1つ目の経路と扱いが異なります。(1) 配送に失敗した項目も含めてsave_fields(field_names, completed=True)しているため、has_partial_skipsで500を返しても、再送は同時刻完了扱いでstale_eventとして捨てられます。(2) update_last_synced_atがmaxを取っていないため、古い項目イベントでlast_synced_atが後退し、他ツール発イベントの古さ判定が緩みます。":
+              - text: 1つ目の経路と扱いが異なります。(1) 配送に失敗した項目も含めて
+              - code: save_fields(field_names, completed=True)
+              - text: しているため、
+              - code: has_partial_skips
+              - text: で500を返しても、再送は同時刻完了扱いで
+              - code: stale_event
+              - text: として捨てられます。(2)
+              - code: update_last_synced_at
+              - text: が
+              - code: max
+              - text: を取っていないため、古い項目イベントで
+              - code: last_synced_at
+              - text: が後退し、他ツール発イベントの古さ判定が緩みます。
+            - cell "1つ目の経路と同様に、完了扱いはskipped_toolsのない項目に限定します。update_last_synced_atもmax(event.occurred_at, mapping.last_synced_at or event.occurred_at)にします。":
+              - text: 1つ目の経路と同様に、完了扱いは
+              - code: skipped_tools
+              - text: のない項目に限定します。
+              - code: update_last_synced_at
+              - text: も
+              - code: max(event.occurred_at, mapping.last_synced_at or event.occurred_at)
+              - text: にします。
+          - row "B4 src/sync_engine/dispatcher.py clear_requestsが項目別時刻の判定と記録の対象外です。propertiesが空でない場合、またはpreparedが空の場合はページ単位の古さ判定も外れるため、古い「項目クリア」の再送がそのまま他ツールへ適用され、新しい値を消してしまいます。 クリア対象の項目名もeligible_fieldsの判定対象に入れ、save_fieldsで記録します。対象外になったクリアは除外します。":
+            - cell "B4"
+            - cell "src/sync_engine/dispatcher.py"
+            - cell "clear_requestsが項目別時刻の判定と記録の対象外です。propertiesが空でない場合、またはpreparedが空の場合はページ単位の古さ判定も外れるため、古い「項目クリア」の再送がそのまま他ツールへ適用され、新しい値を消してしまいます。":
+              - code: clear_requests
+              - text: が項目別時刻の判定と記録の対象外です。
+              - code: properties
+              - text: が空でない場合、または
+              - code: prepared
+              - text: が空の場合はページ単位の古さ判定も外れるため、古い「項目クリア」の再送がそのまま他ツールへ適用され、新しい値を消してしまいます。
+            - cell "クリア対象の項目名もeligible_fieldsの判定対象に入れ、save_fieldsで記録します。対象外になったクリアは除外します。":
+              - text: クリア対象の項目名も
+              - code: eligible_fields
+              - text: の判定対象に入れ、
+              - code: save_fields
+              - text: で記録します。対象外になったクリアは除外します。
+          - row "B5 migrations/20261001000000_record_sync_field_watermark、record_sync_lock.py（eligible_fields） 旧時刻からの移行が不完全です。(1) 基準値がRecordSyncWatermarkだけから作られるため、この表に行がないレコードは基準なしとなり、IdMapping.last_synced_at以前の古い再送を受け入れてしまいます。(2) completedAtがNULLの行（受理済み・未完了）は基準として無視され、旧来のacceptedAt未満を拒否する判定が失われます。(3) マイグレーション実行からコード切替までの間に旧コードが進めた時刻は、基準値に反映されません。 基準値をGREATEST(completedAt, IdMapping.last_synced_at)で作り、Watermarkのないレコードにも行を作ります。判定にはoccurred_at < baseline.acceptedAtの拒否を追加します。基準値のINSERTはON CONFLICT DO UPDATE SET ... GREATESTで冪等にし、コード切替の直後にもう一度実行します。":
+            - cell "B5"
+            - cell "migrations/20261001000000_record_sync_field_watermark、record_sync_lock.py（eligible_fields）"
+            - cell "旧時刻からの移行が不完全です。(1) 基準値がRecordSyncWatermarkだけから作られるため、この表に行がないレコードは基準なしとなり、IdMapping.last_synced_at以前の古い再送を受け入れてしまいます。(2) completedAtがNULLの行（受理済み・未完了）は基準として無視され、旧来のacceptedAt未満を拒否する判定が失われます。(3) マイグレーション実行からコード切替までの間に旧コードが進めた時刻は、基準値に反映されません。":
+              - text: 旧時刻からの移行が不完全です。(1) 基準値が
+              - code: RecordSyncWatermark
+              - text: だけから作られるため、この表に行がないレコードは基準なしとなり、
+              - code: IdMapping.last_synced_at
+              - text: 以前の古い再送を受け入れてしまいます。(2)
+              - code: completedAt
+              - text: がNULLの行（受理済み・未完了）は基準として無視され、旧来の
+              - code: acceptedAt
+              - text: 未満を拒否する判定が失われます。(3) マイグレーション実行からコード切替までの間に旧コードが進めた時刻は、基準値に反映されません。
+            - cell "基準値をGREATEST(completedAt, IdMapping.last_synced_at)で作り、Watermarkのないレコードにも行を作ります。判定にはoccurred_at < baseline.acceptedAtの拒否を追加します。基準値のINSERTはON CONFLICT DO UPDATE SET ... GREATESTで冪等にし、コード切替の直後にもう一度実行します。":
+              - text: 基準値を
+              - code: GREATEST(completedAt, IdMapping.last_synced_at)
+              - text: で作り、Watermarkのないレコードにも行を作ります。判定には
+              - code: occurred_at < baseline.acceptedAt
+              - text: の拒否を追加します。基準値のINSERTは
+              - code: ON CONFLICT DO UPDATE SET ... GREATEST
+              - text: で冪等にし、コード切替の直後にもう一度実行します。
+      - paragraph: WARN（配備前の修正を推奨）
+      - table:
+        - rowgroup:
+          - row "ID 対象ファイル 指摘・理由 最小修正案":
+            - columnheader "ID"
+            - columnheader "対象ファイル"
+            - columnheader "指摘・理由"
+            - columnheader "最小修正案"
+        - rowgroup:
+          - row "W1 gmail_ingest_webhook.py 後処理がすべて完了したメールでもrecord_messageを呼び、分類・score_email・連絡先検索を毎回やり直しています。2時間の重複取得と5分間隔の実行が重なるため、1通あたり約24回再計算されます。スコアリングが外部APIを使っている場合はコストが膨らみます。 effectの3つのフラグがすべてtrueならexistingを返し、record_messageを呼ばないようにします。":
+            - cell "W1"
+            - cell "gmail_ingest_webhook.py"
+            - cell "後処理がすべて完了したメールでもrecord_messageを呼び、分類・score_email・連絡先検索を毎回やり直しています。2時間の重複取得と5分間隔の実行が重なるため、1通あたり約24回再計算されます。スコアリングが外部APIを使っている場合はコストが膨らみます。":
+              - text: 後処理がすべて完了したメールでも
+              - code: record_message
+              - text: を呼び、分類・
+              - code: score_email
+              - text: ・連絡先検索を毎回やり直しています。2時間の重複取得と5分間隔の実行が重なるため、1通あたり約24回再計算されます。スコアリングが外部APIを使っている場合はコストが膨らみます。
+            - cell "effectの3つのフラグがすべてtrueならexistingを返し、record_messageを呼ばないようにします。":
+              - code: effect
+              - text: の3つのフラグがすべてtrueなら
+              - code: existing
+              - text: を返し、
+              - code: record_message
+              - text: を呼ばないようにします。
+          - row "W2 src/gmail_sync/sync.py 再開時に分類とスコアを計算し直しています。連絡先の解決結果や優先度が初回と変わると、EmailLogとは別の連絡先へNotion更新や通知が行われます。classify_messageがNoneになればnotionDoneは永久にfalseのまま残ります。 再開時（inserted=Falseかつeffectあり）は、EmailLogに保存済みのcontactPageId・incidentPriority・sentAtを読んで後処理だけを実行します。":
+            - cell "W2"
+            - cell "src/gmail_sync/sync.py"
+            - cell "再開時に分類とスコアを計算し直しています。連絡先の解決結果や優先度が初回と変わると、EmailLogとは別の連絡先へNotion更新や通知が行われます。classify_messageがNoneになればnotionDoneは永久にfalseのまま残ります。":
+              - text: 再開時に分類とスコアを計算し直しています。連絡先の解決結果や優先度が初回と変わると、EmailLogとは別の連絡先へNotion更新や通知が行われます。
+              - code: classify_message
+              - text: がNoneになれば
+              - code: notionDone
+              - text: は永久にfalseのまま残ります。
+            - cell "再開時（inserted=Falseかつeffectあり）は、EmailLogに保存済みのcontactPageId・incidentPriority・sentAtを読んで後処理だけを実行します。":
+              - text: 再開時（
+              - code: inserted=False
+              - text: かつeffectあり）は、EmailLogに保存済みの
+              - code: contactPageId
+              - text: ・
+              - code: incidentPriority
+              - text: ・
+              - code: sentAt
+              - text: を読んで後処理だけを実行します。
+          - row "W3 src/gmail_sync/sync.py（Push経路） Push経路では、保存後にNotion更新が失敗するとUniqueViolationでreturn Falseとなり、再開できません。effect行がないため、GAS側でもexisting扱いで回収されません。 Push経路もinsert_email_log_once（effect行を作る側）に統一し、後処理の台帳を1本化します。":
+            - cell "W3"
+            - cell "src/gmail_sync/sync.py（Push経路）"
+            - cell "Push経路では、保存後にNotion更新が失敗するとUniqueViolationでreturn Falseとなり、再開できません。effect行がないため、GAS側でもexisting扱いで回収されません。":
+              - text: Push経路では、保存後にNotion更新が失敗すると
+              - code: UniqueViolation
+              - text: で
+              - code: return False
+              - text: となり、再開できません。effect行がないため、GAS側でも
+              - code: existing
+              - text: 扱いで回収されません。
+            - cell "Push経路もinsert_email_log_once（effect行を作る側）に統一し、後処理の台帳を1本化します。":
+              - text: Push経路も
+              - code: insert_email_log_once
+              - text: （effect行を作る側）に統一し、後処理の台帳を1本化します。
+          - row "W4 src/gmail_sync/sync.py 通知は試行権を先に取る方式（最大1回）なので、送信失敗やnotify_managers_immediate内部で握りつぶされた失敗は、気づかれないまま消えます。さらに高優先度の即時通知がNotion更新の成功を待つ順序になっており、Notion障害中は通知が遅れます。 通知の失敗時はgmailMessageId付きでERRORログを出し、監視対象にします。インシデント通知の試行権取得と送信は、Notion更新より前に移します。":
+            - cell "W4"
+            - cell "src/gmail_sync/sync.py"
+            - cell "通知は試行権を先に取る方式（最大1回）なので、送信失敗やnotify_managers_immediate内部で握りつぶされた失敗は、気づかれないまま消えます。さらに高優先度の即時通知がNotion更新の成功を待つ順序になっており、Notion障害中は通知が遅れます。":
+              - text: 通知は試行権を先に取る方式（最大1回）なので、送信失敗や
+              - code: notify_managers_immediate
+              - text: 内部で握りつぶされた失敗は、気づかれないまま消えます。さらに高優先度の即時通知がNotion更新の成功を待つ順序になっており、Notion障害中は通知が遅れます。
+            - cell "通知の失敗時はgmailMessageId付きでERRORログを出し、監視対象にします。インシデント通知の試行権取得と送信は、Notion更新より前に移します。":
+              - text: 通知の失敗時は
+              - code: gmailMessageId
+              - text: 付きでERRORログを出し、監視対象にします。インシデント通知の試行権取得と送信は、Notion更新より前に移します。
+          - row "W5 gas/gmail-ingest/ingest.js 保存したpageTokenが失効または不正になると、listが毎回例外を投げ、INGEST_CURSORが残ったまま取込みが永久に止まります。 再開中にlistが失敗したらカーソルを削除し、成功位置から取り直します。あわせてカーソルに保存時刻を持たせ、一定時間（例：1時間）を過ぎたものは破棄します。":
+            - cell "W5"
+            - cell "gas/gmail-ingest/ingest.js"
+            - cell "保存したpageTokenが失効または不正になると、listが毎回例外を投げ、INGEST_CURSORが残ったまま取込みが永久に止まります。":
+              - text: 保存した
+              - code: pageToken
+              - text: が失効または不正になると、
+              - code: list
+              - text: が毎回例外を投げ、
+              - code: INGEST_CURSOR
+              - text: が残ったまま取込みが永久に止まります。
+            - cell "再開中にlistが失敗したらカーソルを削除し、成功位置から取り直します。あわせてカーソルに保存時刻を持たせ、一定時間（例：1時間）を過ぎたものは破棄します。":
+              - text: 再開中に
+              - code: list
+              - text: が失敗したらカーソルを削除し、成功位置から取り直します。あわせてカーソルに保存時刻を持たせ、一定時間（例：1時間）を過ぎたものは破棄します。
+          - row "W6 gas/gmail-ingest/ingest.js、sync.py DRY_RUN=falseへ切り替えた初回は、LAST_SUCCESS_SECONDSが未設定のため直近2日＋2時間分を実際に取り込みます。Pushが取りこぼしていた古いメールに対して、即時通知やWeb接客ツールへの通知がまとめて飛びます。 切替時にLAST_SUCCESS_SECONDSを現在時刻で初期化する手順を設けるか、sent_atが一定時間より古いメールは通知しない閾値を入れます。":
+            - cell "W6"
+            - cell "gas/gmail-ingest/ingest.js、sync.py"
+            - cell "DRY_RUN=falseへ切り替えた初回は、LAST_SUCCESS_SECONDSが未設定のため直近2日＋2時間分を実際に取り込みます。Pushが取りこぼしていた古いメールに対して、即時通知やWeb接客ツールへの通知がまとめて飛びます。":
+              - code: DRY_RUN=false
+              - text: へ切り替えた初回は、
+              - code: LAST_SUCCESS_SECONDS
+              - text: が未設定のため直近2日＋2時間分を実際に取り込みます。Pushが取りこぼしていた古いメールに対して、即時通知やWeb接客ツールへの通知がまとめて飛びます。
+            - cell "切替時にLAST_SUCCESS_SECONDSを現在時刻で初期化する手順を設けるか、sent_atが一定時間より古いメールは通知しない閾値を入れます。":
+              - text: 切替時に
+              - code: LAST_SUCCESS_SECONDS
+              - text: を現在時刻で初期化する手順を設けるか、
+              - code: sent_at
+              - text: が一定時間より古いメールは通知しない閾値を入れます。
+          - row "W7 scripts/compare_gmail_gas_ingest.py 比較結果が不正確になる要因が4つあります。(1) GAS側はinternal_date_ms、CRM側はsentAtで期間を絞っており、時刻の基準が異なるため境界付近で差分が偽陽性になります。(2) GASの走査範囲（after/before）が比較期間を覆っているかを検証していません。(3) unmatchedを除外しているため、CRMにしかないメールが「GASが見ていない」のか「分類結果の違い」なのか区別できません。(4) repEmailを完全一致で比較しており、大文字小文字の違いで一致しません。 gas_onlyはIDだけで（期間条件なしで）EmailLogに存在するかを再確認します。ログのafter/beforeの和集合で比較期間を覆えているか検証し、不足があれば警告します。unmatchedのIDは別枠で出力し、lower()で比較します。":
+            - cell "W7"
+            - cell "scripts/compare_gmail_gas_ingest.py"
+            - cell "比較結果が不正確になる要因が4つあります。(1) GAS側はinternal_date_ms、CRM側はsentAtで期間を絞っており、時刻の基準が異なるため境界付近で差分が偽陽性になります。(2) GASの走査範囲（after/before）が比較期間を覆っているかを検証していません。(3) unmatchedを除外しているため、CRMにしかないメールが「GASが見ていない」のか「分類結果の違い」なのか区別できません。(4) repEmailを完全一致で比較しており、大文字小文字の違いで一致しません。":
+              - text: 比較結果が不正確になる要因が4つあります。(1) GAS側は
+              - code: internal_date_ms
+              - text: 、CRM側は
+              - code: sentAt
+              - text: で期間を絞っており、時刻の基準が異なるため境界付近で差分が偽陽性になります。(2) GASの走査範囲（after/before）が比較期間を覆っているかを検証していません。(3)
+              - code: unmatched
+              - text: を除外しているため、CRMにしかないメールが「GASが見ていない」のか「分類結果の違い」なのか区別できません。(4)
+              - code: repEmail
+              - text: を完全一致で比較しており、大文字小文字の違いで一致しません。
+            - cell "gas_onlyはIDだけで（期間条件なしで）EmailLogに存在するかを再確認します。ログのafter/beforeの和集合で比較期間を覆えているか検証し、不足があれば警告します。unmatchedのIDは別枠で出力し、lower()で比較します。":
+              - code: gas_only
+              - text: はIDだけで（期間条件なしで）EmailLogに存在するかを再確認します。ログのafter/beforeの和集合で比較期間を覆えているか検証し、不足があれば警告します。
+              - code: unmatched
+              - text: のIDは別枠で出力し、
+              - code: lower()
+              - text: で比較します。
+          - row "W8 notion_webhook.py、dispatcher.py DispatchResult.has_partial_skipsの定義が差分にありません（要確認）。既存の属性でなければAttributeErrorになります。またskipped_toolsに意図的なスキップ（保留・対象外・競合など）が含まれる場合は500が返り続けて無限に再試行され、その間カレンダー連携の後続フックも実行されません。 一時的な失敗だけを判定する属性にし、テストで固定します。":
+            - cell "W8"
+            - cell "notion_webhook.py、dispatcher.py"
+            - cell "DispatchResult.has_partial_skipsの定義が差分にありません（要確認）。既存の属性でなければAttributeErrorになります。またskipped_toolsに意図的なスキップ（保留・対象外・競合など）が含まれる場合は500が返り続けて無限に再試行され、その間カレンダー連携の後続フックも実行されません。":
+              - code: DispatchResult.has_partial_skips
+              - text: の定義が差分にありません（要確認）。既存の属性でなければ
+              - code: AttributeError
+              - text: になります。また
+              - code: skipped_tools
+              - text: に意図的なスキップ（保留・対象外・競合など）が含まれる場合は500が返り続けて無限に再試行され、その間カレンダー連携の後続フックも実行されません。
+            - cell "一時的な失敗だけを判定する属性にし、テストで固定します。"
+          - row "W9 record_sync_lock.py 項目別処理によってguard.accept・guard.advanceが古い時刻でも呼ばれるようになりました。これらが最大値を取らない実装だと、ページ単位の時刻が後退します（要確認）。 accept・advanceをGREATESTで単調に更新するか、呼び出し側で最大値を渡します。":
+            - cell "W9"
+            - cell "record_sync_lock.py"
+            - cell "項目別処理によってguard.accept・guard.advanceが古い時刻でも呼ばれるようになりました。これらが最大値を取らない実装だと、ページ単位の時刻が後退します（要確認）。":
+              - text: 項目別処理によって
+              - code: guard.accept
+              - text: ・
+              - code: guard.advance
+              - text: が古い時刻でも呼ばれるようになりました。これらが最大値を取らない実装だと、ページ単位の時刻が後退します（要確認）。
+            - cell "accept・advanceをGREATESTで単調に更新するか、呼び出し側で最大値を渡します。":
+              - code: accept
+              - text: ・
+              - code: advance
+              - text: を
+              - code: GREATEST
+              - text: で単調に更新するか、呼び出し側で最大値を渡します。
+          - row "W10 slack_crm_command.py 許可判定がuser_idだけで、team_id（Grid環境ではenterprise_idも）を検証していません。検索が3秒を超えるとSlack側でタイムアウトします。本文がbase64で届く場合の扱いがslack_interaction_webhookと揃っているかも要確認です。 SLACK_CRM_ALLOWED_TEAM_IDを照合します。検索にタイムアウトを設けるか、即時に受付応答を返し、結果はresponse_urlへ送ります。":
+            - cell "W10"
+            - cell "slack_crm_command.py"
+            - cell "許可判定がuser_idだけで、team_id（Grid環境ではenterprise_idも）を検証していません。検索が3秒を超えるとSlack側でタイムアウトします。本文がbase64で届く場合の扱いがslack_interaction_webhookと揃っているかも要確認です。":
+              - text: 許可判定が
+              - code: user_id
+              - text: だけで、
+              - code: team_id
+              - text: （Grid環境では
+              - code: enterprise_id
+              - text: も）を検証していません。検索が3秒を超えるとSlack側でタイムアウトします。本文がbase64で届く場合の扱いが
+              - code: slack_interaction_webhook
+              - text: と揃っているかも要確認です。
+            - cell "SLACK_CRM_ALLOWED_TEAM_IDを照合します。検索にタイムアウトを設けるか、即時に受付応答を返し、結果はresponse_urlへ送ります。":
+              - code: SLACK_CRM_ALLOWED_TEAM_ID
+              - text: を照合します。検索にタイムアウトを設けるか、即時に受付応答を返し、結果は
+              - code: response_url
+              - text: へ送ります。
+      - paragraph: INFO（確認・改善事項）
+      - table:
+        - rowgroup:
+          - row "ID 対象ファイル 内容":
+            - columnheader "ID"
+            - columnheader "対象ファイル"
+            - columnheader "内容"
+        - rowgroup:
+          - row "I1 src/api/routes/webhooks.py デコレータが<TEST_EMAIL>(...)になっています。サニタイズ処理が@router.postを置換したものと思われますので、実物で確認してください。":
+            - cell "I1"
+            - cell "src/api/routes/webhooks.py"
+            - cell "デコレータが<TEST_EMAIL>(...)になっています。サニタイズ処理が@router.postを置換したものと思われますので、実物で確認してください。":
+              - text: デコレータが
+              - code: <TEST_EMAIL>(...)
+              - text: になっています。サニタイズ処理が
+              - code: "@router.post"
+              - text: を置換したものと思われますので、実物で確認してください。
+          - row "I2 test_gmail_ingest_webhook.py 担当者の偽装テストは、サニタイズで宛先が同一アドレスになり、意図どおり400を確認できない状態です。実物では異なるアドレスになっているか確認してください。また、このテストにはemail_log_existsのモックがありません。":
+            - cell "I2"
+            - cell "test_gmail_ingest_webhook.py"
+            - cell "担当者の偽装テストは、サニタイズで宛先が同一アドレスになり、意図どおり400を確認できない状態です。実物では異なるアドレスになっているか確認してください。また、このテストにはemail_log_existsのモックがありません。":
+              - text: 担当者の偽装テストは、サニタイズで宛先が同一アドレスになり、意図どおり400を確認できない状態です。実物では異なるアドレスになっているか確認してください。また、このテストには
+              - code: email_log_exists
+              - text: のモックがありません。
+          - row "I3 gmail_ingest_webhook.py Pushとの競合で保存に負けたメールがunmatchedと表示されます。record_messageの戻り値を「保存／既存／対象外」の3値にすると、比較にも使えます。":
+            - cell "I3"
+            - cell "gmail_ingest_webhook.py"
+            - cell "Pushとの競合で保存に負けたメールがunmatchedと表示されます。record_messageの戻り値を「保存／既存／対象外」の3値にすると、比較にも使えます。":
+              - text: Pushとの競合で保存に負けたメールが
+              - code: unmatched
+              - text: と表示されます。
+              - code: record_message
+              - text: の戻り値を「保存／既存／対象外」の3値にすると、比較にも使えます。
+          - row "I4 gmail_sync/db.py ほか 以下を実物で確認してください。_connectがdict_rowを返すか（effect['notionDone']がこれに依存）、db.email_log_existsが存在するか、Callableがimportされているか、アプリ用ロールにGmailIngestEffectへの権限があるか。receipt_source=\"gmail_ingest\"が本文を保存する場合は、件名・スニペットの保持期間も検討が必要です。GmailIngestEffectは完了済みの行が溜まり続けるため、定期削除の方針を決めてください。":
+            - cell "I4"
+            - cell "gmail_sync/db.py ほか"
+            - cell "以下を実物で確認してください。_connectがdict_rowを返すか（effect['notionDone']がこれに依存）、db.email_log_existsが存在するか、Callableがimportされているか、アプリ用ロールにGmailIngestEffectへの権限があるか。receipt_source=\"gmail_ingest\"が本文を保存する場合は、件名・スニペットの保持期間も検討が必要です。GmailIngestEffectは完了済みの行が溜まり続けるため、定期削除の方針を決めてください。":
+              - text: 以下を実物で確認してください。
+              - code: _connect
+              - text: が
+              - code: dict_row
+              - text: を返すか（
+              - code: effect['notionDone']
+              - text: がこれに依存）、
+              - code: db.email_log_exists
+              - text: が存在するか、
+              - code: Callable
+              - text: がimportされているか、アプリ用ロールに
+              - code: GmailIngestEffect
+              - text: への権限があるか。
+              - code: receipt_source="gmail_ingest"
+              - text: が本文を保存する場合は、件名・スニペットの保持期間も検討が必要です。GmailIngestEffectは完了済みの行が溜まり続けるため、定期削除の方針を決めてください。
+          - row "I5 dispatcher.py 古さ判定を後ろへ移したため、古いNotion再送でも_enqueue_project_linkが実行されます（冪等なら問題ありません）。Notionのプロパティ名を変更すると、項目別時刻がリセットされます。":
+            - cell "I5"
+            - cell "dispatcher.py"
+            - cell "古さ判定を後ろへ移したため、古いNotion再送でも_enqueue_project_linkが実行されます（冪等なら問題ありません）。Notionのプロパティ名を変更すると、項目別時刻がリセットされます。":
+              - text: 古さ判定を後ろへ移したため、古いNotion再送でも
+              - code: _enqueue_project_link
+              - text: が実行されます（冪等なら問題ありません）。Notionのプロパティ名を変更すると、項目別時刻がリセットされます。
+          - row "I6 gas/gmail-ingest/ingest.js 取得ヘッダーにCcが含まれていません。Push側の取得ヘッダーと揃っていないと、比較で差分が出ます。配信遅延が2時間を超えるメールは取りこぼします。":
+            - cell "I6"
+            - cell "gas/gmail-ingest/ingest.js"
+            - cell "取得ヘッダーにCcが含まれていません。Push側の取得ヘッダーと揃っていないと、比較で差分が出ます。配信遅延が2時間を超えるメールは取りこぼします。"
+          - row "I7 slack_crm_command.py Dで始まるチャンネルという条件は、Botとのダイレクトメッセージに限らず、任意のDMで通ります。応答はエフェメラルなので漏えいはありませんが、「本人DM」をBotとのDMに限定する方針であれば照合方法の見直しが必要です。command名の検証もありません。許可ユーザー全員が全取引先を閲覧できる前提になっている点も、方針として確認してください。":
+            - cell "I7"
+            - cell "slack_crm_command.py"
+            - cell "Dで始まるチャンネルという条件は、Botとのダイレクトメッセージに限らず、任意のDMで通ります。応答はエフェメラルなので漏えいはありませんが、「本人DM」をBotとのDMに限定する方針であれば照合方法の見直しが必要です。command名の検証もありません。許可ユーザー全員が全取引先を閲覧できる前提になっている点も、方針として確認してください。":
+              - code: D
+              - text: で始まるチャンネルという条件は、Botとのダイレクトメッセージに限らず、任意のDMで通ります。応答はエフェメラルなので漏えいはありませんが、「本人DM」をBotとのDMに限定する方針であれば照合方法の見直しが必要です。
+              - code: command
+              - text: 名の検証もありません。許可ユーザー全員が全取引先を閲覧できる前提になっている点も、方針として確認してください。
+          - row "I8 tests 全般 不足しているテスト：インシデント通知の再開、PushとGASの同時保存、GASのカーソル再開・中断・DRY_RUN切替、clear_requests、2つ目の経路の部分失敗、移行時の基準値。":
+            - cell "I8"
+            - cell "tests 全般"
+            - cell "不足しているテスト：インシデント通知の再開、PushとGASの同時保存、GASのカーソル再開・中断・DRY_RUN切替、clear_requests、2つ目の経路の部分失敗、移行時の基準値。":
+              - text: 不足しているテスト：インシデント通知の再開、PushとGASの同時保存、GASのカーソル再開・中断・DRY_RUN切替、
+              - code: clear_requests
+              - text: 、2つ目の経路の部分失敗、移行時の基準値。
+      - paragraph: 実物検証は、次の順序をおすすめします。
+      - list:
+        - listitem: B1〜B5を修正する。
+        - text: マイグレーションを適用し、
+        - code: validate_record_sync_storage
+        - text: が通ることを確認する。
+        - listitem: DRY_RUNで数日間運用し、W7を反映した比較スクリプトで差分がないことを確認する。
+        - code: LAST_SUCCESS_SECONDS
+        - text: を初期化してから実取込みへ切り替える。
+        - listitem: 保存後にNotionが失敗した場合の再開を、実際のNotionで1件確認する。
+      - group "おすすめのアクション":
+        - button "スプレッドシートを作成":
+          - generic: 
+          - text: スプレッドシートを作成

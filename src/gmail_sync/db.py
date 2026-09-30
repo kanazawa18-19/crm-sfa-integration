@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import os
 import uuid
+import hashlib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from collections.abc import Iterator
 
 import psycopg
 from psycopg.rows import dict_row
@@ -202,6 +205,94 @@ def insert_email_log(
             ),
         )
         conn.commit()
+
+
+def insert_email_log_once(**values: Any) -> bool:
+    """PushとGASの並走中も、実際に挿入した一方だけが通知を出す。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "EmailLog" (id, "contactPageId", "contactEmail", "repEmail", '
+            '"gmailMessageId", "gmailThreadId", direction, subject, snippet, "sentAt", '
+            '"createdAt", "incidentScore", "incidentPriority") '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s) '
+            'ON CONFLICT ("gmailMessageId") DO NOTHING RETURNING id',
+            (uuid.uuid4().hex, values['contact_page_id'], values['contact_email'], values['rep_email'],
+             values['gmail_message_id'], values.get('gmail_thread_id'), values['direction'],
+             values.get('subject'), values.get('snippet'), values['sent_at'],
+             values.get('incident_score'), values.get('incident_priority')),
+        )
+        inserted = cur.fetchone() is not None
+        if inserted:
+            cur.execute(
+                'INSERT INTO "GmailIngestEffect" ("gmailMessageId") VALUES (%s)',
+                (values['gmail_message_id'],),
+            )
+        conn.commit()
+        return inserted
+
+
+def gmail_ingest_effect_status(gmail_message_id: str) -> dict[str, bool] | None:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "notionDone", "incidentAttempted", "engagementAttempted" '
+            'FROM "GmailIngestEffect" WHERE "gmailMessageId" = %s', (gmail_message_id,)
+        )
+        return cur.fetchone()
+
+
+def get_email_log(gmail_message_id: str) -> dict[str, Any] | None:
+    """再開時は最初に保存した宛先と判定を使う。"""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "contactPageId", "contactEmail", "repEmail", direction, '
+            '"sentAt", "incidentScore", "incidentPriority", subject, snippet '
+            'FROM "EmailLog" WHERE "gmailMessageId" = %s', (gmail_message_id,)
+        )
+        return cur.fetchone()
+
+
+@contextmanager
+def locked_latest_email_at(contact_page_id: str) -> Iterator[datetime]:
+    """連絡先単位でNotion最終日時の更新を直列化し、古い値への逆戻りを防ぐ。"""
+    key = int.from_bytes(hashlib.blake2b(
+        f'email-last-at:{contact_page_id}'.encode(), digest_size=8
+    ).digest(), 'big', signed=True)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT pg_advisory_xact_lock(%s)', (key,))
+        cur.execute('SELECT max("sentAt") AS latest FROM "EmailLog" WHERE "contactPageId" = %s',
+                    (contact_page_id,))
+        row = cur.fetchone()
+        if not row or row['latest'] is None:
+            raise RuntimeError('最終メール日時の計算対象がありません')
+        yield row['latest']
+
+
+def mark_gmail_ingest_effect(gmail_message_id: str, column: str) -> None:
+    if column not in {'notionDone', 'incidentAttempted', 'engagementAttempted'}:
+        raise ValueError('未定義の処理です')
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'UPDATE "GmailIngestEffect" SET "{column}" = true, "updatedAt" = now() '
+            'WHERE "gmailMessageId" = %s', (gmail_message_id,),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError('Gmail取込み後処理の台帳がありません')
+        conn.commit()
+
+
+def claim_gmail_ingest_notification(gmail_message_id: str, column: str) -> bool:
+    """送信前に一度だけ試行権を取る。応答不明時の自動二重送信を防ぐ。"""
+    if column not in {'incidentAttempted', 'engagementAttempted'}:
+        raise ValueError('未定義の通知です')
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'UPDATE "GmailIngestEffect" SET "{column}" = true, "updatedAt" = now() '
+            f'WHERE "gmailMessageId" = %s AND "{column}" = false RETURNING "gmailMessageId"',
+            (gmail_message_id,),
+        )
+        claimed = cur.fetchone() is not None
+        conn.commit()
+        return claimed
 
 
 def fetch_existing_message_ids() -> set[str]:

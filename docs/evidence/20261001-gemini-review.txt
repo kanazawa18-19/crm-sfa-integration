@@ -1,0 +1,205 @@
+BLOCKER（リリース・実行不可 / 致命的バグ）、WARN（潜在的障害 / 処理不整合）、INFO（改善推奨）の順に示します。
+  - heading "BLOCKER（修正必須）" [level=3]
+  - heading "1. デコレータの構文エラー（起動不可）" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: src/api/routes/webhooks.py
+    - paragraph:
+      - text: "理由: 380行目および419行目において、FastAPIのルーティングデコレータが"
+      - code: "@router.post(...)"
+      - text: ではなく
+      - code: <TEST_EMAIL>("/api/webhooks/gmail-ingest")
+      - text: および
+      - code: <TEST_EMAIL>("/api/webhooks/slack-crm-command")
+      - text: と記述されています（サニタイズ処理時の置換ミスの可能性含む）。このままでは Python の
+      - code: SyntaxError
+      - text: が発生し、アプリケーションが起動しません。
+    - paragraph: "最小修正案:"
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code:
+      - text: "# 380行目・419行目のプレースホルダーを正しいデコレータに修正"
+      - text: "@router.post("
+      - generic: "\"/api/webhooks/gmail-ingest\""
+      - text: )
+      - text: ...
+      - text: "@router.post("
+      - generic: "\"/api/webhooks/slack-crm-command\""
+      - text: )
+  - heading "2. 他ツール更新時におけるウォーターマーク（ last_synced_at ）の巻き戻し" [level=4]:
+    - text: 2. 他ツール更新時におけるウォーターマーク（
+    - code: last_synced_at
+    - text: ）の巻き戻し
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: src/sync_engine/dispatcher.py
+      - text: (746行目)
+    - paragraph:
+      - text: "理由: Notion発イベントの処理パス（495行目）では"
+      - code: max(event.occurred_at, mapping.last_synced_at or event.occurred_at)
+      - text: を用いてウォーターマークの巻き戻しを防止していますが、他ツール更新時（746行目）では
+      - code: self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
+      - text: と直接上書きしています。これにより、遅れて届いた古い時刻のイベントによって
+      - code: last_synced_at
+      - text: が過去の時刻へ巻き戻り、後続の同期イベントが誤って重複処理されたりスキップされたりする原因となります。
+    - paragraph: "最小修正案:"
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: "# 746行目 self._store.update_last_synced_at( mapping.notion_key, max(event.occurred_at, mapping.last_synced_at or event.occurred_at) )"
+  - heading "3. 処理済みメッセージ再送時における Notion API の過剰呼び出し（レートリミット障害）" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: src/sync_engine/webhook_handlers/gmail_ingest_webhook.py
+      - text: および
+      - code: src/gmail_sync/sync.py
+    - paragraph:
+      - text: "理由: GASから定期送信（再送や重複含む）されたメッセージのうち、すでに取込み・Notion更新・通知が全て完了している（"
+      - code: GmailIngestEffect
+      - text: の全フラグが
+      - code: "true"
+      - text: である）メッセージであっても、
+      - code: gmail_ingest_webhook.py
+      - text: の判定を通過して
+      - code: sync.record_message
+      - text: が呼び出されます。
+      - code: record_message
+      - text: の冒頭で毎回
+      - code: classify_message
+      - text: （宛先となる Notion ページの検索 API 呼び出し）が実行されるため、GAS実行のたびに無駄な Notion API リクエストが大量発生し、429 (Rate Limit) エラーを引き起こして同期エンジン全体が停止するリスクがあります。
+    - paragraph:
+      - text: "最小修正案:"
+      - code: gmail_ingest_webhook.py
+      - text: 内で、
+      - code: exists
+      - text: かつ
+      - code: GmailIngestEffect
+      - text: の全処理が完了しているメッセージについては、
+      - code: sync.record_message
+      - text: （および Notion 検索）を呼び出さずに即座に
+      - code: "'existing'"
+      - text: や
+      - code: "'resumed_or_existing'"
+      - text: を返すように判定を前置します。
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: "# gmail_ingest_webhook.py effect = db.gmail_ingest_effect_status(message.id) if exists else None if exists and (effect is None or (effect['notionDone'] and effect['engagementAttempted'])): results.append({'id': message.id, 'status': 'existing'}) continue"
+  - heading "WARN（要対応・潜在的リスク）" [level=3]
+  - heading "4. GAS処理エラー時における cursorKey 残存によるリカバリ不全" [level=4]:
+    - text: 4. GAS処理エラー時における
+    - code: cursorKey
+    - text: 残存によるリカバリ不全
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: gas/gmail-ingest/ingest.js
+    - paragraph:
+      - text: "理由:"
+      - code: UrlFetchApp.fetch
+      - text: などで HTTP エラー（500等）が発生して例外が投げられた際、
+      - code: catch
+      - text: ブロックが存在しないため
+      - code: cursorKey
+      - text: （途中ページの
+      - code: pageToken
+      - text: ）がプロパティストアに残存します。次回トリガー実行時、失効した古い
+      - code: pageToken
+      - text: を使ってリトライを試み、永久にエラーを繰り返し続けるリスクがあります。
+    - paragraph:
+      - text: "最小修正案:"
+      - code: ingest.js
+      - text: の例外発生時（または起動時）に、古い
+      - code: cursorKey
+      - text: を無効化・クリアする処理を追加するか、
+      - code: try ... catch
+      - text: で例外を捕捉した際に
+      - code: props.deleteProperty(cursorKey)
+      - text: を呼び出すようにします。また、プロパティ未設定時の数値変換を安全にします。
+    - generic: JavaScript
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: "// saved の安全な取得 const rawSaved = props.getProperty(successKey); const saved = rawSaved ? Number(rawSaved) : null;"
+  - heading "5. メモリ状態（DB非接続）時における __baseline__ 判定漏れ" [level=4]:
+    - text: 5. メモリ状態（DB非接続）時における
+    - code: __baseline__
+    - text: 判定漏れ
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: src/sync_engine/record_sync_lock.py
+      - text: (62〜72行目)
+    - paragraph:
+      - text: "理由:"
+      - code: RecordSyncGuard.eligible_fields
+      - text: メソッドにおいて、
+      - code: self.conn is None
+      - text: （ユニットテストやメモリ空間での動作時）の場合、
+      - code: rows
+      - text: 辞書は
+      - code: names
+      - text: で渡された項目のみから生成されます。そのため
+      - code: "'__baseline__'"
+      - text: が含まれず、
+      - code: baseline
+      - text: 変数が常に
+      - code: None
+      - text: に評価されてしまい、旧時刻からの移行ロジック（
+      - code: __baseline__
+      - text: との比較）がメモリ動作時に正しくテスト・検証されません。
+    - paragraph: "最小修正案:"
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code:
+      - text: "# record_sync_lock.py 72行目 else: rows = {name: self.state.get("
+      - generic: "f'field:{name}'"
+      - text: ", {}) for name in (names + ['__baseline__'])}"
+  - heading "6. Slack コマンドにおける認可エラー時の UX と設定未定義時の考慮" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: src/sync_engine/webhook_handlers/slack_crm_command.py
+    - paragraph: "理由:"
+    - list:
+      - paragraph: 署名検証失敗時に 401 を返していますが、Slack Slash Command の仕様上、画面に不親切なエラーが表示されます。
+      - paragraph:
+        - text: 環境変数
+        - code: SLACK_CRM_ALLOWED_USER_IDS
+        - text: が未定義の場合、エラーログを出さずに全リクエストを静かに拒否するため、障害の初期調査が難しくなります。
+    - paragraph: "最小修正案: 認可設定が未定義（または空）の場合は警告ログを出力する処理を追加します。"
+  - heading "INFO（軽微・コード品質）" [level=3]
+  - heading "7. JSONL 照合スクリプトのパースエラーの堅牢化" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: scripts/compare_gmail_gas_ingest.py
+    - paragraph: "理由: GASのログフォーマット変更や不正な JSONL 行が含まれていた場合に、警告なくスキップされます。"
+    - paragraph: "最小修正案: フォーマット不一致の行が存在した際にスキップ件数のカウントを表示するログを追加します。"
+  - heading "8. 旧ウォーターマーク移行 SQL の実行パフォーマンス確認" [level=4]
+  - list:
+    - paragraph:
+      - text: "対象ファイル:"
+      - code: dashboard/prisma/migrations/20261001000000_record_sync_field_watermark/migration.sql
+    - paragraph:
+      - text: "理由:"
+      - code: RecordSyncWatermark
+      - text: から
+      - code: RecordSyncFieldWatermark
+      - text: への
+      - code: __baseline__
+      - text: データ移行 SQL は論理的に正しく動作します。テーブルデータ量が非常に大きい本番環境に適用する場合は、メンテナンスウィンドウ内での実行を推奨します。

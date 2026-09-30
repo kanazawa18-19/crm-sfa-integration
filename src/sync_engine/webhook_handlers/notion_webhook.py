@@ -667,6 +667,15 @@ def handler_with_proxy(
             release_event(event_id)
         return internal_error_response()
 
+    retryable_skip = bool(result is not None and (
+        any(p.skipped_tools and not p.review_pending for p in result.properties)
+        if hasattr(result, 'properties') else result.has_partial_skips
+    ))
+    if retryable_skip:
+        if not trusted_queue:
+            release_event(event_id)
+        return internal_error_response()
+
     side_hook_failed = False
     if calendar_sync is not None and sync_event.db_key == "project":
         try:

@@ -55,6 +55,30 @@ def test_保存後の古いストア読み取りでも巻き戻さない(store, 
     assert dispatcher.dispatch(event()).reason == 'stale_event'
 
 
+def test_別項目は古いページ時刻でも届き同じ項目は巻き戻さない(store, mapping):
+    targets = _all_targets()
+    dispatcher = Dispatcher(store, targets)
+    first = event(NOW + timedelta(seconds=2))
+    second = replace(event(NOW + timedelta(seconds=1)), properties={'住所': '東京都'})
+    assert not dispatcher.dispatch(first).skipped
+    assert not dispatcher.dispatch(second).skipped
+    assert targets[Tool.ZOHO].upsert_calls[-1][1] == {'住所': '東京都'}
+    assert store.get(mapping.notion_key).last_synced_at == first.occurred_at
+    assert dispatcher.dispatch(replace(first, occurred_at=NOW)).reason == 'stale_event'
+    assert dispatcher.dispatch(second).reason == 'stale_event'
+
+
+def test_他ツールの新しい同項目を古いNotion通知で戻さない(store, mapping):
+    dispatcher = Dispatcher(store, _all_targets())
+    newer = SyncEvent(
+        source_tool=Tool.KINTONE, db_key='client_master', external_id='1001',
+        occurred_at=NOW + timedelta(seconds=5), properties={'取引先名': '新しい値'},
+    )
+    assert not dispatcher.dispatch(newer).skipped
+    older_notion = replace(event(NOW + timedelta(seconds=4)), properties={'取引先名': '古い値'})
+    assert dispatcher.dispatch(older_notion).reason == 'stale_event'
+
+
 def test_完了印の保存失敗でも古い更新を拒否し同時刻再送を許す(store, mapping, monkeypatch):
     targets = _all_targets()
     dispatcher = Dispatcher(store, targets)
@@ -193,6 +217,18 @@ def test_事前検査は行を変更せず権限を確認する(monkeypatch):
     cur.fetchone.return_value = {'ready': True}
     monkeypatch.setattr(record_sync_lock, '_connect_direct', lambda: conn)
     record_sync_lock.validate_record_sync_storage(object())
-    assert len(cur.execute.call_args_list) == 2
+    assert len(cur.execute.call_args_list) == 3
     assert all(call.args[0].startswith('SELECT ') for call in cur.execute.call_args_list)
     conn.close.assert_called_once()
+
+
+def test_項目の基準時刻は旧受理時刻を含め最初の一度だけ固定する():
+    from src.sync_engine.record_sync_lock import RecordSyncGuard
+    state = {'acceptedAt': NOW, 'completedAt': None}
+    guard = RecordSyncGuard('client_master', 'page-1', state=state)
+    guard.ensure_field_baseline(None)
+    assert guard.eligible_fields(['施設名'], NOW - timedelta(seconds=1)) == []
+    assert guard.eligible_fields(['施設名'], NOW) == ['施設名']
+    guard.advance(NOW + timedelta(days=1))
+    guard.ensure_field_baseline(None)
+    assert guard.eligible_fields(['別項目'], NOW + timedelta(seconds=1)) == ['別項目']

@@ -289,6 +289,7 @@ def test_slack_interaction_webhook_uses_slack_interaction_actor(
 
 
 def test_gmail_sync_process_message_ref_uses_gmail_sync_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import contextmanager
     from src.gmail_sync import sync
     from src.gmail_sync.gmail_client import GmailMessage
 
@@ -318,6 +319,10 @@ def test_gmail_sync_process_message_ref_uses_gmail_sync_actor(monkeypatch: pytes
         ),
     )
     monkeypatch.setattr(sync.db, "insert_email_log", lambda **kwargs: None)
+    @contextmanager
+    def locked(_contact_id):
+        yield datetime(2026, 8, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(sync.db, 'locked_latest_email_at', locked)
     monkeypatch.setattr(sync, "notify_web_engagement_tool", lambda **kwargs: None)
 
     contact_client = _FakeContactClient()
