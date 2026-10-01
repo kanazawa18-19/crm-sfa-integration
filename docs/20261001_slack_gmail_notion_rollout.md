@@ -8,6 +8,18 @@
 | Gmail | GAS取得・CRM取込み・再送台帳・比較スクリプトを用意 | 実Gmail/GAS/DBでは未検証。並走未開始 | 未実施 |
 | Notion | 項目別時刻と既存時刻の移行基準を用意 | 実DB・実Notion通知では未検証 | 未実施 |
 
+## 2026-10-01 本番反映後の確認
+
+本人の「いいよ、進めて」を受け、`40fb9f2` を main に push。API と管理画面は両方 READY、GitHub CI `36845533043` は成功。DB の新規2移行を先に適用し、Prisma の40移行すべて適用済みを再確認した。API の `/healthz` は 200/ok。以下の表は冒頭の配備前状態を更新する。
+
+| 対象 | 確認した実物 | 残る条件 |
+|---|---|---|
+| Slack | API側に本人ユーザー・所属ワークスペースの許可値と画面URLを本番設定。既存Slackアプリの `/crm` 登録画面に送信先と説明を入力 | 保存は自動審査が拒否。恒久的なコマンド追加と場合によるBot User追加の具体承認が必要。本人DMでの実操作は未検証 |
+| Gmail | 本番APIに専用受信秘密値と担当メールを設定。実APIへ架空IDを `dry_run:true` で送り 200/unmatched、DBの保存0件を確認。GASの非共有プロジェクトを本人アカウントで作り、`ingest.js` と同一のコードを保存 | GASマニフェスト・高度なGmailサービス・Script Properties・実行認可・5分トリガーは未完了。14日観測は未開始。秘密値はmacOSキーチェーン `crm-sfa-gmail-ingest-secret` に保存し、Git/Vaultには置かない |
+| Notion | 本番DBの `RecordSyncFieldWatermark` と `GmailIngestEffect` を実読確認。前者に合成キーを使い、同時刻未完了の再試行・完了後の拒否・別項目の古い更新受理をトランザクション内で確認し、rollback後の残存0件を確認 | 実Notion Webhookの `updated_properties` を経由した限定試験は未実施 |
+
+Slackのコマンド保存は自動審査の拒否を迂回しない。GASの秘密値をブラウザへ入力する操作は Chrome 操作手順で本人への引き渡しが必要。Gmail読取権限の認可は本人アカウントの画面で行う。14日の開始は、dry-runトリガーの自然実行を実測してから記録する。
+
 ## Slackの最小操作案
 
 `/crm ホテル名` を本人DMで実行すると、取引先名・識別用ID・CRM画面へのリンクを最大10件返す。署名検証に加え、`SLACK_CRM_ALLOWED_USER_IDS`（SlackユーザーIDのカンマ区切り）と `SLACK_CRM_ALLOWED_TEAM_ID` で利用者とワークスペースを絞る。結果は本人にだけ見える一時表示。CRM画面のURLは `DASHBOARD_BASE_URL` を使う。未設定時はID付きの名前だけ返す。Slack側のスラッシュコマンドのRequest URLは `/api/webhooks/slack-crm-command`。
