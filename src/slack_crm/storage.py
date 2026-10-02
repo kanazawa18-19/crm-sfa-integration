@@ -14,7 +14,7 @@ def _connect() -> psycopg.Connection[dict[str, Any]]:
     if not url:
         raise ValueError("DATABASE_URL is not set")
     return psycopg.connect(url, row_factory=dict_row, connect_timeout=1,
-                           options="-c timezone=UTC -c statement_timeout=1000")
+                           options="-c timezone=UTC")
 
 
 def search_projects(query: str, *, limit: int = 10) -> list[dict[str, Any]]:

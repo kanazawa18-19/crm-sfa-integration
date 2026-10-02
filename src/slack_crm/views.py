@@ -17,7 +17,10 @@ def plain(text: str) -> dict[str, str]:
 
 
 def _button(label: str, action_id: str, value: str = "") -> dict[str, Any]:
-    return {"type": "button", "text": plain(label), "action_id": action_id, "value": value}
+    button: dict[str, Any] = {"type": "button", "text": plain(label), "action_id": action_id}
+    if value:
+        button["value"] = value
+    return button
 
 
 def _section(text: str) -> dict[str, Any]:

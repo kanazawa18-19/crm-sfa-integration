@@ -47,6 +47,7 @@ def test_home_is_private_and_uses_two_large_entries(monkeypatch: pytest.MonkeyPa
     assert sent[0][0] == "views.publish"
     assert sent[0][1]["user_id"] == "U_SELF"
     assert len(sent[0][1]["view"]["blocks"][1]["elements"]) == 2
+    assert all("value" not in button for button in sent[0][1]["view"]["blocks"][1]["elements"])
     sent.clear()
     body = json.dumps({"type": "event_callback", "team_id": "T_ONE",
                        "event": {"type": "app_home_opened", "user": "U_OTHER"}})
