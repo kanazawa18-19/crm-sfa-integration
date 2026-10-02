@@ -16,7 +16,7 @@
 |---|---|---|
 | Slack | API側に本人ユーザー・所属ワークスペースの許可値と画面URLを本番設定。既存Slackアプリの `/crm` 登録画面に送信先と説明を入力 | 保存は自動審査が拒否。恒久的なコマンド追加と場合によるBot User追加の具体承認が必要。本人DMでの実操作は未検証 |
 | Gmail | 本番APIに専用受信秘密値と担当メールを設定。実APIへ架空IDを `dry_run:true` で送り 200/unmatched、DBの保存0件を確認。GASの非共有プロジェクトを本人アカウントで作り、`ingest.js` と同一のコードを保存。10/2に `appsscript.json` へGmail高度なサービスと必要な3権限を保存し、画面を再読込して内容を確認 | Script Properties・本人の実行認可・5分トリガーは未完了。Gmailサービスの実呼出しは未検証。14日観測は未開始。秘密値はmacOSキーチェーン `crm-sfa-gmail-ingest-secret` に保存し、Git/Vaultには置かない |
-| Notion | 本番DBの `RecordSyncFieldWatermark` と `GmailIngestEffect` を実読確認。前者に合成キーを使い、同時刻未完了の再試行・完了後の拒否・別項目の古い更新受理をトランザクション内で確認し、rollback後の残存0件を確認 | 実Notion Webhookの `updated_properties` を経由した限定試験は未実施 |
+| Notion | 本番DBの `RecordSyncFieldWatermark` と `GmailIngestEffect` を実読確認。前者に合成キーを使い、同時刻未完了の再試行・完了後の拒否・別項目の古い更新受理をトランザクション内で確認し、rollback後の残存0件を確認。10/2の読取では直近24時間のNotion受信記録68件、項目別台帳は取引先マスター2レコード・計8行（完了5、未完了3） | 自然通知から項目別台帳に記録された可能性は高いが、個々のWebhook内容と同期先を照合した限定試験は未実施。未完了3行の理由も未確定 |
 
 Slackのコマンド保存は自動審査の拒否を迂回しない。GASの秘密値をブラウザへ入力する操作は Chrome 操作手順で本人への引き渡しが必要。Gmail読取権限の認可は本人アカウントの画面で行う。14日の開始は、dry-runトリガーの自然実行を実測してから記録する。
 
