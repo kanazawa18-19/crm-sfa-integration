@@ -1,0 +1,103 @@
+レビュー結果です。重大度ごとに件数をまとめると、BLOCKER 4件、WARN 6件、INFO 6件です。
+
+ID	重大度	観点	概要
+B1	BLOCKER	Slack 3秒応答・モーダル	応答後処理がBackgroundTasks頼みで、Vercel上での実行時機・実行保証が未検証
+B2	BLOCKER	Notion重複作成	Notion作成成功後に監査ログで例外が出ると「失敗」と通知され、再操作で重複する
+B3	BLOCKER	重複作成・モーダル履歴	受付画面を閉じると入力画面に戻り、再送信のたびに新しいoperation_idが発行される
+B4	BLOCKER	Zoho等への同期	Slackで作成したアクションに案件リレーションが付かないまま同期され、新規作成として連携されない可能性が高い
+W1	WARN	Slack 3秒応答	応答経路内で同期的にSlack API・DB接続を呼んでおり、trigger_idの3秒失効を超えうる
+W2	WARN	Zoho等への同期	stale_eventを無条件に成功扱いしているため、未同期でも「同期完了」と通知されうる
+W3	WARN	既存同期との排他	busy時のrequeueでdrainが打ち切られ、対象が先頭に詰まる。再試行の上限もない
+W4	WARN	通知再送	恒久エラー時に5分間隔で無限に再送される
+W5	WARN	モーダル・データ保全	メモの500字切り詰めと日時の日付切り詰めにより、未変更のまま送信しても上書きになる
+W6	WARN	モーダル	views.updateにhashがなく、背景更新が利用者の現在画面を上書きしうる
+
+B1 BLOCKER：BackgroundTasksの実行保証（要実測）
+
+再現条件：Vercel Pythonランタイムの実装次第で、次の2つのうちどちらかが起きる可能性があります。
+
+ASGIアプリの完了までレスポンスが返らない場合、process_one（Notion取得・更新、dispatch、DM送信）の完了後にSlackへ応答することになり、3秒を超えます。結果としてプレビュー画面がSlackのエラー表示になります。
+レスポンス送出後に関数が凍結される場合、操作自体はcronのdrainで回収されます。ただしpublish_action_picker と publish_action_form は台帳を持たないため、「読み込んでいます…」の画面のまま止まります。
+
+修正案：まず実測してください。背景タスクに sleep(5) を入れ、Slack側でエラーが出るか、またviews.updateが実行されるかを確認します。保証がない場合は、応答後の処理を別の実行単位（ジョブキュー、または内部エンドポイントへの非同期呼び出し）に分けてください。アクション一覧はNotionへ直接問い合わせず、ProjectMirrorと同様のPostgresミラーから同期的に返す形にすると、背景更新そのものが不要になります。
+
+B2 BLOCKER：作成成功を「失敗」と通知する
+
+再現条件：_state_for_create の中で create_page_once が成功した後、record_notion_write が例外を出すケースです。例外は process_one の except Exception に落ち、state="failed"、page_id=None で finish されます。利用者には「やり直してください」と届くため、再作成すると重複します。
+
+修正案：作成後の付随処理は例外を握りつぶし、done を返してください。
+
+
+python
+try:
+    record_notion_write(db_key=ACTION_SCHEMA.key, notion_page_id=page_id,
+                        action="create", before=None, after=changes)
+except Exception:
+    logger.exception("監査ログ記録に失敗: page=%s", page_id)
+return "done", None, page_id
+
+B3 BLOCKER：モーダル履歴からの再送信による重複作成
+
+再現条件：アクション入力画面で「確認へ」を押し、プレビューで「保存する」を押すと受付画面が表示されます。受付画面はresponse_action: updateでプレビューを置き換えたものなので、これを閉じるとスタック上の入力画面（値が入ったまま）に戻ります。ここで再度「確認へ」を押すと、_on_submission で uuid4 が新たに発行されます。enqueue の ON CONFLICT が効かないため、2件目が作成されます。タイトル末尾の #xxxxxx も確認のたびに再生成されます。更新系は expected の照合により結果的に done になりますが、作成系は防げません。
+
+修正案：次の2点です。
+
+operation_id とタイトル末尾は、action_form（およびproject_form）を描画する時点で1回だけ発行し、metadataで引き継いでください。同じフォームから再送信した場合、enqueue が False を返します。そのときは受付画面に「受付済みです」と表示します。
+receipt_view に "clear_on_close": True を付け、閉じると全画面が閉じるようにしてください。
+
+B4 BLOCKER：Slackで作成したアクションが連携先で新規作成されない（dispatcherの仕様次第）
+
+再現条件：_state_for_create では、案件名をローカル変数の changes にだけ追加しています。台帳の changes には残りません。そのため process_sync の SyncEvent は、案件リレーションを含まない部分プロパティだけで dispatch されます。dispatcher が「Notion上の新規ページ」をZoho等に作成する経路を通らない場合、unknown_record から unmapped になり、Slack起点の作成はすべて連携先へ反映されません。
+
+修正案：action_create については、get_page で取得した全プロパティ（案件名を含む）を渡してください。あわせて、既存のNotion Webhookが新規ページを受けたときと同じ作成経路を呼んでください。このとき、dispatch が途中まで書いた状態で再試行されても連携先で重複作成されないこと（冪等性）も確認が必要です。
+
+W1 WARN：応答経路内の同期処理
+
+再現条件：crm_home_open_project は「DB接続（connect_timeout=1）＋get_project＋views.open」を応答前に順に実行します。requestsの timeout=2 は接続と読み込みのそれぞれに適用されるため、最悪で約4秒かかります。コールドスタート時にはtrigger_idが失効し、expired_trigger_id になります。
+
+修正案：まずロード中の画面を即座に views.open し、内容は後から views.update してください（B1の解決が前提です）。Slack API呼び出しは timeout=(0.5, 1.5) のように接続と読み込みで分け、応答経路でのDB接続は1回に抑えてください。
+
+W2 WARN：stale_eventを成功扱いにしている
+
+再現条件：初回の dispatch が stale_event でスキップされた場合でも、処理が下まで進んで state="done" となり、「連携先への同期処理も完了しました」と通知されます。Notionの last_edited_time は分単位に丸められるため、同じ分のうちに別の同期が記録されていると初回から stale と判定されえます。現在のテストは「前回dispatchに成功済み」の再試行ケースしか検証していません。
+
+修正案：dispatch に成功した時点で syncState を dispatched に更新し、stale_event を成功とみなすのはその再試行時だけに限定してください。occurred_at には、Notionへ書き込む直前に台帳へ記録した時刻（秒未満の精度）を使ってください。
+
+W3 WARN：busy時の先頭詰まりと無限requeue
+
+再現条件：既存同期が同じ案件を処理中だと、process_one は requeue したうえで None を返します。drain は None を「キューが空」と解釈して break するため、後続の操作が処理されません。requeue された操作は createdAt 順で次回も最初に claim されるうえ、試行回数の上限もありません。
+
+修正案：busy を None とは別の戻り値で返し、drain はループを継続するようにしてください。台帳には processAfter と processAttempts を追加し、claim の条件で processAfter を除外します。上限に達した操作は failed として通知してください。
+
+W4 WARN：通知再送の上限がない
+
+再現条件：DM先のユーザーが無効化されている、スコープが不足している、トークンが未設定である、といった恒久エラーの場合、5分ごとに永久に再試行が続きます。また、chat.postMessage は成功したのに応答がタイムアウトした場合、二重にDMが送られます（at-least-once）。
+
+修正案：notifyAttempts が上限（例：5回）に達したら打ち切り、notifiedAt を確定させてエラーログを残してください。二重DMは許容する方針であれば、仕様としてその旨を明記してください。
+
+W5 WARN：切り詰めによる意図しない上書き
+
+再現条件：
+
+履歴メモが500字を超えるアクションを開くと、initial_value は500字に切り詰められますが、expected は全文のまま保持されます。そのため種別だけを変えて送信しても、メモの差分が検出され、切り詰めた内容で上書きされます。
+アクション日に時刻が含まれている場合（例：2026-10-02T10:00+09:00）、initial_date の[:10]との差分が検出され、時刻が失われます。
+長いメモをそのまま private_metadata に入れると、上限の3000字を超えて views.update が失敗します。
+
+修正案：上限を超えるメモはSlack上では編集不可とし、表示だけにしてください。時刻付きの日付は、比較時に正規化するか編集対象から外します。expected には値の代わりにハッシュを持たせ、Worker側で現在値のハッシュと照合してください。
+
+W6 WARN：views.updateの競合
+
+再現条件：アクション一覧を読み込み中に、利用者が戻ったり別の操作をしたりすると、遅れて届いた views.update がその画面を上書きします。
+
+修正案：push の応答に含まれる view.hash を背景タスクへ渡し、views.update の hash に指定してください。hash_conflict が返った場合は何もしないようにします。
+
+INFO
+
+作成の応答が不明だった場合（unknown）の自動照合について：operation_id の先頭をタイトルや専用プロパティに埋め込んでおけば、drain がNotionを検索して done / failed を自動で確定できます。人手での照合を減らせます。
+排他について：同期と同じ鍵による advisory lock と expected 照合の組み合わせは妥当です。process_sync はロックの外で実行されますが、dispatcher 側で同じ鍵を取得していることが前提になっています。また、_connect_direct が dict_row を返し、PgBouncerのトランザクションプールを経由しない直接接続であることも確認してください。NotionのUIから人が同時に編集する場合の TOCTOU は避けられないため、現行の照合方式で十分です。
+Slackのoptionalなテキスト入力は、空欄だと value が null で送られてきます。そのため、メモを消去する操作は「変更はありません」と表示されます。消去を許可するかどうかは仕様として決めてください。
+Events APIは3秒以内に応答がないと再送してきます。X-Slack-Retry-Num が付いたリクエストは即座に200を返すようにすると、Homeの重複publishを避けられます。
+block_suggestion はすべてCRM側へ振り分けられます。既存の承認導線で将来 external_select を使う場合に衝突するので、action_id での判定に絞ることを推奨します。webhooks.py で json が import されているかも確認してください。
+追加すべきテスト：作成後の監査ログ失敗（B2）、履歴からの再送信（B3）、作成の同期ペイロード（B4）、初回の stale_event（W2）、busy 時の drain 継続（W3）、通知の上限（W4）、長いメモの扱い（W5）、既存の承認ボタンが従来どおり既存ハンドラへ届くことの回帰テスト。
+
+なお、vercel.json の5分間隔のcronはプランによっては実行されないため、デプロイ先のプランを確認してください。

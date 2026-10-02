@@ -637,6 +637,36 @@ model GmailIngestEffect {
   updatedAt      DateTime @default(now())
 }
 
+// Slackの携帯画面から受けたCRM更新を永続化し、応答後に処理する。
+model SlackCrmOperation {
+  id           String   @id
+  actorId      String
+  kind         String
+  targetId     String
+  expected     Json
+  changes      Json
+  state        String   @default("queued")
+  resultPageId String?
+  errorCode    String?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  startedAt    DateTime? @db.Timestamptz(6)
+  processAfter DateTime? @db.Timestamptz(6)
+  attempts     Int @default(0)
+  finishedAt   DateTime? @db.Timestamptz(6)
+  notifyClaimedAt DateTime? @db.Timestamptz(6)
+  notifiedAt   DateTime? @db.Timestamptz(6)
+  notifyAfter  DateTime? @db.Timestamptz(6)
+  notifyAttempts Int @default(0)
+  syncState    String?
+  syncClaimedAt DateTime? @db.Timestamptz(6)
+  syncAfter    DateTime? @db.Timestamptz(6)
+  syncAttempts Int @default(0)
+  syncError    String?
+
+  @@index([state, createdAt])
+  @@index([actorId, createdAt])
+}
+
 // ---------------------------------------------------------------------------
 // リスト作成マシーン(2026-09-11)
 //

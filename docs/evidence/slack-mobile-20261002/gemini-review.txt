@@ -1,0 +1,103 @@
+Slack内の携帯向けCRM案件・アクション更新機能の実装に対するレビュー結果です。指示に従い、BLOCKER / WARN / INFO に区分して問題点、再現条件、および修正案を示します。
+
+1. BLOCKER（致命的な不具合・修正必須）
+[BLOCKER-1] Vercel Serverless環境における FastApi BackgroundTasks の実行中断
+
+概要: src/api/routes/webhooks.py にて background_tasks.add_task で process_slack_crm_operation や publish_action_picker などの重い処理・API呼び出しを登録していますが、Vercel (Serverless) 環境ではレスポンス返却直後にプロセスが凍結・終了するため、バックグラウンドタスクが途中で破棄される危険性があります。
+
+再現条件: Vercel上で実行中、ユーザーがSlackモーダルから保存またはアクション選択を実行する。
+
+影響:
+
+モーダルが「読み込んでいます…」のまま更新されない。
+
+CRM更新が DB（SlackCrmOperation）にキューイングされたまま処理されず、5分後の Cron (slack-crm-drain) まで実行が遅延する。
+
+修正案: 応答内で同期処理を行うか、Vercel KV / QStash / SQS などの外部メッセージキューおよび非同期ワーカー経由で実行してください。
+
+[BLOCKER-2] モーダル更新（crm_pick_action）における Slack API レスポンスと外部呼び出しの競合
+
+概要: src/slack_crm/handler.py の _on_submission 内（callback == "crm_pick_action"）で、Slackへの返却値として response_action: "update"（「アクションを読み込んでいます…」）を返しつつ、BackgroundTasks で外部から views.update（publish_action_form）を呼んでいます。同じ view_id に対して短時間に二重更新が発生し、Slack API で競合エラー（hash_conflict や not_found）が発生します。
+
+再現条件: 「アクションを選ぶ」モーダルでアクションを選択し、「次へ」を押下する。
+
+修正案: view_submission の同期レスポンス内で Notion からデータを取得して最終的な action_form モーダルをそのまま返却するか、views.update 側の二重呼び出しを削除してください。
+
+[BLOCKER-3] DBアドバイザリロック（_target_lock）の明示的解放漏れと接続保持
+
+概要: src/slack_crm/service.py の _target_lock で pg_try_advisory_lock を使用して既存同期との排他ロックを取得していますが、finally ブロックで pg_advisory_unlock を明示的に呼んでいません。また、Notion API との通信中も DB 接続（conn）を開きっぱなしにしており、接続数の枯渇を引き起こします。
+
+再現条件: 同一の案件やアクションに対して複数ユーザーまたは同期処理が連続で実行される。
+
+修正案:
+
+Python
+@contextmanager
+def _target_lock(kind: str, target_id: str):
+    key = lock_key("project" if kind in {"project_update", "action_create"} else "action", target_id)
+    conn = _connect_direct()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s) AS locked", (key,))
+            if not cur.fetchone()["locked"]:
+                raise RecordSyncBusy("同じ対象を別の同期が処理中です")
+        yield
+    finally:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (key,))
+        finally:
+            conn.close()
+
+2. WARN（警告・リスクあり）
+[WARN-1] DBコネクションプーリング未適用による Slack 3秒応答タイムアウトのリスク
+
+概要: src/slack_crm/storage.py の _connect() が呼び出されるたびに psycopg.connect() で直に接続を確立しています。検索やステータス更新などで 1 リクエスト中に複数回呼び出されるため、接続オーバーヘッド（TCP/TLSハンドシェイク）により Slack の 3秒タイムアウト制限を超過するリスクがあります。
+
+再現条件: 検索窓への入力時（block_suggestion）、またはDBとのネットワーク遅延が発生した際。
+
+修正案: psycopg_pool.ConnectionPool などを導入し、接続コストを削減してください。
+
+[WARN-2] 通知処理（notify_pending）における最大リトライ回数の未判定による無限ループ
+
+概要: src/slack_crm/storage.py の claim_notification で notifyAttempts をカウントアップしていますが、WHERE 句に回数上限の判定がありません。Slack DMの送信失敗（ユーザーの退職・アプリブロック等）が発生した場合、永久に 5 分おきにリトライが走り続けます。
+
+再現条件: DM送信エラーとなるオペレーションが DB に残る。
+
+修正案: クエリの WHERE 句に AND "notifyAttempts" < 5 などの上限チェックを追加し、上限を超えた場合は諦めてステータスを更新（notifiedAt = now()）してください。
+
+[WARN-3] 日付項目（次回アクション日等）のクリア（削除）不可
+
+概要: src/slack_crm/handler.py の _form_values にて、datepicker で日付が解除（クリア）された場合（selected_date が None）、if day: の判定によって返却辞書からキーが除外されます。そのため、日付を空に更新することができません。
+
+再現条件: モーダルで「次回アクション日」または「アクション日」をクリアして保存する。
+
+修正案: フォーム値が存在する場合は None であっても辞書に保持し、domain.py 側で空値への変更を許可するロジックに修正してください。
+
+3. INFO（情報・改善推奨）
+[INFO-1] 他ツール（Zoho等）への同期イベント（process_sync）における親リレーションの補完
+
+概要: action_create 完了後に process_sync から発行される SyncEvent の properties（operation["changes"]）には、validate_changes の仕様上 "案件名"（プロジェクトID）が含まれていません。
+
+対応案: process_sync 内で db_key == "action" の場合、event.properties に operation["targetId"] を "案件名" として補完してディスパッチすることで、他ツール側での親レコード紐付け漏れを防げます。
+
+[INFO-2] アクション作成時の自動タイトル命名仕様
+
+概要: _form_values 内で f"【{kind_option['value']}】{day} {summary} #{uuid.uuid4().hex[:6]}" と自動命名を行っており、重複防止が考慮されています。
+
+対応案: Notion や Slack 上でサフィックス（#1a2b3c）が表示されるため、業務上の表記仕様として問題ないか関係者で確認を推奨します。
+
+チェック項目に関する確認結果サマリ
+チェック項目	判定	評価
+Slack 3秒応答	⚠️ 要改善	_connect() の直接続オーバーヘッド（[WARN-1]）および BackgroundTasks（[BLOCKER-1]）の改善が必要です。
+Notionの重複作成	✅ 良好	create_page_once および recover_stale で action_create 時のステータスを unknown に隔離する設計が正しく機能しています。
+既存同期との排他	⚠️ 要修正	アドバイザリロックの明示的解放処理（[BLOCKER-3]）が必要です。
+Notionボット編集の同期	順調	process_sync による手動イベント発行が実装されています。親IDの伝播のみ調整を推奨（[INFO-1]）。
+通知再送	⚠️ 要修正	リトライ上限回数（notifyAttempts）の判定抜け（[WARN-2]）を修正する必要があります。
+モーダル履歴・操作性	⚠️ 要修正	private_metadata の文字数制限（500文字制限で回避）や15分期限チェックは良好ですが、画面更新時の競合（[BLOCKER-2]）を修正してください。
+
+
+
+
+思考モード

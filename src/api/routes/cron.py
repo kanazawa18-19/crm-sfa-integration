@@ -385,3 +385,10 @@ def run_project_product_links() -> dict[str, Any]:
 def resume_daily_batch() -> dict[str, Any]:
     """新しい日付を作らず、収集中/送達前の処理だけを短く進める。"""
     return run_report_batch(start_today=False)
+
+
+@router.get("/api/cron/slack-crm-drain", dependencies=[Depends(verify_cron_secret)])
+def run_slack_crm_drain() -> dict[str, int]:
+    """応答後に止まったSlack更新だけを台帳から再開する。"""
+    from src.slack_crm.service import drain
+    return drain(limit=10)

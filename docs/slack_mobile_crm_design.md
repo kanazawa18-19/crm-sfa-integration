@@ -1,4 +1,6 @@
-# SlackからCRM-SFAを更新するモバイル中心の設計案（2026-10-02）
+# SlackからCRM-SFAを更新するモバイル中心の設計（2026-10-02）
+
+実装状態と導入手順は [slack_mobile_crm_implementation.md](slack_mobile_crm_implementation.md) に記録する。下の画面図は構想を含み、現版のホームには「今日の予定案件」はまだ出さない。担当者と案件の対応を確かめるまで、検索と本人が更新した案件を入口にする。
 
 ## 結論と現状
 

@@ -20,7 +20,7 @@ import weakref
 from typing import Any, Callable, Mapping, NamedTuple
 
 import anyio
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 
 from src.api.dependencies import wiring_dependency
 from src.sync_engine import webhook_receipts
@@ -40,6 +40,8 @@ from src.sync_engine.webhook_handlers.slack_interaction_webhook import (
     handler as slack_interaction_webhook_handler,
 )
 from src.sync_engine.webhook_handlers.slack_crm_command import handler as slack_crm_command_handler
+from src.slack_crm.handler import handler as slack_crm_handler, publish_home as publish_slack_crm_home
+from src.slack_crm.service import process_one as process_slack_crm_operation
 from src.sync_engine.webhook_handlers.spreadsheet_webhook import (
     handler as spreadsheet_webhook_handler,
 )
@@ -403,7 +405,7 @@ async def webhook_lead_inquiry(request: Request) -> Response:
 
 
 @router.post("/api/webhooks/slack-interactions")
-async def webhook_slack_interactions(request: Request) -> Response:
+async def webhook_slack_interactions(request: Request, background_tasks: BackgroundTasks) -> Response:
     """Slack interactivity（承認/対象外ボタンの押下）の受信。
 
     `webhook_web_engagement_meeting`がSlackへ投稿した承認依頼メッセージへのコールバック。
@@ -411,10 +413,37 @@ async def webhook_slack_interactions(request: Request) -> Response:
     内で実施）。承認時のみNotionアクション履歴DBへ実際に書き込む。
     """
     event = await _lambda_event_from_request(request)
+    # 既存のカレンダー承認ボタンとCRM画面を同じSlack Interactivity URLで受ける。
+    # 新しいコールバックだけCRMへ振り分け、稼働中の承認導線を保持する。
+    from urllib.parse import parse_qs
+    try:
+        payload = json.loads((parse_qs(event["body"]).get("payload") or ["{}"]) [0])
+    except (ValueError, TypeError):
+        payload = {}
+    callback_id = (payload.get("view") or {}).get("callback_id", "")
+    action_id = (payload.get("actions") or [{}])[0].get("action_id", "")
+    if str(callback_id).startswith("crm_") or str(action_id).startswith("crm_"):
+        outcome = await _run_off_event_loop(slack_crm_handler, event)
+        result = dict(outcome.result)
+        operation_id = result.pop("_background_operation_id", None)
+        if operation_id:
+            background_tasks.add_task(process_slack_crm_operation, operation_id)
+        return _lambda_result_to_response(result)
     outcome = await _run_off_event_loop(
         slack_interaction_webhook_handler, event, handler_kwargs=dict(context=None)
     )
     return _lambda_result_to_response(outcome.result)
+
+
+@router.post("/api/webhooks/slack-crm-events")
+async def webhook_slack_crm_events(request: Request, background_tasks: BackgroundTasks) -> Response:
+    event = await _lambda_event_from_request(request)
+    outcome = await _run_off_event_loop(slack_crm_handler, event)
+    result = dict(outcome.result)
+    user_id = result.pop("_background_home_user", None)
+    if user_id:
+        background_tasks.add_task(publish_slack_crm_home, user_id)
+    return _lambda_result_to_response(result)
 
 
 @router.post("/api/webhooks/slack-crm-command")

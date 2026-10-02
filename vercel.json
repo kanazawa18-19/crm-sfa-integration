@@ -48,6 +48,10 @@
     {
       "path": "/api/cron/daily-batch-resume",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/slack-crm-drain",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
