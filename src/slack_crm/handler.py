@@ -270,7 +270,8 @@ def handler(event: Mapping[str, Any]) -> dict[str, Any]:
                        "user": {"id": event_payload.get("user")}}
             if envelope.get("type") == "url_verification":
                 expected_team = os.environ.get("SLACK_CRM_ALLOWED_TEAM_ID")
-                if expected_team and envelope.get("team_id") != expected_team:
+                # SlackのURL検証にはteam_idが付かない。署名検証は先に済ませる。
+                if expected_team and envelope.get("team_id") not in (None, expected_team):
                     return _response()
                 return _response({"challenge": envelope.get("challenge")})
             if not _authorized(payload):

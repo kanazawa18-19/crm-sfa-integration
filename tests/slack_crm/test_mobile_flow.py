@@ -66,7 +66,7 @@ def test_project_search_and_other_user_rejected(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_signed_url_verification_is_not_blocked_by_missing_user() -> None:
-    body = json.dumps({"type": "url_verification", "team_id": "T_ONE", "challenge": "challenge-value"})
+    body = json.dumps({"type": "url_verification", "challenge": "challenge-value"})
     result = handler.handler({"headers": {"Content-Type": "application/json"}, "body": body})
     assert json.loads(result["body"])["challenge"] == "challenge-value"
     other = json.dumps({"type": "url_verification", "team_id": "T_OTHER", "challenge": "x"})
@@ -76,7 +76,7 @@ def test_signed_url_verification_is_not_blocked_by_missing_user() -> None:
 def test_real_signature_rejects_invalid_and_expired_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(handler, "_verify_slack_signature", _verify_slack_signature)
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "unit-test-signing-key")
-    body = json.dumps({"type": "url_verification", "team_id": "T_ONE", "challenge": "ok"})
+    body = json.dumps({"type": "url_verification", "challenge": "ok"})
     timestamp = str(int(time.time()))
     signature = "v0=" + hmac.new(b"unit-test-signing-key", f"v0:{timestamp}:{body}".encode(), hashlib.sha256).hexdigest()
     event = {"headers": {"Content-Type": "application/json", "X-Slack-Request-Timestamp": timestamp,
