@@ -6,14 +6,14 @@
 |---|---|
 | DB | `20261002000000_slack_crm_operation` を本番の直接接続で適用。移行40→41件、`SlackCrmOperation` は23列・操作0件で読戻し。 |
 | API | `afd3c15`、Slack URL検証修正 `983da55`、実接続修正 `841a89f` をmainへpush。最新のVercel配備READY、GitHub CI `36984397989` 成功。 |
-| Slackアプリ | `sales-crm-sfa` のHomeタブON、Event SubscriptionsのURL検証済み、`app_home_opened` 登録済み。Options Load URLを既存Interactivity URLと同じ `/api/webhooks/slack-interactions` に設定。追加スコープと認証交換なし。 |
+| Slackアプリ | `sales-crm-sfa` のHomeタブON、Event SubscriptionsのURL検証済み、`app_home_opened` 登録済み。Options Load URLを既存Interactivity URLと同じ `/api/webhooks/slack-interactions` に設定。MessagesタブがOFFだったため、結果DMを閲覧できるようON・閲覧専用に変更し、マニフェストを読戻し。追加スコープと認証交換なし。 |
 | 本人の画面 | Bot API `views.publish` 成功。本人用App Homeに「案件を探す」「アクションを記録」の表示を確認。`app_home_opened` は本番APIに到達して200。 |
 | 定期回収 | DB接続オプション修正前は500、修正後の本番 `/api/cron/slack-crm-drain` は200。 |
 | ローカル | 修正後のSlack関連テスト18件成功。 |
 
 ## 未完了の実物確認
 
-本人用App Homeで2つのボタンを押しても、案件選択画面が開かない。押下後の本番ログに `/api/webhooks/slack-interactions` の到達記録はなかった。Slack公式仕様ではボタン押下時に `block_actions` を送るため、設定またはSlackクライアント側の挙動を引き続き切り分ける。本人宛DMに同じ操作ボタンを含む試験メッセージ1件を送信したが、ブラウザでDMタブへ切り替われず、そのボタンの実押下は未確認。試験DMの削除は自動承認審査で拒否されたため、本人宛に残っている。
+本人用App Homeで2つのボタンを押しても、案件選択画面が開かない。押下後の本番ログに `/api/webhooks/slack-interactions` の到達記録はなかった。SlackのマニフェストからInteractivity ON、Request URLとOptions Load URLがともに正しいことを読戻した。明示値を付けた一時的なHomeボタンでも通知は届かず、元のHomeへ戻した。Slack公式仕様ではボタン押下時に `block_actions` を送るため、Slackクライアントでの実押下と配信状況を引き続き切り分ける。本人宛DMに同じ操作ボタンを含む試験メッセージ1件を送信したが、ブラウザでDMタブへ切り替われず、そのボタンの実押下は未確認。試験DMの削除は自動承認審査で拒否されたため、本人宛に残っている。
 
 `SLACK_CRM_WRITE_ENABLED` は未設定。専用試験レコードでの案件更新、アクション作成・編集、二重送信、結果DM、Notionと同期先の読戻し、携帯実機確認は未実施。一般の顧客レコードには書き込んでいない。Gmailの14日観測・3日並走も未経過で、切替はしていない。Notion項目別同期の実Webhook確認も未完了。
 

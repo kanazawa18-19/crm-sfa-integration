@@ -32,7 +32,7 @@ Slackの本人用App Homeから案件を探し、案件の営業ステータス�
 
 1. `dashboard/prisma/migrations/20261002000000_slack_crm_operation/migration.sql` を本番DBへ適用し、`SlackCrmOperation` が存在することを読み取りで確認する。
 2. APIを反映し、既存の `SLACK_SIGNING_SECRET` と `SLACK_BOT_TOKEN` を再利用する。本人のSlack IDを `SLACK_CRM_ALLOWED_USER_IDS`、チームIDを `SLACK_CRM_ALLOWED_TEAM_ID` に設定する。最初は `SLACK_CRM_WRITE_ENABLED` を未設定のままにする。秘密値をGitやVaultへ書かない。
-3. Slackアプリ `sales-crm-sfa` のApp HomeをON、Event SubscriptionsをONにし、Request URLを `https://crm-sfa-integration.vercel.app/api/webhooks/slack-crm-events`、Bot Eventsに `app_home_opened` を設定する。Interactivityの既存Request URLは維持し、Options Load URLを `https://crm-sfa-integration.vercel.app/api/webhooks/slack-interactions` に設定する。現時点で追加のOAuthスコープや認証交換は必要ない。
+3. Slackアプリ `sales-crm-sfa` のApp Homeと本人DMを閲覧できるMessagesタブをON、Event SubscriptionsをONにし、Request URLを `https://crm-sfa-integration.vercel.app/api/webhooks/slack-crm-events`、Bot Eventsに `app_home_opened` を設定する。Messagesタブは閲覧専用にする。Interactivityの既存Request URLは維持し、Options Load URLを `https://crm-sfa-integration.vercel.app/api/webhooks/slack-interactions` に設定する。現時点で追加のOAuthスコープや認証交換は必要ない。
 4. 本人のホーム表示、検索、各モーダルと選択肢を携帯のSlackで確認する。書き込みが無効な間の保存は「準備中」を返す。
 5. 専用の試験レコードだけで書き込みを有効にし、案件1件の更新、アクション1件の作成と編集、二重送信・競合・本人DM、Notionと同期先の読戻しを行う。試験の作成物は片付ける。一般の本番レコードへ広げるのはその後。
 
