@@ -42,7 +42,8 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 raise ValueError('メールの必須項目がありません')
             if not item['id'] or len(item['id']) > 100:
                 raise ValueError('メールIDが不正です')
-            limits = {'from': 1000, 'to': 2000, 'subject': 1000, 'snippet': 500,
+            # 一斉送信の宛先を切り捨てず受理しつつ、入力サイズは制限する。
+            limits = {'from': 1000, 'to': 65536, 'subject': 1000, 'snippet': 500,
                       'date_header': 200, 'thread_id': 100, 'internal_date_ms': 20}
             if any(item.get(key) is not None and (
                 not isinstance(item[key], str) or len(item[key]) > limit

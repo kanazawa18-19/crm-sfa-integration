@@ -66,3 +66,23 @@ def test_1通の後処理失敗でも後続メールを受け付ける(monkeypat
     assert [item['status'] for item in json.loads(response['body'])['results']] == [
         'effect_failed', 'inserted',
     ]
+
+
+def test_長い宛先を切り捨てず受け取り上限超過は拒否する(monkeypatch):
+    monkeypatch.setenv('GMAIL_INGEST_WEBHOOK_SECRET', 'test-secret')
+    monkeypatch.setenv('GMAIL_INGEST_REP_EMAIL', 'rep@example.com')
+    captured = []
+    monkeypatch.setattr(ingest, '_process_one', lambda message, *args: captured.append(message.to_header) or 'unmatched')
+    for length, expected in [(6213, 200), (65536, 200), (65537, 400)]:
+        event = _event()
+        body = json.loads(event['body'])
+        header = 'a' * length
+        body['messages'][0]['to'] = header
+        event['body'] = json.dumps(body)
+        previous = len(captured)
+        response = ingest.handler(event, None, contact_client=object())
+        assert response['statusCode'] == expected
+        if expected == 200:
+            assert captured[-1] == header
+        else:
+            assert len(captured) == previous

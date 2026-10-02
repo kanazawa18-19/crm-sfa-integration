@@ -96,6 +96,12 @@ function gmailIngestPost(url, secret, repEmail, dryRun, messages, after, before)
     payload: JSON.stringify({rep_email: repEmail, dry_run: dryRun, messages})
   });
   if (response.getResponseCode() !== 200) {
+    // メールの中身を出さず、入力制限に抵触した項目を切り分ける。
+    const maxLengths = {};
+    messages.forEach(message => Object.keys(message).forEach(key => {
+      if (typeof message[key] === 'string') maxLengths[key] = Math.max(maxLengths[key] || 0, message[key].length);
+    }));
+    console.log(JSON.stringify({httpStatus: response.getResponseCode(), maxLengths}));
     throw new Error(`CRM取込み失敗 HTTP ${response.getResponseCode()}`);
   }
   const result = JSON.parse(response.getContentText());
