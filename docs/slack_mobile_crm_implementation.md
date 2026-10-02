@@ -4,7 +4,7 @@
 
 Slackの本人用App Homeから案件を探し、案件の営業ステータス・次回アクション日・確度、アクションの登録・種別・日付・短いメモを入力する実装を用意した。既存アクションの編集もできる。保存前に変更前後を表示し、受付後の結果は本人DMへ送る。Notionを正本として更新し、既存の同期経路へ渡す。
 
-コード、ローカルの単体試験、使い捨てPostgreSQLによる台帳試験は済み。**本番への反映、Slackアプリ設定、携帯実機、実Notionへの変更、各CRMへの到達は未検証**。`SLACK_CRM_WRITE_ENABLED` は初期状態で無効。Gmailの14日観測や3日並走が経過したという意味にはならない。
+コード、ローカルの単体試験、使い捨てPostgreSQLによる台帳試験は済み。2026-10-02に本番DB移行とAPI配備、SlackアプリのHome/Event/Options設定を反映した。本人のSlack画面でApp Homeと2つのボタンを確認した。ただし、ブラウザで押したボタンから操作通知が届かず、案件選択画面は開いていない。**携帯実機、実Notionへの変更、各CRMへの到達は未検証**。`SLACK_CRM_WRITE_ENABLED` は未設定で書き込み無効。Gmailの14日観測や3日並走が経過したという意味にはならない。
 
 ## 携帯での流れ
 
@@ -45,3 +45,4 @@ Slackの本人用App Homeから案件を探し、案件の営業ステータス�
 - 台帳: `dashboard/prisma/schema.prisma` と上記migration
 - 試験: `tests/slack_crm/test_mobile_flow.py`、`tests/api/test_route_registry.py`
 - 独立レビュー・他モデルレビュー: `docs/evidence/slack-mobile-20261002/`
+- 本番反映と実画面の確認結果: `docs/evidence/slack-mobile-20261002/live-validation.md`
