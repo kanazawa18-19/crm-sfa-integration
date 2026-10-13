@@ -44,11 +44,7 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
     ),
-    (Tool.KINTONE, 'client_master', '【営業部・パーソネル】アクション履歴DB'): (
-        "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
-        "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
-        "やるなら名前の書かれたテキスト項目からの名寄せしかない"
-    ),
+
     (Tool.KINTONE, 'client_master', 'サービス・商品'): (
         "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
@@ -59,11 +55,7 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
     ),
-    (Tool.KINTONE, 'project', 'アクション履歴'): (
-        "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
-        "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
-        "やるなら名前の書かれたテキスト項目からの名寄せしかない"
-    ),
+
     (Tool.KINTONE, 'project', 'サービス・商品'): (
         "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
@@ -86,7 +78,6 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
     (Tool.ZOHO, 'chain', '案件管理'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'chain', '👨\u200d👩\u200d👧\u200d👦 取引先マスター'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'client_master', '【営業部】案件管理DB'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
-    (Tool.ZOHO, 'client_master', '【営業部・パーソネル】アクション履歴DB'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'client_master', 'サービス・商品'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'client_master', 'チェーン'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'contact', 'アクション履歴'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
@@ -94,7 +85,6 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
     (Tool.ZOHO, 'contact', '案件管理'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'product', 'チェーン'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'product', '取引先マスター'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
-    (Tool.ZOHO, 'project', 'アクション履歴'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'project', 'チェーン'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
 }
 
@@ -105,7 +95,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.KINTONE, 'project', '新規・既存種別'): 'Zoho専用の選択欄。kintone専用保存枠への対応は未実装',
     (Tool.ZOHO, 'project', '契約予定日'): 'kintone契約予定日の専用欄。Zoho完了予定日とは共用しない',
 
-    (Tool.KINTONE, 'action', 'アクション日'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'action', '商談回数・電話回数・メール回数（何回目）'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'action', '導入フローとスケジュール'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'action', '議事録・録画リンク'): "送信元に対応項目がない、または意味・型の同一性を確認できない",

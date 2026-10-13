@@ -16,7 +16,8 @@ def test_unknown_values_are_not_copied_and_sections_keep_order():
 def test_absent_choice_does_not_claim_value_exists():
     notes = gap_notes(Tool.ZOHO, "project", {})
     assert not any("担当メンバー" in key for key in notes)
-    assert any("アクション履歴" in key for key in notes)
+    assert not any("アクション履歴" in key for key in notes)
+    assert any("チェーン" in key for key in notes)
 
 
 def test_empty_choice_removes_previous_warning():

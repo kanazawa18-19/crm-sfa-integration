@@ -1,0 +1,160 @@
+レビュー判定サマリー
+
+提示された要件・前提条件（逆参照CRM対象外、kintoneアクション日非対応、Zoho作成除外2件、Q052旧受理履歴の分離、履歴非削除）を正確に満たしており、変更方針およびテストの拡充は極めて妥当です。マージを即座にブロックする致命的欠陥（BLOCKER）はありませんが、本番運用の安定性に関する確認事項（WARN）および軽微な改善点（INFO）があります。   
+TXT
+
+WARN（運用リスク・潜在的欠陥）
+
+vercel.json: Cron実行頻度の引き上げ（1日1回 → 10分毎）に伴う制約と重複実行リスク
+
+   
+TXT
+
+Vercelプラン制約: Vercel Hobby（無料）プランでは、Cronジョブを1日1回を超えて実行することはできません（デプロイエラーまたは無効化されます）。対象環境がProプラン以上であることを確認してください。
+
+並行実行・排他制御: 処理が10分以上滞留した場合に後続のCronが重複起動する可能性があります。アウトボックス消化処理側で二重実行防止（ロックやステータス制御）が担保されているか、また Google Sheets API の書き込みクォータ超過リスクがないか確認を推奨します。
+
+src/sync_operations/exclusions.py: kintone_id の型不一致による除外判定漏れリスク
+
+   
+TXT
+
+is_destination_excluded 内で mapping.kintone_id in ZOHO_CREATION_EXCLUDED_KINTONE_IDS と直接 in 判定を行っています。   
+TXT
+
+is_excluded では str(external_id) in EXCLUSIONS と安全に文字列化されていますが、mapping.kintone_id が int 型で保持されている経路が存在した場合、判定をすり抜けてZohoへ作成リクエストが送信されてしまいます。   
+TXT
+
+str(mapping.kintone_id or '') in ZOHO_CREATION_EXCLUDED_KINTONE_IDS のように文字列キャストを挟むことを推奨します。
+
+src/sync_engine/notion_id_mapping.py: インメモリカッシュのスコープと肥大化
+
+   
+TXT
+
+新規作成直後の Eventual Consistency 対策として _created_page_ids にページIDを保持する改修は有効です。   
+TXT
+
+ただし、これは同一プロセス・同一インスタンス内でのみ有効です。サーバーレス環境でリクエストが分散する場合は引き継がれません（同一トランザクション内で作成から時刻更新まで完結する設計であれば問題ありません）。
+
+バッチ等で長時間稼働するプロセスの場合は辞書サイズが増加し続けるため、update_last_synced_at 完了後に pop するか、TTL/サイズ上限を設ける設計がより堅牢です。
+
+INFO（改善提案・仕様整合性の確認）
+
+scripts/compare_gmail_gas_ingest.py: ISO8601文字列ソートの表記揺れ
+
+   
+TXT
+
+entries = sorted(entries, key=lambda entry: entry.get('observedAt') or entry.get('completedAt') or '') において、ログ側のタイムスタンプ形式に表記揺れ（Z と +00:00 の混在など）があると辞書順比較が崩れる可能性があります。_utc パースを噛ませた datetime キーでのソートがより確実です。   
+TXT
+
+区間マージロジック（covered_until）は、全走査完了（scanComplete: true）の証跡のみを対象にし、ギャップがあれば正しく検知できる実装になっています。   
+TXT
+
+src/diagnostics/unfinished_sync.py: NULLセマンティクスの確認
+
+   
+TXT
+
+クエリ条件 "propertyName" <> '__baseline__' は、万一 RecordSyncFieldWatermark の propertyName に NULL が許容されている場合、Three-valued logic により行ごと除外されます。テーブル定義側で NOT NULL 制約が保証されているか確認してください。   
+TXT
+
+前提条件への適合性確認
+前提条件	実装箇所	判定
+
+
+逆参照一覧のCRM送信先なし
+
+ 
+TXT
+
+	
+
+client_master.py, project.py で sync_scope を SPREADSHEET_ONLY に変更し、known_sync_gaps.py から削除 
+TXT
+
+	
+
+適合 
+TXT
+
+
+
+
+kintone実項目にアクション日なし
+
+ 
+TXT
+
+	
+
+action.py で SyncScope.ZOHO_AND_SPREADSHEET を新設・適用し、kintoneを除外 
+TXT
+
+	
+
+適合 
+TXT
+
+
+
+
+Zoho作成しない2件（本人確定）
+
+ 
+TXT
+
+	
+
+exclusions.py で kintone_id 90543, 90580 のZoho新規作成のみ除外し、他ツール配信を維持 
+TXT
+
+	
+
+適合 
+TXT
+
+
+
+
+Q052対象外（本人確定）
+
+ 
+TXT
+
+	
+
+unfinished_sync.py で旧受理履歴（propertyName is None）のみ除外集計し、新規フィールド更新監視は維持 
+TXT
+
+	
+
+適合 
+TXT
+
+
+
+
+完了履歴は削除しない
+
+ 
+TXT
+
+	
+
+DB行を物理削除せず、観測・集計ロジック側で分離して可視化（RecordSyncFieldWatermark との UNION ALL 化） 
+TXT
+
+	
+
+適合 
+TXT
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

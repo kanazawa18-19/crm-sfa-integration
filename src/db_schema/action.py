@@ -83,8 +83,8 @@ ACTION_SCHEMA = DatabaseSchema(
             name="アクション日",
             property_type=PropertyType.DATE,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="接触回数の時系列判定に使用",
+            sync_scope=SyncScope.ZOHO_AND_SPREADSHEET,
+            description="接触日の記録。kintoneには対応欄がなく、次回アクション日へは転記しない",
         ),
         PropertyDefinition(
             name="導入フローとスケジュール",

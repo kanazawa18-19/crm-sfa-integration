@@ -39,7 +39,7 @@
     },
     {
       "path": "/api/cron/spreadsheet-outbox-drain",
-      "schedule": "0 17 * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/cron/project-product-links",

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -376,6 +377,7 @@ def run_project_product_links() -> dict[str, Any]:
     from src.sync_engine.won_product_link_queue import drain_project_product_links
     dispatcher = build_production_dispatcher()
     result = drain_project_product_links(dispatcher._store, dispatcher._project_linker)
+    logging.getLogger(__name__).info("project_product_links result=%s", json.dumps(result, sort_keys=True))
     if result["failed"]:
         raise HTTPException(status_code=500, detail=result)
     return result

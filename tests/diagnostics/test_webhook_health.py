@@ -93,3 +93,35 @@ def test_未完了の古いイベント時刻だけで異常と断定しない()
     assert first['fingerprint']==second['fingerprint']
     assert second['by_database']=={'project':1,'action':1}
     assert summarize([],NOW)['status']=='ok'
+
+
+def test_項目別未完了を内部基準行と区別して集計する():
+    from src.diagnostics.unfinished_sync import summarize
+    base = {'dbKey': 'client_master', 'notionKey': 'a', 'acceptedAt': NOW}
+    result = summarize([base, dict(base, propertyName='TEL'),
+                        dict(base, propertyName='住所'),
+                        dict(base, propertyName='__baseline__')], NOW)
+    assert result['count'] == 3
+    assert result['record_count'] == 1
+    assert result['field_count'] == 2
+    assert result['legacy_count'] == 1
+    assert summarize([dict(base, propertyName='__baseline__')], NOW)['status'] == 'ok'
+
+
+def test_同一レコード同時刻でも別項目の滞留は識別する():
+    from src.diagnostics.unfinished_sync import summarize
+    base = {'dbKey': 'client_master', 'notionKey': 'a', 'acceptedAt': NOW}
+    first = summarize([dict(base, propertyName='TEL')], NOW)
+    second = summarize([dict(base, propertyName='住所')], NOW)
+    assert first['fingerprint'] != second['fingerprint']
+
+
+def test_対象外の旧受理履歴を再送待ちと区別する():
+    from src.diagnostics.unfinished_sync import summarize
+    row = {'dbKey': 'client_master', 'notionKey': '3d8d8ea8-d4f3-817d-a1c8-f30516aacc8d', 'acceptedAt': NOW}
+    result = summarize([row], NOW)
+    assert result['status'] == 'ok'
+    assert result['count'] == 0
+    assert result['excluded_legacy_count'] == 1
+    assert result['exclusions_by_decision'] == {'Q052': 1}
+    assert summarize([dict(row, propertyName='TEL')], NOW)['count'] == 1

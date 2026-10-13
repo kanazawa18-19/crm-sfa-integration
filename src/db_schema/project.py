@@ -409,8 +409,8 @@ PROJECT_SCHEMA = DatabaseSchema(
             name="アクション履歴",
             property_type=PropertyType.RELATION,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="アクション履歴DBへの紐付け（dual_property）",
+            sync_scope=SyncScope.SPREADSHEET_ONLY,
+            description="Notionの逆参照をシートへ表示。外部CRMの関連はアクション側の参照で保持",
             relation_target="action",
         ),
         # 2026-08-10、連絡先DB/サービス・商品DB側にdual_propertyリレーションを追加した際に

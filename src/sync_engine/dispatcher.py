@@ -369,9 +369,10 @@ class Dispatcher:
         schema = get_schema(event.db_key)
 
         # 1. Self-Exclusion：送信元ツールを対象リストから除外する。
-        from src.sync_operations.exclusions import is_excluded
+        from src.sync_operations.exclusions import is_excluded, is_destination_excluded
         target_tools = [t for t in _ALL_TOOLS if t != event.source_tool
-                        and not is_excluded(t, mapping.db_key, _external_id_for(t, mapping))]
+                        and not is_excluded(t, mapping.db_key, _external_id_for(t, mapping))
+                        and not is_destination_excluded(t, mapping)]
 
         results: list[PropertyDispatchResult] = []
 

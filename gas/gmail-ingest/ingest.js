@@ -66,7 +66,7 @@ function gmailIngest() {
     // 全ページ成功時のみ進める。途中失敗は次回同じ範囲を再取得する。
     props.setProperty(successKey, String(before - 1));
     props.deleteProperty(cursorKey);
-    console.log(JSON.stringify({listed, dryRun, completedAt: new Date().toISOString()}));
+    console.log(JSON.stringify({listed, dryRun, after, before, scanComplete: true, completedAt: new Date().toISOString()}));
   } finally {
     lock.releaseLock();
   }

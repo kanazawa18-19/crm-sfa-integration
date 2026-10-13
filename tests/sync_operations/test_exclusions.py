@@ -49,3 +49,37 @@ def test_external_update_ignores_excluded_destination_without_blocking_notion():
     assert notion.upsert_calls == [('source-page', {'取引先名': '新名'})]
     assert not client.mock_calls
     assert all(Tool.KINTONE not in item.skipped_tools for item in result.properties)
+
+
+def test_本人がZohoへ作らないと決めた2件も他の配送を維持():
+    from src.sync_operations.exclusions import is_destination_excluded
+    for identifier in ('62543', '62580'):
+        mapping = IdMapping('source-page', 'client_master', kintone_id=identifier)
+        assert is_destination_excluded(Tool.ZOHO, mapping)
+        assert not is_destination_excluded(Tool.KINTONE, mapping)
+        assert not is_destination_excluded(Tool.SPREADSHEET, mapping)
+        assert not is_destination_excluded(Tool.ZOHO, IdMapping('other', 'project', kintone_id=identifier))
+        assert not is_destination_excluded(Tool.ZOHO, IdMapping('other', 'client_master', kintone_id=identifier, zoho_id='existing'))
+        store = SQLiteIdMappingStore()
+        store.upsert(mapping)
+        kintone = FakeSyncTarget(Tool.KINTONE, {identifier: {'TEL': 'old'}})
+        sheet = FakeSyncTarget(Tool.SPREADSHEET, {})
+        result = Dispatcher(store, {Tool.KINTONE: kintone, Tool.SPREADSHEET: sheet}).dispatch(
+            SyncEvent(Tool.NOTION, 'client_master', 'source-page', datetime.now(timezone.utc), {'TEL': 'new'}))
+        assert kintone.upsert_calls == [(identifier, {'TEL': 'new'})]
+        assert all(Tool.ZOHO not in item.skipped_tools for item in result.properties)
+
+
+def test_逆参照と接触日は実際に対応する同期先だけへ配送():
+    for db_key, field, value, expected_tools in [
+        ('project', 'アクション履歴', ['action-page'], {Tool.SPREADSHEET}),
+        ('client_master', '【営業部・パーソネル】アクション履歴DB', ['action-page'], {Tool.SPREADSHEET}),
+        ('action', 'アクション日', '2026-10-13', {Tool.SPREADSHEET, Tool.ZOHO}),
+    ]:
+        store = SQLiteIdMappingStore()
+        store.upsert(IdMapping('source-page', db_key, zoho_id='z', kintone_id='k', spreadsheet_row=2))
+        targets = {tool: FakeSyncTarget(tool, {}) for tool in (Tool.KINTONE, Tool.ZOHO, Tool.SPREADSHEET)}
+        result = Dispatcher(store, targets).dispatch(SyncEvent(
+            Tool.NOTION, db_key, 'source-page', datetime.now(timezone.utc), {field: value}))
+        assert {tool for tool, target in targets.items() if target.upsert_calls} == expected_tools
+        assert result.properties[0].skipped_tools == frozenset()

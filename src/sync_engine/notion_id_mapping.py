@@ -229,6 +229,8 @@ class NotionIdMappingStore(IdMappingStore):
         self._max_retries = max_retries
         self._max_rate_limit_retries = max_rate_limit_retries
         self._backoff_base = backoff_base
+        # 作成直後の検索反映遅延に備え、値ではなく応答で確定したページIDだけ保持する。
+        self._created_page_ids: dict[str, str] = {}
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -264,6 +266,7 @@ class NotionIdMappingStore(IdMappingStore):
             json_body={"filter": filter_obj, "page_size": 1},
         )
         raise_for_error(response, NotionIdMappingStoreApiError)
+
         results = response.json().get("results") or []
         return results[0] if results else None
 
@@ -323,6 +326,11 @@ class NotionIdMappingStore(IdMappingStore):
             )
         raise_for_error(response, NotionIdMappingStoreApiError)
 
+        if existing_page is None:
+            page_id = response.json().get("id")
+            if page_id:
+                self._created_page_ids[mapping.notion_key] = page_id
+
     def _assert_no_duplicate_external_id(self, mapping: IdMapping) -> None:
         """外部ID（kintone_id/zoho_id/spreadsheet_row）が同一db_key内で既に別のnotion_keyに
         紐づいていないか検査する（db_keyをまたいだ重複は正当なので許容する）。
@@ -373,12 +381,14 @@ class NotionIdMappingStore(IdMappingStore):
         return _page_to_mapping(page) if page else None
 
     def update_last_synced_at(self, notion_key: str, synced_at: datetime) -> None:
-        page = self._query_first(_title_equals_filter(notion_key))
+        page_id = self._created_page_ids.get(notion_key)
+        page = {"id": page_id} if page_id else self._query_first(_title_equals_filter(notion_key))
         if page is None:
             raise KeyError(f"no id_mapping found for notion_key={notion_key!r}")
         body = {"properties": {"last_synced_at": {"date": {"start": synced_at.isoformat()}}}}
         response = self._request("PATCH", f"/pages/{page['id']}", json_body=body)
         raise_for_error(response, NotionIdMappingStoreApiError)
+        self._created_page_ids.pop(notion_key, None)
 
     def list_by_db(self, db_key: str) -> list[IdMapping]:
         pages = self._query_all(_select_equals_filter("db_key", db_key))

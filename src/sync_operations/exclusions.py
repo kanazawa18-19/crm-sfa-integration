@@ -8,6 +8,15 @@ EXCLUSIONS = {
     '62202': {'reason': '取引先名が空のため同期対象外', 'decision': 'Q053'},
 }
 
+# 2026-10-03本人判断。Notion・kintone・シートは維持し、Zohoへは作らない。
+ZOHO_CREATION_EXCLUDED_KINTONE_IDS = frozenset({'62543', '62580'})
+
+
+def is_destination_excluded(tool, mapping):
+    if tool == Tool.ZOHO and mapping.db_key == 'client_master':
+        return str(mapping.kintone_id or "") in ZOHO_CREATION_EXCLUDED_KINTONE_IDS and not mapping.zoho_id
+    return False
+
 
 def is_excluded(tool, db_key, external_id):
     return tool in (Tool.KINTONE, 'kintone') and db_key == 'client_master' and str(external_id) in EXCLUSIONS

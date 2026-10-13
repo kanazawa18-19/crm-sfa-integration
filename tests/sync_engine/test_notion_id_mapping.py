@@ -519,3 +519,13 @@ def test_list_by_db_logs_warning_when_has_more_true_but_next_cursor_missing(
     assert requests_mock.call_count == 1
     # メッセージは日本語の共通ページング処理（_notion_paging.py）が出す。
     assert any("next_cursor が空" in r.getMessage() for r in caplog.records)
+
+
+def test_作成直後に検索未反映でも応答のページへ同期時刻を保存(requests_mock, store):
+    requests_mock.post(QUERY_URL, json=_empty_query_response())
+    requests_mock.post(PAGES_URL, json={'id': 'mapping-created'})
+    saved = requests_mock.patch(PAGES_URL + '/mapping-created', json={'id': 'mapping-created'})
+    store.upsert(IdMapping(notion_key='new-record', db_key='product'))
+    store.update_last_synced_at('new-record', datetime(2026, 10, 13, tzinfo=timezone.utc))
+    assert saved.call_count == 1
+    assert saved.last_request.json()['properties']['last_synced_at']['date']['start'] == '2026-10-13T00:00:00+00:00'

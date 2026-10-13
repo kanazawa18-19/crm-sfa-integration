@@ -15,6 +15,7 @@ function runtime({failPost = false, failFirstMessage = false} = {}) {
     setProperty: (key, value) => values.set(key, value),
     deleteProperty: key => values.delete(key),
   };
+  const logs = [];
   const context = {
     PropertiesService: {getScriptProperties: () => props},
     LockService: {getScriptLock: () => ({tryLock: () => true, releaseLock() {}})},
@@ -34,10 +35,10 @@ function runtime({failPost = false, failFirstMessage = false} = {}) {
                   status: failFirstMessage && calls.length === 1 ? 'effect_failed' : 'existing'}))})};
     }},
     ScriptApp: {getProjectTriggers: () => [], newTrigger: () => ({timeBased: () => ({everyMinutes: () => ({create() {}})})})},
-    console: {log() {}},
+    console: {log(value) {logs.push(JSON.parse(value));}},
   };
   vm.runInNewContext(fs.readFileSync(__dirname + '/ingest.js', 'utf8'), context);
-  return {context, values, calls};
+  return {context, values, calls, logs};
 }
 
 test('全ページ成功したときだけ取得位置を確定する', () => {
@@ -66,4 +67,19 @@ test('1通の後処理失敗を保持し、次の実行で再試行する', () =
   context.gmailIngest();
   assert.equal(calls[2].messages[0].id, 'm1');
   assert.equal(values.get('FAILED_MESSAGE_IDS'), '[]');
+});
+
+
+test('走査完了証跡は全ページ成功時だけ範囲付きで出す', () => {
+  const {context, logs} = runtime();
+  context.gmailIngest();
+  const completed = logs.filter(row => row.scanComplete);
+  assert.equal(completed.length, 1);
+  const batches = logs.filter(row => row.results);
+  assert.ok(batches.length > 1);
+  assert.ok(batches.every(row => row.after === completed[0].after && row.before === completed[0].before));
+  assert.equal(completed[0].dryRun, true);
+  const failed = runtime({failPost: true});
+  assert.throws(() => failed.context.gmailIngest());
+  assert.equal(failed.logs.some(row => row.scanComplete), false);
 });
