@@ -250,7 +250,9 @@ def resolve_zoho_relation_by_lookup_id(
             source_tool="zoho",
             source_record_id=source_record_id,
             target_db_key=target_db_key,
-            raw_value=raw_name or str(target_zoho_id),
+            # 保留後も改名や同名の別レコードを区別できるよう確定IDを保持する。
+            raw_value=repr({"id": str(target_zoho_id), "name": raw_name,
+                            "property": property_name}),
             # 候補は無い（曖昧なのではなく、相手がまだNotionに存在しない）。
             candidate_notion_page_ids=[],
             candidate_raw_names=[],

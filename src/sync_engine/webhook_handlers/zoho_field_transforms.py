@@ -72,7 +72,6 @@ from src.migration.zoho_chain import normalize_approach_status
 from src.migration.zoho_client_master import normalize_prefecture
 from src.migration.zoho_project import _parse_bool, _parse_first_touch
 from src.relation_sync.resolve import resolve_client_master_relation
-from src.sync_engine.id_mapping import IdMappingStore
 from src.relation_sync.resolve_zoho import (
     extract_zoho_lookup_name,
     ZohoActionRecordClient,

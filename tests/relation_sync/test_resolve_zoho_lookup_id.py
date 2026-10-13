@@ -67,7 +67,13 @@ def test_returns_none_when_the_target_is_not_synced_yet(
 
     assert _resolve({"name": "未同期ホテル", "id": "99999999"}, store) is None
     # 人が気づけるようにレビューキューへ積む。
-    assert recorded and recorded[0]["raw_value"] == "未同期ホテル"
+    assert len(recorded) == 1
+    assert recorded[0]["raw_value"] == repr({
+        "id": "99999999", "name": "未同期ホテル", "property": "取引先マスター",
+    })
+    from src.record_merge.relation_decisions import matches_pending_value
+    assert matches_pending_value(recorded[0]["raw_value"], {"id": "99999999", "name": "改名後"})
+    assert not matches_pending_value(recorded[0]["raw_value"], {"id": "88888888", "name": "未同期ホテル"})
 
 
 def test_looks_up_in_the_target_database_only(store: SQLiteIdMappingStore) -> None:
