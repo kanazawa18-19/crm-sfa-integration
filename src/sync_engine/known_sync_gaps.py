@@ -55,11 +55,6 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
     ),
 
-    (Tool.KINTONE, 'project', 'サービス・商品'): (
-        "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
-        "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
-        "やるなら名前の書かれたテキスト項目からの名寄せしかない"
-    ),
     (Tool.KINTONE, 'project', 'チェーン'): (
         "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
