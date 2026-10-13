@@ -86,18 +86,27 @@ def test_逆参照と接触日は実際に対応する同期先だけへ配送()
         assert result.properties[0].skipped_tools == frozenset()
 
 
-def test_Zoho商品関連はNotionへ取り込み未対応保存先を完了条件に含めない():
+def test_Zoho商品関連はNotionへ取り込み未対応保存先を完了条件に含めない(monkeypatch):
     from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY
+    from src.sync_engine.webhook_handlers.zoho_webhook import zoho_payload_to_sync_events
+    monkeypatch.setenv('RELATION_SYNC_ENABLED', 'true')
     store = SQLiteIdMappingStore()
     store.upsert(IdMapping('source-page', 'project', zoho_id='z', spreadsheet_row=2))
+    store.upsert(IdMapping('product-page', 'product', zoho_id='product-z'))
     now = datetime.now(timezone.utc)
     notion = FakeSyncTarget(Tool.NOTION, {'source-page': {
         'サービス・商品': [], NOTION_LAST_EDITED_TIME_KEY: now - timedelta(days=1)}})
     targets = {tool: FakeSyncTarget(tool, {}) for tool in (Tool.KINTONE, Tool.ZOHO, Tool.SPREADSHEET)}
     targets[Tool.NOTION] = notion
-    result = Dispatcher(store, targets).dispatch(SyncEvent(
-        Tool.ZOHO, 'project', 'z', now, {'サービス・商品': ['product-page']}))
-    assert notion.upsert_calls == [('source-page', {'サービス・商品': ['product-page']})]
+    events = zoho_payload_to_sync_events({
+        'module': 'Deals', 'ids': ['z'], 'server_time': int(now.timestamp() * 1000),
+        'affected_values': [{'record_id': 'z', 'values': {
+            'field72': {'id': 'product-z', 'name': '検証商品'}}}],
+    }, {}, id_mapping_store=store)
+    assert len(events) == 1
+    assert events[0].properties == {'サービス・商品': 'product-page'}
+    result = Dispatcher(store, targets).dispatch(events[0])
+    assert notion.upsert_calls == [('source-page', {'サービス・商品': 'product-page'})]
     assert not any(targets[t].upsert_calls for t in (Tool.KINTONE, Tool.ZOHO, Tool.SPREADSHEET))
     assert result.properties[0].skipped_tools == frozenset()
     assert result.properties[0].written_tools == frozenset({Tool.NOTION})

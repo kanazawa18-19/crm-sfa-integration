@@ -215,6 +215,22 @@ def resolve_zoho_relation_by_lookup_id(
             target_zoho_id,
             exc_info=True,
         )
+        # 未対応と一時的な読取障害を区別し、項目が省略されても監視対象に残す。
+        try:
+            enqueue_for_review(
+                source_tool="zoho",
+                source_record_id=source_record_id,
+                target_db_key=target_db_key,
+                raw_value=repr({"id": str(target_zoho_id), "name": extract_zoho_lookup_name(value),
+                                "error": "対応表読取失敗", "property": property_name}),
+                candidate_notion_page_ids=[],
+                candidate_raw_names=[],
+            )
+        except Exception:
+            logger.warning(
+                "resolve_zoho_relation_by_lookup_id: 読取障害の保留記録にも失敗しました",
+                exc_info=True,
+            )
         return None
     if mapping is not None:
         return mapping.notion_key

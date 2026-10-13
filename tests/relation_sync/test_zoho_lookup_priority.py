@@ -52,6 +52,17 @@ def test_ID付き通知は名前による候補へ切り替えない(monkeypatch
     if mapping_state == 'missing':
         assert len(reviews) == 1
         assert reviews[0]['source_record_id'] == 'source'
+    if mapping_state == 'failed':
+        assert reviews == [{
+            'source_tool': 'zoho', 'source_record_id': 'source',
+            'target_db_key': 'client_master',
+            'raw_value': repr({'id': '900', 'name': '同名会社',
+                               'error': '対応表読取失敗', 'property': property_name}),
+            'candidate_notion_page_ids': [], 'candidate_raw_names': [],
+        }]
+        from src.record_merge.relation_decisions import matches_pending_value
+        assert matches_pending_value(reviews[0]['raw_value'], {'id': '900', 'name': '変更後の名称'})
+        assert not matches_pending_value(reviews[0]['raw_value'], {'id': '901', 'name': '同名会社'})
 
 
 def test_既定のNotion直接参照の優先順位を維持する(monkeypatch):
