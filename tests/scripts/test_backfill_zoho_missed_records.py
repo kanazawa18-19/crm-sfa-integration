@@ -352,11 +352,12 @@ def test_build_production_dispatcher_accepts_explicit_none_notifier(monkeypatch:
 
     monkeypatch.setattr(pw, "build_notion_clients_by_db", lambda **_: {})
     monkeypatch.setattr(pw, "build_kintone_targets_by_db", lambda: {})
-    monkeypatch.setattr(pw, "build_zoho_targets_by_db", lambda _c=None: {})
+    monkeypatch.setattr(pw, "build_zoho_targets_by_db", lambda _c=None, **_: {})
     monkeypatch.setattr(pw, "build_spreadsheet_targets_by_db", lambda: {})
 
-    class _Store:  # IdMappingStore の代わり（呼ばれない）
-        pass
+    class _Store:  # 参照関数の受渡しだけを確かめ、外部通信しない。
+        def get(self, key):
+            raise AssertionError("この試験では対応表を参照しません")
 
     silent = pw.build_production_dispatcher(id_mapping_store=_Store(), slack_notifier=None)
     assert silent._slack_notifier is None

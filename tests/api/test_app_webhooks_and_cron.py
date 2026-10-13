@@ -801,7 +801,7 @@ def test_partial_skip_summary_does_not_cross_between_concurrent_webhooks() -> No
     def handler(event: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # SkipTrackingDispatcher は既知のズレ判定で event.db_key 等を読むので SyncEvent 相当を渡す
         dispatcher.dispatch(
-            SimpleNamespace(db_key="project", source_tool=Tool.ZOHO, external_id=event["body"])
+            SimpleNamespace(db_key="project", source_tool=Tool.ZOHO, external_id=event["body"], properties={})
         )
         barrier.wait()  # 両方が dispatch し終わってから要約を読みに行く
         return {"statusCode": 200, "body": "{}"}
