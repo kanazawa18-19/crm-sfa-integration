@@ -83,3 +83,24 @@ test('走査完了証跡は全ページ成功時だけ範囲付きで出す', ()
   assert.throws(() => failed.context.gmailIngest());
   assert.equal(failed.logs.some(row => row.scanComplete), false);
 });
+
+test('時間切れ後も元の範囲と次ページを引き継いで完走する', () => {
+  const {context, values, calls, logs} = runtime();
+  const start = 1791800000000;
+  let ticks = 0;
+  context.Date = class extends Date {
+    static now() { return start + (++ticks > 2 ? 241000 : 0); }
+  };
+  context.gmailIngest();
+  const cursor = JSON.parse(values.get('INGEST_CURSOR'));
+  assert.equal(cursor.pageToken, 'page-2');
+  assert.equal(values.has('LAST_DRY_RUN_SUCCESS_SECONDS'), false);
+  assert.equal(logs.some(row => row.scanComplete), false);
+  context.gmailIngest();
+  assert.deepEqual(calls.map(call => call.messages[0].id), ['m1', 'm2']);
+  const completed = logs.find(row => row.scanComplete);
+  assert.equal(completed.after, cursor.after);
+  assert.equal(completed.before, cursor.before);
+  assert.equal(values.get('LAST_DRY_RUN_SUCCESS_SECONDS'), String(cursor.before - 1));
+  assert.equal(values.has('INGEST_CURSOR'), false);
+});

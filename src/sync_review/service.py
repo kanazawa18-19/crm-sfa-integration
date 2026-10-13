@@ -167,6 +167,13 @@ class FieldReviewService:
                 # 復旧・消去中の通常Webhookも、途中値を他ツールへ戻さない。
                 held.append(name)
                 continue
+            if event.source_tool is Tool.NOTION and not any(
+                prop.should_sync_to(tool) for tool in Tool if tool is not Tool.NOTION
+            ):
+                # Notion内だけの項目には外部の削除先がない。空欄でも通常の
+                # 処理へ渡し、配送不要として項目別の受理・完了を記録する。
+                allowed.append((name, prop, value))
+                continue
             if not is_blank(value):
                 allowed.append((name, prop, value))
                 continue

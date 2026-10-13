@@ -168,3 +168,18 @@ def test_owner_blank_does_not_create_unexecutable_delete_review():
     allowed, held = service.filter_properties(event, mapping, [(prop.name, prop, [])])
     assert allowed == [] and held == [prop.name]
     assert journal.rows == {}
+
+
+@pytest.mark.parametrize('db_key,name', [
+    ('project', 'アクション履歴'),
+    ('client_master', '【営業部・パーソネル】アクション履歴DB'),
+])
+def test_notion_only_blank_can_complete_without_external_delete(db_key, name):
+    journal = MemoryJournal()
+    service = FieldReviewService(journal, {})
+    mapping = IdMapping('page', db_key, zoho_id='z')
+    prop = get_schema(db_key).get_property(name)
+    event = SyncEvent(Tool.NOTION, db_key, 'page', datetime.now(timezone.utc), properties={name: []})
+    allowed, held = service.filter_properties(event, mapping, [(name, prop, [])])
+    assert allowed == [(name, prop, [])] and held == []
+    assert journal.rows == {}
