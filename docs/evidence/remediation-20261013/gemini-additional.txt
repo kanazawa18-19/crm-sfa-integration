@@ -1,0 +1,183 @@
+      - 'button "TXT: crm-remediation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button "crm-remediation-additional-review.txt":
+    - generic: TXT
+    - generic: crm-remediation-additional-review
+  - heading "あなたのプロンプト 添付crm-remediation-additional-review.txtの追加修正をレビューしてください。実スキーマ確認と隔離PostgreSQLでのrollback試験を実施済みです。誤同期・…" [level=5]
+  - paragraph: 添付crm-remediation-additional-review.txtの追加修正をレビューしてください。実スキーマ確認と隔離PostgreSQLでのrollback試験を実施済みです。誤同期・履歴消失・監視漏れを中心にBLOCKER / WARN / INFOで短くお願いします。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - heading "レビュー結果サマリー" [level=3]
+  - paragraph:
+    - text: 誤同期・履歴消失・監視漏れの主要3観点において、要件を満たした安全な設計となっています
+    - superscript
+    - text: 。隔離PostgreSQLでのアトミック性（ロールバック）検証や対応DB境界のテストも網羅されており
+    - superscript
+    - generic: 、BLOCKER（マージ阻止事象）はありません。運用保守性を高めるための1件のWARNと、動作仕様に関するINFOを報告します。
+    - 'button "TXT: crm-remediation-additional-review.txt、TXT: crm-remediation-additional-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+      - generic: TXT
+      - generic: 他 1 件
+  - heading "BLOCKER" [level=3]
+  - paragraph: なし
+  - heading "WARN（潜在的バグ・型安全性のリスク）" [level=3]
+  - list:
+    - paragraph:
+      - code: src/db_schema/base.py
+      - text: ":"
+      - code: supports_database
+      - text: 内の同一性比較（
+      - code: is not
+      - text: ）によるすり抜けリスク
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-remediation-additional-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: tool is not Tool.KINTONE
+        - text: と実装されていますが
+        - superscript
+        - text: 、仮に呼び出し元で Enum ではなく文字列（
+        - code: "\"kintone\""
+        - text: ）が渡された場合、Python の仕様上同一性比較が
+        - code: "True"
+        - text: と評価され、非対応DBであっても kintone のチェックをすり抜けてしまいます
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-additional-review.txt、TXT: crm-remediation-additional-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - paragraph:
+        - code: tool != Tool.KINTONE
+        - text: または
+        - code: Tool(tool) != Tool.KINTONE
+        - text: のように等価比較への変更を推奨します。
+  - heading "INFO（観点別評価・確認事項）" [level=3]
+  - list:
+    - paragraph: "誤同期（判定: 良好）"
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-remediation-additional-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "選択肢の厳格送信:"
+        - code: _choice_value
+        - text: において、Notionの顧客種別を安易に「その他」等へ丸めず実値をそのまま送信し
+        - superscript
+        - text: 、未知値は kintone API 側で拒否させる方針はサイレントなデータ汚損を完全に防げています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-additional-review.txt、TXT: crm-remediation-additional-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - paragraph:
+        - text: "対応DBの限定: kintone対応を3DB（"
+        - code: client_master
+        - text: ","
+        - code: project
+        - text: ","
+        - code: action
+        - text: ）に限定したことで
+        - superscript
+        - text: 、contact や product 等の更新時に不要なリクエストや誤判定が飛ぶ経路が遮断されました
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-additional-review.txt、TXT: crm-remediation-additional-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph: "履歴消失（判定: 良好）"
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-remediation-additional-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "アトミックな監査退避:"
+        - code: retire_archived
+        - text: において、保留（
+        - code: blocked
+        - text: ）の削除と
+        - code: AuditLog
+        - text: への記録が単一トランザクション内で完結しており、外部作成済みの予約（
+        - code: reserved
+        - text: /
+        - code: created
+        - text: ）は確実に保持されています
+        - superscript
+        - text: 。ロールバック試験も含め証跡保全は極めて堅牢です
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-additional-review.txt、TXT: crm-remediation-additional-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph: "監視漏れ（判定: 良好）"
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-remediation-additional-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "正常スキップと未完了検知の分離: 非対応DBはそもそも"
+        - code: target_tools
+        - text: から除外される一方
+        - superscript
+        - text: 、対応DB（
+        - code: client_master
+        - text: など）で ID が欠落しているケースは依然として
+        - code: skipped_tools
+        - text: として残るため
+        - superscript
+        - text: 、同期漏れの監視アラートを損なわずに偽陽性のみを抑止できています。
+        - 'button "TXT: crm-remediation-additional-review.txt、TXT: crm-remediation-additional-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - paragraph:
+        - text: "UI対応: アーカイブ退避のアクション（"
+        - code: creation_hold_retired
+        - text: ）がダッシュボードの表示ラベルに追加されており、オペレーターの観測性も担保されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-additional-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+- generic: 音声入力 (⌘⇧D)

@@ -79,6 +79,26 @@ class PostgresCreationJournal:
         with connect() as conn, conn.cursor() as cur:
             cur.execute('DELETE FROM "HubCreationAttempt" WHERE "sourceKey"=%s AND target=%s AND state=\'blocked\'', (source_key,target))
 
+    def retire_archived(self, source_key, db_key, page_id):
+        """原本のアーカイブ確認後、POST前の保留を監査記録へ移す。"""
+        from uuid import uuid4
+        from psycopg.types.json import Jsonb
+        with connect() as conn:
+            rows = conn.execute('''DELETE FROM "HubCreationAttempt"
+                WHERE "sourceKey"=%s AND "dbKey"=%s AND state='blocked' RETURNING *''',
+                (source_key, db_key)).fetchall()
+            if rows:
+                # 消去と証跡を同一トランザクションで確定する。作成予約は維持する。
+                before = [{key: str(value) if key.endswith('At') and value is not None else value
+                           for key, value in row.items()} for row in rows]
+                conn.execute('''INSERT INTO "AuditLog"
+                    (id,"dbKey","notionPageId",action,"changedFields","actorSource")
+                    VALUES (%s,%s,%s,'creation_hold_retired',%s,'hub_creation')''',
+                    (str(uuid4()),db_key,page_id,Jsonb({
+                        '新規作成保留': {'before':before,'after':[]},
+                        '退避理由': {'before':None,'after':'原本がアーカイブ済み'},
+                        '登録元': {'before':source_key,'after':source_key}})))
+
     def pending_counts(self):
         with connect() as conn, conn.cursor() as cur:
             cur.execute('''SELECT target, state, count(*) AS count FROM "HubCreationAttempt"

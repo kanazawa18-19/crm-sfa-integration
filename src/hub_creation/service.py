@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import os
 import logging
 from typing import Any
-from src.db_schema.base import Tool
+from src.db_schema.base import Tool, supports_database
 from src.db_schema.registry import get_schema
 from src.hub_creation.domain import CreationHeld, CreationNotApplicable, title_value, require_notion_fields, identity_hash, sheet_properties
 from src.sync_engine.id_mapping import IdMapping
@@ -124,17 +124,18 @@ class HubCreationService:
                     return None
                 if existing is not None and all(
                     getattr(existing, {"zoho": "zoho_id", "kintone": "kintone_id"}[adapter.target])
-                    or (adapter.target == "kintone" and event.db_key not in {"client_master", "project", "action"})
+                    or not supports_database(Tool(adapter.target), event.db_key)
                     for adapter in self.adapters
                 ):
                     self.journal.dismiss_hold(source_key, "source")
                     return None
                 raw = client.get_raw_page(event.external_id)
-                if raw.get("archived") or raw.get("in_trash"):
-                    return "new_record_archived"
                 parent = raw.get("parent", {}).get("database_id", "").replace("-", "")
                 if parent != get_schema(event.db_key).notion_database_id.replace("-", ""):
                     return "new_record_database_mismatch"
+                if raw.get("archived") or raw.get("in_trash"):
+                    self.journal.retire_archived(source_key, event.db_key, event.external_id)
+                    return "new_record_archived"
                 created = datetime.fromisoformat(raw["created_time"].replace("Z", "+00:00"))
                 if created < self.enabled_since:
                     return None  # 過去の未登録は週次点検だけに残す。
@@ -169,7 +170,7 @@ class HubCreationService:
                 self.journal.resolve_hold(source_key, "source", page_id)
                 notes = {f"{UNAVAILABLE}|{origin}:新規登録": ""}
                 for adapter in self.adapters:
-                    if adapter.target == "kintone" and event.db_key not in {"client_master", "project", "action"}:
+                    if not supports_database(Tool(adapter.target), event.db_key):
                         continue
                     target_tool = Tool(adapter.target)
                     scoped = {p.name: properties[p.name] for p in get_schema(event.db_key).properties

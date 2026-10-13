@@ -118,3 +118,13 @@ def test_owner_fallback_uses_actual_required_field(required, monkeypatch):
     def unavailable(*args): raise ValueError('未確認')
     client.get_user_field_required = unavailable
     assert target._to_kintone_payload({'担当メンバー': ['unknown']}, 'project') is None
+
+
+def test_client_prefecture_and_category_keep_exact_values():
+    client = FakeKintoneClient()
+    target = KintoneSyncTarget(client, 'clients')
+    values = {'都道府県':'東京都','顧客種別':'その他'}
+    assert target.unsupported_properties(values, db_key='client_master') == frozenset()
+    target.upsert_record('1', values, db_key='client_master')
+    assert client.records['clients']['1'] == {'都道府県名':'東京都','顧客種別':'その他'}
+    assert target.unsupported_properties({'都道府県':None,'顧客種別':[]}, db_key='client_master') == frozenset(values)

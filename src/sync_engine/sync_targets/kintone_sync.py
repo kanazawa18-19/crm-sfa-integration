@@ -12,6 +12,10 @@ from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 
 
 def _choice_value(db_key, name, value):
+    if db_key == "client_master" and name in {"都道府県", "顧客種別"}:
+        # 都道府県は独立テキスト欄、顧客種別は同名の選択肢へそのまま送る。
+        # 未知値を「その他」へ変えず、選択肢違反はkintone APIの拒否を保持する。
+        return value if isinstance(value, str) and value.strip() else None
     return first_touch(value) if db_key == "project" and name == "ファーストタッチ" else None
 
 

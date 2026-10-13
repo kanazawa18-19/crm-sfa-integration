@@ -19,6 +19,14 @@ class Tool(str, Enum):
     ZOHO = "zoho"
 
 
+KINTONE_DATABASE_KEYS = frozenset({"client_master", "project", "action"})
+
+
+def supports_database(tool: Tool, db_key: str) -> bool:
+    """独立した保存先があるDBだけを配送対象にする。認証やID欠落とは別。"""
+    return tool != Tool.KINTONE or db_key in KINTONE_DATABASE_KEYS
+
+
 class PropertyType(str, Enum):
     TITLE = "title"
     TEXT = "text"

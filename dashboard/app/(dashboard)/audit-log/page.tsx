@@ -20,6 +20,7 @@ const DB_KEY_OPTIONS = Object.keys(DB_KEY_LABELS);
 
 // docs/audit_log_note.md「actorSourceの伝播方式」の一覧と対応させる。
 const ACTOR_SOURCE_LABELS: Record<string, string> = {
+  hub_creation: "新規登録の保留整理",
   kintone_webhook: "kintone",
   zoho_webhook: "Zoho",
   spreadsheet_webhook: "スプレッドシート",
@@ -32,7 +33,7 @@ const ACTOR_SOURCE_LABELS: Record<string, string> = {
 };
 const ACTOR_SOURCE_OPTIONS = Object.keys(ACTOR_SOURCE_LABELS);
 
-const ACTION_LABELS: Record<string, string> = { create: "作成", update: "更新" };
+const ACTION_LABELS: Record<string, string> = { create: "作成", update: "更新", creation_hold_retired: "削除済み原本の保留を退避" };
 
 const MAX_ROWS = 200;
 

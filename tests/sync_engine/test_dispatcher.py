@@ -2361,3 +2361,31 @@ def test_product_creation_still_requires_name(
         external_id="product-1", occurred_at=NOW, properties={}))
     assert result.reason == "new_record_missing_required_properties"
     assert targets[Tool.NOTION].upsert_calls == []
+
+
+@pytest.mark.parametrize('db_key,name', [('contact','名前'),('product','名前'),('chain','グループ名')])
+def test_database_without_kintone_app_does_not_require_kintone(db_key, name):
+    store = SQLiteIdMappingStore()
+    store.upsert(IdMapping(notion_key='page', db_key=db_key, zoho_id='z', spreadsheet_row=1))
+    targets = {tool: FakeSyncTarget(tool, always_skip=tool is Tool.KINTONE) for tool in Tool}
+    result = Dispatcher(store, targets).dispatch(SyncEvent(Tool.NOTION, db_key, 'page', NOW, properties={name:'専用試験'}))
+    assert not result.skipped
+    assert len(result.properties) == 1
+    assert not result.properties[0].skipped_tools
+    assert targets[Tool.KINTONE].upsert_calls == []
+    assert targets[Tool.KINTONE].get_record_calls == []
+
+
+def test_missing_id_for_supported_database_is_still_incomplete():
+    store = SQLiteIdMappingStore()
+    store.upsert(IdMapping(notion_key='page', db_key='client_master', zoho_id='z', spreadsheet_row=1))
+    targets = {tool: FakeSyncTarget(tool, always_skip=tool is Tool.KINTONE) for tool in Tool}
+    result = Dispatcher(store, targets).dispatch(SyncEvent(Tool.NOTION, 'client_master', 'page', NOW, properties={'取引先名':'専用試験'}))
+    assert not result.skipped
+    assert result.properties[0].skipped_tools == {Tool.KINTONE}
+
+
+def test_database_support_also_accepts_string_tool():
+    from src.db_schema.base import supports_database
+    assert not supports_database('kintone', 'contact')
+    assert supports_database('kintone', 'client_master')

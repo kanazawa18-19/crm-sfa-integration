@@ -283,7 +283,8 @@ class KintoneCreationAdapter:
         self.store = store
 
     def plan(self, db_key, properties):
-        if db_key not in {"client_master", "project", "action"}:
+        from src.db_schema.base import Tool, supports_database
+        if not supports_database(Tool.KINTONE, db_key):
             raise CreationNotApplicable("対応するkintoneアプリがありません")
         target = self.targets.get(db_key)
         if target is None:

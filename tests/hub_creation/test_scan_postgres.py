@@ -137,3 +137,32 @@ def test_confirmed_echo_is_not_blocked_by_unrelated_unknown_creation(local):
     assert attempts.reserve('notion:second', 'kintone', 'action', 'second')
     assert attempts.conflicts('action', 'kintone', '123')
     with pytest.raises(RecordSyncBusy): attempts.conflicts('action', 'kintone', '124')
+
+
+def test_archived_hold_retirement_is_atomic_and_preserves_reservations(local):
+    _, attempts = local
+    attempts.hold('notion:page','source','action','種別不足')
+    attempts.hold('notion:page','retry','project','別DB')
+    assert attempts.reserve('notion:page','zoho','action','reserved')
+    assert attempts.reserve('notion:page','kintone','action','created')
+    attempts.finish('notion:page','kintone','123')
+    # 監査表なしのINSERT失敗でも、先行DELETEが確定しないことを実DBで確認する。
+    with pytest.raises(psycopg.errors.UndefinedTable):
+        attempts.retire_archived('notion:page','action','page')
+    assert attempts.get('notion:page','source')['state'] == 'blocked'
+    with connect() as conn:
+        conn.execute(Path('dashboard/prisma/migrations/20260816192452_add_audit_log/migration.sql').read_text())
+    attempts.retire_archived('notion:page','action','page')
+    assert attempts.get('notion:page','source') is None
+    assert attempts.get('notion:page','retry')['state'] == 'blocked'
+    assert attempts.get('notion:page','zoho')['state'] == 'reserved'
+    assert attempts.get('notion:page','kintone')['state'] == 'created'
+    with connect() as conn:
+        rows=conn.execute('SELECT * FROM "AuditLog"').fetchall()
+    assert len(rows) == 1
+    assert rows[0]['action'] == 'creation_hold_retired'
+    assert rows[0]['changedFields']['新規作成保留']['before'][0]['reason'] == '種別不足'
+    assert rows[0]['changedFields']['退避理由']['after'] == '原本がアーカイブ済み'
+    attempts.retire_archived('notion:page','action','page')
+    with connect() as conn:
+        assert conn.execute('SELECT count(*) AS n FROM "AuditLog"').fetchone()['n'] == 1

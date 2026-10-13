@@ -34,6 +34,11 @@ class Journal:
     def dismiss_hold(self, key, target):
         if self.get(key,target) and self.get(key,target)['state']=='blocked': self.rows.pop((key,target))
 
+    def retire_archived(self, key, db_key, page_id):
+        for source, target in list(self.rows):
+            if source == key:
+                self.dismiss_hold(source, target)
+
 
 class Notion:
     created = '2026-09-28T00:00:00Z'
@@ -71,6 +76,21 @@ def test_old_unmapped_page_is_not_created():
     service,event,journal,notion,adapter,store=setup(); notion.created='2026-09-27T00:00:00Z'
     assert service.handle(event) is None
     assert adapter.creates == 0 and journal.rows == {}
+
+
+@pytest.mark.parametrize('flag', ['archived', 'in_trash'])
+def test_archived_source_retires_only_pre_post_holds(flag):
+    service,event,journal,notion,adapter,store = setup()
+    original = notion.get_raw_page
+    notion.get_raw_page = lambda page: {**original(page), flag: True}
+    journal.rows['notion:page','source'] = {'state':'blocked'}
+    journal.rows['notion:page','zoho'] = {'state':'reserved'}
+    journal.rows['notion:page','notion'] = {'state':'created','externalId':'page'}
+    assert service.handle(event) == 'new_record_archived'
+    assert ('notion:page','source') not in journal.rows
+    assert journal.rows['notion:page','zoho']['state'] == 'reserved'
+    assert journal.rows['notion:page','notion']['state'] == 'created'
+    assert adapter.creates == 0
 
 
 def test_duplicate_is_not_created_or_automatically_linked():

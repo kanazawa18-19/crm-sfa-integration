@@ -36,7 +36,10 @@ def require_notion_fields(db_key: str, properties: Mapping[str, Any]) -> None:
     title_value(db_key, properties)
     missing = [p.name for p in get_schema(db_key).properties if p.is_required and properties.get(p.name) in (None, "", [], {})]
     if missing:
-        raise CreationHeld("必須項目が未入力です: " + "・".join(missing))
+        message = "必須項目が未入力です: " + "・".join(missing)
+        if db_key == "action" and "アクション種別" in missing:
+            message += "。タイトルとは別に「アクション種別」を選択してください（電話はテレアポ）。保存後に再判定します"
+        raise CreationHeld(message)
 
 
 def sheet_properties(db_key: str, values: Mapping[str, Any]) -> dict[str, Any]:

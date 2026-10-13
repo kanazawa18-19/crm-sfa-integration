@@ -79,7 +79,10 @@ class FieldReviewService:
     def snapshot(self, mapping, prop, records=None):
         records = {} if records is None else records
         result = {}
+        from src.db_schema.base import supports_database
         for tool, target in self.targets.items():
+            if not supports_database(tool, mapping.db_key):
+                continue
             if tool is not Tool.NOTION and not prop.should_sync_to(tool):
                 continue
             identifier = external_id(tool, mapping)

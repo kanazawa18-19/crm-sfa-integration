@@ -285,7 +285,7 @@ def test_unsupported_external_relations_are_not_success():
     store.upsert(mapping)
     dispatcher = Dispatcher(store, {Tool.SPREADSHEET: FakeSyncTarget(Tool.SPREADSHEET)})
     result = dispatcher.propagate_linked_relation(mapping, "取引先マスター", ["client"], {})
-    assert result.skipped_tools == {Tool.ZOHO, Tool.KINTONE}
+    assert result.skipped_tools == {Tool.ZOHO}
     assert result.written_tools == {Tool.NOTION, Tool.SPREADSHEET}
     assert result.related_db_key == "product"
 
@@ -519,7 +519,7 @@ def test_unmapped_external_relation_does_not_fetch_external_versions():
     zoho, kintone = FakeSyncTarget(Tool.ZOHO), FakeSyncTarget(Tool.KINTONE)
     dispatcher = Dispatcher(store, {Tool.SPREADSHEET: FakeSyncTarget(Tool.SPREADSHEET), Tool.ZOHO: zoho, Tool.KINTONE: kintone})
     result = dispatcher.propagate_linked_relation(mapping, '取引先マスター', ['client'], {})
-    assert result.skipped_tools == {Tool.ZOHO, Tool.KINTONE}
+    assert result.skipped_tools == {Tool.ZOHO}
     assert not zoho.get_record_calls and not kintone.get_record_calls
     assert not zoho.upsert_calls and not kintone.upsert_calls
 

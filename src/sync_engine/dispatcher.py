@@ -31,7 +31,7 @@ from typing import Any, Callable, Mapping, MutableMapping
 import requests
 import psycopg
 
-from src.db_schema.base import Tool
+from src.db_schema.base import Tool, supports_database
 from src.db_schema.registry import get_schema
 from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 from src.sync_engine.clients._notion_keys import NOTION_LAST_EDITED_TIME_KEY
@@ -371,6 +371,7 @@ class Dispatcher:
         # 1. Self-Exclusion：送信元ツールを対象リストから除外する。
         from src.sync_operations.exclusions import is_excluded, is_destination_excluded
         target_tools = [t for t in _ALL_TOOLS if t != event.source_tool
+                        and supports_database(t, mapping.db_key)
                         and not is_excluded(t, mapping.db_key, _external_id_for(t, mapping))
                         and not is_destination_excluded(t, mapping)]
 
@@ -781,7 +782,8 @@ class Dispatcher:
     ) -> PropertyDispatchResult:
         """関連追加後のNotion値を直接伝播する。呼び出し元が対象レコードを排他する。"""
         prop = get_schema(mapping.db_key).get_property(property_name)
-        intended = frozenset(t for t in _ALL_TOOLS if t != Tool.NOTION and prop.should_sync_to(t))
+        intended = frozenset(t for t in _ALL_TOOLS if t != Tool.NOTION
+                             and supports_database(t, mapping.db_key) and prop.should_sync_to(t))
         from src.sync_engine.outbound_field_mapping import (
             zoho_outbound_field_names, kintone_outbound_field_names,
         )
