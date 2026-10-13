@@ -92,6 +92,7 @@ def test_action_client_master_field_passes_full_context_to_resolver(
             "record_id": "action-record-77",
             "changed_values": {"field22": "hint", "field6": "テスト商事"},
             "zoho_client": sentinel_zoho_client,
+            "id_mapping_store": None,
         }
     ]
 
@@ -179,7 +180,7 @@ class Test_連絡先の取引先リレーション:
         notion_property, _ = ZOHO_LABEL_FIELD_MAPPINGS["contact"]["お取引先"]
         assert notion_property == "取引先マスター"
 
-    def test_ルックアップの会社名で名寄せする(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_IDのない旧ルックアップだけ会社名で名寄せする(self, monkeypatch: pytest.MonkeyPatch) -> None:
         渡された名前: list[str] = []
 
         def _fake(raw_name: str, **_: object) -> str:
@@ -188,7 +189,7 @@ class Test_連絡先の取引先リレーション:
 
         monkeypatch.setattr(module, "resolve_client_master_relation", _fake)
 
-        assert self._変換()({"name": "合同会社HB2", "id": "2233"}) == "notion-page-5"
+        assert self._変換()({"name": "合同会社HB2"}) == "notion-page-5"
         assert 渡された名前 == ["合同会社HB2"]
 
     def test_文字列で来ても扱える(self, monkeypatch: pytest.MonkeyPatch) -> None:

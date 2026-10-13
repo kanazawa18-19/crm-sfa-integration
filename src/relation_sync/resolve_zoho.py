@@ -7,14 +7,14 @@
 config/zoho_field_mapping.json（CustomModule2セクション）で確認済みの実フィールドapi_name:
 - `field22`（ラベル「【Notion】取引先マスター」）: `会社名 (NotionページURL)`形式でNotionページ
   への直リンクが埋め込まれていることがある自由記述テキスト。
-- `field6`（ラベル「取引先」）: Zoho側の生の会社名（自由入力）。埋め込みヒントを持たない
-  新規Zohoレコード（移行後に作成されたレコード等）向けのフォールバック。
+- `field6`（ラベル「取引先」）: 取引先IDを含むルックアップ、または旧通知の会社名文字列。
 
 優先順位（金沢さん指示）:
 1. `field22`に埋め込みNotionページIDヒントがあれば、それをそのまま使う（ID直接参照なので
    名寄せ不要、最も信頼性が高い）。
-2. 埋め込みヒントが無ければ、`field6`の生の会社名を`resolve_client_master_relation()`へ渡し、
-   ClientNameIndexでの名寄せ解決を試みる（完全一致のみ自動、曖昧なら`RelationReviewQueue`へ）。
+2. 埋め込みヒントが無ければ、`field6`の確定した取引先IDを対応表で解決する。
+   IDがあるのに未対応なら保留し、別の同名会社へ代替しない。
+3. IDがない旧通知だけ会社名で照合する（曖昧なら保留）。
 
 Zoho Webhook（Notification API）が届けるのは変更されたフィールドのみのdelta
 （`affected_values[*].values`）であり、`field22`/`field6`の一方だけが変更された場合、
@@ -87,6 +87,7 @@ def resolve_zoho_action_client_master_relation(
     record_id: str,
     changed_values: Mapping[str, Any],
     zoho_client: ZohoActionRecordClient | None,
+    id_mapping_store: IdMappingStore | None = None,
 ) -> str | None:
     """⑥アクション履歴DBの「👨‍👩‍👧‍👦 取引先マスター」リレーション先Notion page IDを解決する。
 
@@ -139,6 +140,15 @@ def resolve_zoho_action_client_master_relation(
         raw_name = changed_values.get(_RAW_CLIENT_NAME_FIELD)
     else:
         raw_name = _fetch_record_once().get(_RAW_CLIENT_NAME_FIELD)
+
+    if isinstance(raw_name, Mapping) and raw_name.get("id"):
+        return resolve_zoho_relation_by_lookup_id(
+            raw_name,
+            target_db_key="client_master",
+            property_name="👨‍👩‍👧‍👦 取引先マスター",
+            id_mapping_store=id_mapping_store,
+            source_record_id=record_id,
+        )
 
     return resolve_client_master_relation(
         extract_zoho_lookup_name(raw_name),

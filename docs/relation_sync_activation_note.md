@@ -278,15 +278,19 @@ Round1（本ドキュメントの本編、kintoneアクション履歴の`client
 
 ### Zoho「取引先」/「【Notion】取引先マスター」の解決
 
-Zohoのアクション履歴モジュール（CustomModule2）で`field6`（取引先、生の会社名）または
+Zohoのアクション履歴モジュール（CustomModule2）で`field6`（取引先IDを含むルックアップ、または旧通知の会社名文字列）または
 `field22`（【Notion】取引先マスター、移行時にNotionページへの直リンクが埋め込まれている
 ことがある自由記述）が変更された場合、`src/relation_sync/resolve_zoho.py`の
 `resolve_zoho_action_client_master_relation()`が以下の優先順位で解決する:
 
 1. `field22`に埋め込まれたNotionページIDヒント（`src/migration/_utils.py`の
    `extract_notion_page_id()`）があれば、そのまま使う（名寄せ不要、最も信頼性が高い）。
-2. 無ければ`field6`の生の会社名を、Round1と同じ`resolve_client_master_relation()`に渡して
-   名寄せする（完全一致のみ自動、曖昧なら`RelationReviewQueue`へ、既存の安全設計を踏襲）。
+2. 無ければ`field6`の取引先IDを対応表で解決する。IDがあるのに未対応・読取失敗なら保留し、
+   同名の別会社へ代替しない。
+3. IDのない旧通知だけ、Round1と同じ会社名照合を行う（曖昧なら保留）。
+
+連絡先の「お取引先」（field25）も同じく確定IDを優先する。2026-10-13、IDを会社名へ
+変換してから再照合していたため、正しい対応表があっても同名会社で保留になる問題を修正した。
 
 `field22`/`field6`のどちらか一方しかWebhook通知の変更差分（delta）に含まれない場合、
 もう一方の現在値はZoho API（`get_record`）でレコード全体を取得して補う。この機能全体も

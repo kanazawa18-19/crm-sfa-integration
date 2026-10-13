@@ -41,9 +41,8 @@ CustomModule3の実際のラベルと1つずつ突き合わせた結果すべて
 「【Notion】取引先マスター」は当初いずれも「1フィールド単位のWebhook部分更新には不適切」
 として意図的に対象外だったが、「取引先」（field6）・「【Notion】取引先マスター」（field22）
 の2つは`src.relation_sync.resolve_zoho.resolve_zoho_action_client_master_relation()`
-（field22の埋め込みNotionページIDヒント優先、無ければfield6の生の会社名を
-`resolve_client_master_relation()`で名寄せ）による例外対応を行った（kintone側の`client_name`
-と同じ設計思想、2026-08-25）。「案件名」は引き続き対象外（案件(project)リレーションは
+（field22のNotionページID、field6の確定IDの順に解決し、IDのない旧通知だけ会社名で照合）
+で扱う。ID未対応時は同名会社へ代替せず保留する（2026-10-13）。「案件名」は引き続き対象外（案件(project)リレーションは
 kintone側と同じ理由でスコープ外。下記`_ACTION_ZOHO_LABEL_TO_NOTION_FIELD`直前のコメント参照）。
 
 なぜ「ステージ」の値を圧縮・変換せず「営業ステータス」へそのまま書き込むのか:
@@ -181,7 +180,8 @@ def _resolve_client_master_for_zoho_action(_value: Any) -> Any:
     if ctx is None:
         return SKIP_FIELD
     resolved = resolve_zoho_action_client_master_relation(
-        record_id=ctx.record_id, changed_values=ctx.changed_values, zoho_client=ctx.zoho_client
+        record_id=ctx.record_id, changed_values=ctx.changed_values, zoho_client=ctx.zoho_client,
+        id_mapping_store=ctx.id_mapping_store
     )
     return resolved if resolved is not None else SKIP_FIELD
 
@@ -481,21 +481,9 @@ def _current_zoho_relation_record_id() -> str:
 
 
 def _resolve_client_master_from_zoho_lookup(value: Any) -> Any:
-    """Zohoのルックアップ項目（`{"name": ..., "id": ...}`）の会社名から、
-    取引先マスターDBへのリレーションを解決する。
-
-    連絡先の「お取引先」（api_name=field25）から使う（2026-08-31追加）。
-    それまで連絡先には取引先マスターを埋める経路が無く、**必須プロパティが常に欠けるため
-    Zoho発の新規連絡先はNotionに1件も作られていなかった**。
-
-    アクションで使っている`resolve_zoho_action_client_master_relation()`はZoho APIを
-    追加で叩いて関連レコードを辿るが、こちらは**ルックアップ項目に会社名が入っている**ため
-    APIを叩かずに済む。`ClientNameIndex`（Postgresのローカルミラー）へのSELECT一発で完結する。
-
-    解決できなかった場合（曖昧・候補なし・未入力）は`SKIP_FIELD`を返し、
-    そのフィールドだけ書き込みをスキップする。新規作成なら必須プロパティ不足として
-    Slackへ通知され、人が判断できる。
-    """
+    """連絡先の取引先IDを優先し、IDがない旧通知だけ会社名で照合する。"""
+    if isinstance(value, Mapping) and value.get("id"):
+        return _relation_from_zoho_lookup("取引先マスター", "client_master")(value)
     resolved = resolve_client_master_relation(
         extract_zoho_lookup_name(value),
         source_tool="zoho",

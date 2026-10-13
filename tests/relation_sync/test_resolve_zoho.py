@@ -213,7 +213,7 @@ class Test_ルックアップ項目から会社名を取り出す:
         assert extract_zoho_lookup_name(None) == ""
         assert extract_zoho_lookup_name({"id": "2233"}) == ""
 
-    def test_辞書のまま名寄せに渡さない(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_確定IDを会社名の照合へ戻さない(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """回帰防止。解決関数へ辞書の文字列表現が渡ると必ず名寄せに失敗する。"""
         渡された: list[str] = []
         monkeypatch.setenv("RELATION_SYNC_ENABLED", "true")
@@ -229,5 +229,4 @@ class Test_ルックアップ項目から会社名を取り出す:
             zoho_client=None,
         )
 
-        assert 渡された == ["ホテルABC"]
-        assert "{" not in 渡された[0]
+        assert 渡された == []

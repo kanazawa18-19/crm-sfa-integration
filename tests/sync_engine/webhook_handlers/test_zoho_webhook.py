@@ -599,6 +599,7 @@ def test_zoho_payload_to_sync_events_action_passes_zoho_client_through_relation_
             "record_id": DEFAULT_RECORD_ID,
             "changed_values": {"field6": "テスト商事"},
             "zoho_client": sentinel_zoho_client,
+            "id_mapping_store": None,
         }
     ]
 
