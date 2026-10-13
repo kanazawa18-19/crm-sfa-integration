@@ -510,3 +510,21 @@ def test_同期キーが空のセルはNoneで返す(requests_mock, client: Http
     requests_mock.get(f"{BASE}/values/'{SHEET}'!B5", json={})
 
     assert client.read_sync_key(SHEET, 5, "同期キー") is None
+
+
+@pytest.mark.parametrize("method", ["append", "update", "batch"])
+def test_電話と郵便の先頭ゼロを保持し金額と日付を変えない(requests_mock, client, method):
+    headers = ["TEL", "郵便番号", "標準月額費用", "アクション日"]
+    values = dict(zip(headers, ["08012345678", "0010001", 1000, "2026-10-13"]))
+    requests_mock.get(f"{BASE}/values/'{SHEET}'!1:1", json={"values": [headers]})
+    requests_mock.post(f"{BASE}/values/'{SHEET}'!A1:append", json={"updates": {"updatedRange": "取引先マスター!A2:D2", "updatedRows": 1}})
+    requests_mock.post(f"{BASE}/values:batchUpdate", json={})
+    if method == "append":
+        client.append_row(SHEET, values)
+    elif method == "batch":
+        client.append_rows(SHEET, [values])
+    else:
+        client.update_row(SHEET, 2, values)
+    body = requests_mock.last_request.json()
+    actual = body["values"][0] if method != "update" else [item["values"][0][0] for item in body["data"]]
+    assert actual == ["'08012345678", "'0010001", 1000, "2026-10-13"]

@@ -456,7 +456,7 @@ class HttpSpreadsheetClient:
 
     def append_row(self, sheet: str, values: dict[str, Any]) -> int:
         headers = self._get_header_row(sheet)
-        row_values = [_to_cell_value(values.get(name, "")) for name in headers]
+        row_values = [_to_cell_value(values.get(name, ""), field_name=name) for name in headers]
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複行追加を避けリトライしない。
         response = self._request(
             "POST",
@@ -495,7 +495,7 @@ class HttpSpreadsheetClient:
         if not rows:
             return []
         headers = self._get_header_row(sheet)
-        payload = [[_to_cell_value(values.get(name, "")) for name in headers] for values in rows]
+        payload = [[_to_cell_value(values.get(name, ""), field_name=name) for name in headers] for values in rows]
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複行追加を避けリトライしない。
         response = self._request(
             "POST",
@@ -522,7 +522,7 @@ class HttpSpreadsheetClient:
         data = [
             {
                 "range": f"'{sheet}'!{column_letter(i + 1)}{row}",
-                "values": [[_to_cell_value(values[name])]],
+                "values": [[_to_cell_value(values[name], field_name=name)]],
             }
             for i, name in enumerate(headers)
             if name in values
@@ -537,7 +537,7 @@ class HttpSpreadsheetClient:
         raise_for_error(response, SpreadsheetApiError)
 
 
-def _to_cell_value(value: Any) -> Any:
+def _to_cell_value(value: Any, *, field_name: str | None = None) -> Any:
     """1セルに入る形へ変換する。
 
     **Sheetsはセルにスカラーしか受け付けない。** リレーション（NotionページIDの配列）や
@@ -551,6 +551,9 @@ def _to_cell_value(value: Any) -> Any:
     """
     if value is None:
         return ""
+    # USER_ENTEREDでも識別用の番号を数値・式に変換させない。金額と日付は従来どおり。
+    if isinstance(value, str) and value and field_name in {"TEL", "直通TEL", "電話", "電話番号", "FAX", "郵便番号"}:
+        return "'" + value
     if isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Mapping):
