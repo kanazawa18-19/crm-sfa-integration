@@ -2323,3 +2323,41 @@ def test_merge_between_lookup_and_lock_never_writes_under_old_lock(monkeypatch):
     with pytest.raises(RecordSyncBusy, match='対応先'):
         dispatcher.dispatch(SyncEvent(Tool.ZOHO, 'client_master', 'old-z', NOW, properties={'取引先名': '旧名'}))
     dispatcher._dispatch_locked.assert_not_called()
+
+
+@pytest.mark.parametrize("billing", [None, "", "-None-", "ランニング"])
+def test_product_creation_allows_empty_billing_and_replay_does_not_duplicate(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore, billing: str | None
+) -> None:
+    """課金区分が空でも作成し、同じ外部IDの再配送ではページを増やさない。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {
+        "product-1": {"Product_Name": "架空商品", "field15": billing}
+    })
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(source_tool=Tool.ZOHO, db_key="product", external_id="product-1",
+                      occurred_at=NOW, properties={})
+    result = dispatcher.dispatch(event)
+    assert not result.skipped
+    expected = {"名前": "架空商品"}
+    if billing == "ランニング":
+        expected["課金形態"] = "月額ストック"
+    assert targets[Tool.NOTION].upsert_calls == [(None, expected)]
+    assert store.find_by_external_id(Tool.ZOHO, "product-1", db_key="product") is not None
+    dispatcher.dispatch(event)
+    assert len(targets[Tool.NOTION].upsert_calls) == 1
+
+
+def test_product_creation_still_requires_name(
+    monkeypatch: pytest.MonkeyPatch, store: SQLiteIdMappingStore
+) -> None:
+    """課金区分の任意化で商品名の必須条件を緩めない。"""
+    monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
+    targets = _all_targets()
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {"product-1": {"field15": None}})
+    dispatcher = Dispatcher(store, targets)
+    result = dispatcher.dispatch(SyncEvent(source_tool=Tool.ZOHO, db_key="product",
+        external_id="product-1", occurred_at=NOW, properties={}))
+    assert result.reason == "new_record_missing_required_properties"
+    assert targets[Tool.NOTION].upsert_calls == []

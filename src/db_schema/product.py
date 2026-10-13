@@ -51,7 +51,8 @@ PRODUCT_SCHEMA = DatabaseSchema(
         PropertyDefinition(
             name="課金形態",
             property_type=PropertyType.SELECT,
-            requirement=RequirementLevel.REQUIRED,
+            requirement=RequirementLevel.OPTIONAL,
+            description="未入力でも作成する。初期費用と月額費用はそれぞれの金額項目で保持する",
             sync_scope=SyncScope.ALL_TOOLS,
             options=("月額ストック", "イニシャルスポット", "成果報酬"),
         ),

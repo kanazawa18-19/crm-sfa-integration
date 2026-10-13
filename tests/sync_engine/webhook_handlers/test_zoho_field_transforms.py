@@ -250,8 +250,7 @@ class Test_課金形態のマッピング:
 
     @pytest.mark.parametrize("未入力", ["", "  ", "-None-", None])
     def test_未入力は書き込まない(self, 未入力: object) -> None:
-        """課金形態は必須プロパティ。適当な値で埋めると誤った分類のまま作られる。
-        書かずにおけば missing_required_properties としてSlackへ通知される。"""
+        """任意の課金区分は、未入力なら推測で補わず空欄を保つ。"""
         assert self._変換()(未入力) is module.SKIP_FIELD
 
     def test_未知の値も書き込まない(self) -> None:

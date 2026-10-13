@@ -520,14 +520,7 @@ _CONTACT_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]]
     "TEL会社": ("直通TEL", lambda v: v or None),
 }
 
-# 対象は transform_zoho_product() が実際にNotionプロパティへ書き込んでいるフィールドのみ
-# （src/migration/zoho_product.py参照）。以下は意図的に含めない:
-# - "zoho_ID": 内部専用キー。
-# - "課金形態"（PRODUCT_SCHEMA上REQUIRED、SELECT型）: transform_zoho_product()では
-#   Zoho側に対応する列が存在しないため`_DEFAULT_BILLING_TYPE`（"イニシャルスポット"）を
-#   常に既定値として書き込んでいるだけで、どのZohoラベルからも導出されていない。
-#   1フィールド単位のWebhookマッピングとして流用できる「Zohoラベル→値」の対応が
-#   存在しないため対象外（実データ精査後に手動調整する前提という元の移行方針を踏襲）。
+# 商品の課金区分は入力済みの値だけ変換し、空欄を推測で補わない。
 # Zoho「課金形態」(field15)と、サービス・商品DBの「課金形態」の対応（2026-08-31、
 # 金沢さんがZoho側に項目を新設。実APIで選択肢を確認済み）。
 #   Zoho   : ランニング / ショット / 成果報酬
@@ -543,9 +536,8 @@ def _zoho_billing_type(value: Any) -> Any:
     """Zohoの「課金形態」を、サービス・商品DBの選択肢へ読み替える。
 
     **未入力（空・`-None-`）と未知の値は`SKIP_FIELD`を返す。**
-    課金形態は必須プロパティなので、適当な値で埋めると誤った分類のまま
-    ページが作られてしまう。書かずにおけば `missing_required_properties` として
-    Slackへ通知され、Zoho側の入力を促せる（アクション種別と同じ方針）。
+    課金形態は任意項目。初期費用と月額費用の併用を単一の区分に決めつけず、
+    未入力のままページを作成できる。
     Zoho側に選択肢が増えたときも、黙って取りこぼさずここで気づける。
     """
     text = str(value or "").strip()
