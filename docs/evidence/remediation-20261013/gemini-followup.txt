@@ -1,0 +1,49 @@
+追加確認：実装のSpreadsheetSyncTarget.drop_relation_propertiesは逆参照2項目を保存対象から除外していました。このため対象2項目のsync_scopeをNO…
+
+追加確認：実装のSpreadsheetSyncTarget.drop_relation_propertiesは逆参照2項目を保存対象から除外していました。このため対象2項目のsync_scopeをNOTION_ONLYへ修正し、Notion内の逆参照とアクション側の関連を保持します。外部3ツールへの呼出ゼロの単体試験は通過。型文字列化、作成ページIDの更新成功後pop、日時UTCパースも採用しました。この追加修正に問題がないか短く再レビューしてください。
+
+Gemini の回答
+再レビュー判定サマリー
+
+追加修正は問題なく、方針・実装ともに妥当（LGTM）です。マージを阻害する問題（BLOCKER / WARN）はありません。   
+TXT
+
+評価詳細
+
+sync_scope の NOTION_ONLY への変更（妥当）
+
+   
+TXT
+
+スプレッドシート側の drop_relation_properties 実装と整合し、外部3ツールへの不要な同期リクエスト・例外発生を完全に防止できています。
+
+Notionの dual_property（双方向リレーション）はアクション側が作成・更新された際にNotion内部で自動解決されるため、親側（client_master / project）の逆参照項目を NOTION_ONLY と定義するのが設計上最も正確です。   
+TXT
+
+テスト（外部3ツール呼出ゼロ）が通過している点も確認済みです。
+
+前回の指摘反映事項（すべて解消）
+
+型文字列化: kintone_id の型揺れ（int/str）による判定漏れリスクが解消されました。
+
+キャッシュの pop: _created_page_ids のメモリ肥大化が防止され、ロングランプロセスでも安全です。
+
+日時UTCパース: タイムスタンプの表記揺れによるソート崩れリスクが解消されました。
+
+INFO（軽微な確認・推奨）
+
+スキーマ定義の description 文言整理
+
+   
+TXT
+
+client_master.py および project.py の description に「Notionの逆参照をシートへ表示」という記述が残っている場合、実態に合わせて「Notion内保持（外部同期対象外）」等へ更新しておくと後続の実装者が混乱しません。   
+TXT
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

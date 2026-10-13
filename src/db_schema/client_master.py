@@ -184,8 +184,8 @@ CLIENT_MASTER_SCHEMA = DatabaseSchema(
             name="【営業部・パーソネル】アクション履歴DB",
             property_type=PropertyType.RELATION,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.SPREADSHEET_ONLY,
-            description="Notionの逆参照をシートへ表示。外部CRMの関連はアクション側の参照で保持",
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Notion内の逆参照一覧。シート・外部CRMへは送らず、関連はアクション側の参照で保持",
             relation_target="action",
         ),
         # --- 以下、読み取り専用（rollup/button/created_time/unique_id） ---

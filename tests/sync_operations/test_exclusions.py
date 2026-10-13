@@ -72,8 +72,8 @@ def test_本人がZohoへ作らないと決めた2件も他の配送を維持():
 
 def test_逆参照と接触日は実際に対応する同期先だけへ配送():
     for db_key, field, value, expected_tools in [
-        ('project', 'アクション履歴', ['action-page'], {Tool.SPREADSHEET}),
-        ('client_master', '【営業部・パーソネル】アクション履歴DB', ['action-page'], {Tool.SPREADSHEET}),
+        ('project', 'アクション履歴', ['action-page'], set()),
+        ('client_master', '【営業部・パーソネル】アクション履歴DB', ['action-page'], set()),
         ('action', 'アクション日', '2026-10-13', {Tool.SPREADSHEET, Tool.ZOHO}),
     ]:
         store = SQLiteIdMappingStore()
