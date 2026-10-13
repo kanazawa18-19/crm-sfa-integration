@@ -32,3 +32,14 @@
 - 関連広域1496成功/48スキップ。独立SEC/品質/QA指摘を反映、QA BLOCKERは実PG確認後に解消。
 - Gemini追加レビューB0/W1。同一性比較を等価比較へ修正し文字列kintoneの回帰試験追加、Dispatcher74成功。画面記録gemini-additional.txt。添付20819 bytes、SHA256 df60f94eb6a85078e8b43d40b0efe250d139ae3cb77ad01ae2784596dee4c59b。Claudeの別作業下書きに対する拒否は継続、操作しない。
 - 関連40件は独立本番読戻しでQueue/Decision/追加関連/元関連保持全件一致。元162の残122、全体pending123（新規1増加）/resolved516/dismissed2。
+
+
+## Slack実物試験からの通常更新・入力修正
+
+- 実配送先に合わせ専用日付・入力・関連のscopeを限定。シートが落とす関連3項目はZOHO_ONLY。旧gap10件とkintoneに独立欄のないアクションtitleを整理。
+- Zohoは確定単一関連ID3項目と実boolean2項目を部分更新。kintoneは一意なstatus4値・アクション種別6値のみ。未対応値は保留し、値別通知で誤警報を防ぐ。
+- Slack作成は先方担当者の明示入力と単一取引先スナップショットを必要とし、原本の全関連を案件ロック内に再確認してから作成。編集時空欄は保持と案内。
+- 独立SEC・品質・QA：BLOCKER0、品質の空欄hint指摘反映。広域1609成功45skip、その後hint・空欄維持試験追加でSlack31成功。作成応答不明の単体試験はunknown返却までで再claim検証とは区別。
+- 本人専用の保存済み2操作について実DBで同一受付番号のenqueue=false・claim=Noneを確認し、追加0・再実行0。外部CRM処理は再実行していない。
+- Gemini通常更新レビューB0/W0。24463 bytes、SHA256 74999062d9ed412ba70b8c32f47bebbe8d3529e18f8a2fa0bcad19a9d3a2d7b1。Slackフォーム追補16535 bytes、SHA256 2c476c42493634d28aeb2bc8d51fe4c23fb7cf37177c53d6edb823124486177d。各画面結果を保存。
+- GAS修正版自然完走と失敗4回後の確認結果はgmail-gas-observation-20261003.mdに追記。14日全期間の合格とはしない。

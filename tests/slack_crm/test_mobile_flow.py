@@ -137,7 +137,7 @@ def test_confirm_requires_actor_and_feature_flag(monkeypatch: pytest.MonkeyPatch
 
 def test_same_action_form_reuses_operation_id_and_title() -> None:
     pid = "01234567-89ab-cdef-0123-456789abcdef"
-    form = views.action_form(pid, project_name="試験案件")
+    form = views.action_form(pid, project_name="試験案件", client_ids=[pid], client_name="試験取引先")
     meta = json.loads(form["private_metadata"])
     payload = _base(type="view_submission", view={
         "callback_id": "crm_submit_action_create", "private_metadata": form["private_metadata"],
@@ -145,6 +145,7 @@ def test_same_action_form_reuses_operation_id_and_title() -> None:
             "action_type": {"type_value": {"selected_option": {"value": "メール"}}},
             "date": {"action_date": {"selected_date": "2026-10-02"}},
             "memo": {"memo_value": {"value": "資料送付"}},
+            "person": {"person_value": {"value": "試験担当者"}},
         }},
     })
     first = json.loads(handler.handler(_event(payload))["body"])
@@ -280,3 +281,51 @@ def test_mobile_forms_have_prefilled_values_and_confirmation() -> None:
     date_block = next(block for block in form["blocks"] if block.get("block_id") == "date")
     assert date_block["element"]["initial_date"] == "2026-10-03"
     assert form["submit"]["text"] == "確認へ"
+
+
+@pytest.mark.parametrize('ids',[None,[],['a','b']])
+def test_action_create_requires_one_project_client(ids):
+    view=views.action_form('project',client_ids=ids)
+    assert view['callback_id']=='crm_receipt'
+
+@pytest.mark.parametrize('value',[None,'','   ',17])
+def test_action_create_requires_explicit_person(value):
+    changes={'商談回数・電話回数・メール回数（何回目）':'試験','アクション種別':'テレアポ','アクション日':'2026-10-13','先方担当者':value}
+    with pytest.raises(ValueError,match='先方担当者'):
+        domain.validate_changes('action_create',changes)
+
+def test_action_person_edit_is_in_expected_values():
+    form=views.action_form('p',action_id='a',current={'先方担当者':'旧担当者'})
+    assert json.loads(form['private_metadata'])['expected']['先方担当者']=='旧担当者'
+    assert domain.validate_changes('action_update',{'先方担当者':'新担当者'}) == {'先方担当者':'新担当者'}
+
+@pytest.mark.parametrize('actual,expected',[([],['a']),(['b'],['a']),(['a','b'],['a']),(['a'],None)])
+def test_action_creation_stops_changed_or_ambiguous_client(monkeypatch,actual,expected):
+    raw={'properties':{'取引先マスター':{'relation':[{'id':x} for x in actual]}}}
+    monkeypatch.setattr(service,'_client',lambda _:SimpleNamespace(get_raw_page_with_relations=lambda *_:raw))
+    action=SimpleNamespace(create_page_once=lambda _:pytest.fail('作成してはいけない'))
+    assert service._state_for_create(action,{'targetId':'p','expected':{'取引先マスター':expected}}) == ('conflict','relation_changed',None)
+
+def test_action_creation_copies_confirmed_client_and_reports_unknown(monkeypatch):
+    raw={'properties':{'取引先マスター':{'relation':[{'id':'a'}]}}}
+    monkeypatch.setattr(service,'_client',lambda _:SimpleNamespace(get_raw_page_with_relations=lambda *_:raw))
+    monkeypatch.setattr(service,'record_notion_write',lambda **_:None)
+    writes=[]
+    def create(props):
+        writes.append(props)
+        return 'new-page'
+    op={'targetId':'p','expected':{'取引先マスター':['a']},'changes':{'商談回数・電話回数・メール回数（何回目）':'試験','アクション種別':'テレアポ','アクション日':'2026-10-13','先方担当者':'明示担当者'}}
+    assert service._state_for_create(SimpleNamespace(create_page_once=create),op)==('done',None,'new-page')
+    assert writes[0]['👨‍👩‍👧‍👦 取引先マスター']==['a']
+    assert writes[0]['案件名']==['p']
+    def unknown(props):
+        writes.append(props)
+        raise TimeoutError()
+    assert service._state_for_create(SimpleNamespace(create_page_once=unknown),op)==('unknown','create_response_unknown',None)
+    assert len(writes)==2
+
+
+@pytest.mark.parametrize('value',[None,'','   '])
+def test_empty_person_edit_keeps_current_value(value):
+    payload={'view':{'state':{'values':{'person':{'person_value':{'value':value}}}}}}
+    assert '先方担当者' not in handler._form_values(payload,'action_update','op')

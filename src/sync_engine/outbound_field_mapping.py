@@ -191,7 +191,8 @@ def kintone_outbound_field_names() -> dict[str, dict[str, str]]:
                 table[property_name] = chosen
         result[db_key] = table
     # Q024は案件名と施設名の対応。取引先relationの逆変換とは別。
-    result.setdefault("project", {}).update({"案件名": "店舗名", "ファーストタッチ": "ドロップダウン_4"})
+    result.setdefault("project", {}).update({"案件名": "店舗名", "ファーストタッチ": "ドロップダウン_4", "営業ステータス": "ドロップダウン_2"})
+    result.setdefault("action", {})["アクション種別"] = "actionContent"
     result.setdefault("client_master", {}).update({"都道府県": "都道府県名", "顧客種別": "顧客種別"})
     return result
 

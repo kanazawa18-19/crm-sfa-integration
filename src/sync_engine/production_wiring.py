@@ -727,7 +727,7 @@ def build_zoho_client() -> HttpZohoClient | None:
         return None
 
 
-def build_zoho_targets_by_db(client: HttpZohoClient | None = None) -> dict[str, ZohoSyncTarget]:
+def build_zoho_targets_by_db(client: HttpZohoClient | None = None, *, get_mapping=None) -> dict[str, ZohoSyncTarget]:
     """db_key単位のZohoSyncTargetを組み立てる（`ENABLE_ZOHO=False`時は空辞書）。
 
     `client`（省略可）を渡すと、その`HttpZohoClient`インスタンスをそのまま使い回す
@@ -742,7 +742,7 @@ def build_zoho_targets_by_db(client: HttpZohoClient | None = None) -> dict[str, 
         client = build_zoho_client()
     if client is None:
         return {}
-    return {schema.key: ZohoSyncTarget(client, schema.zoho_api_module) for schema in ALL_SCHEMAS}
+    return {schema.key: ZohoSyncTarget(client, schema.zoho_api_module, get_mapping=get_mapping) for schema in ALL_SCHEMAS}
 
 
 def build_spreadsheet_targets_by_db() -> dict[str, SpreadsheetSyncTarget]:
@@ -943,7 +943,7 @@ def build_production_dispatcher(
     if kintone_targets:
         targets[Tool.KINTONE] = _MultiDbKintoneSyncTarget(kintone_targets)
 
-    zoho_targets = build_zoho_targets_by_db(zoho_client)
+    zoho_targets = build_zoho_targets_by_db(zoho_client, get_mapping=store.get)
     if zoho_targets:
         targets[Tool.ZOHO] = _MultiDbZohoSyncTarget(zoho_targets)
 
@@ -1035,7 +1035,7 @@ class SkipTrackingDispatcher:
     }
 
     @classmethod
-    def _is_known_gap(cls, tool: Tool, db_key: str, property_name: str) -> bool:
+    def _is_known_gap(cls, tool: Tool, db_key: str, property_name: str, value=None) -> bool:
         """このスキップが「分かっていること」かどうか。
 
         2種類ある。**両方を除かないと通知が洪水になる。**
@@ -1054,6 +1054,9 @@ class SkipTrackingDispatcher:
         db_keyが解決できない・認証情報が無い・相手が編集していた、といった**本当に
         対処が要るもの**に絞られる。
         """
+        if tool == Tool.KINTONE and (db_key, property_name) in {("project", "営業ステータス"), ("action", "アクション種別")}:
+            from src.sync_engine.sync_targets.kintone_sync import _choice_value
+            return _choice_value(db_key, property_name, value) is None
         if (tool, db_key, property_name) in KNOWN_SYNC_GAPS:
             return True
         if tool is Tool.SPREADSHEET:
@@ -1075,7 +1078,8 @@ class SkipTrackingDispatcher:
         return [
             tool
             for tool in prop_result.skipped_tools
-            if not self._is_known_gap(tool, prop_result.related_db_key or event.db_key, prop_result.property_name)
+            if not self._is_known_gap(tool, prop_result.related_db_key or event.db_key, prop_result.property_name,
+                                      event.properties.get(prop_result.property_name))
         ]
 
     def dispatch(self, event: SyncEvent) -> DispatchResult:

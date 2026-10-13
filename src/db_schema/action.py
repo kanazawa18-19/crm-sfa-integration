@@ -52,7 +52,7 @@ ACTION_SCHEMA = DatabaseSchema(
             name="商談回数・電話回数・メール回数（何回目）",
             property_type=PropertyType.TITLE,
             requirement=RequirementLevel.REQUIRED,
-            sync_scope=SyncScope.ALL_TOOLS,
+            sync_scope=SyncScope.ZOHO_AND_SPREADSHEET,
             description="実質のアクション内容の自由記述。表記ゆれが激しい",
         ),
         PropertyDefinition(

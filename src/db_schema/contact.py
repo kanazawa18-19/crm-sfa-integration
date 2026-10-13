@@ -55,7 +55,7 @@ CONTACT_SCHEMA = DatabaseSchema(
             # 後から紐づける方がよい、との判断。会社名があるのに取引先マスターと 1 件に決まらない
             # 場合も同様に空で作られ、リレーション解決のレビューキューに残る。
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
+            sync_scope=SyncScope.ZOHO_ONLY,
             description=(
                 "所属企業。空でも作成してよい（2026-09-26 本人判断）。"
                 "webhook_handlers/lead_inquiry_webhook.py経由のレコードは、会社名が"

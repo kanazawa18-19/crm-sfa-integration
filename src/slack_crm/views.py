@@ -122,10 +122,20 @@ def action_picker(project_id: str, project_name: str = "") -> dict[str, Any]:
 
 
 def action_form(project_id: str, *, project_name: str = "", action_id: str | None = None,
-                current: dict[str, Any] | None = None) -> dict[str, Any]:
+                current: dict[str, Any] | None = None, client_ids=None, client_name: str = "") -> dict[str, Any]:
     current = current or {}
     creating = action_id is None
+    if creating and (not isinstance(client_ids, list) or len(client_ids) != 1):
+        return receipt_view("案件の取引先を1件に確定してから、アクションを記録してください。")
     blocks: list[dict[str, Any]] = [_section(f"*{_display(project_name)}* のアクション")]
+    if creating:
+        blocks.append(_section(f"取引先: {_display(client_name or client_ids[0])}"))
+    person = {"type": "plain_text_input", "action_id": "person_value", "max_length": 100}
+    if current.get("先方担当者"):
+        person["initial_value"] = str(current["先方担当者"])
+    blocks.append({"type": "input", "block_id": "person", "label": plain("先方担当者"),
+                   "optional": not creating, "element": person,
+                   **({"hint": plain("空欄では変更しません。削除はCRM画面で行ってください。")} if not creating else {})})
     types = list(next(p.options for p in ACTION_SCHEMA.properties if p.name == "アクション種別"))
     blocks.append(_select("種別", "action_type", "type_value", types, current.get("アクション種別")))
     today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
@@ -144,9 +154,11 @@ def action_form(project_id: str, *, project_name: str = "", action_id: str | Non
             memo_element["initial_value"] = memo
         blocks.append({"type": "input", "block_id": "memo", "label": plain("メモ"),
                        "optional": True, "element": memo_element})
-    expected = {key: current.get(key) for key in ("アクション種別", "アクション日")}
+    expected = {key: current.get(key) for key in ("アクション種別", "アクション日", "先方担当者")}
     if len(memo) <= 500:
         expected["履歴メモ"] = current.get("履歴メモ")
+    if creating:
+        expected = {"取引先マスター": client_ids, "取引先表示名": client_name}
     if not creating:
         expected["案件名"] = [project_id]
     return _modal("アクションを記録" if creating else "アクションを更新",
@@ -159,6 +171,8 @@ def preview_view(*, actor_id: str, kind: str, target_id: str, expected: dict[str
                  changes: dict[str, Any], operation_id: str) -> dict[str, Any]:
     lines = [f"• *{_display(key)}*: {_display(expected.get(key))} → {_display(value)}"
              for key, value in changes.items()]
+    if kind == "action_create":
+        lines.append(f"取引先: {_display(expected.get('取引先表示名') or expected.get('取引先マスター'))}")
     return _modal("保存内容を確認", "crm_preview", [
         _section("\n".join(lines)),
     ], metadata={"actor_id": actor_id, "kind": kind, "target_id": target_id,

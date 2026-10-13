@@ -121,6 +121,9 @@ def _form_values(payload: Mapping[str, Any], kind: str, operation_id: str) -> di
     day = date_state.get("selected_date")
     memo_state = _state(payload, "memo", "memo_value")
     memo = memo_state.get("value")
+    person = _state(payload, "person", "person_value").get("value")
+    if person is not None and (kind == "action_create" or str(person).strip()):
+        values["先方担当者"] = person
     if kind_option:
         values["アクション種別"] = kind_option["value"]
     if date_state:
@@ -143,7 +146,8 @@ def _on_submission(payload: dict[str, Any]) -> dict[str, Any]:
         project = storage.get_project(_page_id(choice["value"])) if choice else None
         if not project:
             return _response({"response_action": "errors", "errors": {"project_choice": "案件を選び直してください"}})
-        target = (views.action_form(project["id"], project_name=project.get("案件名", ""))
+        target = (views.action_form(project["id"], project_name=project.get("案件名", ""),
+                                    client_ids=project.get("取引先マスター"), client_name=project.get("client_name") or "")
                   if meta.get("mode") == "action_create" else views.project_detail(project))
         return _response({"response_action": "update", "view": target})
     if callback == "crm_pick_action":
@@ -179,11 +183,11 @@ def _on_submission(payload: dict[str, Any]) -> dict[str, Any]:
         changes = validate_changes(kind, changes)
     except ValueError as exc:
         message = str(exc)
-        block = ("action_type" if "種別" in message else "memo" if "メモ" in message else
+        block = ("person" if "担当者" in message else "action_type" if "種別" in message else "memo" if "メモ" in message else
                  "status" if "ステータス" in message else "confidence" if "確度" in message else "date")
         return _response({"response_action": "errors", "errors": {block: message}})
     expected = ({key: expected.get(key) for key in changes}
-                if kind != "action_create" else {})
+                if kind != "action_create" else {key: expected.get(key) for key in ("取引先マスター", "取引先表示名")})
     if kind == "action_update":
         expected["案件名"] = [_page_id(meta.get("project_id"))]
     return _response({"response_action": "push", "view": views.preview_view(
@@ -243,7 +247,8 @@ def _on_action(payload: dict[str, Any]) -> dict[str, Any]:
         if action_id == "crm_open_project_edit":
             target = views.project_form(project)
         elif action_id == "crm_open_action_create":
-            target = views.action_form(project["id"], project_name=project.get("案件名", ""))
+            target = views.action_form(project["id"], project_name=project.get("案件名", ""),
+                                    client_ids=project.get("取引先マスター"), client_name=project.get("client_name") or "")
         else:
             target = views.action_picker(project["id"], project.get("案件名", ""))
         call("views.push", {"trigger_id": trigger, "view": target})

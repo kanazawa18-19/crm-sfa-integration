@@ -1,0 +1,159 @@
+heading "Gemini の回答" [level=6]
+  - heading "レビュー判定サマリー" [level=3]
+  - paragraph: "判定: LGTM（マージ可）"
+  - paragraph:
+    - text: 重点3観点（誤配送・未配送の成功誤認・既存通知の回帰）に対して漏れなく安全策が講じられており、重大な欠陥（BLOCKER）および潜在リスク（WARN）はありません
+    - superscript
+    - text: 。
+    - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+      - generic: TXT
+  - list:
+    - paragraph: "BLOCKER: 0件"
+    - paragraph: "WARN: 0件"
+    - paragraph: "INFO: 3件"
+  - heading "重点3観点の評価" [level=3]
+  - list:
+    - paragraph: 誤配送の防止（適合）
+    - list:
+      - paragraph:
+        - text: "選択肢の厳格化: kintoneの「営業ステータス」は一意逆変換が確定している4値（連絡済み・失注・解約・契約済）のみに絞り、多分岐する「アポ」や「返信なし」は"
+        - code: None
+        - text: として送信対象から確実に除外しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "Zoho関連の防御的実装:"
+        - code: _confirmed_payload
+        - text: にて、要素数1の確定ID、対象DB一致、
+        - code: zoho_id
+        - text: 発行済みの3条件をすべて満たす場合のみ payload を生成しており、複数IDや未解決リレーションの誤送信リスクを排除できています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "型チェック:"
+        - code: type(...) is bool
+        - text: で厳密判定を行い、Python の
+        - code: int
+        - text: （1/0）の意図しない真偽値送信を遮断しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: 未配送の成功誤認の防止（適合）
+    - list:
+      - paragraph:
+        - text: "未処理プロパティの残留: 保留されたステータス値や未確定リレーションは"
+        - code: handled
+        - text: /
+        - code: additional
+        - text: に含めず
+        - code: unsupported_properties
+        - text: に残す設計となっており、Dispatcher 側で正しく
+        - code: skipped_tools
+        - text: として扱われます
+        - superscript
+        - text: 。未配送のまま書き込み成功（
+        - code: written_tools
+        - text: ）と誤認される経路はありません
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt、TXT: crm-remediation-slack-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph: 既存通知の回帰の防止（適合）
+    - list:
+      - paragraph:
+        - text: "値依存のギャップ判定:"
+        - code: SkipTrackingDispatcher._is_known_gap
+        - text: に
+        - code: value
+        - text: 評価が追加されたことで、意図的保留（アポ等）による Slack 通知の洪水（不要な偽陽性）を正確に抑止できています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "障害通知の維持: 配送対象である4値の同期失敗や、その他予期しないスキップは通常通り通知対象として維持されます"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "スキーマ変更との整合: 各項目の"
+        - code: sync_scope
+        - text: を絞り込んだことで、非同期ツール側での不要なスキップ発生自体が根本から遮断され、
+        - code: KNOWN_SYNC_GAPS
+        - text: からの削除と整合しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "INFO（設計・運用の確認）" [level=3]
+  - list:
+    - paragraph:
+      - text: "スキーマ一元化による gap 辞書の整理:"
+      - code: contact.py
+      - text: や
+      - code: project.py
+      - text: の
+      - code: sync_scope
+      - text: で配送対象外を明示したことで、
+      - code: known_sync_gaps.py
+      - text: の静的辞書との二重管理が解消され、保守性が大きく向上しています
+      - superscript
+      - text: 。
+      - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - text: "インジェクション設計:"
+      - code: build_zoho_targets_by_db
+      - text: に
+      - code: get_mapping=store.get
+      - text: を注入可能にしたことで、テスト時のモック注入と本番結線の分離が綺麗に行われています
+      - superscript
+      - text: 。
+      - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - text: "将来の選択肢追加時の注意: 将来的に kintone 側で商談フェーズの選択肢体系が整理され「アポ」等を再同期対象とする際は、"
+      - code: _choice_value
+      - text: のマッピング追加と合わせて、
+      - code: SkipTrackingDispatcher
+      - text: の保留条件からも外す必要がある点のみ留意してください
+      - superscript
+      - text: 。
+      - 'button "TXT: crm-remediation-slack-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button "一番下に移動":
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く

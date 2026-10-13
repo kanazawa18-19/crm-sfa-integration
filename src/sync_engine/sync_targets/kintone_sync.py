@@ -12,6 +12,15 @@ from src.sync_engine.clients._http import ApiError, ConcurrentModificationError
 
 
 def _choice_value(db_key, name, value):
+    if db_key == "action" and name == "アクション種別":
+        # 実選択肢6件。問い合わせメール・自動メールを通常メールへ丸めない。
+        return {"テレアポ": "テレアポ", "訪問商談": "訪問商談", "オンライン商談": "WEB商談",
+                "メール": "メール", "飛び込み": "飛び込み", "その他": "その他"}.get(value) if isinstance(value, str) else None
+    if db_key == "project" and name == "営業ステータス":
+        # 2026-10-13の実選択肢と既存受信変換で、一意に戻せる値だけ送る。
+        # アポは商談中A〜Dへ分岐するため、返信なし等とともに保留する。
+        return {"連絡済み": "連絡済み", "失注": "失注", "解約": "解約",
+                "契約": "契約済"}.get(value) if isinstance(value, str) else None
     if db_key == "client_master" and name in {"都道府県", "顧客種別"}:
         # 都道府県は独立テキスト欄、顧客種別は同名の選択肢へそのまま送る。
         # 未知値を「その他」へ変えず、選択肢違反はkintone APIの拒否を保持する。

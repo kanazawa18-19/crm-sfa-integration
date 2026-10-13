@@ -88,6 +88,8 @@ class SyncScope(str, Enum):
     ALL_TOOLS = "all_tools"
     NOTION_ONLY = "notion_only"
     SPREADSHEET_ONLY = "spreadsheet_only"
+    ZOHO_ONLY = "zoho_only"
+    KINTONE_AND_SPREADSHEET = "kintone_and_spreadsheet"
     ZOHO_AND_SPREADSHEET = "zoho_and_spreadsheet"
     INTERNAL = "internal"
 
@@ -105,6 +107,8 @@ _SYNC_SCOPE_TOOLS.update(
         SyncScope.ALL_TOOLS: frozenset({Tool.SPREADSHEET, Tool.KINTONE, Tool.ZOHO}),
         SyncScope.NOTION_ONLY: frozenset(),
         SyncScope.SPREADSHEET_ONLY: frozenset({Tool.SPREADSHEET}),
+        SyncScope.ZOHO_ONLY: frozenset({Tool.ZOHO}),
+        SyncScope.KINTONE_AND_SPREADSHEET: frozenset({Tool.SPREADSHEET, Tool.KINTONE}),
         SyncScope.ZOHO_AND_SPREADSHEET: frozenset({Tool.SPREADSHEET, Tool.ZOHO}),
         SyncScope.INTERNAL: frozenset(),
     }

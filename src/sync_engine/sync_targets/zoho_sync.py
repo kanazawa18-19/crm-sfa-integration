@@ -63,7 +63,8 @@ class ZohoSyncTarget(SyncTarget):
 
     tool = Tool.ZOHO
 
-    def __init__(self, client: ZohoClient, module: str, *, enabled: bool | None = None) -> None:
+    def __init__(self, client: ZohoClient, module: str, *, enabled: bool | None = None, get_mapping=None) -> None:
+        self._get_mapping = get_mapping
         self._client = client
         self._module = module
         # enabled未指定時は呼び出しごとに環境変数を再評価する
@@ -150,7 +151,29 @@ class ZohoSyncTarget(SyncTarget):
             zoho_outbound_field_names(), db_key, properties, translate_choice_value
         )
         _, handled = self._owner_payload(db_key, properties)
-        return frozenset(set(unmapped) - handled)
+        _, additional = self._confirmed_payload(db_key, properties)
+        return frozenset(set(unmapped) - handled - additional)
+
+    def _confirmed_payload(self, db_key, properties):
+        """確定済み単一関連と、実設定で確認した真偽値だけを部分更新する。"""
+        from src.hub_creation.creation_payload import ZOHO_RELATIONS
+        payload, handled = {}, set()
+        if db_key in {"contact", "project"} and self._get_mapping is not None:
+            for code, (name, target_db) in ZOHO_RELATIONS[db_key].items():
+                ids = properties.get(name)
+                if not isinstance(ids, (list, tuple)) or len(ids) != 1 or not isinstance(ids[0], str):
+                    continue
+                mapping = self._get_mapping(ids[0])
+                if mapping is None or mapping.db_key != target_db or not mapping.zoho_id:
+                    continue
+                payload[code] = {"id": str(mapping.zoho_id)}
+                handled.add(name)
+        if db_key == "project":
+            for name, code in {"かつやさん": "field16", "問合せ": "field48"}.items():
+                if type(properties.get(name)) is bool:
+                    payload[code] = properties[name]
+                    handled.add(name)
+        return payload, handled
 
     def _owner_payload(self, db_key, properties):
         owners, handled = owner_payload(db_key, properties, "zoho")
@@ -181,7 +204,9 @@ class ZohoSyncTarget(SyncTarget):
         )
         owners, handled = self._owner_payload(db_key, properties)
         payload.update(owners)
-        unmapped = sorted(set(unmapped) - handled)
+        extra, additional = self._confirmed_payload(db_key, properties)
+        payload.update(extra)
+        unmapped = sorted(set(unmapped) - handled - additional)
         if unmapped:
             logger.warning(
                 "ZohoSyncTarget: Zoho側の項目が特定できないため送信しません "

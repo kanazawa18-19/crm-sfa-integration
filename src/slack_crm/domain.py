@@ -9,7 +9,7 @@ from src.db_schema.action import ACTION_SCHEMA
 
 
 PROJECT_FIELDS = frozenset({"営業ステータス", "次回アクション日", "確度"})
-ACTION_FIELDS = frozenset({"アクション種別", "アクション日", "履歴メモ"})
+ACTION_FIELDS = frozenset({"アクション種別", "アクション日", "履歴メモ", "先方担当者"})
 ACTION_TYPES = frozenset(
     next(p.options for p in ACTION_SCHEMA.properties if p.name == "アクション種別")
 )
@@ -22,7 +22,7 @@ def validate_changes(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
     elif kind == "action_update":
         allowed = ACTION_FIELDS
     elif kind == "action_create":
-        allowed = frozenset({"商談回数・電話回数・メール回数（何回目）", "アクション種別", "アクション日", "履歴メモ"})
+        allowed = frozenset({"商談回数・電話回数・メール回数（何回目）", "アクション種別", "アクション日", "履歴メモ", "先方担当者"})
     else:
         raise ValueError("操作種別が不正です")
     if not changes or set(changes) - allowed:
@@ -30,6 +30,8 @@ def validate_changes(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
     if kind == "action_create" and (not {"商談回数・電話回数・メール回数（何回目）", "アクション種別", "アクション日"} <= set(changes)
                                     or not changes.get("アクション日")):
         raise ValueError("アクションの必須項目が不足しています")
+    if kind == "action_create" and not isinstance(changes.get("先方担当者"), str):
+        raise ValueError("先方担当者を入力してください")
     result: dict[str, Any] = {}
     for key, value in changes.items():
         if key == "営業ステータス":
@@ -51,6 +53,10 @@ def validate_changes(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
         elif key == "アクション種別":
             if value not in ACTION_TYPES:
                 raise ValueError("アクション種別が不正です")
+        elif key == "先方担当者":
+            if not isinstance(value, str) or not (1 <= len(value.strip()) <= 100):
+                raise ValueError("先方担当者は1〜100文字で入力してください")
+            value = value.strip()
         elif key == "履歴メモ":
             if not isinstance(value, str) or len(value) > 500:
                 raise ValueError("履歴メモは500文字以内です")

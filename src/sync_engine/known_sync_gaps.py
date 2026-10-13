@@ -23,7 +23,6 @@ from src.db_schema.base import Tool
 #: 名前から相手のページを引き当てる「名寄せ」が要る（`src/relation_sync/`）。
 #: 現状これがあるのは取引先マスターへの紐付けだけ。
 KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
-    (Tool.KINTONE, "project", "取引先マスター"): "Q024で店舗名は案件名へ確定。取引先の関連IDを確定できる入力が無いため保留",
     (Tool.KINTONE, 'action', '案件名'): (
         "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
@@ -66,11 +65,6 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
     ),
-    (Tool.KINTONE, 'project', '連絡先'): (
-        "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
-        "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
-        "やるなら名前の書かれたテキスト項目からの名寄せしかない"
-    ),
     (Tool.ZOHO, 'action', '案件名'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'action', '連絡先'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'chain', 'アクション履歴'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
@@ -90,19 +84,13 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
 
 #: リレーション以外の未対応（外部→Notion）。
 KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
-    (Tool.KINTONE, 'project', 'リードソース1'): 'Zoho専用の選択欄。kintone専用保存枠への対応は未実装',
-    (Tool.KINTONE, 'project', '完了予定日'): 'Zoho完了予定日の専用欄。kintone契約予定日と実値が異なるため共用しない',
-    (Tool.KINTONE, 'project', '新規・既存種別'): 'Zoho専用の選択欄。kintone専用保存枠への対応は未実装',
-    (Tool.ZOHO, 'project', '契約予定日'): 'kintone契約予定日の専用欄。Zoho完了予定日とは共用しない',
 
-    (Tool.KINTONE, 'action', '商談回数・電話回数・メール回数（何回目）'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'action', '導入フローとスケジュール'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'action', '議事録・録画リンク'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'client_master', '予算組の時期'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'client_master', '日付'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'client_master', '決算'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '【例外】粗利'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
-    (Tool.KINTONE, 'project', 'かつやさん'): "チェックボックス。外部側の真偽値表現が未確認",
     (Tool.KINTONE, 'project', 'サイトコントローラー'): "複数選択。外部の値の分割規則が未定義",
     (Tool.KINTONE, 'project', 'サービス数（施設数）'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', 'ショット'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
@@ -110,9 +98,7 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.KINTONE, 'project', 'ネックポイント'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', 'ファーストタッチ'): "複数選択。外部の値の分割規則が未定義",
     (Tool.KINTONE, 'project', 'メモ'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
-    (Tool.KINTONE, 'project', '例外スイッチ（途中解約・複数サービス提案など）'): "チェックボックス。外部側の真偽値表現が未確認",
     (Tool.KINTONE, 'project', '再アプローチ日'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
-    (Tool.KINTONE, 'project', '問合せ'): "チェックボックス。外部側の真偽値表現が未確認",
     (Tool.KINTONE, 'project', '失注日'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '失注理由'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.KINTONE, 'project', '担当者名'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
@@ -130,7 +116,6 @@ KNOWN_UNMAPPED_FIELDS: dict[tuple[Tool, str, str], str] = {
     (Tool.ZOHO, 'client_master', '日付'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.ZOHO, 'client_master', '決算'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
     (Tool.ZOHO, 'project', 'ショット'): "送信元に対応項目がない、または意味・型の同一性を確認できない",
-    (Tool.ZOHO, 'project', '例外スイッチ（途中解約・複数サービス提案など）'): "チェックボックス。外部側の真偽値表現が未確認",
 }
 
 

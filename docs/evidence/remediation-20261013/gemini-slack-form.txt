@@ -1,0 +1,135 @@
+heading "Gemini の回答" [level=6]
+  - heading "レビュー判定サマリー" [level=3]
+  - paragraph: "判定: LGTM（マージ可）"
+  - paragraph:
+    - text: 重点4観点（誤った取引先への作成、入力漏れ、保存時の再照合、二重作成）に対し、UIとワーカーの両層で厳密なガードが実装されています
+    - superscript
+    - text: 。重大な欠陥（BLOCKER）および運用リスク（WARN）はありません。
+    - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+      - generic: TXT
+  - list:
+    - paragraph: "BLOCKER: 0件"
+    - paragraph: "WARN: 0件"
+    - paragraph: "INFO: 2件"
+  - heading "重点観点別の評価" [level=3]
+  - list:
+    - paragraph: 誤った取引先への作成 & 保存時の再照合（適合）
+    - list:
+      - paragraph:
+        - text: "入口制御: フォーム表示時点で案件に紐づく取引先が単一（"
+        - code: len(client_ids) == 1
+        - text: ）でない場合、作成モーダルを開かせず受付画面（
+        - code: receipt_view
+        - text: ）で中断しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "実行直前ガード:"
+        - code: _state_for_create
+        - text: 内で案件原本の
+        - code: 取引先マスター
+        - text: リレーションを取得し直し、
+        - code: len(ids) != 1
+        - text: または画面表示時のスナップショット（
+        - code: expected
+        - text: ）と不一致の場合は
+        - code: conflict / relation_changed
+        - text: として作成を拒否しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "対象DB整合: 作成ペイロードに正しい Notion プロパティ名（"
+        - code: 👨‍👩‍👧‍👦 取引先マスター
+        - text: ）で確定IDを注入しており、誤紐付けは完全に防止されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: 入力漏れ（適合）
+    - list:
+      - paragraph:
+        - text: "作成時の先方担当者必須化: Slack モーダル（"
+        - code: "optional: False"
+        - text: ）およびドメインバリデーション（
+        - code: 1 <= len(value.strip()) <= 100
+        - text: ）の双方で空白・未入力を遮断しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "更新時ヒントの明示: 更新時は空欄を「変更なし（維持）」として扱い、CRM画面での削除を促すヒントを表示することで、意図しない担当者名の消去を防止しています"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: 二重作成（適合）
+    - list:
+      - paragraph:
+        - text: 既存の台帳機構（operation_id）を維持し、タイムアウト等の応答不明時は自動再試行せず手動照合へ倒す設計が維持されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "INFO（確認事項）" [level=3]
+  - list:
+    - paragraph: Notion ID（UUID）のハイフン表記揺れの確認
+    - paragraph:
+      - code: _state_for_create
+      - text: の照合（
+      - code: ids != expected
+      - text: ）において、APIから取得した
+      - code: ids
+      - text: （ハイフン付きUUID）と、キャッシュ/ストレージ層の
+      - code: project.get("取引先マスター")
+      - text: の形式に表記揺れ（ハイフンの有無）がないか確認してください
+      - superscript
+      - text: 。同一形式であれば安全に一致比較されます。
+      - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph: kintoneタイトル欄の同期スコープ除外
+    - paragraph:
+      - code: 商談回数・電話回数・メール回数（何回目）
+      - text: を
+      - code: ZOHO_AND_SPREADSHEET
+      - text: に絞り、
+      - code: _choice_value
+      - text: でアクション種別6値を確定させたことで、kintoneへの不要なタイトル同期・未対応エラーの発生が正確に抑止されています
+      - superscript
+      - text: 。
+      - 'button "TXT: crm-remediation-action-form-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+- generic: 音声入力 (⌘⇧D)

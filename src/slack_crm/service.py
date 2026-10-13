@@ -67,10 +67,15 @@ def _state_for_update(client: HttpNotionClient, operation: dict[str, Any]) -> tu
 
 
 def _state_for_create(client: HttpNotionClient, operation: dict[str, Any]) -> tuple[str, str | None, str | None]:
-    project = _client("project_update").get_page(operation["targetId"])
-    if project is None:
+    raw = _client("project_update").get_raw_page_with_relations(operation["targetId"], {"取引先マスター"})
+    if not raw or raw.get("archived") or raw.get("in_trash"):
         return "failed", "project_not_found", None
+    ids = [item["id"] for item in raw["properties"]["取引先マスター"]["relation"]]
+    expected = operation.get("expected", {}).get("取引先マスター")
+    if len(ids) != 1 or ids != expected:
+        return "conflict", "relation_changed", None
     changes = validate_changes("action_create", operation["changes"])
+    changes["👨‍👩‍👧‍👦 取引先マスター"] = ids
     changes["案件名"] = [operation["targetId"]]
     # 非冪等の作成は1度だけ。応答不明の場合は人が照合する。
     try:
