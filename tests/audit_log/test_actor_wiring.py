@@ -228,9 +228,11 @@ def test_lead_inquiry_webhook_uses_lead_inquiry_actor(monkeypatch: pytest.Monkey
         "headers": {WEBHOOK_SECRET_HEADER: "correct-secret"},
     }
 
+    from tests.hub_creation.inquiry_fakes import MemoryHandoff
     lead_inquiry_handler(
         event,
         context=None,
+        handoff=MemoryHandoff(),
         contact_client=contact_client,
         client_master_client=client_master_client,
     )

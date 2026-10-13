@@ -144,6 +144,7 @@ def test_entry_plan_persist_and_redelivery(target, db, origin, post_timeout, jou
                   '日付': {'type': 'DATE'}, '営業担当者': {'type': 'USER_SELECT'},
                   'comment': {'type': 'MULTI_LINE_TEXT'}, 'cnctorMember': {'type': 'USER_SELECT'},
                   'service': {'type': 'MULTI_SELECT', 'options': {'メイリー': {}}},
+                  'actionContent': {'type': 'DROP_DOWN', 'options': {'WEB商談': {}, 'その他': {}}},
                   'client_name': {'type': 'SINGLE_LINE_TEXT'}}
         def request(method, url, **kwargs):
             assert method == 'GET' and url.startswith('https://fixture.invalid/')

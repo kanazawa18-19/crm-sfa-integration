@@ -186,6 +186,11 @@ def collect_webhook_health() -> dict:
         checks.append(read_unfinished(datetime.now(timezone.utc)))
     except Exception:
         checks.append(check('unfinished_sync', 'unknown', '受理後の完了記録を取得できません'))
+    try:
+        from src.diagnostics.registration_health import read_registration_health
+        checks.append(read_registration_health())
+    except Exception:
+        checks.append(check('registration_holds', 'unknown', '登録・問い合わせ引継ぎの記録を取得できません'))
     return {"schema_version": 1, "observed_at": stamp(datetime.now(timezone.utc)),
             "elapsed_ms": round((time.monotonic() - started) * 1000), "checks": checks,
             "receipts": {s: {"last_received_at": stamp(receipts.get(s, {}).get("last")),

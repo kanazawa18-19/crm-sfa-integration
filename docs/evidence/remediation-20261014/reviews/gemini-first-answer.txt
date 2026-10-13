@@ -1,0 +1,127 @@
+BLOCKER
+
+1. compare_gmail_gas_ingest.py / export_gmail_gas_observations.py: sent_at キー欠落による比較集計の全件スキップ
+
+場所: scripts/export_gmail_gas_observations.py, scripts/compare_gmail_gas_ingest.py (L57付近), src/gmail_sync/observation.py (L86付近)
+TXT
+他 2 件
+
+条件: DBに保存した GmailIngestObservation を export_gmail_gas_observations.py で出力し、compare_gmail_gas_ingest.py で検証を実行した場合。
+TXT
+
+実害: observation.py は結果配列に internal_date_ms のみを保存し、エクスポート側でも sent_at を生成していません。しかし比較器側は if 'sent_at' in item: で判定しているため、すべての要素で条件が偽となり、latest への格納や遅延計算が一切行われません。その結果、gas_ids や判定結果がすべて空集合となり、比較・並走検証スクリプトが完全に機能不全に陥ります。
+TXT
+他 3 件
+
+修正案: export_gmail_gas_observations.py（または observation.py）で internal_date_ms から ISO 8601 文字列の sent_at を付与して出力するか、compare_gmail_gas_ingest.py 側で sent_at がない場合に internal_date_ms から日時を逆算してフォールバックするように修正してください。
+TXT
+
+2. compare_gmail_gas_ingest.py: --latency-start 未指定時に遅延サンプルが全件除外されるバグ
+
+場所: scripts/compare_gmail_gas_ingest.py (L86付近)
+TXT
+
+条件: コマンドライン引数 --latency-start を指定せずに実行した場合。
+TXT
+
+実害:
+
+Python
+latency_start=_utc(args.latency_start) if args.latency_start else end
+
+
+未指定時のフォールバックが end に設定されています。summarize_observations 内の条件 (latency_start is None or sent_at >= latency_start) において、対象区間内のメールは必ず sent_at < end であるため条件が常に偽となり、first_latency_by_id のサンプル数が常に 0 件になります。自然観測の遅延証拠が一切集計されません。
+TXT
+他 2 件
+
+修正案: 未指定時は None を渡すように修正してください。
+TXT
+
+Python
+latency_start=_utc(args.latency_start) if args.latency_start else None
+
+
+3. src/hub_creation/service.py: 会社確定・姓未入力の問い合わせが通常通知で外部CRMへ誤作成される
+
+場所: src/hub_creation/service.py (L144-147)
+TXT
+
+条件: 問い合わせ受付で会社は1件特定できたが「姓」の明示入力がなく、問い合わせ側（InquiryHandoff）で保留（blocked）になったページに対し、Notion Webhook（通常同期）が届いた場合。
+TXT
+
+実害:
+
+Python
+inquiry = self.journal.get('notion:' + page_id, 'inquiry_handoff') if event.db_key == 'contact' else None
+if inquiry and not (existing and existing.zoho_id) and len(properties.get('取引先マスター') or []) != 1:
+    raise CreationHeld('問い合わせの取引先が一意に確定していません')
+
+
+service.py 側では「取引先マスターが一意でないこと」のみを保留条件としており、「姓」の存在や Zoho 保留の有無を確認していません。そのため、会社が1件紐づいていると CreationHeld を通過し、HubCreationService が名前を推測・分割して Zoho へ新規連絡先を作成してしまいます。「未確定会社・姓を推測せず保留する」という目的に反し、誤作成・推測作成が再現します。
+TXT
+他 2 件
+
+修正案: inquiry が存在し既存の zoho_id がない場合は、取引先マスターの件数だけでなく、明示姓の欠落（not properties.get('姓')）や journal の Zoho 保留状態も確認して CreationHeld を発生させてください。
+TXT
+
+4. src/hub_creation/inquiry_handoff.py: 未定義の create_page_once 呼び出しによる例外停止リスク
+
+場所: src/hub_creation/inquiry_handoff.py (L89), src/sync_engine/webhook_handlers/lead_inquiry_webhook.py (L45-48)
+TXT
+他 1 件
+
+条件: 問い合わせ新規連絡先を作成する際。
+TXT
+
+実害: lead_inquiry_webhook.py の LeadInquiryContactClient Protocol および従来の HttpNotionClient が提供するメソッドは create_page です。しかし InquirySession.create では page = contact.create_page_once(properties) を呼び出しています。テストではフェイク（MemoryHandoff）が client.create_page を呼んで隠蔽されているため、本番環境で contact に create_page_once が実装されていない場合、AttributeError でハンドラが 500 エラーとなり新規作成が全件停止します。
+TXT
+他 3 件
+
+修正案: contact.create_page(properties) の呼び出しに統一するか、Protocol 定義および本番クライアントに明示的に create_page_once を実装・宣言してください。
+TXT
+
+WARN
+
+1. gas/gmail-ingest/ingest.js: 404（消失）後の再走査でインデックス反映遅延による無限停止ループ
+
+場所: gas/gmail-ingest/ingest.js (L36-46, L68-71)
+TXT
+
+条件: メールの確定消失（404）を検知して MISSING_MESSAGE_IDS に保存し、カーソルを破棄して再開した際、Gmail API の検索インデックス反映遅延により、次回の Messages.list にも同じ消失メール ID が返ってきた場合。
+TXT
+
+実害: 新しい走査（新しい scanId）でやり直す際、cursor.pending.ids の抽出時に MISSING_MESSAGE_IDS をフィルタしていません。そのため、次回起動時も同じ消失 ID を取得して再び 404 例外でカーソルを破棄・中断し、Gmail 側から完全に消えるまで走査が一切進まなくなります。
+TXT
+他 1 件
+
+修正案: Messages.list の取得結果を cursor.pending に固定する際、MISSING_MESSAGE_IDS に記録済みの ID を除外して登録してください。
+TXT
+
+2. src/sync_engine/webhook_handlers/lead_inquiry_webhook.py: page_lock の保護スコープ不足
+
+場所: src/sync_engine/webhook_handlers/lead_inquiry_webhook.py (L181-200)
+TXT
+
+条件: 既存ページへの空欄追記および同期引継ぎの並行実行時。
+TXT
+
+実害: with session.page_lock(existing_page_id): のブロックを抜けてロックを解放した後に session.deliver(contact, page_id) を呼び出しています。deliver 内ではロック外で contact.get_page(page_id) を読み戻して差分判定を行っているため、ロック解放から deliver 実行までの間に他プロセスが別項目を書き換えた場合、競合検知のタイミングが分散します。また、新規作成ページに対しては page_lock が取得されないまま deliver が呼ばれています。
+TXT
+他 3 件
+
+修正案: page_lock のスコープ内に deliver の実行を含める構成に統一してください。
+TXT
+
+INFO
+
+1. lead_inquiry_webhook.py: _resolve_existing_contact の戻り値タプル構築の非対称性
+
+場所: src/sync_engine/webhook_handlers/lead_inquiry_webhook.py (L108-111)
+TXT
+
+内容: email マッチ時は return matches[0], current と返し、name マッチ時はリストに (page_id, current) を追加して return matches[0] と返しています。アンパック結果は同じ型になりますが、リストに格納している構造が異なるため可読性と安全性を損ねています。
+TXT
+他 1 件
+
+修正案: name 側もリストには page_id のみを保持し、明示的に return matches[0], current と返す形に統一することを推奨します。
+TXT

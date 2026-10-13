@@ -141,12 +141,26 @@ class HubCreationService:
                     return None  # 過去の未登録は週次点検だけに残す。
                 page_id = event.external_id
                 properties = self._creation_properties(event.db_key, raw)
+                # 問い合わせで保存した会社未確定ページは、後日の通常通知でも新規作成しない。
+                inquiry = self.journal.get('notion:' + page_id, 'inquiry_handoff') if event.db_key == 'contact' else None
+                if inquiry and not (existing and existing.zoho_id):
+                    from src.hub_creation.domain import inquiry_creation_hold
+                    if reason := inquiry_creation_hold(properties):
+                        raise CreationHeld(reason)
                 require_notion_fields(event.db_key, properties)
                 name, title = title_value(event.db_key, properties)
                 fingerprint = identity_hash(event.db_key, title)
                 self._check_notion_duplicates(client, name, title, page_id)
 
             with acquire_record_sync_lock(self.store, event.db_key, page_id):
+                if event.expected_source_properties is not None:
+                    latest = client.get_raw_page(page_id)
+                    current = self._creation_properties(event.db_key, latest)
+                    if (latest.get('archived') or latest.get('in_trash')
+                            or latest.get('parent') != raw.get('parent')
+                            or current != properties
+                            or any(current.get(k) != v for k, v in event.expected_source_properties.items())):
+                        return 'source_changed_after_handoff'
                 creation_page_snapshot = client.get_raw_page(page_id) if is_sheet else raw
                 mapping = self.store.get(page_id)
                 if mapping is None:

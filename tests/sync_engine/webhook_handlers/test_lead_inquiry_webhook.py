@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from src.sync_engine.webhook_handlers._common import WEBHOOK_SECRET_HEADER
+from tests.hub_creation.inquiry_fakes import MemoryHandoff
 from src.sync_engine.webhook_handlers.lead_inquiry_webhook import handler
 
 
@@ -84,6 +85,7 @@ def _handle(
     return handler(
         _event(payload, secret=secret),
         context=None,
+        handoff=MemoryHandoff(),
         contact_client=contact_client or FakeNotionPageClient(),
         client_master_client=client_master_client or FakeNotionPageClient(),
     )
@@ -151,7 +153,7 @@ def test_handler_creates_new_contact_when_not_found() -> None:
 
     assert response["statusCode"] == 200
     body = json.loads(response["body"])
-    assert body == {"page_id": "new-page-1", "created": True, "matched_client_master": False}
+    assert body == {"page_id": "new-page-1", "created": True, "matched_client_master": False, "sync": {"state": "blocked", "reason": "試験用保留"}}
     assert contact.created == [{"名前": "山田太郎", "メールアドレス": "yamada@example.com", "携帯番号": "090-1111-2222"}]
 
 
@@ -205,6 +207,7 @@ def test_handler_fills_empty_fields_on_existing_contact() -> None:
         "page_id": "existing-1",
         "created": False,
         "matched_client_master": True,
+        "sync": {"state": "blocked", "reason": "試験用保留"},
     }
     assert contact.created == []
     assert len(contact.updated) == 1
@@ -277,7 +280,7 @@ def test_handler_matches_existing_contact_by_name_when_company_also_matches() ->
 
 def test_handler_does_not_use_name_fallback_when_company_does_not_match() -> None:
     """名前は一致しても、会社が特定できない(client_master不一致)場合は別人の可能性が
-    高いとみなし、既存連絡先とはマージせず新規作成する。"""
+    残るため、候補の確認まで作成せず保留する。"""
     contact = FakeNotionPageClient(
         pages=[_title_page("existing-1", "名前", "山田太郎")],
         flat_pages={"existing-1": {"携帯番号": None, "取引先マスター": []}},
@@ -286,13 +289,14 @@ def test_handler_does_not_use_name_fallback_when_company_does_not_match() -> Non
     response = _handle(_payload(email=""), contact_client=contact)
 
     body = json.loads(response["body"])
-    assert body["created"] is True
+    assert body["created"] is False
+    assert body["sync"]["state"] == "blocked"
     assert contact.updated == []
 
 
 def test_handler_does_not_use_name_fallback_when_linked_company_differs() -> None:
     """名前は一致するが、既存連絡先が既に別の取引先マスターへリンク済みで今回のcompanyと
-    食い違う場合も、別人とみなして新規作成する。"""
+    食い違う場合も、同一性の確認まで保留する。"""
     contact = FakeNotionPageClient(
         pages=[_title_page("existing-1", "名前", "山田太郎")],
         flat_pages={"existing-1": {"携帯番号": None, "取引先マスター": ["cm-other"]}},
@@ -304,7 +308,8 @@ def test_handler_does_not_use_name_fallback_when_linked_company_differs() -> Non
     response = _handle(_payload(email=""), contact_client=contact, client_master_client=client_master)
 
     body = json.loads(response["body"])
-    assert body["created"] is True
+    assert body["created"] is False
+    assert body["sync"]["state"] == "blocked"
     assert contact.updated == []
 
 
@@ -330,3 +335,44 @@ def test_handler_does_not_query_client_master_when_company_blank() -> None:
     _handle(_payload(company=""), client_master_client=client_master)
 
     assert client_master.last_filter is None
+
+
+def test_会社完全一致でも複数候補なら関連を付けない():
+    contact = FakeNotionPageClient()
+    companies = FakeNotionPageClient(pages=[
+        _title_page('a', '取引先名', '株式会社サンプル温泉'),
+        _title_page('b', '取引先名', '株式会社サンプル温泉'),
+    ])
+    result = _handle(_payload(), contact_client=contact, client_master_client=companies)
+    assert result['statusCode'] == 200
+    assert '取引先マスター' not in contact.created[0]
+    assert not json.loads(result['body'])['matched_client_master']
+
+
+def test_同じメールの複数候補は作成も更新もしない():
+    contact = FakeNotionPageClient(pages=[_email_page('a', 'yamada@example.com'),
+                                         _email_page('b', 'yamada@example.com')])
+    response = _handle(_payload(), contact_client=contact)
+    assert response['statusCode'] == 200
+    assert json.loads(response['body'])['sync']['state'] == 'blocked'
+    assert contact.created == contact.updated == []
+
+
+def test_候補解決後に別処理が保存した非空欄を共有ロック内で読み直す():
+    from contextlib import contextmanager
+    contact = FakeNotionPageClient(pages=[_email_page('page', 'yamada@example.com')],
+                                   flat_pages={'page': {'メールアドレス': '', '携帯番号': ''}})
+    class ConcurrentHandoff(MemoryHandoff):
+        @contextmanager
+        def page_lock(self, page_id):
+            # 別の問い合わせが同じ候補へ先に保存した場面。
+            contact.flat_pages[page_id]['メールアドレス'] = 'other@example.com'
+            contact.flat_pages[page_id]['携帯番号'] = '09011111111'
+            yield
+    flow = ConcurrentHandoff()
+    response = handler(_event(_payload(), secret='correct-secret'), None,
+                       handoff=flow, contact_client=contact,
+                       client_master_client=FakeNotionPageClient())
+    assert response['statusCode'] == 200
+    assert contact.updated == []
+    assert flow.staged == [('page', {})]

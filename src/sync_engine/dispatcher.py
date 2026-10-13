@@ -350,6 +350,12 @@ class Dispatcher:
             return self._dispatch_locked(event, mapping, guard)
 
     def _dispatch_locked(self, event: SyncEvent, mapping: IdMapping, guard: RecordSyncGuard) -> DispatchResult:
+        if event.expected_source_properties is not None:
+            if event.source_tool is not Tool.NOTION:
+                raise ValueError('原本一致確認はNotion保存後の引継ぎ専用です')
+            current = self._targets[Tool.NOTION].get_record(mapping.notion_key, db_key=mapping.db_key)
+            if current is None or any(current.get(k) != v for k, v in event.expected_source_properties.items()):
+                return DispatchResult(skipped=True, reason='source_changed_after_handoff')
         # 差分更新の原則：last_synced_atより新しいイベントのみ処理する。
         if event.source_tool is not Tool.NOTION and mapping.last_synced_at is not None and event.occurred_at <= mapping.last_synced_at:
             return DispatchResult(skipped=True, reason="stale_event")

@@ -18,7 +18,7 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def summarize_observations(entries, start, end, *, dry_run=True):
+def summarize_observations(entries, start, end, *, dry_run=True, observation_kind="natural", latency_start=None):
     """完了証跡のある走査範囲だけを採用し、各IDは最新の判定を使う。"""
     gas_ids: set[str] = set()
     unmatched_ids: set[str] = set()
@@ -32,6 +32,8 @@ def summarize_observations(entries, start, end, *, dry_run=True):
                      if entry.get('observedAt') or entry.get('completedAt')
                      else datetime.min.replace(tzinfo=timezone.utc))
     for entry in entries:
+        if not entry.get('scanId') or entry.get('observationKind') != observation_kind:
+            continue
         if entry.get('dryRun') is not dry_run:
             continue
         if entry.get('scanComplete') is True and entry.get('completedAt') and 'after' in entry and 'before' in entry:
@@ -52,8 +54,8 @@ def summarize_observations(entries, start, end, *, dry_run=True):
                 latest[item['id']] = item.get('status')
                 if item.get('status') not in statuses:
                     continue
-                if observed:
-                    delay = max(0.0, (observed - sent_at).total_seconds())
+                if observation_kind == 'natural' and observed and sent_at <= observed and latency_start is not None and sent_at >= latency_start:
+                    delay = (observed - sent_at).total_seconds()
                     first_latency_by_id[item['id']] = min(first_latency_by_id.get(item['id'], delay), delay)
     gas_ids = {key for key, status in latest.items() if status in statuses}
     unmatched_ids = {key for key, status in latest.items() if status == 'unmatched'}
@@ -73,13 +75,24 @@ def main() -> None:
     parser.add_argument('--end', required=True, help='ISO8601、終了を含まない')
     parser.add_argument('--mode', choices=('dry-run', 'live'), default='dry-run',
                         help='観測と本取込みの証跡を混ぜずに比較する')
+    parser.add_argument('--observation-kind', choices=('natural', 'backfill'), default='natural')
+    parser.add_argument('--latency-start', help='初回遡及を除外する自然観測開始日時')
     args = parser.parse_args()
     start, end = _utc(args.start), _utc(args.end)
     if start >= end:
         parser.error('終了は開始より後にしてください')
+    if args.observation_kind == 'natural' and not args.latency_start:
+        parser.error('自然観測は --latency-start で初回遡及を除く開始日時を指定してください')
+    entries = [json.loads(line) for line in args.gas_jsonl.read_text().splitlines() if line.strip()]
+    excluded_legacy = sum(not row.get('scanId') or not row.get('observationKind') for row in entries)
+    missing_ids = {id for row in entries if row.get('scanId') and row.get('observationKind') == args.observation_kind
+                   and row.get('dryRun') is (args.mode == 'dry-run')
+                   and row.get('after', 0) < end.timestamp() and row.get('before', 0) > start.timestamp()
+                   for id in row.get('missingIds', [])}
     gas_ids, unmatched_ids, failed_ids, observed_at, first_latency_by_id, full_scan_coverage = summarize_observations(
-        [json.loads(line) for line in args.gas_jsonl.read_text().splitlines() if line.strip()], start, end,
-        dry_run=args.mode == 'dry-run'
+        entries, start, end,
+        dry_run=args.mode == 'dry-run', observation_kind=args.observation_kind,
+        latency_start=_utc(args.latency_start) if args.latency_start else end
     )
     ordered_observations = sorted(set(observed_at))
     gaps = [
@@ -106,7 +119,12 @@ def main() -> None:
         gas_existing_any_time = {row[0] for row in cur.fetchall()}
     print(json.dumps({
         'start': start.isoformat(), 'end': end.isoformat(),
-        'mode': args.mode,
+        'mode': args.mode, 'observation_kind': args.observation_kind,
+        'latency_start': args.latency_start,
+        'excluded_legacy_observation_events': excluded_legacy,
+        'confirmed_missing_ids': sorted(missing_ids),
+        'crm_confirmed_missing_in_gmail': sorted(crm_ids & missing_ids),
+        'latency_sample_count': len(first_latency_by_id),
         'gas_first_observed': min(observed_at).isoformat() if observed_at else None,
         'gas_last_observed': max(observed_at).isoformat() if observed_at else None,
         'observation_gaps_over_30_min': gaps,
@@ -117,7 +135,8 @@ def main() -> None:
         'effect_failed_ids': sorted(failed_ids),
         'gas_missing_in_crm': sorted(gas_ids - gas_existing_any_time),
         'gas_time_mismatch': sorted(gas_existing_any_time - crm_ids),
-        'crm_not_seen_by_gas': sorted(crm_ids - gas_ids - unmatched_ids),
+        'crm_classified_unmatched_by_gas': sorted(crm_ids & unmatched_ids),
+        'crm_not_seen_by_gas': sorted(crm_ids - gas_ids - unmatched_ids - missing_ids),
     }, ensure_ascii=False, indent=2))
 
 

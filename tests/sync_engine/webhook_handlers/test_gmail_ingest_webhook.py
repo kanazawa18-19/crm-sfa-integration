@@ -86,3 +86,17 @@ def test_長い宛先を切り捨てず受け取り上限超過は拒否する(m
             assert captured[-1] == header
         else:
             assert len(captured) == previous
+
+
+def test_観測保存失敗をHTTP成功にしない(monkeypatch):
+    monkeypatch.setenv('GMAIL_INGEST_WEBHOOK_SECRET', 'test-secret')
+    monkeypatch.setenv('GMAIL_INGEST_REP_EMAIL', 'rep@example.com')
+    event = _event()
+    body = json.loads(event['body'])
+    body['observation'] = dict(scan_id='test-scan-identifier-0001', phase='batch', kind='natural',
+                               after=1791800000, before=1791807200, sequence=0)
+    event['body'] = json.dumps(body)
+    def unavailable(*args, **kwargs):
+        raise RuntimeError('DB保存不可')
+    monkeypatch.setattr(ingest.observation, 'record', unavailable)
+    assert ingest.handler(event, None, contact_client=object())['statusCode'] == 500

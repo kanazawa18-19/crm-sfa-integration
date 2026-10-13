@@ -1,0 +1,59 @@
+採否表の根拠確認
+
+提示された採否表の判断および根拠を実装コードと照合し、すべて妥当であることを確認しました。
+TXT
+
+Gemini B1（sent_at 欠落）不採用の妥当性: scripts/compare_gmail_gas_ingest.py では item.get('internal_date_ms') から直接 sent_at（datetime）を生成して判定しており、各要素内の sent_at キーを参照する実装は存在しないため、集計スキップの問題は発生しません。
+TXT
+
+Gemini B3 / Claude W3（姓・会社の保留ガード）採用の妥当性: src/hub_creation/domain.py に inquiry_creation_hold を新設し、会社の一意性（len(取引先マスター) == 1）と明示姓の有無（properties.get('姓')）の判定を共通化しています。service.py の通常同期入口でもこの関数を呼び出すよう修正されたため、会社確定・姓未入力のレコードが推測作成される経路は塞がれています。
+TXT
+他 1 件
+
+Gemini B4（create_page_once 未定義）不採用の妥当性: 既存の実クライアント HttpNotionClient（L539）に同メソッドが実装されており、実行時に AttributeError で処理が停止する懸念はありません。
+TXT
+他 1 件
+
+Gemini W1 / Claude W9（確定404後の再出現ループ）採用の妥当性: gas/gmail-ingest/ingest.js において、cursor.pending.ids の抽出時に MISSING_MESSAGE_IDS を除外フィルタする処理が追加され、さらに missing フェーズとしてDBへ永続化した後にカーソルを破棄する順序へ修正されたため、無限停止ループは解消されています。
+TXT
+他 1 件
+
+Gemini W2（deliver の排他スコープ）不採用の妥当性: deliver 内部で呼び出される Dispatcher.dispatch は内部で同一のレコード同期ロックを取得します。deliver 全体を呼び出し側の page_lock 内に含めると非再入ロックの競合（RecordSyncBusy やデッドロック）を誘発するため、保存時のロックと配送時のロックを分離し、配送ロック内での原本照合（expected_source_properties）によって競合を検知する設計は妥当です。
+TXT
+他 2 件
+
+Claude B1 / W1 / W2 / W8 / W10 / W11 / I1 の各採用の妥当性: 退避・統合済み旧ページの明示保留（check_page）、元 sourceKey の再利用、inputPayload の永続化、31日分割走査と重複ID記録、旧ログ除外、同名候補の会社未特定時保留、CLIでの --latency-start 必須化など、指摘された境界条件への対策が過不足なく組み込まれています。
+TXT
+
+未解決の重大問題
+
+BLOCKER（重大な実害が再現できる指摘）: なし（0件）
+
+前回のレビューで懸念された推測作成、照合不全、再送・消失処理の中断リスクはいずれも解消されています。
+TXT
+他 2 件
+
+WARN（限定的リスク）: なし（0件）
+
+INFO（任意改善）
+
+1. LeadInquiryContactClient Protocol の型定義整合性
+
+場所: src/sync_engine/webhook_handlers/lead_inquiry_webhook.py（L40付近）
+TXT
+
+内容: InquirySession.create では contact.create_page_once(properties) を、InquirySession.check_page および deliver では contact.get_raw_page(page_id) を呼び出しています。本番の HttpNotionClient には両メソッドとも実装されているため動作上の実害はありませんが、Protocol 定義には create_page のみが宣言されており、静的型検査（mypy等）の検証や新規テストフェイク作成時の誤認要因となり得ます。
+TXT
+他 2 件
+
+修正案: LeadInquiryContactClient Protocol に create_page_once および get_raw_page を追加宣言することを推奨します。
+TXT
+
+2. _resolve_existing_contact における戻り値タプルの記述形式
+
+場所: src/sync_engine/webhook_handlers/lead_inquiry_webhook.py（L100-112）
+TXT
+
+内容: email 一致時は return matches[0], current と返し、name 一致時はリストに (page_id, current) を格納した上で return matches[0] と返しています。アンパック時の型（(str, dict)）は一致しており動作に問題はありませんが、同一関数内で戻り値の構築スタイルを統一するとより可読性が高まります。
+TXT
+他 1 件

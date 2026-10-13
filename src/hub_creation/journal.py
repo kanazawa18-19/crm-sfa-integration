@@ -70,9 +70,16 @@ class PostgresCreationJournal:
                 raise RuntimeError("ページの作成予約が重複しています")
             return rows[0]["sourceKey"] if rows else None
 
-    def resolve_hold(self, source_key, target, page_id):
+    def resolve_hold(self, source_key, target, page_id, *, expected_reason=None):
+        # 入口由来の保留を解消する場合、確認後に別理由へ変わっていないことも同時に判定する。
+        query = """UPDATE "HubCreationAttempt" SET state='created', reason='', "externalId"=%s,
+            "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='blocked'"""
+        params = (page_id, source_key, target)
+        if expected_reason is not None:
+            query += ' AND reason=%s'
+            params += (expected_reason,)
         with connect() as conn, conn.cursor() as cur:
-            cur.execute('UPDATE "HubCreationAttempt" SET state=\'created\', reason=\'\', "externalId"=%s, "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state=\'blocked\'', (page_id,source_key,target))
+            cur.execute(query, params)
 
     def dismiss_hold(self, source_key, target):
         """対象外になったPOST前の保留だけを取り除く。予約済み・作成済みは消さない。"""

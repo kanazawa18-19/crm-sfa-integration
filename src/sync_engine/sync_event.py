@@ -31,3 +31,5 @@ class SyncEvent:
     registration_key: str | None = None
     # 通常変換で抑止する空欄も、承認経路にだけ渡す。
     clear_requests: dict[str, Any] = field(default_factory=dict)
+    # 保存後引継ぎ専用。共有ページロック取得後に原本が一致することを確認する。
+    expected_source_properties: dict[str, Any] | None = None

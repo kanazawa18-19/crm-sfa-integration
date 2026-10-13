@@ -7,7 +7,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from src.gmail_sync import db, gmail_client, sync
+from src.gmail_sync import db, gmail_client, sync, observation
 from src.gmail_sync.matcher import find_contact_page_id
 from src.sync_engine.webhook_handlers._common import (
     bad_request_response, get_header, internal_error_response, logger, unauthorized_response,
@@ -58,6 +58,7 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 snippet=item.get('snippet'), thread_id=item.get('thread_id'),
                 internal_date_ms=item.get('internal_date_ms'),
             ))
+        observation_meta = observation.validate(body.get('observation'), dry_run=dry_run, messages=parsed)
     except (ValueError, TypeError, AttributeError) as exc:
         return bad_request_response(str(exc))
     try:
@@ -69,20 +70,29 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 cache[address] = find_contact_page_id(client, address)
             return cache[address]
 
-        results = []
-        for message in parsed:
-            try:
-                status = _process_one(message, rep_email, client, resolve, dry_run)
-            except Exception:
-                logger.exception('Gmail後処理に失敗しました: message_id=%s', message.id)
-                status = 'effect_failed'
-            results.append({'id': message.id, 'status': status})
-        return {'statusCode': 200, 'body': json.dumps({
-            'received': len(parsed), 'dry_run': dry_run,
-            'inserted': sum(r['status'] == 'inserted' for r in results),
-            'would_insert': sum(r['status'] == 'would_insert' for r in results),
-            'results': results,
-        })}
+        def process():
+            results = []
+            for message in parsed:
+                try:
+                    status = _process_one(message, rep_email, client, resolve, dry_run)
+                except Exception:
+                    logger.exception('Gmail後処理に失敗しました: message_id=%s', message.id)
+                    status = 'effect_failed'
+                results.append({'id': message.id, 'status': status})
+            return {
+                'received': len(parsed), 'dry_run': dry_run,
+                'inserted': sum(r['status'] == 'inserted' for r in results),
+                'would_insert': sum(r['status'] == 'would_insert' for r in results),
+                'results': results,
+            }
+
+        result = observation.record(
+            observation_meta, rep_email=rep_email, dry_run=dry_run,
+            messages=parsed, process=process,
+        ) if observation_meta else process()
+        return {'statusCode': 200, 'body': json.dumps(result)}
+    except ValueError as exc:
+        return bad_request_response(str(exc))
     except Exception:
         logger.exception('Gmail GAS取り込みに失敗しました')
         return internal_error_response()

@@ -1066,3 +1066,32 @@ model ReportDelivery {
   collection     ReportCollection @relation(fields: [reportDate], references: [reportDate])
   @@id([reportDate, kind])
 }
+
+// 自然観測と補完走査を分離し、GASログの保存期間に依存しない証跡。
+model GmailIngestObservation {
+  eventId     String   @id
+  scanId      String
+  phase       String
+  requestHash String
+  evidence    Json
+  response    Json
+  receivedAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([scanId])
+  @@index([receivedAt])
+}
+
+// 問い合わせ経由のNotion保存と明示同期の間を追跡する。
+model InquiryHandoff {
+  sourceKey String @id
+  pageId String?
+  inputPayload Json @default("{}")
+  properties Json @default("{}")
+  state String @default("pending")
+  zohoHoldReason String?
+  reason String @default("")
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([state])
+}

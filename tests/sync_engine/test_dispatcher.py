@@ -2389,3 +2389,21 @@ def test_database_support_also_accepts_string_tool():
     from src.db_schema.base import supports_database
     assert not supports_database('kintone', 'contact')
     assert supports_database('kintone', 'client_master')
+
+
+def test_引継ぎ配送は共有ロック内で原本を再確認する(store, mapping):
+    from src.sync_engine.record_sync_lock import acquire_record_sync_lock, RecordSyncBusy
+    targets = _all_targets()
+    def locked_read(page, **kwargs):
+        with pytest.raises(RecordSyncBusy):
+            with acquire_record_sync_lock(store, mapping.db_key, page):
+                pytest.fail('ロックが共有されていません')
+        return {'名前': '他の処理による新しい値'}
+    targets[Tool.NOTION].get_record = locked_read
+    dispatcher = Dispatcher(store, targets)
+    result = dispatcher.dispatch(SyncEvent(
+        source_tool=Tool.NOTION, db_key=mapping.db_key, external_id=mapping.notion_key,
+        occurred_at=NOW, properties={'名前': '古い保存値'},
+        expected_source_properties={'名前': '古い保存値'}))
+    assert result.skipped and result.reason == 'source_changed_after_handoff'
+    assert all(not t.upsert_calls for t in targets.values())

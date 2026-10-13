@@ -110,3 +110,12 @@ def sheet_properties(db_key: str, values: Mapping[str, Any]) -> dict[str, Any]:
         result[prop.name] = value
     require_notion_fields(db_key, result)
     return result
+
+
+def inquiry_creation_hold(properties):
+    """問い合わせ専用の新規作成条件。会社・姓を名前から推測しない。"""
+    if len(properties.get('取引先マスター') or []) != 1:
+        return '取引先が一意に確定していません。Zoho新規作成は保留します'
+    if not isinstance(properties.get('姓'), str) or not properties['姓'].strip():
+        return '姓の明示入力がありません。名前を分割せずZoho新規作成は保留します'
+    return None

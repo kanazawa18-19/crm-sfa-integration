@@ -355,3 +355,111 @@ def test_other_outbound_creation_busy_is_retried_without_holding_source():
     assert not journal.get('notion:page', 'zoho')
     assert service.handle(event) == "hub_creation_complete"
     assert adapter.creates == 1
+
+
+def test_問い合わせの会社未確定は後日の通常通知でも外部作成しない():
+    service, event, journal, notion, adapter, store = setup()
+    from dataclasses import replace
+    event = replace(event, db_key='contact')
+    service.notion_clients = {'contact': notion}
+    notion.get_raw_page = lambda page: {
+        'id': page, 'created_time': notion.created,
+        'parent': {'database_id': get_schema('contact').notion_database_id},
+        'properties': {'名前': {'type': 'title', 'title': [{'plain_text': '入力済み氏名'}]},
+                       '姓': {'type': 'rich_text', 'rich_text': [{'plain_text': '明示姓'}]}}}
+    journal.hold('notion:page', 'inquiry_handoff', 'contact', '会社未確定')
+    assert service.handle(event) == 'hub_creation_held'
+    assert adapter.creates == 0
+    assert '取引先' in journal.get('notion:page', 'source')['reason']
+
+
+@pytest.mark.parametrize('changes_after_read', [False, True])
+def test_引継ぎの古い入力は対応表なしでも作成前に止める(changes_after_read):
+    from dataclasses import replace
+    from src.sync_engine.record_sync_lock import acquire_record_sync_lock, RecordSyncBusy
+    service, event, journal, notion, adapter, store = setup()
+    expected = notion.title if changes_after_read else '保存時の古い値'
+    event = replace(event, expected_source_properties={'グループ名': expected})
+    original = notion.get_raw_page
+    calls = []
+    def read(page):
+        calls.append(page)
+        if len(calls) == 2:
+            with pytest.raises(RecordSyncBusy):
+                with acquire_record_sync_lock(store, 'chain', page):
+                    pytest.fail('作成前の原本照合がロック外です')
+            if changes_after_read:
+                notion.title = '待機中の変更'
+        return original(page)
+    notion.get_raw_page = read
+    assert service.handle(event) == 'source_changed_after_handoff'
+    assert adapter.creates == 0 and store.get('page') is None
+
+
+def test_問い合わせは会社が一意でも通常通知から姓を推測作成しない():
+    service, event, journal, notion, adapter, store = setup()
+    from dataclasses import replace
+    event = replace(event, db_key='contact')
+    service.notion_clients = {'contact': notion}
+    notion.get_raw_page = lambda page: {
+        'id': page, 'created_time': notion.created,
+        'parent': {'database_id': get_schema('contact').notion_database_id},
+        'properties': {'名前': {'type': 'title', 'title': [{'plain_text': '入力済み氏名'}]},
+                       '取引先マスター': {'type': 'relation', 'relation': [{'id': 'company'}]}}}
+    journal.hold('notion:page', 'inquiry_handoff', 'contact', '姓未入力')
+    assert service.handle(event) == 'hub_creation_held'
+    assert adapter.creates == 0
+    assert '姓' in journal.get('notion:page', 'source')['reason']
+
+
+def test_実Dispatcherは作成前原本変更をskippedへ伝える():
+    from dataclasses import replace
+    from src.sync_engine.production_wiring import SkipTrackingDispatcher
+    from src.sync_engine.dispatcher import Dispatcher
+    service, event, journal, notion, adapter, store = setup()
+    event = replace(event, expected_source_properties={'グループ名': '保存時の古い値'})
+    wrapper = SkipTrackingDispatcher(Dispatcher(store, {}), creation_service=service)
+    result = wrapper.dispatch(event)
+    assert result.skipped and result.reason == 'source_changed_after_handoff'
+    assert adapter.creates == 0
+
+
+def test_問い合わせの比較値は実クライアントと同期先と作成経路で一致():
+    from src.sync_engine.clients.notion_client import HttpNotionClient
+    from src.sync_engine.sync_targets.notion_sync import NotionSyncTarget
+    import requests
+    import json
+    raw = {'properties': {
+        '名前': {'type': 'title', 'title': [{'plain_text': '架空の氏名'}]},
+        'メールアドレス': {'type': 'email', 'email': 'sample@example.com'},
+        '携帯番号': {'type': 'phone_number', 'phone_number': None},
+        '取引先マスター': {'type': 'relation', 'relation': [{'id': '11111111-1111-1111-1111-111111111111'}]}}}
+    client = HttpNotionClient(api_key='test-only', database_id='test-db', db_key='contact')
+    response = requests.Response(); response.status_code = 200
+    response._content = json.dumps(raw).encode()
+    client._request = lambda *args, **kwargs: response
+    direct = client.get_page('page')
+    assert direct == NotionSyncTarget(client).get_record('page')
+    assert direct == HubCreationService._creation_properties('contact', raw)
+
+
+def test_作成不要のNoneは実ラッパーから通常配送へ通過する():
+    from types import SimpleNamespace
+    from src.sync_engine.production_wiring import SkipTrackingDispatcher
+    from src.sync_engine.dispatcher import DispatchResult
+    service, event, journal, notion, adapter, store = setup()
+    notion.created = '2026-09-27T00:00:00Z'
+    calls = []
+    wrapper = SkipTrackingDispatcher(SimpleNamespace(dispatch=lambda e: calls.append(e) or DispatchResult(skipped=False)),
+                                     creation_service=service)
+    result = wrapper.dispatch(event)
+    assert not result.skipped and calls == [event] and adapter.creates == 0
+
+
+def test_Notionの変換関数は同じ再公開オブジェクト():
+    from src.hub_creation import service
+    from src.sync_engine.clients import notion_client
+    from src.sync_engine.webhook_handlers import notion_webhook, lead_inquiry_webhook
+    assert service.parse_notion_property_value is notion_webhook.parse_notion_property_value
+    assert notion_client.parse_notion_property_value is notion_webhook.parse_notion_property_value
+    assert lead_inquiry_webhook.parse_notion_property_value is notion_webhook.parse_notion_property_value

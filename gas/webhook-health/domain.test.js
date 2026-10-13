@@ -59,3 +59,17 @@ test('受理後の未完了は同じ対象を再観測して警告し、完了�
   const recovered=health.plan([{key:'unfinished_sync',status:'ok',reason:'完了'}],second.next,now+7200000);
   assert.equal(recovered.events[0].level,'recovered');
 });
+
+test('8項目のAPI応答を検証して登録保留専用の継続警告・復旧へ進める', () => {
+ const keys=['receipt_store','notion_delivery','kintone_delivery','zoho_subscription','zoho_delivery','spreadsheet_delivery','unfinished_sync'];
+ const c={key:'registration_holds',status:'pending',reason:'登録保留',activity_at:new Date(now-H).toISOString(),fingerprint:'c'.repeat(64),count:3};
+ const report={schema_version:1,observed_at:new Date(now).toISOString(),checks:keys.map(key=>({key,status:'ok',reason:'確認済み'})).concat(c)};
+ const first=health.plan(health.validate(report,now).checks,{},now);
+ assert.equal(first.lines.length,8);assert.equal(first.events.length,0);
+ assert.match(first.lines[7],/登録・問い合わせ/);assert.doesNotMatch(first.lines[7],/受信待ち/);
+ const second=health.plan(report.checks,first.next,now+H);
+ assert.equal(second.events[0].key,'registration_holds');assert.equal(second.events[0].level,'warning');
+ const recovered=health.plan([{...c,status:'ok'}],second.next,now+2*H);
+ assert.equal(recovered.events[0].level,'recovered');
+ assert.throws(()=>health.validate({...report,checks:report.checks.slice(0,7).concat({...c,activity_at:null})},now));
+});

@@ -1,0 +1,84 @@
+{
+  "date": "2026-10-14",
+  "baseCommit": "9b258d4",
+  "transport": "本人のブラウザチャット（API不使用）",
+  "responses": [
+    {
+      "file": "claude-first-answer.txt",
+      "provider": "claude",
+      "round": "first",
+      "model": "Opus 5.5 中",
+      "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
+      "sha256": "1458a9719a0834cb65bbd3bcbe296817a838ed9afc696ad3c774a937191bcb0e",
+      "bytes": 14980
+    },
+    {
+      "file": "claude-supplement-answer.txt",
+      "provider": "claude",
+      "round": "supplement",
+      "model": "Opus 5.5 中",
+      "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
+      "sha256": "67e3c90eddd912c40f92b07d2f2b2162153dc8c9a8a90e40d47607dcb563dfe3",
+      "bytes": 2402
+    },
+    {
+      "file": "claude-final-answer.txt",
+      "provider": "claude",
+      "round": "final",
+      "model": "Opus 5.5 中",
+      "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
+      "sha256": "0ae94a82069046505177cc755ef63ffc5edd39080dc5cd3336bed34793ae1ea6",
+      "bytes": 6306
+    },
+    {
+      "file": "gemini-first-answer.txt",
+      "provider": "gemini",
+      "round": "first",
+      "model": "思考モード",
+      "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
+      "sha256": "8855951b5ded6203afe0a8f8ef3e9bb42a7274109293503b275ce69afd6c1930",
+      "bytes": 7631
+    },
+    {
+      "file": "gemini-supplement-answer.txt",
+      "provider": "gemini",
+      "round": "supplement",
+      "model": "思考モード",
+      "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
+      "sha256": "379545d4cfedeba7ba600691df65b2bb72b42fc1f868da0125228af0bc54707e",
+      "bytes": 6271
+    },
+    {
+      "file": "gemini-final-answer.txt",
+      "provider": "gemini",
+      "round": "final",
+      "model": "思考モード",
+      "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
+      "sha256": "c86bcbdd1f0abef2e4d5fa334ebb688c72c3b1219fa6f68b297eb6bb4546a3cf",
+      "bytes": 4378
+    }
+  ],
+  "submitted": {
+    "base": {
+      "bytes": 99766,
+      "sha256": "f85e0378605e0630a0155cf998006d47ea83e43d98f7a9a8a8e5979b19703c5c"
+    },
+    "supplement": {
+      "bytes": 26938,
+      "sha256": "e8eae482ae65de71f5d1acb2a5f09871267cec8d18784469a80c3e42b83e778f"
+    },
+    "final": {
+      "bytes": 137297,
+      "sha256": "5d713a4db4896d80a45a7477c73ff44ef6a2be1f3b372f3f747a5347dbeb2f34",
+      "gemini": "B0 W0 INFO2",
+      "claude": "B0 W4 INFO2",
+      "answered": true
+    }
+  },
+  "finalAssessment": {
+    "gemini": "BLOCKER 0 / WARN 0 / INFO 2",
+    "claude": "BLOCKER 0 / WARN 4 / INFO 2"
+  },
+  "decisions": "../external-review-decisions.md",
+  "note": "回答本文は参考意見。最終Claude WARN4の後続修正は採否記録と独立再確認で扱う。本番配備・自然観測の完了を意味しない。"
+}

@@ -1,0 +1,124 @@
+追補された3ファイル（journal.py, inquiry_handoff.py, test_inquiry_handoff.py）を含めて全体を再評価しました。
+TXT
+
+追補で行われた resolve_hold への expected_reason 追加およびSQLのアトミックな条件付き更新は妥当であり、確認後に他処理が別理由で保留した際の上書き競合を適切に防止できています。ただし、置換後のコードを含め、本番運用および並走検証を阻害する重大問題（BLOCKER）が依然として存在します。
+TXT
+他 2 件
+
+BLOCKER
+
+1. src/hub_creation/inquiry_handoff.py: 未定義の create_page_once 呼び出しによる新規作成失敗
+
+場所: src/hub_creation/inquiry_handoff.py (L89)
+TXT
+
+条件: 問い合わせから新規Notion連絡先を作成する際。
+TXT
+他 1 件
+
+実害:
+
+Python
+page = contact.create_page_once(properties)
+
+
+lead_inquiry_webhook.py の LeadInquiryContactClient Protocol および本番の HttpNotionClient が提供している正規メソッドは create_page です。contact オブジェクトに create_page_once が実装されていない場合、本番実行時に AttributeError が発生してハンドラが 500 エラーとなり、新規連絡先の登録が全件停止します（テストコード内ではモック/フェイクにより隠蔽されています）。
+TXT
+他 4 件
+
+修正案: contact.create_page(properties) を呼び出すように修正するか、Protocol およびクライアントクラスに create_page_once を正式に実装・宣言してください。
+TXT
+他 1 件
+
+2. src/hub_creation/service.py: 会社確定・姓未入力の問い合わせが通常通知経由でZohoへ推測作成される
+
+場所: src/hub_creation/service.py (L144-147)
+TXT
+
+条件: 問い合わせ受付で取引先マスターは特定できたが「姓」の入力がなく保留（blocked）となっているページに対し、後からNotion通常同期（Webhook）が到達した場合。
+TXT
+
+実害:
+
+Python
+inquiry = self.journal.get('notion:' + page_id, 'inquiry_handoff') if event.db_key == 'contact' else None
+if inquiry and not (existing and existing.zoho_id) and len(properties.get('取引先マスター') or []) != 1:
+    raise CreationHeld('問い合わせの取引先が一意に確定していません')
+
+
+service.py の保留判定が「取引先マスターが一意であるか」のみとなっており、「明示姓の欠落」や journal の Zoho 保留状態を確認していません。そのため、会社が1件紐づいていると通常同期側でチェックを通過し、姓を推測・分割してZohoへ新規作成してしまいます。「未確定会社・姓を推測せず保留する」という目的に反します。
+TXT
+他 2 件
+
+修正案: inquiry が存在し既存の zoho_id がない場合、not properties.get('姓') または既存の Zoho 保留レコードの有無も確認し、CreationHeld を発生させてください。
+TXT
+
+3. compare_gmail_gas_ingest.py / export_gmail_gas_observations.py: sent_at キー欠落による比較集計の全件スキップ
+
+場所: scripts/export_gmail_gas_observations.py, scripts/compare_gmail_gas_ingest.py (L57付近)
+TXT
+他 1 件
+
+条件: DBに保存した観測証跡を export_gmail_gas_observations.py で出力し、compare_gmail_gas_ingest.py で集計・比較を実行した場合。
+TXT
+
+実害: DB側の evidence には internal_date_ms のみが保存されており、エクスポート処理でも sent_at を生成していません。比較器側は if 'sent_at' in item: で判定しているため、すべてのメールがスキップされ、集計結果（gas_ids や判定結果）が空集合になります。72時間並走や14日観測の照合検証が成立しません。
+TXT
+他 2 件
+
+修正案: export_gmail_gas_observations.py で internal_date_ms から ISO 8601 文字列の sent_at を付与して出力するか、比較器側で internal_date_ms から日時を逆算して判定するように修正してください。
+TXT
+
+4. compare_gmail_gas_ingest.py: --latency-start 未指定時に遅延サンプルが全件除外される
+
+場所: scripts/compare_gmail_gas_ingest.py (L86付近)
+TXT
+
+条件: --latency-start 引数を指定せずに実行した場合。
+TXT
+
+実害:
+
+Python
+latency_start=_utc(args.latency_start) if args.latency_start else end
+
+
+未指定時のフォールバックが end に設定されているため、sent_at >= latency_start が全件偽となり、遅延計測サンプル数（latency_sample_count）が常に 0 件になります。
+TXT
+
+修正案: 未指定時は None を渡すように修正してください。
+TXT
+
+Python
+latency_start=_utc(args.latency_start) if args.latency_start else None
+
+WARN
+
+1. gas/gmail-ingest/ingest.js: 確定404後の再走査でインデックス遅延によるループ中断
+
+場所: gas/gmail-ingest/ingest.js (L36-46, L68-71)
+TXT
+
+条件: メールの確定404を検知して MISSING_MESSAGE_IDS に記録・カーソル破棄した直後、Gmail側のインデックス反映遅延により、次回の Messages.list でも同一の消失IDが返ってきた場合。
+TXT
+
+実害: 新しい scanId で再開した際、cursor.pending.ids に記録済みの消失IDが再度固定され、再び404例外でカーソルを破棄して中断するループに陥ります。
+TXT
+
+修正案: cursor.pending に登録する際、MISSING_MESSAGE_IDS に含まれるIDを除外して格納してください。
+TXT
+
+2. lead_inquiry_webhook.py: page_lock 解放後の deliver 呼び出し
+
+場所: src/sync_engine/webhook_handlers/lead_inquiry_webhook.py (L181-200)
+TXT
+
+条件: 既存連絡先の更新時。
+TXT
+
+実害: with session.page_lock(existing_page_id): のブロックを抜けてから session.deliver(contact, page_id) を呼び出しています。deliver 内での読戻しや同期処理がロック外で行われるため、ロック解放〜配送開始の間に他処理が割り込んだ場合の競合検知が遅延します。
+TXT
+他 1 件
+
+修正案: session.deliver の呼び出しまで page_lock のコンテキスト内に含めてください。
+TXT
