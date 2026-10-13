@@ -427,8 +427,8 @@ PROJECT_SCHEMA = DatabaseSchema(
             name="サービス・商品",
             property_type=PropertyType.RELATION,
             requirement=RequirementLevel.OPTIONAL,
-            sync_scope=SyncScope.ALL_TOOLS,
-            description="サービス・商品DBからのdual_property逆参照",
+            sync_scope=SyncScope.NOTION_ONLY,
+            description="Notion内の商品関連。Zoho field72の取込みは維持し、未実装の外部書戻しは要求しない",
             relation_target="product",
         ),
         PropertyDefinition(

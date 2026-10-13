@@ -73,6 +73,7 @@ def test_本人がZohoへ作らないと決めた2件も他の配送を維持():
 def test_逆参照と接触日は実際に対応する同期先だけへ配送():
     for db_key, field, value, expected_tools in [
         ('project', 'アクション履歴', ['action-page'], set()),
+        ('project', 'サービス・商品', ['product-page'], set()),
         ('client_master', '【営業部・パーソネル】アクション履歴DB', ['action-page'], set()),
         ('action', 'アクション日', '2026-10-13', {Tool.SPREADSHEET, Tool.ZOHO}),
     ]:
@@ -83,3 +84,20 @@ def test_逆参照と接触日は実際に対応する同期先だけへ配送()
             Tool.NOTION, db_key, 'source-page', datetime.now(timezone.utc), {field: value}))
         assert {tool for tool, target in targets.items() if target.upsert_calls} == expected_tools
         assert result.properties[0].skipped_tools == frozenset()
+
+
+def test_Zoho商品関連はNotionへ取り込み未対応保存先を完了条件に含めない():
+    from src.sync_engine.clients.notion_client import NOTION_LAST_EDITED_TIME_KEY
+    store = SQLiteIdMappingStore()
+    store.upsert(IdMapping('source-page', 'project', zoho_id='z', spreadsheet_row=2))
+    now = datetime.now(timezone.utc)
+    notion = FakeSyncTarget(Tool.NOTION, {'source-page': {
+        'サービス・商品': [], NOTION_LAST_EDITED_TIME_KEY: now - timedelta(days=1)}})
+    targets = {tool: FakeSyncTarget(tool, {}) for tool in (Tool.KINTONE, Tool.ZOHO, Tool.SPREADSHEET)}
+    targets[Tool.NOTION] = notion
+    result = Dispatcher(store, targets).dispatch(SyncEvent(
+        Tool.ZOHO, 'project', 'z', now, {'サービス・商品': ['product-page']}))
+    assert notion.upsert_calls == [('source-page', {'サービス・商品': ['product-page']})]
+    assert not any(targets[t].upsert_calls for t in (Tool.KINTONE, Tool.ZOHO, Tool.SPREADSHEET))
+    assert result.properties[0].skipped_tools == frozenset()
+    assert result.properties[0].written_tools == frozenset({Tool.NOTION})
