@@ -513,8 +513,9 @@ def test_同期キーが空のセルはNoneで返す(requests_mock, client: Http
 
 
 @pytest.mark.parametrize("method", ["append", "update", "batch"])
-def test_電話と郵便の先頭ゼロを保持し金額と日付を変えない(requests_mock, client, method):
-    headers = ["TEL", "郵便番号", "標準月額費用", "アクション日"]
+@pytest.mark.parametrize("phone_field", ["TEL", "携帯番号"])
+def test_電話と郵便の先頭ゼロを保持し金額と日付を変えない(requests_mock, client, method, phone_field):
+    headers = [phone_field, "郵便番号", "標準月額費用", "アクション日"]
     values = dict(zip(headers, ["08012345678", "0010001", 1000, "2026-10-13"]))
     requests_mock.get(f"{BASE}/values/'{SHEET}'!1:1", json={"values": [headers]})
     requests_mock.post(f"{BASE}/values/'{SHEET}'!A1:append", json={"updates": {"updatedRange": "取引先マスター!A2:D2", "updatedRows": 1}})

@@ -552,7 +552,7 @@ def _to_cell_value(value: Any, *, field_name: str | None = None) -> Any:
     if value is None:
         return ""
     # USER_ENTEREDでも識別用の番号を数値・式に変換させない。金額と日付は従来どおり。
-    if isinstance(value, str) and value and field_name in {"TEL", "直通TEL", "電話", "電話番号", "FAX", "郵便番号"}:
+    if isinstance(value, str) and value and field_name in {"TEL", "直通TEL", "携帯番号", "電話", "電話番号", "FAX", "郵便番号"}:
         return "'" + value
     if isinstance(value, (str, int, float, bool)):
         return value
