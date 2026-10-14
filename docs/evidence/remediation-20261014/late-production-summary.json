@@ -1,0 +1,52 @@
+{
+  "codeCommit": "f737e30f50212c0edc30d92070574c4ce3353383",
+  "baseline": {
+    "contacts": 33111,
+    "completedAt": "2026-10-14T03:21:14.634869+00:00",
+    "mailCountersZero": true
+  },
+  "limitedRecovery": {
+    "existingSkipped": 1,
+    "newInserted": 1,
+    "originalFiveRecreated": 0,
+    "duplicates": 0,
+    "notifications": 0,
+    "sourceChanges": 0
+  },
+  "candidateDecisions": {
+    "dismissed": 3,
+    "auditEntriesEach": 1,
+    "periodAndWaitPreserved": true
+  },
+  "jobs": {
+    "done": 2,
+    "dismissed": 3,
+    "candidate": 0,
+    "blocked": 0,
+    "pending": 0
+  },
+  "active": {
+    "deploymentId": "dpl_8jwudBtJmYQJHXqcLxEWhZyc6MdH",
+    "ready": true,
+    "mode": "active",
+    "naturalCronAt": "2026-10-14T03:35:47.237000+00:00",
+    "httpStatus": 200,
+    "progressBefore": "2026-10-14T03:30:47.160545+00:00",
+    "progressAfter": "2026-10-14T03:35:47.309819+00:00",
+    "roundCountBefore": 100,
+    "roundCountAfter": 200,
+    "health": "ok",
+    "manualActiveInvocations": 0
+  },
+  "unverified": [
+    "新規連絡先の自然検知から実2日待機後の自動回収までの本番標本",
+    "GAS新14日連続観測",
+    "GAS本取込みへの移管後72時間並行確認"
+  ],
+  "independentVerification": {
+    "baselineAndRecovery": "BLOCKER 0 / WARN 0",
+    "activeNaturalCron": "BLOCKER 0 / WARN 0",
+    "activeReadAt": "2026-10-14T03:37:26+00:00",
+    "manualInvocationAbsenceEvidence": "主担当の操作記録。HTTPログ単体から起動種別を識別したという意味ではない"
+  }
+}
