@@ -52,6 +52,10 @@
     {
       "path": "/api/cron/slack-crm-drain",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/gmail-late-registration",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

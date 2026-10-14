@@ -73,3 +73,14 @@ test('8項目のAPI応答を検証して登録保留専用の継続警告・復�
  assert.equal(recovered.events[0].level,'recovered');
  assert.throws(()=>health.validate({...report,checks:report.checks.slice(0,7).concat({...c,activity_at:null})},now));
 });
+
+test('遅延登録の過去取込を9項目応答として検証し専用の継続警告にする', () => {
+ const keys=['receipt_store','notion_delivery','kintone_delivery','zoho_subscription','zoho_delivery','spreadsheet_delivery','unfinished_sync','registration_holds'];
+ const c={key:'gmail_late_registration',status:'pending',reason:'過去取込待ち',activity_at:new Date(now-H).toISOString(),fingerprint:'d'.repeat(64),count:1};
+ const report={schema_version:1,observed_at:new Date(now).toISOString(),checks:keys.map(key=>({key,status:'ok',reason:'確認済み'})).concat(c)};
+ const first=health.plan(health.validate(report,now).checks,{},now);
+ assert.equal(first.lines.length,9); assert.equal(first.events.length,0);
+ const second=health.plan(report.checks,first.next,now+H);
+ assert.equal(second.events[0].key,'gmail_late_registration');
+ assert.match(second.events[0].text,/遅延登録/);
+});

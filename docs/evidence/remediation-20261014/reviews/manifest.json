@@ -9,8 +9,10 @@
       "round": "first",
       "model": "Opus 5.5 中",
       "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
-      "sha256": "1458a9719a0834cb65bbd3bcbe296817a838ed9afc696ad3c774a937191bcb0e",
-      "bytes": 14980
+      "sha256": "6753affbe3582f535d6d0443a80a4a97f6945f86e483b009a7da3296ff024efd",
+      "bytes": 14981,
+      "originalSha256": "1458a9719a0834cb65bbd3bcbe296817a838ed9afc696ad3c774a937191bcb0e",
+      "originalBytes": 14980
     },
     {
       "file": "claude-supplement-answer.txt",
@@ -18,8 +20,10 @@
       "round": "supplement",
       "model": "Opus 5.5 中",
       "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
-      "sha256": "67e3c90eddd912c40f92b07d2f2b2162153dc8c9a8a90e40d47607dcb563dfe3",
-      "bytes": 2402
+      "sha256": "cebd225d0b57553efa7d14412be234a2df8d39070835768da16899f67a9bcbaf",
+      "bytes": 2403,
+      "originalSha256": "67e3c90eddd912c40f92b07d2f2b2162153dc8c9a8a90e40d47607dcb563dfe3",
+      "originalBytes": 2402
     },
     {
       "file": "claude-final-answer.txt",
@@ -27,8 +31,10 @@
       "round": "final",
       "model": "Opus 5.5 中",
       "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
-      "sha256": "0ae94a82069046505177cc755ef63ffc5edd39080dc5cd3336bed34793ae1ea6",
-      "bytes": 6306
+      "sha256": "47e00d03256163a6d0fcee0b85193ac313af9b54418ea6b748080e6564094b96",
+      "bytes": 6307,
+      "originalSha256": "0ae94a82069046505177cc755ef63ffc5edd39080dc5cd3336bed34793ae1ea6",
+      "originalBytes": 6306
     },
     {
       "file": "gemini-first-answer.txt",
@@ -36,8 +42,10 @@
       "round": "first",
       "model": "思考モード",
       "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
-      "sha256": "8855951b5ded6203afe0a8f8ef3e9bb42a7274109293503b275ce69afd6c1930",
-      "bytes": 7631
+      "sha256": "28168199b44b58a3f9f9baf9b70bf7eb7a3be3092b568d812a06b4e9179c6524",
+      "bytes": 7551,
+      "originalSha256": "8855951b5ded6203afe0a8f8ef3e9bb42a7274109293503b275ce69afd6c1930",
+      "originalBytes": 7631
     },
     {
       "file": "gemini-supplement-answer.txt",
@@ -45,8 +53,10 @@
       "round": "supplement",
       "model": "思考モード",
       "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
-      "sha256": "379545d4cfedeba7ba600691df65b2bb72b42fc1f868da0125228af0bc54707e",
-      "bytes": 6271
+      "sha256": "bb1d48150e9c41fe1a49f39a5b36e55c569fb118c05e34bd394c4288377b5416",
+      "bytes": 6194,
+      "originalSha256": "379545d4cfedeba7ba600691df65b2bb72b42fc1f868da0125228af0bc54707e",
+      "originalBytes": 6271
     },
     {
       "file": "gemini-final-answer.txt",
@@ -54,8 +64,32 @@
       "round": "final",
       "model": "思考モード",
       "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
-      "sha256": "c86bcbdd1f0abef2e4d5fa334ebb688c72c3b1219fa6f68b297eb6bb4546a3cf",
-      "bytes": 4378
+      "sha256": "53771f19502dd8fb01eb1735f661168ac6fec96ef115819ce28c337a758a49dc",
+      "bytes": 4340,
+      "originalSha256": "c86bcbdd1f0abef2e4d5fa334ebb688c72c3b1219fa6f68b297eb6bb4546a3cf",
+      "originalBytes": 4378
+    },
+    {
+      "file": "gemini-late-answer.txt",
+      "provider": "gemini",
+      "round": "late-registration",
+      "model": "思考モード",
+      "url": "https://gemini.google.com/app/d266e317112af1eb?hl=ja",
+      "sha256": "229c1f3aea5dce4c4525dce37c48766fd263d10afd91703df049e32772922332",
+      "bytes": 5372,
+      "originalSha256": "47f9b396828e4336456fe4c206ca26e9d10d4733e4c3e527eaff4f12bfed34e3",
+      "originalBytes": 5371
+    },
+    {
+      "file": "claude-late-answer.txt",
+      "provider": "claude",
+      "round": "late-registration",
+      "model": "Opus 5.5 中",
+      "url": "https://claude.ai/chat/da19d9b9-c44a-4600-84be-a63dc2842559",
+      "sha256": "c01516500efad442adf1c01dea945c77a88b3d645740313c6713b06fa8446f4a",
+      "bytes": 7894,
+      "originalSha256": "a9fd0b78f474f3bf790103f57708e373ad25f9131582e57502b007940316efc7",
+      "originalBytes": 7893
     }
   ],
   "submitted": {
@@ -73,6 +107,13 @@
       "gemini": "B0 W0 INFO2",
       "claude": "B0 W4 INFO2",
       "answered": true
+    },
+    "lateRegistration": {
+      "bytes": 85784,
+      "sha256": "9f277c1ec9b4d826898d78090cbf4694f4702a7d044e892cef45374a96603519",
+      "gemini": "B1 W2 INFO1",
+      "claude": "B0 W4 INFO7",
+      "answered": true
     }
   },
   "finalAssessment": {
@@ -80,5 +121,11 @@
     "claude": "BLOCKER 0 / WARN 4 / INFO 2"
   },
   "decisions": "../external-review-decisions.md",
-  "note": "回答本文は参考意見。最終Claude WARN4の後続修正は採否記録と独立再確認で扱う。本番配備・自然観測の完了を意味しない。"
+  "note": "回答本文は参考意見。最終Claude WARN4の後続修正は採否記録と独立再確認で扱う。本番配備・自然観測の完了を意味しない。",
+  "normalization": "公開回答ファイルは行末空白を除去。originalSha256/originalBytesは私有原文、sha256/bytesは公開ファイルを指す。",
+  "lateAssessment": {
+    "gemini": "BLOCKER 1 / WARN 2 / INFO 1",
+    "claude": "BLOCKER 0 / WARN 4 / INFO 7",
+    "resolution": "B/Wを修正または根拠付きで採否判断し、独立SEC/品質/QAの最終BLOCKER 0 / WARN 0を確認。全体4304成功/12skip、最終差分42成功、GAS10成功。本番実物は別途検証。"
+  }
 }

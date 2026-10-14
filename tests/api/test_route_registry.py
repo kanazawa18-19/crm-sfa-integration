@@ -54,6 +54,7 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/cron/slack-crm-drain"),
     ("GET", "/api/cron/token-encryption-healthcheck"),
     ("GET", "/api/cron/gmail-sync"),
+    ("GET", "/api/cron/gmail-late-registration"),
     ("GET", "/api/cron/gmail-watch-renewal"),
     ("GET", "/api/cron/incident-digest"),
     ("GET", "/api/cron/email-reminder-check"),

@@ -394,3 +394,10 @@ def run_slack_crm_drain() -> dict[str, int]:
     """応答後に止まったSlack更新だけを台帳から再開する。"""
     from src.slack_crm.service import drain
     return drain(limit=10)
+
+
+@router.get('/api/cron/gmail-late-registration', dependencies=[Depends(verify_cron_secret)])
+def run_gmail_late_registration() -> dict[str, Any]:
+    """遅延登録の過去メールを有界処理する。既定無効、通常Gmail同期とは独立。"""
+    from src.gmail_sync.late_registration import run
+    return run()

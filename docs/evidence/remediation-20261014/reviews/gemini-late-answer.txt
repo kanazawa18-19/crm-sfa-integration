@@ -1,0 +1,110 @@
+### BLOCKER
+
+**`discover`: 9,000件到達時の分岐順序の誤りによるNotion1万件上限突破ループおよび完了不能**
+
+* **場所**: `src/gmail_sync/late_registration.py` (L107-118 付近)
+
+
+* **条件**:
+1. 連絡先DBが9,000件を超えている状態で `discover` を実行した場合。
+
+
+2. または、総件数が9,000件以上で最終ページ（`has_more == False`）に達した場合。
+
+
+
+
+* **実害**:
+```python
+if response['has_more']:
+    if not response.get('next_cursor') or response['next_cursor']==state.get('cursor'):
+        raise ValueError('連絡先巡回の続きが不明です')
+    next_state.update(cursor=response['next_cursor'],roundCount=count)
+elif (response.get('request_status') or {}).get('type')=='incomplete' or count>=9000:
+    newest=pages[-1]['created_time'] if pages else None
+    if not newest or newest==state.get('watermark'):
+        raise ValueError('連絡先巡回の境界が停滞しています')
+    next_state.update(cursor=None,watermark=newest,roundCount=0)
+else:
+    next_state.update(initial=False,cursor=None,watermark=None,roundCount=0,lastCompletedAt=now.isoformat())
+
+```
+
+
+* **条件1の実害**: `response['has_more']` が `True` の間は常に最初の `if` に入るため、`count >= 9000` に達しても `elif`（watermark への切り替え）に絶対に到達しません。そのまま `cursor` ページネーションを継続して Notion API の 10,000 件上限（HTTP 400）に衝突し、例外ハンドラで `cursor` がリセットされ、毎回先頭（0件目）からやり直す無限ループに陥ります。10,000件以降の連絡先を永久に回収できません。
+
+
+* **条件2の実害**: 9,000件以上で正常に全件走査が終わった（`has_more == False`）際、本来なら `else`（完了: `initial=False`）に進むべきところ、`elif count >= 9000` が真になり `watermark = newest` が設定されます。次回実行時に同一日時の再検索で進捗が出ず、`newest == state.get('watermark')` の停滞例外（`ValueError`）で異常停止し、走査が永久に完了扱いになりません。
+
+
+
+
+* **最小修正**:
+```python
+if response['has_more'] and count < 9000:
+    if not response.get('next_cursor') or response['next_cursor']==state.get('cursor'):
+        raise ValueError('連絡先巡回の続きが不明です')
+    next_state.update(cursor=response['next_cursor'],roundCount=count)
+elif response['has_more'] or (response.get('request_status') or {}).get('type')=='incomplete':
+    newest=pages[-1]['created_time'] if pages else None
+    if not newest or newest==state.get('watermark'):
+        raise ValueError('連絡先巡回の境界が停滞しています')
+    next_state.update(cursor=None,watermark=newest,roundCount=0)
+else:
+    next_state.update(initial=False,cursor=None,watermark=None,roundCount=0,lastCompletedAt=now.isoformat())
+
+```
+
+
+
+---
+
+### WARN
+
+**1. `process_job`: 一時的なレコードロック競合（`RecordSyncBusy`）による巡回ヘルスチェックの `unknown` 誤検知**
+
+* **場所**: `src/gmail_sync/late_registration.py` (L183, L231, L246-250)
+
+
+* **条件**: メール保存直前の `with record_guard(data['pageId']):` において、通常同期など別プロセスが対象連絡先の排他ロックを保持していた場合。
+
+
+* **実害**: `record_guard` 内で送出された `RecordSyncBusy` が `run()` の外側まで伝播し、`state['error'] = '巡回または取込が失敗...'` が書き込まれます。これにより `health()` が「連絡先巡回の停滞・失敗」として診断結果 `unknown` を返し、単なる並行同期待ちがシステム障害として誤報されます。
+
+
+* **最小修正**: `run()` のジョブ処理ループ内で `from src.sync_engine.record_sync_lock import RecordSyncBusy` を個別に捕捉し、`state['error']` を更新せずに当該ジョブの処理を次回以降へスキップするように修正してください。
+
+
+
+**2. `Store.jobs`: SQL 内の `ANY(%s)` に対する型キャスト欠落**
+
+* **場所**: `src/gmail_sync/late_registration.py` (L86 付近)
+
+
+* **条件**: `store.jobs(job_ids, ...)` で `job_ids` に文字列リストを渡した場合。
+
+
+* **実害**:
+```sql
+AND (%s::text[] IS NULL OR (id=ANY(%s) AND data->>'generation'='selected'))
+
+```
+
+
+前者の条件には `%s::text[]` とキャストがありますが、`id=ANY(%s)` の右辺にはキャストがありません。psycopg3 と PostgreSQL の型解決設定によって、配列型の推論に失敗し `operator does not exist: text = unknown[]` などの実行時エラーが発生する恐れがあります。
+
+
+* **最小修正**: `id=ANY(%s::text[])` と明示的にキャストしてください。
+
+
+
+---
+
+### INFO
+
+**`process_job`: 重複確認における Notion ページ ID のハイフン表記ゆれ予防**
+
+* **場所**: `src/gmail_sync/late_registration.py` (L146)
+
+
+* **内容**: `candidates[0]['id'] != data['pageId']` でページ ID を直接比較しています。Notion API 経由の値同士であるため通常はハイフン付きで一致しますが、他モジュール（`src/hub_creation/service.py` など）と同様に `.replace('-', '')` で正規化して比較すると、UUID 文字列の表記ゆれに対する安全性が高まります。

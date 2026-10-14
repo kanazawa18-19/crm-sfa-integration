@@ -1095,3 +1095,28 @@ model InquiryHandoff {
 
   @@index([state])
 }
+
+// メール後に登録された連絡先の過去メールを独立して回収する。
+model GmailContactDiscovery {
+  key String @id
+  data Json @default("{}")
+  updatedAt DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model GmailContactEmail {
+  pageId String @id
+  email String
+  generation String
+  observedAt DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model GmailLateRegistrationJob {
+  id String @id
+  pageId String
+  state String @default("pending")
+  data Json
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([state, updatedAt])
+}

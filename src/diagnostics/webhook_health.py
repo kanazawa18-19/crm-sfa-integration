@@ -191,6 +191,11 @@ def collect_webhook_health() -> dict:
         checks.append(read_registration_health())
     except Exception:
         checks.append(check('registration_holds', 'unknown', '登録・問い合わせ引継ぎの記録を取得できません'))
+    try:
+        from src.gmail_sync.late_registration import health as late_registration_health
+        checks.append(late_registration_health())
+    except Exception:
+        checks.append(check('gmail_late_registration', 'unknown', '遅延登録の過去取込を確認できません'))
     return {"schema_version": 1, "observed_at": stamp(datetime.now(timezone.utc)),
             "elapsed_ms": round((time.monotonic() - started) * 1000), "checks": checks,
             "receipts": {s: {"last_received_at": stamp(receipts.get(s, {}).get("last")),

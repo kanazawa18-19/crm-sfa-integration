@@ -5,10 +5,10 @@ var WebhookHealth = (function () {
   // 毎時トリガーの時刻の揺れを許容し、手動の連打では連続確認にならないようにする。
   var RECHECK_DELAY = HOUR * 0.8;
   var KEYS = ['receipt_store', 'notion_delivery', 'kintone_delivery', 'zoho_subscription', 'zoho_delivery', 'spreadsheet_delivery'];
-  var OPTIONAL_KEYS = ['unfinished_sync', 'registration_holds'];
-  var LABELS = {registration_holds: '登録・問い合わせの保留',unfinished_sync: '受理後の未完了同期', receipt_store: '受信記録', notion_delivery: 'Notion受信', kintone_delivery: 'kintone受信', zoho_subscription: 'Zoho購読', zoho_delivery: 'Zoho受信', spreadsheet_delivery: 'シート受信', monitor: '診断API'};
+  var OPTIONAL_KEYS = ['unfinished_sync', 'registration_holds', 'gmail_late_registration'];
+  var LABELS = {gmail_late_registration: '遅延登録の過去メール取込',registration_holds: '登録・問い合わせの保留',unfinished_sync: '受理後の未完了同期', receipt_store: '受信記録', notion_delivery: 'Notion受信', kintone_delivery: 'kintone受信', zoho_subscription: 'Zoho購読', zoho_delivery: 'Zoho受信', spreadsheet_delivery: 'シート受信', monitor: '診断API'};
   var STATUSES = ['ok', 'unverified', 'pending', 'warning', 'critical', 'unknown'];
-  function queue(key) { return key === 'unfinished_sync' || key === 'registration_holds'; }
+  function queue(key) { return key === 'gmail_late_registration' || key === 'unfinished_sync' || key === 'registration_holds'; }
   function validate(report, now) {
     if (!report || report.schema_version !== 1 || !Array.isArray(report.checks) || report.checks.length < KEYS.length || report.checks.length > KEYS.length + OPTIONAL_KEYS.length) throw new Error('診断応答が不正です');
     var age = now - Date.parse(report.observed_at);
@@ -41,7 +41,7 @@ var WebhookHealth = (function () {
       var level = c.status;
       var reason = c.reason;
       if (level === 'pending' && queue(c.key)) {
-        var label = c.key === 'registration_holds' ? '登録・問い合わせの保留' : '受理後未完了';
+        var label = c.key === 'gmail_late_registration' ? '遅延登録の過去メール取込' : c.key === 'registration_holds' ? '登録・問い合わせの保留' : '受理後未完了';
         if (same && now - first >= RECHECK_DELAY) {
           level = 'warning'; reason = '同じ対象の' + label + 'が再観測でも続いています（' + c.count + '件）';
         } else reason = label + '（' + c.count + '件・再観測待ち）';
