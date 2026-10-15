@@ -365,14 +365,20 @@ class KintoneCreationAdapter:
             owner_name = '担当メンバー' if db_key == 'project' else '担当営業'
             if db_key == 'action' and '担当営業' not in properties:
                 raise CreationHeld('担当営業の集計が未確定です。Notionの関連先と集計完了を確認してください')
-            owner = owner_to_external(properties.get(owner_name, []), 'kintone', required=bool(fields.get(owner_code, {}).get('required')))
-            if owner is UNRESOLVED_OWNER:
-                raise CreationHeld('担当者対応の設定または複数担当の対応を確認してください')
+            if db_key == 'action':
+                from src.hub_creation.action_kintone import action_actors, action_service, comment_with_actor, creation_comment_body
+                from src.record_merge.creation_candidates import creation_context
+                creation_comment_body(payload.get('comment'))
+                owner, names = action_actors(properties, creation_context())
+                payload['service'] = action_service(properties, fields)
+                if names:
+                    payload['comment'] = comment_with_actor(payload.get('comment'), names)
+            else:
+                owner = owner_to_external(properties.get(owner_name, []), 'kintone', required=bool(fields.get(owner_code, {}).get('required')))
+                if owner is UNRESOLVED_OWNER:
+                    raise CreationHeld('担当者対応の設定または複数担当の対応を確認してください')
             payload[owner_code] = owner
             if db_key == 'action':
-                services = properties.get('提案サービス')
-                if services:
-                    payload['service'] = services
                 ids = properties.get('👨‍👩‍👧‍👦 取引先マスター')
                 if isinstance(ids, (list, tuple)) and len(ids) == 1 and self.store is not None:
                     mapping = self.store.get(ids[0])
@@ -381,7 +387,8 @@ class KintoneCreationAdapter:
                         record = client_target._client.get_record(client_target._app, mapping.kintone_id)
                         if record and isinstance(record.get('顧客名'), str):
                             payload['client_name'] = record['顧客名']
-        payload = {code: value for code, value in payload.items() if value not in (None, '', [], {})}
+        payload = {code: value for code, value in payload.items()
+                   if value not in (None, '', [], {}) or (db_key == 'action' and code == 'cnctorMember')}
         if db_key == "client_master" and properties.get("顧客種別"):
             choice = properties["顧客種別"]
             if choice not in fields.get("顧客種別", {}).get("options", {}):
@@ -430,8 +437,16 @@ class KintoneCreationAdapter:
                             value = [{'code': item['code']} for item in value]
                         comparable[code] = value
                     comparable = normalize_creation_payload(comparable, fields, kintone=True, user_fields={'営業担当者','cnctorMember'})
+                    comparison_payload = dict(payload)
+                    if db_key == 'action' and 'comment' in payload:
+                        from src.hub_creation.action_kintone import split_comment
+                        try:
+                            comparison_payload['comment'] = split_comment(payload['comment'])[0]
+                            comparable['comment'] = split_comment(comparable['comment'])[0]
+                        except ValueError as exc:
+                            raise CreationHeld(str(exc)) from None
                     same = all((sorted(value, key=str) == sorted(comparable[code], key=str) if isinstance(value, list)
-                                else value == comparable[code]) for code, value in payload.items())
+                                else value == comparable[code]) for code, value in comparison_payload.items())
                     if db_key == 'project' or same:
                         hold_duplicate('kintone', db_key, identifier, record, 'kintoneに同名案件があります。比較してください' if db_key == 'project' else 'kintoneに登録内容が一致する候補があります。統合候補を確認してください', fetch=lambda: client.get_record(app, identifier))
                 if len(records) < 500:

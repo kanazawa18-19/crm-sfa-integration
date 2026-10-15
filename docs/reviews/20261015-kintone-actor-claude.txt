@@ -1,0 +1,343 @@
+
+  - status
+  - status
+  - button "資料のレビュー、セッション名を変更":
+    - generic: 資料のレビュー
+  - button "資料のレビューのその他のオプション":
+    - generic: 
+  - button "アクティビティパネル":
+    - generic: 
+  - button "共有":
+    - generic: 共有
+  - feed "チャットメッセージ":
+    - paragraph: 上下の矢印キーを使用してメッセージ間を移動します。
+    - article "2件中1件目のメッセージ":
+      - 'heading "あなたの入力: 添付資料の指示に沿って、日本語でレビューしてください。" [level=2]'
+      - button "crm-kintone-actor-review.txt":
+        - generic: crm-kintone-actor-review.txt
+      - generic: crm-kintone-actor-review.txt
+      - generic: TXT
+      - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+      - toolbar "メッセージアクション":
+        - time: 5 分前
+        - button "再試行":
+          - generic: 
+        - button "編集":
+          - generic: 
+        - button "コピー":
+          - generic: 
+        - status
+      - status
+    - article "2件中2件目のメッセージ":
+      - heading "Claude の応答：差分と添付ファイルの範囲でレビューしました。差分外のコード（tokintonepayload、memochoices、creationcontext の実装、service.py の前段分岐など）は見えないため、それに依存する指摘には「要確認」と付けています。" [level=2]
+      - generic "コメント確認漏れの他処理経路への波及を点検中。":
+        - generic: コメント確認漏れの他処理経路への波及を点検中。
+        - button "コメント確認漏れの他処理経路への波及を点検中。":
+          - generic: 
+      - status: コメント確認漏れの他処理経路への波及を点検中。
+      - paragraph:
+        - text: 差分と添付ファイルの範囲でレビューしました。差分外のコード（
+        - code: _to_kintone_payload
+        - text: 、
+        - code: _memo_choices
+        - text: 、
+        - code: creation_context
+        - text: の実装、service.py の前段分岐など）は見えないため、それに依存する指摘には「要確認」と付けています。
+      - paragraph: 総評：差分の中で BLOCKER と断定できる不具合はありません。ただし W-3 と W-4 は、差分外の実装しだいで BLOCKER になります。
+      - paragraph: 要件との対応
+      - table:
+        - rowgroup:
+          - row "要件 判定 根拠":
+            - columnheader "要件"
+            - columnheader "判定"
+            - columnheader "根拠"
+        - rowgroup:
+          - row "アカウントのない実担当者を別人に置換しない（作成時） 概ね達成 action では fallback を通らない。一部だけ割り当てることもしない。テストで fallback 不使用を確認済み":
+            - cell "アカウントのない実担当者を別人に置換しない（作成時）"
+            - cell "概ね達成"
+            - cell "action では fallback を通らない。一部だけ割り当てることもしない。テストで fallback 不使用を確認済み"
+          - row "コメント補足を往復同期で保持する 部分的 送信側は版を固定したうえで保持できている。kintone 側での枠の削除・改変は検知できない（W-1）。全員対応済みの作成経路は未検査（W-2）":
+            - cell "コメント補足を往復同期で保持する"
+            - cell "部分的"
+            - cell "送信側は版を固定したうえで保持できている。kintone 側での枠の削除・改変は検知できない（W-1）。全員対応済みの作成経路は未検査（W-2）"
+          - row "既存 Zoho を再送しない テスト上は達成 スキップ処理そのものは差分に含まれていない（I-9）":
+            - cell "既存 Zoho を再送しない"
+            - cell "テスト上は達成"
+            - cell "スキップ処理そのものは差分に含まれていない（I-9）"
+          - 'row "担当者欄を任意にする 達成 cnctorMember: [] を明示送信。必須設定の場合は保留"':
+            - cell "担当者欄を任意にする"
+            - cell "達成"
+            - 'cell "cnctorMember: [] を明示送信。必須設定の場合は保留"':
+              - code: "cnctorMember: []"
+              - text: を明示送信。必須設定の場合は保留
+          - row "作成者は照合にのみ使う 達成 原本ごとの承認設定があり、かつ作成者が一致した場合だけ採用":
+            - cell "作成者は照合にのみ使う"
+            - cell "達成"
+            - cell "原本ごとの承認設定があり、かつ作成者が一致した場合だけ採用"
+      - paragraph: 指摘一覧
+      - table:
+        - rowgroup:
+          - row "ID 区分 箇所 概要":
+            - columnheader "ID"
+            - columnheader "区分"
+            - columnheader "箇所"
+            - columnheader "概要"
+        - rowgroup:
+          - row "W-1 WARN action_kintone.preserve_comment / kintone_field_transforms kintone 側で枠を削除・改変されても検知できず、実担当者が恒久的に失われるか差し替わる":
+            - cell "W-1"
+            - cell "WARN"
+            - cell "action_kintone.preserve_comment / kintone_field_transforms"
+            - cell "kintone 側で枠を削除・改変されても検知できず、実担当者が恒久的に失われるか差し替わる"
+          - row "W-2 WARN adapters.py action 分岐 全員対応済みの場合、本文に含まれる枠を検査しない。別人が実担当者として表示されうる":
+            - cell "W-2"
+            - cell "WARN"
+            - cell "adapters.py action 分岐"
+            - cell "全員対応済みの場合、本文に含まれる枠を検査しない。別人が実担当者として表示されうる"
+          - row "W-3 WARN（要確認） kintone_sync.upsert_record _memo_choices との干渉、および担当営業・提案サービスの通常同期が未検証":
+            - cell "W-3"
+            - cell "WARN（要確認）"
+            - cell "kintone_sync.upsert_record"
+            - cell "_memo_choices との干渉、および担当営業・提案サービスの通常同期が未検証":
+              - code: _memo_choices
+              - text: との干渉、および担当営業・提案サービスの通常同期が未検証
+          - row "W-4 WARN（要確認） comment を読む他の経路 突合・重複検査などが枠を考慮していない場合、再送ループや重複作成が起きる":
+            - cell "W-4"
+            - cell "WARN（要確認）"
+            - cell "comment を読む他の経路"
+            - cell "突合・重複検査などが枠を考慮していない場合、再送ループや重複作成が起きる"
+          - row "I-1〜I-10 INFO 各所 堅牢性、テスト不足、構成":
+            - cell "I-1〜I-10"
+            - cell "INFO"
+            - cell "各所"
+            - cell "堅牢性、テスト不足、構成"
+      - separator
+      - paragraph: 【W-1】kintone 側での枠の削除・改変を無検知で受け入れる
+      - paragraph: 再現経路
+      - list:
+        - listitem: 承認設定で作成する（担当営業は確定空、実担当者に kintone アカウントなし）。kintone のコメント末尾に枠が付く。
+        - listitem: kintone の画面で利用者がコメントを整理し、枠を削除する（または氏名行を書き換える）。
+        - text: Webhook で
+        - code: split_comment
+        - text: が
+        - code: (本文, '')
+        - text: を返し、Notion には本文だけが届く。エラーにはならない。
+        - text: Notion で履歴メモを編集すると、
+        - code: preserve_comment(枠なしの現在値, 本文)
+        - text: が block='' のまま成功し、枠のない状態が確定する。改変した場合は、改変後の氏名が以後の正として保持される。
+      - paragraph: 原本の担当営業は空なので、CRM 上に実担当者の根拠が残りません（残るのは環境設定だけ）。資料にある「本文編集から枠を差し替えることは許可しない」は、Notion 側からの経路しか守れていません。
+      - paragraph: 修正案：作成時に確定した枠（または氏名リスト）を IdMapping などに保存し、それを正本にします。送信時は、現在値の枠が保存値と一致しなければ書き込まずに保留・通知します（保存値で自動復元するかどうかは運用判断）。受信時も不一致をログに記録してください。
+      - group "pythonコード":
+        - button "クリップボードにコピー":
+          - generic: 
+        - status
+        - generic: python
+        - code:
+          - generic: "stored = store.get(page_id).kintone_actor_block # 作成時に保存"
+          - generic: _, current_block = split_comment(current.get('comment'))
+          - generic: "if stored and current_block != stored:"
+          - generic: raise ApiError(422, '実担当者の補足枠がkintone側で変更されています')
+      - paragraph: テストには「現在値に枠がなく、保存値はある」「氏名が改変されている」の2ケースを追加してください。
+      - separator
+      - paragraph: 【W-2】担当者が全員対応済みのとき、作成時に本文中の枠を検査しない
+      - paragraph: 再現経路
+      - list:
+        - listitem: 他のアクションの kintone コメントを、枠ごと Notion の履歴メモへコピーする。
+        - text: このアクションの担当営業は kintone 対応済みの人なので、
+        - code: names == []
+        - text: となり
+        - code: comment_with_actor
+        - text: が呼ばれない。
+        - listitem: 枠付きの本文がそのまま登録され、kintone 上では無関係な人物が「実担当者」と表示される。担当者欄には正しいアカウントが入っているため、矛盾した記録になる。
+        - listitem: Webhook で枠が本文から分離され、Notion の履歴メモからコピーした部分が消える。枠が破損していた場合は、以後ずっと受信 SKIP・送信 422 のまま固着する。
+      - paragraph: 修正案：action 分岐では、names の有無に関係なく必ず検査します。
+      - group "pythonコード":
+        - button "クリップボードにコピー":
+          - generic: 
+        - status
+        - generic: python
+        - code:
+          - generic: "try:"
+          - generic: body, block = split_comment(payload.get('comment'))
+          - generic: "except ValueError:"
+          - generic: raise CreationHeld('履歴本文の形式を確認してください') from None
+          - generic: "if block:"
+          - generic: raise CreationHeld('新規作成の履歴本文に実担当者の補足枠が含まれています')
+          - generic: "if names:"
+          - generic: payload['comment'] = comment_with_actor(body, names)
+      - separator
+      - paragraph: 【W-3】通常同期で差分外の処理が干渉しないか（要確認）
+      - paragraph:
+        - text: (a)
+        - code: _memo_choices
+        - text: ：保持処理の直後に
+        - code: get_record
+        - text: をもう一度実行しています。action で
+        - code: notes
+        - text: が返り、その処理が comment を現在値から組み立て直す実装であれば、保持済みの comment が上書きされるか、枠が二重になります（二重になると次回から 422 で固着）。また、2回目に取得した版と、1回目の版で固定した
+        - code: expected_version
+        - text: が食い違う可能性があります。
+      - paragraph:
+        - text: (b)
+        - code: _to_kintone_payload
+        - text: ：テストは
+        - code: "{'履歴メモ': ...}"
+        - text: しか渡していません。action で「担当営業 → cnctorMember」または「提案サービス → service」を送る実装が残っていると、次の問題が起きます。
+      - list:
+        - text: 担当営業に未対応者がいる場合、
+        - code: owner_to_external(required=True)
+        - text: 経由で管理者への代替が復活する。または
+        - code: "[]"
+        - text: で上書きされる。
+        - text: 提案サービスが確定空の場合、
+        - code: "service: []"
+        - text: が必須エラー（400）になる。今回、確定空でも作成できるようになったため、この経路が初めて表面化します。
+      - paragraph:
+        - text: 修正案：取得は1回にまとめ、
+        - code: _memo_choices
+        - text: の処理のあとで comment を保持処理します。全プロパティを渡すテストも追加してください。
+      - group "pythonコード":
+        - button "クリップボードにコピー":
+          - generic: 
+        - status
+        - generic: python
+        - code:
+          - generic: "props = {'履歴メモ': '新本文', '担当営業': [PERSON], '提案サービス': [], 'アクション種別': 'テレアポ'}"
+          - generic: target.upsert_record('42', props, db_key='action', expected_version='7')
+          - generic: sent = writes[0][0][2]
+          - generic: assert 'cnctorMember' not in sent and sent.get('service') != []
+          - generic: assert sent['comment'].count(BEGIN) == 1
+      - separator
+      - paragraph: 【W-4】comment を読む他の経路が枠を考慮しているか（要確認）
+      - paragraph:
+        - text: Webhook の変換以外に、kintone の comment を読む経路（定期突合、初期取込、バックフィル、
+        - code: duplicate_scan
+        - text: ）がある場合の懸念です。
+      - list:
+        - listitem: 突合が kintone の生の値と Notion の本文を比較していると、常に差分ありと判定され、毎回再送されて版が進み続けます。または、枠付きの値が Notion に書き戻されます。
+        - code: duplicate_scan
+        - text: が comment の一致で既存レコードを判定していると、変更前に作成したレコードと一致しなくなり、再開時に kintone へ重複作成されます。
+      - paragraph:
+        - text: 修正案：comment の読み取りを
+        - code: split_comment
+        - text: 経由の単一関数に集約し、
+        - code: grep -rn "'comment'" src/
+        - text: で全箇所を確認してください。
+      - separator
+      - paragraph: INFO
+      - paragraph:
+        - text: I-1 adapters の action 分岐は、担当営業が確定済みでも
+        - code: creation_context()
+        - text: を先に評価しています。candidate_context の外（プレビューや別経路）で呼ばれたときに LookupError などを送出する実装だと、これまで作成できていた対応済みケースが未捕捉例外になります。override が必要な場合だけ取得するよう遅延評価にしてください。
+      - paragraph:
+        - text: I-2 service.py の
+        - code: "creation_page_snapshot.get('created_by', {}).get('id')"
+        - text: は、snapshot や created_by が None のとき AttributeError になります。
+        - code: "((snapshot or {}).get('created_by') or {}).get('id')"
+        - text: が安全です。また、差分直前の
+        - code: if
+        - text: 分岐で action の plan が呼ばれる経路がある場合、そこでは action_created_by が設定されないため、承認対象が保留のまま進みません。安全側ではありますが確認してください。
+      - paragraph:
+        - text: I-3 payload の絞り込みで
+        - code: "'cnctorMember'"
+        - text: を直書きしています。
+        - code: code == owner_code
+        - text: にすれば、フィールドコードの変更時に食い違いが起きません。
+      - paragraph:
+        - text: I-4
+        - code: $revision
+        - text: の形式はテストの擬似クライアント（平坦な文字列）でしか検証されていません。実クライアントの get_record が
+        - code: $revision
+        - text: を
+        - code: "{'type', 'value'}"
+        - text: のまま返したり除外したりする場合、全件が 409 になります。実応答の形でクライアント契約テストを1本追加してください。あわせて、ApiError 422 と ConcurrentModificationError が再試行ポリシー上「保留＋通知」になり、無限再試行にならないことも確認が必要です。
+      - paragraph:
+        - text: I-5 文字数上限 65535 は Python の
+        - code: len
+        - text: （コードポイント数）で判定しています。kintone 側の上限値と数え方（サロゲートペアの扱いなど）を確認し、境界のテストを追加してください。
+      - paragraph:
+        - text: I-6 sync_engine が hub_creation に依存しています（kintone_sync と field_transforms から action_kintone を import）。
+        - code: split_comment
+        - text: と
+        - code: preserve_comment
+        - text: は sync_engine 側か共通モジュールへ移し、hub_creation 側は
+        - code: comment_with_actor
+        - text: と
+        - code: action_actors
+        - text: だけを持つ構成が自然です。field_transforms では、既存の「2026-08-25追加…」の説明コメントと辞書定義の間に関数が挟まっているので、関数の位置を移してください。
+      - paragraph:
+        - text: I-7
+        - code: CRM_ACTION_ACTORS_JSON
+        - text: のキーは、正規の小文字ハイフン付き形式と完全一致しないと KeyError で保留になります。読み込み時にキーを
+        - code: str(UUID(k))
+        - text: で正規化すれば、設定ミスによる不要な保留を防げます。
+      - paragraph:
+        - text: I-8 Zoho 側のアクション新規作成は、従来どおり
+        - code: owner_to_external(required=True)
+        - text: によって管理者へ代替される可能性があります。今回の対象が kintone だけであれば、その旨を資料に明記してください。対象に含めるなら別課題にします。
+      - paragraph:
+        - text: I-9 「既存 Zoho ID があれば計画・作成より前にスキップする」処理は差分に含まれていません。既存実装であれば問題ありませんが、どのコミットで入ったかを記録しておくとレビューで追いやすくなります。また、再開テストは
+        - code: adapter.plan
+        - text: を差し替えているため、再開時の kintone payload に枠が付くことまでは検証できていません。
+      - paragraph:
+        - text: I-10 追加を勧めるテスト：枠の後ろに追記された本文の往復、改行コード
+        - code: \r\n
+        - text: を含む値、kintone 側で枠が削除・改変されたケース（W-1）、全員対応済みで本文に枠を含む作成（W-2）、全プロパティでの通常同期（W-3）。
+      - paragraph:
+        - text: 確認できた良い点：作成者を無条件に担当者としない設計、承認・照合の失敗をすべて保留側に倒している点、版番号を取得値で固定して取得から更新までの競合を閉じている点、
+        - code: owner_directory
+        - text: にアカウントのない人の行を追加しても他の DB の挙動が変わらない点は、要件どおりです。
+      - toolbar "メッセージアクション":
+        - button "コピー":
+          - generic: 
+        - status
+        - button "読み上げ":
+          - generic: 
+        - button "良い回答":
+          - generic: 
+        - button "良くない回答":
+          - generic: 
+        - button "再試行":
+          - generic: 
+        - time: 5 分前
+  - button "最下部までスクロール":
+    - generic: 
+  - status
+  - status
+  - status
+  - status
+  - status
+  - generic: 返信
+  - textbox "Claudeへのプロンプトを入力してください" [active]:
+    - paragraph
+  - status
+  - button "メッセージを送信" [disabled]:
+    - generic: 
+  - button "ファイルやコネクタなどを追加":
+    - generic: 
+  - button "音声入力":
+    - generic: 
+  - group "ボイスモードを開始":
+    - button "ボイスモードを開始":
+    - button "マイク":
+      - generic: 
+  - note:
+    - link "Claude は AI であり、間違えることがあります。":
+      - /url: https://support.anthropic.com/en/articles/8525154-claude-is-providing-incorrect-or-misleading-responses-what-s-going-on
+  - 'button "モデル: Opus 5.5 中"':
+    - text: Opus 5.5
+    - generic: 中
+  - button "手動":
+    - generic: 手動
+  - status: Claudeが応答を完了しました
+  - complementary:
+    - generic: このセッションで使用
+    - button:
+      - generic: "アップロード: crm-kintone-actor-review.txt"
+      - generic: 
+      - generic: アップロード
+      - generic: crm-kintone-actor-review.txt
+    - generic: 各ファイルを開くボタンが表示されます — Tabキーを押してカードにフォーカスを移動し、Escapeキーで戻ります。
+  - status
+- status
+- status
+- region "Notifications"

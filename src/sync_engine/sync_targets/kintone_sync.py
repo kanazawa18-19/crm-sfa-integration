@@ -114,6 +114,21 @@ class KintoneSyncTarget(SyncTarget):
         if is_excluded(Tool.KINTONE, db_key, external_id):
             return None
         payload = self._to_kintone_payload(properties, db_key)
+        if db_key == 'action' and payload is not None and 'comment' in payload and external_id:
+            from src.hub_creation.action_kintone import preserve_comment
+            current = self._client.get_record(self._app, external_id)
+            if current is None:
+                raise ApiError(404, '履歴メモの読取先がありません')
+            if not isinstance(current, dict) or 'comment' not in current:
+                raise ApiError(422, '履歴メモの現在値を確認できません')
+            version = current.get('$revision')
+            if version is None or (expected_version is not None and str(version) != str(expected_version)):
+                raise ConcurrentModificationError(409, '履歴メモの版が変更されています')
+            try:
+                payload['comment'] = preserve_comment(current.get('comment'), payload['comment'])
+            except ValueError as exc:
+                raise ApiError(422, str(exc)) from None
+            expected_version = str(version)
         notes = _memo_choices(db_key, properties)
         if notes:
             current = self._client.get_record(self._app, external_id) if external_id else {}

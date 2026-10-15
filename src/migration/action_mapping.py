@@ -47,6 +47,8 @@ def transform_kintone_action(record: dict[str, str]) -> dict[str, object]:
     （実データ確認済み: 単一の「提案サービス」列は存在しない。以前の実装は単一列を
     前提にしており、提案サービス情報が常に空リストになるバグがあった）。
     """
+    from src.hub_creation.action_kintone import split_comment
+    comment_body, _ = split_comment(record.get("コメント"))
     proposed_services = [
         option
         for option in parse_checkbox_columns(record, prefix="提案サービス")
@@ -55,7 +57,7 @@ def transform_kintone_action(record: dict[str, str]) -> dict[str, object]:
     return {
         "kintone_Act_ID": record.get("レコード番号", ""),
         "アクション種別": normalize_action_type(record.get("アクション内容", "")),
-        "履歴メモ": record.get("コメント") or None,
+        "履歴メモ": comment_body or None,
         "_担当営業氏名": record.get("対応者", ""),
         "_先方担当者氏名": record.get("担当者名") or None,
         "_提案サービス名リスト": proposed_services,

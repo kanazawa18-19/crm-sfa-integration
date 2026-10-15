@@ -193,12 +193,20 @@ _CLIENT_MASTER_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any
 # 2026-08-25追加）。キーは実フィールドコード。actionContent/commentの2件は2026-08-14、実際の
 # kintone Webhook通知（本番）で確認済み（GET /k/v1/app/form/fields.json?app=<action>でも
 # 再確認済み）。client_nameも同API検証済み（モジュールdocstring参照）。
+def _action_comment_body(value):
+    from src.hub_creation.action_kintone import split_comment
+    try:
+        return split_comment(value)[0] or None
+    except ValueError:
+        return SKIP_FIELD
+
+
 _ACTION_KINTONE_FIELD_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] = {
     # 2026-09-27: toPersonは担当者名の自由記述。最新200件中100件で利用。
     # kintone通知は全レコード。未同期時代の空値でNotionを消さないため、空は保留する。
     "toPerson": ("先方担当者", lambda v: v if v not in (None, "") else SKIP_FIELD),
     "actionContent": ("アクション種別", normalize_action_type),  # ラベル: アクション内容
-    "comment": ("履歴メモ", lambda v: v or None),  # ラベル: コメント
+    "comment": ("履歴メモ", _action_comment_body),  # ラベル: コメント
     # ラベル: 顧客名（法人・個人・施設）。自由入力テキストのため、ClientNameIndexでの
     # 名寄せによりNotion取引先マスターDBへのリレーションを解決する（モジュールdocstring
     # 参照）。戻り値は解決済みpage IDまたはSKIP_FIELD（未解決、プロパティ自体を書き込まない）。

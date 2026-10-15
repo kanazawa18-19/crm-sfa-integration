@@ -1,0 +1,330 @@
+ [level=1]
+  - button "crm-kintone-actor-review.txt":
+    - generic: TXT
+    - generic: crm-kintone-actor-review
+  - heading "あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。" [level=5]
+  - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - paragraph: 提供されたコード差分、関連実装、テストコードおよび設計ドキュメントに基づき、独立コードレビューを実施しました。指摘事項を BLOCKER、WARN、INFO に分類し、具体的な再現経路と修正案を提示します。
+  - heading "【BLOCKER】（マージ・本番稼働不可）" [level=3]
+  - heading "1. adapters.py における担当者必須チェックの欠落（単体テスト失敗および API エラー）" [level=4]:
+    - text: "1."
+    - code: adapters.py
+    - text: における担当者必須チェックの欠落（単体テスト失敗および API エラー）
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/hub_creation/adapters.py
+      - text: (368–377行目付近)
+    - paragraph:
+      - text: "概要: 設計ドキュメント（"
+      - code: docs/action-kintone-actor.md
+      - text: ）では「対応者欄がまだ必須の場合は作成を保留する」と規定されており、単体テスト（
+      - code: test_action_creation_keeps_empty_user_field_and_unknown_service
+      - text: ）でも
+      - code: fields['cnctorMember']['required'] = True
+      - text: 時に
+      - code: pytest.raises(CreationHeld, match='必須')
+      - text: を検証しています。しかし、新設された
+      - code: "if db_key == 'action':"
+      - text: 分岐内では
+      - code: fields
+      - text: に対する
+      - code: required
+      - text: チェックが一切行われておらず、担当者不在時（
+      - code: owner == []
+      - text: ）でもそのままスルーされてしまいます。
+    - paragraph: "再現経路:"
+    - list:
+      - paragraph:
+        - text: kintone 側で担当者フィールド（
+        - code: cnctorMember
+        - text: ）の任意化が未完了（
+        - code: required=True
+        - text: ）の状態で、kintone アカウントを持たない担当者のアクションを登録（
+        - code: plan
+        - text: ）しようとする。
+      - paragraph:
+        - code: action_actors
+        - text: は
+        - code: ([], ['表示名'])
+        - text: を返し、
+        - code: payload['cnctorMember'] = []
+        - text: がセットされる。
+      - paragraph:
+        - code: adapters.py
+        - text: 内で必須判定が行われないため、
+        - code: CreationHeld
+        - text: が送出されずに空の担当者フィールドを含む payload が返される。
+      - paragraph:
+        - text: 同梱の単体テストが
+        - code: "Failed: DID NOT RAISE <class 'CreationHeld'>"
+        - text: で即座に失敗する。また実環境でも kintone API から 400 バリデーションエラー（必須項目未入力）が返り異常終了する。
+    - paragraph:
+      - text: "修正案:"
+      - code: adapters.py
+      - text: の
+      - code: db_key == 'action'
+      - text: の分岐内で、担当者フィールドが必須かつ
+      - code: owner
+      - text: が空配列の場合に保留例外を発生させます。
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code: "if db_key == 'action': from src.hub_creation.action_kintone import action_actors, action_service, comment_with_actor from src.record_merge.creation_candidates import creation_context owner, names = action_actors(properties, creation_context()) if bool(fields.get(owner_code, {}).get('required')) and not owner: raise CreationHeld('担当者フィールドが必須のため作成を保留します') payload['service'] = action_service(properties, fields) if names: payload['comment'] = comment_with_actor(payload.get('comment'), names)"
+  - heading "2. CRLF（ \\r\\n ）改行コードによる実担当者補足枠の「破損」誤判定と同期停止" [level=4]:
+    - text: 2. CRLF（
+    - code: \r\n
+    - text: ）改行コードによる実担当者補足枠の「破損」誤判定と同期停止
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/hub_creation/action_kintone.py
+      - text: (
+      - code: split_comment
+      - text: 関数)
+    - paragraph:
+      - text: "概要:"
+      - code: block.split('\n')
+      - text: を用いて固定行数を比較していますが、ブラウザ（Windows等）、Webhook ペイロード、API 経由でコメントに
+      - code: \r\n
+      - text: が含まれていた場合、
+      - code: lines[0]
+      - text: が
+      - code: "'【CRM同期:実担当者】\\r'"
+      - text: となり、
+      - code: lines[0] != BEGIN
+      - text: の判定に引っかかります。その結果、正常な補足枠であるにもかかわらず「破損」と誤判定されます。
+    - paragraph: "再現経路:"
+    - list:
+      - paragraph:
+        - text: kintone または Notion 上で、Windows クライアント等から改行コード
+        - code: \r\n
+        - text: を含むコメントが送信される。
+      - paragraph:
+        - text: kintone → Notion 同期時、
+        - code: _action_comment_body
+        - text: 内で
+        - code: split_comment
+        - text: が呼ばれ
+        - code: ValueError('実担当者の補足枠が破損しています')
+        - text: が発生する。
+      - paragraph:
+        - text: 例外ハンドラにより
+        - code: SKIP_FIELD
+        - text: が返され、Notion へのコメント同期が一切行われなくなる。
+      - paragraph:
+        - text: Notion → kintone 同期時、
+        - code: preserve_comment
+        - text: が 422
+        - code: ApiError
+        - text: を送出し、同期ジョブが停止する。
+    - paragraph:
+      - text: "修正案:"
+      - code: split_comment
+      - text: 内で改行コードを LF に統一した上で判定を行います。また、本文と枠の間の改行除去も CRLF に対応させます。
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code:
+      - generic: "def split_comment(value):"
+      - text: "value = '' if value is None else value if not isinstance(value, str): raise ValueError('履歴メモの形式を確認してください') # 改行コードの正規化 value = value.replace('\\r\\n', '\\n').replace('\\r', '\\n') if BEGIN not in value and END not in value: return value, '' if value.count(BEGIN) != 1 or value.count(END) != 1: raise ValueError('実担当者の補足枠が重複または破損しています') start, finish = value.index(BEGIN), value.index(END) if finish < start: raise ValueError('実担当者の補足枠が破損しています') block = value[start:finish + len(END)] lines = block.split('\\n') if len(lines) != 3 or lines[0] != BEGIN or lines[-1] != END or not lines[1].startswith('実担当者: '): raise ValueError('実担当者の補足枠が破損しています') if not lines[1][len('実担当者: '):].strip(): raise ValueError('実担当者の補足枠が空です') prefix = value[:start] if prefix.endswith('\\n\\n'): prefix = prefix[:-2] return prefix + value[finish + len(END):], block"
+  - heading "【WARN】（運用リスク・潜在的不具合）" [level=3]
+  - heading "1. comment_with_actor での未処理 ValueError 送出リスク" [level=4]:
+    - text: "1."
+    - code: comment_with_actor
+    - text: での未処理
+    - code: ValueError
+    - text: 送出リスク
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/hub_creation/action_kintone.py
+      - text: (
+      - code: comment_with_actor
+      - text: 関数)
+    - paragraph:
+      - text: "概要: Notion 側でユーザーが作成した新規メモ内に、たまたま不正な形式のタグ（例:"
+      - code: BEGIN
+      - text: のみ記載など）が含まれていた場合、冒頭の
+      - code: split_comment(value)
+      - text: が
+      - code: ValueError
+      - text: を送出します。作成フロー（
+      - code: adapters.py
+      - text: ）ではこの
+      - code: ValueError
+      - text: をハンドリングしていないため、
+      - code: CreationHeld
+      - text: による業務保留にならず、未処理例外（HTTP 500 / クラッシュ）として処理が落ちます。
+    - paragraph:
+      - text: "再現経路: 新規アクション登録時の Notion「履歴メモ」本文に"
+      - code: 【CRM同期:実担当者】
+      - text: だけが含まれていた場合、
+      - code: plan
+      - text: 処理全体が未処理例外で終了する。
+    - paragraph:
+      - text: "修正案:"
+      - code: comment_with_actor
+      - text: 内で
+      - code: split_comment
+      - text: からの
+      - code: ValueError
+      - text: を捕捉し、
+      - code: CreationHeld
+      - text: にラップして返します。
+    - generic: Python
+    - button "コードをダウンロードする":
+      - img: arrow_circle_down
+    - button "コードをコピー":
+      - img: copy
+    - code:
+      - generic: "def comment_with_actor(value, names):"
+      - text: "try: body, block = split_comment(value) except ValueError as exc: raise CreationHeld("
+      - generic: "f'履歴メモの形式を確認してください: {exc}'"
+      - text: ") from None if block: raise CreationHeld('新規作成の履歴本文に実担当者の補足枠が含まれています') ..."
+  - heading "2. kintone_sync.py におけるレコード再取得の冗長性と競合リスク" [level=4]:
+    - text: "2."
+    - code: kintone_sync.py
+    - text: におけるレコード再取得の冗長性と競合リスク
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/sync_engine/sync_targets/kintone_sync.py
+      - text: (116–133行目)
+    - paragraph:
+      - text: "概要:"
+      - code: comment
+      - text: の保持処理内で
+      - code: current = self._client.get_record(self._app, external_id)
+      - text: を実行した後、後続の
+      - code: notes = _memo_choices(...)
+      - text: 処理内でも再度
+      - code: get_record
+      - text: を呼び出しています。同一トランザクション内での重複呼び出しは API コストを浪費するだけでなく、取得の合間に別更新が入った場合に
+      - code: $revision
+      - text: と
+      - code: expected_version
+      - text: の不整合を引き起こす要因になります。
+    - paragraph:
+      - text: "修正案: 同期処理冒頭ですでに"
+      - code: current
+      - text: レコードを取得している場合は、それを再利用するようにスコープを整理してください。
+  - heading "3. service.py における creation_context の直接変更とスコープ汚染" [level=4]:
+    - text: "3."
+    - code: service.py
+    - text: における
+    - code: creation_context
+    - text: の直接変更とスコープ汚染
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/hub_creation/service.py
+      - text: (222–224行目)
+    - paragraph:
+      - text: "概要:"
+      - code: creation_context()['action_created_by'] = ...
+      - text: とコンテキスト辞書を直接更新していますが、例外発生時やコンテキストブロック脱出時にこのキーがクリーンアップされる保証がありません。同一ワーカープロセスで後続の別レコード処理が行われた際に、前回の作成者情報が残存・誤適用される懸念があります。
+    - paragraph:
+      - text: "修正案:"
+      - code: candidate_context
+      - text: の引数経由でコンテキストに値を安全に渡すか、
+      - code: try...finally
+      - text: ブロックで確実にキーを破棄する構造に改善してください。
+  - heading "【INFO】（改善提案・仕様合致確認）" [level=3]
+  - heading "1. フィールドコード 'cnctorMember' のハードコード" [level=4]:
+    - text: 1. フィールドコード
+    - code: "'cnctorMember'"
+    - text: のハードコード
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/hub_creation/adapters.py
+      - text: (390行目付近)
+    - paragraph:
+      - text: "内容:"
+      - code: code == 'cnctorMember'
+      - text: と特定フィールドコードがハードコードされています。直前で使用されている変数
+      - code: owner_code
+      - text: を用いて
+      - code: code == owner_code
+      - text: と比較することで、フィールド定義変更への追従性を高めることができます。
+  - heading "2. 設定 JSON 不正時のデバッグ可能性向上" [level=4]
+  - list:
+    - paragraph:
+      - text: "該当箇所:"
+      - code: src/hub_creation/action_kintone.py
+      - text: (
+      - code: action_actors
+      - text: 関数)
+    - paragraph:
+      - text: "内容:"
+      - code: CRM_ACTION_ACTORS_JSON
+      - text: のパース失敗、作成者不一致、UUID 形式不正がすべてまとめて
+      - code: "except (ValueError, KeyError, TypeError, AttributeError):"
+      - text: で
+      - code: CreationHeld
+      - text: "に集約されています。セキュリティ上ユーザー向けエラーメッセージを統一するのは妥当ですが、障害調査を迅速化するため、不一致の理由（例: 作成者UUID不一致、未登録の原本IDなど）を内部ログ（"
+      - code: logger.warning
+      - text: ）として出力しておくことを推奨します。
+  - heading "3. 既存要件に対する評価結果" [level=4]
+  - list:
+    - paragraph:
+      - text: "kintone アカウントのない担当者の置換防止: 仕様通り、kintone コードを持たない担当者を管理者（"
+      - code: fallback_notion_id
+      - text: ）に置換せず、全員の表示名をコメント枠へ回す設計になっています。
+    - paragraph:
+      - text: "既存 Zoho 登録の再送防止:"
+      - code: tests/hub_creation/test_action_kintone.py
+      - text: の検証通り、既存
+      - code: zoho_id
+      - text: が存在する場合は計画・作成がスキップされ、kintone 側のみ補完される既存設計と合致しています。
+    - paragraph:
+      - text: "原本限定の承認設定・作成者照合:"
+      - code: CRM_ACTION_ACTORS_JSON
+      - text: において、
+      - code: expected_created_by
+      - text: と原本
+      - code: page_id
+      - text: の双方が完全一致した場合のみ適用されるセーフガードが機能しています。
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"

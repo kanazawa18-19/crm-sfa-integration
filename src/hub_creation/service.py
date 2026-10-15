@@ -219,6 +219,9 @@ class HubCreationService:
                             else:
                                 from src.record_merge.creation_candidates import candidate_context
                                 with candidate_context(event.db_key, page_id, source_key, properties):
+                                    if event.db_key == 'action':
+                                        from src.record_merge.creation_candidates import creation_context
+                                        creation_context()['action_created_by'] = creation_page_snapshot.get('created_by', {}).get('id')
                                     payload = adapter.plan(event.db_key, properties)
                                     scan = getattr(adapter, 'duplicate_scan', None)
                                     if scan is not None and scan.exists():
