@@ -20,7 +20,7 @@ def response(data):
      {'Deal_Name':'text','Closing_Date':'date','field5':'picklist','field42':'date','field65':'multiselectpicklist','Account_Name':'lookup','field10':'lookup'}),
     ('product', {'名前':'検証商品','商品カテゴリー':'メイリー','標準初期費用':0,'標準月額費用':0,'先方担当者':['contact'],'案件管理':['project']},
      {'Product_Name':'text','Product_Category':'picklist','field':'integer','field1':'integer','field7':'lookup','field12':'lookup'}),
-    ('action', {'商談回数・電話回数・メール回数（何回目）':'検証連絡','履歴メモ':'検証','先方担当者':'担当','アクション日':'2026-09-28','👨‍👩‍👧‍👦 取引先マスター':['client']},
+    ('action', {'商談回数・電話回数・メール回数（何回目）':'検証連絡','履歴メモ':'検証','先方担当者':'担当','アクション日':'2026-09-28','👨‍👩‍👧‍👦 取引先マスター':['11111111-1111-1111-1111-111111111111']},
      {'Name':'text','field':'textarea','field2':'text','field4':'date','field6':'lookup'}),
 ])
 def test_zoho_six_creation_routes(db, properties, required):
@@ -34,7 +34,7 @@ def test_zoho_six_creation_routes(db, properties, required):
             if '/settings/layouts?' in path:
                 return response({'layouts':[{'sections':[{'fields':[]}]}]})
             return response({'data':[], 'info':{'more_records':False}})
-    store = SimpleNamespace(get=lambda key: SimpleNamespace(db_key={'client':'client_master','contact':'contact','project':'project'}[key], zoho_id='123'))
+    store = SimpleNamespace(get=lambda key: SimpleNamespace(db_key={'client':'client_master','11111111-1111-1111-1111-111111111111':'client_master','contact':'contact','project':'project'}[key], zoho_id='123'))
     adapter = ZohoCreationAdapter(Client(), store)
     # 任意項目も型確認するため、マッピング済み項目の実型を補う。
     from src.sync_engine.outbound_field_mapping import translate_properties, zoho_outbound_field_names
@@ -55,7 +55,7 @@ def test_zoho_six_creation_routes(db, properties, required):
     ('client_master', {'取引先名':'検証'}, {'顧客名':{'type':'SINGLE_LINE_TEXT','unique':True,'required':True}}),
     ('project', {'案件名':'検証','作成日':'2026-09-28','契約予定日':'2026-10-01','担当メンバー':['user']},
      {'店舗名':{'type':'SINGLE_LINE_TEXT','required':True},'日付_0':{'type':'DATE','required':True},'日付':{'type':'DATE','required':True},'営業担当者':{'type':'USER_SELECT','required':True}}),
-    ('action', {'履歴メモ':'検証','担当営業':['user'],'提案サービス':['メイリー'],'👨‍👩‍👧‍👦 取引先マスター':['client']},
+    ('action', {'履歴メモ':'検証','担当営業':['user'],'提案サービス':['メイリー'],'👨‍👩‍👧‍👦 取引先マスター':['11111111-1111-1111-1111-111111111111']},
      {'comment':{'type':'MULTI_LINE_TEXT','required':True},'cnctorMember':{'type':'USER_SELECT','required':True},'service':{'type':'MULTI_SELECT','required':True,'options':{'メイリー':{}}},'client_name':{'type':'SINGLE_LINE_TEXT','required':True}}),
 ])
 def test_kintone_three_creation_routes(db, properties, fields, monkeypatch):
@@ -117,7 +117,7 @@ def test_action_unfinished_owner_rollup_does_not_use_fallback(monkeypatch):
         _timeout=1, _max_retries=0, _backoff_base=0)
     adapter = KintoneCreationAdapter({'action': SimpleNamespace(_client=client, _app='1')})
     with pytest.raises(CreationHeld, match='集計が未確定'):
-        adapter.plan('action', {'提案サービス': ['メイリー']})
+        adapter.plan('action', {'提案サービス': ['メイリー'], '👨‍👩‍👧‍👦 取引先マスター': ['11111111-1111-1111-1111-111111111111']})
 
 
 def test_unverified_owner_directory_holds_even_optional_owner(monkeypatch):

@@ -312,7 +312,8 @@ def test_sheet_action_reads_confirmed_rollups_after_notion_creation():
     class Sheet:
         def read(self, *args, **kwargs):
             return {'商談回数・電話回数・メール回数（何回目）': '検証連絡',
-                    'アクション種別': 'テレアポ', '担当営業': '未確定入力'}, 12, 9
+                    'アクション種別': 'テレアポ', '担当営業': '未確定入力',
+                    '👨‍👩‍👧‍👦 取引先マスター': ['11111111-1111-1111-1111-111111111111']}, 12, 9
         def update(self, *args, **kwargs): return 9
     service.sheet_gateway = Sheet()
     adapter.target = 'kintone'

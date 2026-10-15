@@ -1,0 +1,323 @@
+Gemini 思考モード
+https://gemini.google.com/app/90ea1acda5d62571?hl=ja
+
+
+BLOCKER
+
+Zoho COQL API の取得上限超過（limit 0,2000）によるクエリエラー
+
+対象コード: src/hub_creation/duplicate_scan.py (_page メソッド)   
+TXT
+
+具体的な再現条件: Zoho 側のアクションが 2,000 件を超え、ZohoCreationAdapter._check_action_duplicates から ZohoDuplicateScan.check() が呼び出されて COQL クエリが発行された場合。   
+TXT
+
+問題点と影響: Zoho CRM COQL API の仕様上、1 リクエストあたりに指定可能なレコード取得件数（limit）の上限は最大 200 件です。現行コードの limit 0,2000 は Zoho 実機 API では不正クエリ（400 Bad Request: INVALID_QUERY / LIMIT_EXCEEDED）となり即座に失敗します。合成テストではモックが素通ししていたため発覚していませんが、本番環境では COQL 実行時に ApiError が発生し、スキャンが state='held' に固定されて新規アクションの作成が完全に停止します。   
+TXT
+他 1 件
+
+修正案:
+COQL のクエリ上限を limit 0,200 に変更し、レスポンス検証も 200 件基準に合わせてページ送りを行う構成に修正してください。
+
+Python
+# src/hub_creation/duplicate_scan.py
+query = f"select id,{','.join(fields)} from {module} where {condition} order by id asc limit 0,200"
+...
+records, info = body.get('data'), body.get('info')
+if (not isinstance(records, list) or len(records) > 200 or not isinstance(info, dict)
+        or type(info.get('more_records')) is not bool):
+    raise CreationHeld('外部の照合ページを確認できません')
+
+
+Zoho レコード 0 件時（HTTP 204 No Content）における一覧照合の異常保留
+
+対象コード: src/hub_creation/adapters.py (_check_action_duplicates メソッド)   
+TXT
+
+具体的な再現条件: Zoho CRM の該当モジュールにアクションレコードが 1 件も登録されていない初期環境、または該当データが存在しない状態で新規アクションを作成しようとした場合。   
+TXT
+
+問題点と影響: Zoho CRM REST API（GET 一覧）は対象レコードが 0 件の際に HTTP 204 No Content を返します。ZohoCreationAdapter._get は 204 応答に対して空辞書 {} を返す仕様ですが、_check_action_duplicates では records, info = data.get('data'), data.get('info') としているため双方が None となります。その結果、直後の if not isinstance(records, list) ... に合致し、本来重複候補がなく安全に作成可能な状態であるにもかかわらず CreationHeld('外部アクションの一覧照合結果を確認できません') が送出され、1 件目の作成が永久にブロックされます。   
+TXT
+他 1 件
+
+修正案:
+data が空辞書（204 応答）の場合は重複候補なしとして早期リターンするか、空リストと安全なフラグで初期化してください。
+
+Python
+# src/hub_creation/adapters.py
+records = data.get('data') if data else []
+info = data.get('info') if data else {'more_records': False}
+if data and (not isinstance(records, list) or len(records) > 200 or not isinstance(info, dict)
+        or type(info.get('more_records')) is not bool):
+    raise CreationHeld('外部アクションの一覧照合結果を確認できません')
+
+WARN
+
+zoho_matcher における field6（取引先）が None の場合の未捕捉 AttributeError
+
+対象コード: src/hub_creation/action_identity.py (zoho_matcher 関数)   
+TXT
+
+具体的な再現条件: 送信前 payload の field6 キーに値として None が入っている状態で zoho_matcher(payload) が実行された場合。   
+TXT
+
+問題点と影響: Python の dict.get(k, default) は、キーが存在して値が None の場合にデフォルト値を返さず None を返します。そのため payload.get('field6', {}).get('id') は None.get('id') となり、未捕捉の AttributeError が発生します。直後で CreationHeld('アクションの取引先のZoho IDを確認してください') を送出する分岐が用意されているにもかかわらず、その前にシステム例外（500 系）として中断してしまいます。   
+TXT
+他 1 件
+
+修正案:
+or {} を挟むことで値が None の場合でも安全に辞書として扱えるように修正してください。
+
+Python
+# src/hub_creation/action_identity.py
+expected_id = (payload.get('field6') or {}).get('id')
+if not isinstance(expected_id, str) or not expected_id:
+    raise CreationHeld('アクションの取引先のZoho IDを確認してください')
+
+
+KintoneCreationAdapter.plan における client_name（顧客名）取得構造の不整合
+
+対象コード: src/hub_creation/adapters.py (KintoneCreationAdapter.plan メソッド)   
+TXT
+
+具体的な再現条件: 👨‍👩‍👧‍👦 取引先マスター に紐づく kintone 顧客レコードを取得した際、kintone 標準のフィールド辞書形式（{'顧客名': {'value': '...'}}）で返ってきた場合。   
+TXT
+
+問題点と影響: 同一クラス内の他箇所（416行目 native['value'] や 427行目 $id.value）では kintone の標準形式である record[field]['value'] 構造を前提にパースしています。しかし 395 行目では isinstance(record.get('顧客名'), str) と生文字列型のみをチェックしているため、API クライアントが生の kintone レコードを返した場合に条件が合致せず、payload['client_name'] が欠落します。その結果、後続の照合チェック（406 行目）で CreationHeld('重複確認用の名前が未入力です') が発生して作成処理が失敗します。   
+TXT
+他 2 件
+
+修正案:
+dict 構造と文字列の双方を受け入れられるように修正してください。
+
+Python
+# src/hub_creation/adapters.py
+raw_client = record.get('顧客名')
+client_name = raw_client.get('value') if isinstance(raw_client, dict) else raw_client
+if isinstance(client_name, str) and client_name:
+    payload['client_name'] = client_name
+
+
+action_day におけるスペース区切り日時文字列のパース失敗
+
+対象コード: src/hub_creation/action_identity.py (action_day 関数)   
+TXT
+
+具体的な再現条件: アクション日 に 'YYYY-MM-DD HH:MM:SS' などのスペース区切りの日時文字列が渡された場合。   
+TXT
+
+問題点と影響: 日時文字列かどうかの判定が 'T' in value に限定されているため、スペース区切りの場合に date.fromisoformat(value) 側へ流れます。Python の date.fromisoformat は日付のみ（YYYY-MM-DD）を要求し、時刻が含まれると ValueError を送出するため、正当な日時表記であるにもかかわらず CreationHeld('アクション日の形式を確認してください') として保留されてしまいます。   
+TXT
+他 1 件
+
+修正案:
+スペース区切りも時刻付きとして扱い、datetime.fromisoformat 経由で暦日を抽出するように修正してください。
+
+Python
+# src/hub_creation/action_identity.py
+return (datetime.fromisoformat(value.replace('Z', '+00:00')).date().isoformat()
+        if ('T' in value or ' ' in value) else date.fromisoformat(value).isoformat())
+
+
+_check_action_duplicates における一時通信エラーのハンドリング欠落
+
+対象コード: src/hub_creation/adapters.py (_check_action_duplicates メソッド)   
+TXT
+
+具体的な再現条件: 通常一覧のページ送り照合（1〜10 ページ）の通信中に、ネットワーク瞬断やタイムアウトが発生した場合。   
+TXT
+
+問題点と影響: _check_list_duplicates では try...except により TimeoutError やネットワーク例外を捕捉して CreationHeld へラップしていますが、新設された _check_action_duplicates では保護されていません。そのため例外がそのまま外周の except Exception: まで漏れ、「通信・保存の確認が必要です」として再試行されない停止保留（state='blocked'）へ移行してしまいます。   
+TXT
+他 1 件
+
+修正案:
+_check_list_duplicates と同様の例外捕捉を組み込んでください。
+
+Python
+# src/hub_creation/adapters.py
+for page in range(1, 11):
+    try:
+        data = self._get(...)
+        ...
+    except CreationHeld:
+        raise
+    except Exception:
+        raise CreationHeld("外部アクションの一覧を最後まで取得できません。作成を保留します") from None
+
+INFO
+
+kintone 連携における取引先マスター未連携時のエラーメッセージ具体化
+
+対象コード: src/hub_creation/adapters.py (KintoneCreationAdapter.plan メソッド)   
+TXT
+
+具体的な再現条件: 取引先マスターが kintone に未連携（mapping なし、または mapping.kintone_id なし）の状態で、アクションの作成処理が行われた場合。   
+TXT
+
+内容: 現行コードでは payload['client_name'] がセットされないまま後続に進み、「重複確認用の名前が未入力です」とエラー表示されます。管理者や利用者に「取引先マスターの kintone 側同期が完了していないこと」が直感的に伝わらないため、未解決時は明示的な保留理由を返すように改善することを推奨します。   
+TXT
+
+修正案:
+
+Python
+# src/hub_creation/adapters.py
+if not payload.get('client_name'):
+    raise CreationHeld('アクションの取引先マスターがkintoneに未登録です。取引先の同期完了を確認してください')
+
+
+合成テストモックにおける実機制約のシミュレーション不足
+
+対象コード: tests/hub_creation/test_action_identity.py
+
+   
+TXT
+
+具体的な再現条件: 合成テスト実行時。   
+TXT
+
+内容: テストモック（tests/hub_creation/test_duplicate_scan.py 等）において、Zoho の 204 No Content 応答や COQL の limit <= 200 制約が検証されておらず、本番 API との挙動乖離が検出できていません。Zoho 側 0 件時の 204 応答テストケース、および COQL クエリに limit 0, 200 を超える値が渡された場合に失敗させるバリデーションをモック側へ追加してください。   
+TXT
+
+
+
+
+
+
+Claude Opus 5.5 中
+https://claude.ai/chat/45399259-a393-4c8c-a34e-de2a6f4f4f39
+
+レビュー結果です。今回の差分で、本番反映を止めるべき BLOCKER は見つかりませんでした。WARN が5件、INFO が7件です。
+タイムアウト時のチェックポイント上書きリスクを検討中。
+
+タイムアウト時のチェックポイント上書きリスクを検討中。
+
+レビュー結果です。今回の差分で、本番反映を止めるべき BLOCKER は見つかりませんでした。WARN が5件、INFO が7件です。
+
+ID	重要度	概要
+W1	WARN	Zohoのplan冒頭で時間切れになると、defer() が進行中・保留中の分割照合のしおりを上書きする（今回の差分による退行）
+W2	WARN	原本の再通知が、後から作られた重複ページに阻まれて保留される
+W3	WARN	同日・同内容の正当な複数接触が恒久的に保留され、業務上の解除手段がない
+W4	WARN	シート経路で取引先UUIDとISO形式の日付が必須になったため、実際のシート値の形式次第でシート登録のアクションが全件保留になる
+W5	WARN	Notion候補の照合で、照合に使わない項目まで解析している。無関係な過去履歴1件の不具合で、その取引先の新規アクションがすべて止まりうる
+I1〜I7	INFO	実APIでの確認事項、正規化、上限、テスト追加など
+
+【W1】plan冒頭の actionComparison 削除と defer() の組み合わせで、照合のしおりが消える
+
+該当箇所: adapters.py の ZohoCreationAdapter.plan と duplicate_scan.py の defer / scan_input_hash
+
+再現条件:
+
+Zohoのアクションが2000件を超え、分割照合が複数回の実行にまたがって進んでいる。journal の行は inputHash=H1（actionComparison を含むハッシュ）、たとえば phase=full, last_id=8000 の状態。
+次の実行で、plan() 冒頭の context.pop('actionComparison') の後、/settings/fields か /settings/layouts の取得中に http_budget(60) を超える（429 待機などで発生しうる）。
+except HttpBudgetExceeded から defer() が呼ばれる。この時点の context には actionComparison がないため、fingerprint は H0 になり H1 と一致しない。
+その結果、checkpoint = {'phase':'full','last_id':'0',...} で行が上書きされ、last_id=8000 までの進捗が失われる。次の check() でも H1≠H0 なので、また先頭からやり直しになる。
+
+もう一つの影響として、行が state='held'（6回進まず、通信失敗3回など、手動での再通知が必要な状態）でも、ハッシュが一致しないため早期 return されず、pending に上書きされます。手動再通知を必須にする仕組みを、メタデータ取得の時間切れだけで素通りできてしまいます。
+
+差分前は defer と check が同じ digest(context) を使っていたため、この問題は起きていませんでした。既存テスト test_old_action_checkpoint_..._defer_first と test_changed_external_mapping_..._defer_first は、比較条件がない状態で既存の行がある組み合わせを通っていません。
+
+修正案: 比較条件が未確定の時点での defer は、既存の行に触れないようにします。
+
+
+python
+def defer(self):
+    context = creation_context()
+    if context is None:
+        return
+    if context['dbKey'] == 'action' and 'actionComparison' not in context:
+        # 比較条件が確定する前の時間切れ。既存のしおり・held状態を壊さない。
+        return
+    ...
+
+あわせて、「H1 の held 行がある状態で、比較条件のない defer を呼んでも行が変わらない」ことを確かめるテストを追加してください。
+
+【W2】原本の再通知が、後発の重複ページに阻まれる
+
+該当箇所: service.py の _check_creation_duplicates（Notion経路では毎回実行される）
+
+再現条件:
+
+Notionでアクション A を作成する。Zohoへの作成は成功し、kintoneは担当者対応が未設定のため target 単位で保留になる。
+誰かが A と同じ内容の B を作成する。B は Notion 照合で A を見つけ、source 単位で保留になる。ここまでは仕様どおりです。
+管理者が kintone の担当者対応を設定し、A を再通知する。
+A の Notion 照合が self_id=A で B を見つけるため、A 自身も source 単位で保留される。その結果、A の kintone 作成は B をアーカイブするまで進みません。
+
+アクションの場合、以前は「タイトルが同じ」という条件だったため、このケースはほとんど起きませんでした。内容一致に変えたことで、発生しやすくなっています。
+
+修正案（どちらか、または両方）:
+
+自分の source_key に created または reserved の attempt が1件でもあれば、その原本は既に作成を開始済みとみなし、Notion照合を省略する。
+一致した候補が自分より後に作られたもの（created_time が新しい、または同時刻で ID が大きい）であれば、保留しない。後発の側だけを止めます。
+
+【W3】同日・同内容の正当な複数接触に解除手段がない（業務判断が必要）
+
+再現条件: 同じ取引先に同じ日、テレアポを2回かけて2回とも不在だったケースです。種別、メモ「担当者不在」、先方担当者がすべて同じで、案件はなし。タイトルは「1回目」と「2回目」で異なります。
+
+2回目は Notion 照合で保留されます。この保留は CreationHeld を直接送出していて、hold_duplicate を経由しないため、管理画面の候補に出ず、見送り操作ができません。
+仮に Notion 照合を通過しても、Zoho と kintone では1回目の created 予約と同じ fingerprint になります。そのため reserve が一意制約で False になり、恒久的に保留されます。Zoho の候補を管理画面で見送っても解除されません。
+
+「同内容の別原本は保守的に保留する」という仕様には沿っています。ただ、架電履歴では日常的に起きるパターンなので、利用者はメモの文言を変えて回避するしかない状態です。
+
+修正案（業務判断のうえで選択）:
+
+管理者が「別の接触として承認」した原本だけ、fingerprint に承認IDを加えて一意制約から外す（監査ログに記録する）。
+または、運用ルールとして「同日の再接触はメモに時刻や回数を書く」ことをシートとNotionの入力説明に明記し、保留メッセージにも書き方を案内する。
+
+【W4】シート経路の入力形式（実データでの確認が必要）
+
+シート経路では、title_value の直後に _creation_fingerprint → identity が呼ばれるようになりました。sheet_properties の戻り値が次のいずれかに当たる場合、シート登録のアクションは全件保留になります。
+
+取引先がUUIDではなく顧客名やラベルになっている（テストでも ‘client’ から UUID に書き換えています）
+アクション日が 2026/10/13 や 10/13 の形式（action_day は ISO 形式しか受け付けません）
+
+テストはすべて合成の ISO 値と UUID です。本番シートの実際の値で sheet_properties の出力を確認してください。必要であれば、action_day で / 区切りを受け付けるか、sheet_properties 側でISO形式に正規化してください。
+
+【W5】Notion候補を全項目解析している
+
+候補ごとに _creation_properties を呼んでいるため、照合に使わない全項目の parse_notion_property_value と、担当営業・提案サービスの creation_rollup まで実行されます。無関係な過去のアクション1件でこれらが例外を出すと（照合キー以外の項目の型変更、ロールアップの異常値など）、その取引先の新規アクションがすべて保留されるか、汎用例外として扱われます。
+
+修正案: 候補には validate_notion_identity と照合に使う6項目だけの抽出を行う軽量関数を使ってください。原本と候補で同じ抽出規則を使うという方針は、その関数を共通化すれば維持できます。
+
+INFO
+
+I1. Zoho の実際の応答形式を本番前に確認してください。zoho_matcher は5項目のキーが欠けていると保留します。値が null の項目について、Records API（fields 指定時）と COQL がキーを省略せずに null を返すこと、また COQL で textarea 項目 field を全文 select できることを、実際のテナントで確認してください。どちらかが満たされない場合、安全側ではありますが全件保留になります。
+
+I2. 文字の正規化について。NFKC と前後の空白除去だけでは、Zoho 上で直接登録された履歴に含まれる CRLF と LF の違い、連続した空白・改行の違いを吸収できず、重複を見逃します。比較時だけ \r\n→\n に変換し、行末の空白を除去することを検討してください。fingerprint の正規化を変える場合は、VERSION を上げてください。
+
+I3. 「同内容で案件だけ違う」組み合わせの並行防止について。fingerprint には案件名が含まれるため、Zoho側で同内容・別案件の2件が来ても journal の一意制約では止まりません。現状は hub-create:zoho の送り先ロックによる直列化と、一覧照合の即時反映に頼っています。実害は小さいと見ていますが、Zoho と kintone の予約だけ案件名を除いたハッシュにすれば、仕様の「同内容の並行予約防止」と完全に一致します。
+
+I4. Notion照合の上限と負荷について。照合は取引先単位で最大1万件です。それを超える取引先では恒久的に保留になり、件数が多い取引先ほど毎回のクエリ数が増えます。アクション日の前後1日でフィルタを加え、暦日の最終判定はコード側で行えば軽くなります。ただし日付が空欄の原本はフィルタできないため、その場合だけ従来の全件照合にしてください。
+
+I5. 日付について。日付が空欄の原本も照合キーとしては成立するため、日付のない同内容の接触はすべて同一とみなされます（W3 と同じ性質です）。また、日付の終了日は無視しています。これらが意図どおりであれば問題ありません。payload の field4 から時刻を落とすようになり、Zoho へ送る値が変わる点も、リリースノートに記載しておくとよいです。
+
+I6. 重複した呼び出しについて。Zoho と kintone の plan 冒頭にある identity(properties) は、service 側で既に検証済みなので防御的な重複です。kintone では supports_database より先に呼ばれていますが、アクションは対応済みのDBなので、現状は影響ありません。
+
+I7. 追加を勧めるテスト:
+
+W1: held 行がある状態で、比較条件のない defer を呼ぶ
+W2: 後発の重複がある状態での原本の再通知
+Zoho 候補の見送り後も、一意制約で恒久保留になることの明示（W3 の仕様確認として）
+CRLF のメモと LF のメモの比較
+シート経路で 2026/10/13 形式の日付を渡した場合の挙動
+
+kintone の比較基準は、payload の全項目一致のままで、identity とは揃っていません。これは「業務判断待ち」として了解済みと理解しています。
+
+
+
+
+
+
+9 分前
+
+返信
+
+
+
+
+
+
+
+
+

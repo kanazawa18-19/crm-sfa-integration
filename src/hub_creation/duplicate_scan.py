@@ -18,6 +18,14 @@ MAX_TRANSIENT_FAILURES = 3
 MAX_NO_PROGRESS_RUNS = 6
 
 
+def scan_input_hash(context):
+    # 照合方法の変更前に通過した区間を、変更後の検証済み区間に流用しない。
+    if context['dbKey'] == 'action':
+        from src.hub_creation.action_identity import VERSION
+        return digest({'context': context, 'matcherVersion': VERSION})
+    return digest(context)
+
+
 def utc_second():
     return datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -40,8 +48,12 @@ class ZohoDuplicateScan:
         context = creation_context()
         if context is None:
             return
-        fingerprint = digest(context)
         row = self.journal.get(context['sourceKey'])
+        # メタデータ取得途中の時間切れでは、比較条件の変更をまだ判定できない。
+        # 前回の進捗・手動確認待ちを保ち、条件確定後のcheckで再開位置を決める。
+        if context['dbKey'] == 'action' and 'actionComparison' not in context and row is not None:
+            return
+        fingerprint = scan_input_hash(context)
         if row and row['inputHash'] == fingerprint and row['state'] == 'held':
             return  # 手動再通知後のcheckで、保留した差分窓を正しく初期化する。
         checkpoint = (row['checkpoint'] if row and row['inputHash'] == fingerprint else
@@ -52,7 +64,12 @@ class ZohoDuplicateScan:
         context = creation_context()
         if context is None or context['dbKey'] != db_key:
             raise CreationHeld('大規模照合の登録元を確認できません')
-        fingerprint = digest(context)
+        if db_key == 'action':
+            comparison = getattr(matches, 'comparison', None)
+            if comparison is None:
+                raise CreationHeld('アクションの外部比較条件を確認できません')
+            context['actionComparison'] = comparison
+        fingerprint = scan_input_hash(context)
         row = self.journal.get(context['sourceKey'])
         now = utc_second()
         if row is None or row['inputHash'] != fingerprint:
@@ -84,7 +101,8 @@ class ZohoDuplicateScan:
                         prior = int(identifier)
                         if matches(record):
                             hold_duplicate('zoho', db_key, identifier, record,
-                                '外部に名前またはメールが一致する候補があります。比較してください',
+                                ('外部に取引先・日付・内容が一致するアクション候補があります。比較してください'
+                                 if db_key == 'action' else '外部に名前またはメールが一致する候補があります。比較してください'),
                                 fetch=lambda identifier=identifier: self.client.get_record(module, identifier))
                     # 候補確認・応答検証が終わるまでページの先へしおりを進めない。
                     if more and not records:

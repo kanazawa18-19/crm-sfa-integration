@@ -105,16 +105,17 @@ class HubCreationService:
                 values, _metadata, _row = self.sheet_gateway.read(sheet, event.registration_key, accepted_key=accepted_key)
                 properties = sheet_properties(event.db_key, values)
                 name, title = title_value(event.db_key, properties)
-                fingerprint = identity_hash(event.db_key, title)
+                fingerprint = self._creation_fingerprint(event.db_key, title, properties)
                 attempt = self.journal.get(source_key, "notion")
                 if attempt and attempt["state"] == "created":
                     page_id = attempt["externalId"]
                 elif attempt and attempt["state"] == "reserved":
                     raise CreationHeld("Notionへの作成結果が不明です。再作成せず確認を待っています")
                 else:
-                    self._check_notion_duplicates(client, name, title)
+                    self._check_creation_duplicates(event.db_key, client, name, title, properties)
                     if not self.journal.reserve(source_key, "notion", event.db_key, fingerprint):
-                        raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
+                        raise CreationHeld("同じ内容のアクション登録が進行中、または既に登録されています"
+                                           if event.db_key == "action" else "同じ名前の登録が進行中、または既に登録されています")
                     # 予約後の失敗はreservedのまま残し、二度目のPOSTを禁止する。
                     page_id = client.create_page_once(properties)
                     self.journal.finish(source_key, "notion", page_id)
@@ -149,8 +150,8 @@ class HubCreationService:
                         raise CreationHeld(reason)
                 require_notion_fields(event.db_key, properties)
                 name, title = title_value(event.db_key, properties)
-                fingerprint = identity_hash(event.db_key, title)
-                self._check_notion_duplicates(client, name, title, page_id)
+                fingerprint = self._creation_fingerprint(event.db_key, title, properties)
+                self._check_creation_duplicates(event.db_key, client, name, title, properties, page_id)
 
             with acquire_record_sync_lock(self.store, event.db_key, page_id):
                 if event.expected_source_properties is not None:
@@ -240,8 +241,13 @@ class HubCreationService:
                                             scan.defer()
                                             raise CreationHeld(PENDING) from None
                                         raise CreationHeld('送信前に時間枠へ到達しました。登録元を再通知してください') from None
-                                if not self.journal.reserve(source_key, target, event.db_key, fingerprint):
-                                    raise CreationHeld("同じ名前の登録が進行中、または既に登録されています")
+                                target_fingerprint = fingerprint
+                                if event.db_key == 'action':
+                                    from src.hub_creation.action_identity import fingerprint as action_fingerprint
+                                    target_fingerprint = action_fingerprint(properties, external=True)
+                                if not self.journal.reserve(source_key, target, event.db_key, target_fingerprint):
+                                    raise CreationHeld("同じ内容のアクション登録が進行中、または既に登録されています"
+                                           if event.db_key == "action" else "同じ名前の登録が進行中、または既に登録されています")
                                 external_id = adapter.create(event.db_key, payload)
                                 self.journal.finish(source_key, target, external_id)
                             updated = replace(mapping, **{column: external_id})
@@ -298,6 +304,9 @@ class HubCreationService:
     def _creation_properties(db_key, raw):
         """作成に用いる入力だけを抽出し、直前照合にも同じ規則を使う。"""
         properties = {}
+        if db_key == 'action':
+            from src.hub_creation.action_identity import validate_notion_identity
+            validate_notion_identity(raw)
         for name, value in raw.get('properties', {}).items():
             try:
                 prop = get_schema(db_key).get_property(name)
@@ -314,6 +323,49 @@ class HubCreationService:
                 if value is not None:
                     properties[name] = value
         return properties
+
+    @staticmethod
+    def _creation_fingerprint(db_key, title, properties):
+        if db_key == 'action':
+            from src.hub_creation.action_identity import fingerprint
+            return fingerprint(properties)
+        return identity_hash(db_key, title)
+
+    def _check_creation_duplicates(self, db_key, client, name, title, properties, self_id=None):
+        if db_key != 'action':
+            return self._check_notion_duplicates(client, name, title, self_id)
+        from src.hub_creation.action_identity import CLIENT, identity, relation_ids
+        expected = identity(properties)
+        body = {'page_size': 100, 'filter': {'property': CLIENT,
+                'relation': {'contains': relation_ids(properties.get(CLIENT))[0]}}}
+        seen = set()
+        for _ in range(100):
+            response = client.query_raw(body)
+            if not isinstance(response.get('results'), list) or type(response.get('has_more')) is not bool:
+                raise CreationHeld('Notionのアクション候補を確認できません')
+            for page in response['results']:
+                if not isinstance(page, dict) or not isinstance(page.get('id'), str):
+                    raise CreationHeld('Notionのアクション候補を確認できません')
+                if page['id'].replace('-', '') == (self_id or '').replace('-', ''):
+                    continue
+                if page.get('archived') or page.get('in_trash'):
+                    continue
+                if not isinstance(page.get('properties'), dict) or CLIENT not in page['properties']:
+                    raise CreationHeld('Notionのアクション候補の関連先を確認できません')
+                candidate = self._creation_properties(db_key, page)
+                # 相手が複数の履歴は、単一相手の履歴と同一とは断定しない。
+                if len(relation_ids(candidate.get(CLIENT))) != 1:
+                    continue
+                if identity(candidate) == expected:
+                    raise CreationHeld('Notionに取引先・日付・内容が一致するアクション候補があります。比較してください')
+            if not response['has_more']:
+                return
+            cursor = response.get('next_cursor')
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise CreationHeld('Notionのアクション候補を最後まで確認できません')
+            seen.add(cursor)
+            body['start_cursor'] = cursor
+        raise CreationHeld('Notionのアクション候補が照合上限を超えています')
 
     @staticmethod
     def _check_notion_duplicates(client, name, title, self_id=None):

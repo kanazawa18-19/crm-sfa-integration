@@ -95,14 +95,22 @@ class ZohoCreationAdapter:
         self.store = store
         self.duplicate_scan = duplicate_scan
 
-    def _get(self, path, *, api_version=None):
+    def _get(self, path, *, api_version=None, empty_list=False):
         response = self.client._request("GET", path, **({'api_version': api_version} if api_version is not None else {}))
         if response.status_code == 204:
-            return {}
+            # 一覧先頭の204だけは履歴0件。200の壊れたJSONとは区別する。
+            return {'data': [], 'info': {'more_records': False}} if empty_list else {}
         raise_for_error(response, ApiError)
         return response.json()
 
     def plan(self, db_key, properties):
+        if db_key == 'action':
+            from src.hub_creation.action_identity import identity
+            identity(properties)
+            from src.record_merge.creation_candidates import creation_context
+            context = creation_context()
+            if context is not None:
+                context.pop('actionComparison', None)
         from src.infrastructure.http_budget import http_budget, HttpBudgetExceeded
         from src.hub_creation.duplicate_scan import PENDING
         try:
@@ -197,12 +205,52 @@ class ZohoCreationAdapter:
         if db_key == 'contact':
             self._check_contact_duplicates(module, properties)
             return payload
+        if db_key == 'action':
+            from src.hub_creation.action_identity import action_day
+            if payload.get('field4'):
+                payload['field4'] = action_day(payload['field4'])
+            self._check_action_duplicates(module, payload)
+            return payload
         title_field = {"client_master": "Account_Name", "chain": "Name", "product": "Product_Name", "action": "Name", "project": "Deal_Name"}[db_key]
         title = payload.get(title_field)
         if not isinstance(title, str) or not title.strip():
             raise CreationHeld("名前による重複確認を安全に行えません")
         self._check_list_duplicates(db_key, module, title_field, title)
         return payload
+
+    def _check_action_duplicates(self, module, payload):
+        from src.hub_creation.action_identity import zoho_matcher
+        fields, matches = zoho_matcher(payload)
+        from src.record_merge.creation_candidates import creation_context
+        context = creation_context()
+        if context is not None:
+            context['actionComparison'] = matches.comparison
+        if self.duplicate_scan is not None and self.duplicate_scan.exists():
+            return self.duplicate_scan.check('action', module, fields, matches)
+        seen = set()
+        for page in range(1, 11):
+            data = self._get(f"/{module}?" + urlencode({'fields': ','.join(['id', *fields]), 'per_page': 200, 'page': page}),
+                             empty_list=page == 1)
+            records, info = data.get('data'), data.get('info')
+            if (not isinstance(records, list) or len(records) > 200 or not isinstance(info, dict)
+                    or type(info.get('more_records')) is not bool):
+                raise CreationHeld('外部アクションの一覧照合結果を確認できません')
+            for record in records:
+                identifier = record.get('id') if isinstance(record, dict) else None
+                if not isinstance(identifier, str) or not identifier or identifier in seen:
+                    raise CreationHeld('外部アクションの一覧照合結果を確認できません')
+                seen.add(identifier)
+                if matches(record):
+                    hold_duplicate('zoho', 'action', identifier, record,
+                        '外部に取引先・日付・内容が一致するアクション候補があります。比較してください',
+                        fetch=lambda identifier=identifier: self.client.get_record(module, identifier))
+            if not info['more_records']:
+                return
+            if not records:
+                raise CreationHeld('外部アクションの一覧を最後まで確認できません')
+        if self.duplicate_scan is not None:
+            return self.duplicate_scan.check('action', module, fields, matches)
+        raise CreationHeld('外部アクションが2000件の照合上限を超えるため作成を保留します')
 
     def _check_contact_duplicates(self, module, properties):
         from src.hub_creation.duplicate_scan import contact_matcher
@@ -283,6 +331,9 @@ class KintoneCreationAdapter:
         self.store = store
 
     def plan(self, db_key, properties):
+        if db_key == 'action':
+            from src.hub_creation.action_identity import identity
+            identity(properties)
         from src.db_schema.base import Tool, supports_database
         if not supports_database(Tool.KINTONE, db_key):
             raise CreationNotApplicable("対応するkintoneアプリがありません")
