@@ -695,3 +695,19 @@ def test_repeated_relation_cursor_is_rejected(requests_mock, client):
     with pytest.raises(NotionRelationDataError, match='cursor'):
         client.get_raw_page_with_relations(PAGE_ID, {'サービス・商品'})
     assert requests_mock.call_count == 3
+
+
+def test_get_user_reads_exact_canonical_user(requests_mock, client):
+    profile = {'object': 'user', 'id': PAGE_ID, 'type': 'person', 'name': '検証担当者'}
+    requests_mock.get(f'https://api.notion.com/v1/users/{PAGE_ID}', json=profile)
+    assert client.get_user(PAGE_ID.replace('-', '')) == profile
+    assert requests_mock.call_count == 1
+    with pytest.raises(ValueError):
+        client.get_user('../users')
+    assert requests_mock.call_count == 1
+
+
+def test_get_user_permission_error_does_not_return_empty_success(requests_mock, client):
+    requests_mock.get(f'https://api.notion.com/v1/users/{PAGE_ID}', status_code=403, json={'code': 'restricted_resource'})
+    with pytest.raises(NotionApiError):
+        client.get_user(PAGE_ID)

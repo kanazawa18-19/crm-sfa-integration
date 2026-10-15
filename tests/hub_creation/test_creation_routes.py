@@ -53,14 +53,14 @@ def test_zoho_six_creation_routes(db, properties, required):
 
 @pytest.mark.parametrize('db,properties,fields', [
     ('client_master', {'取引先名':'検証'}, {'顧客名':{'type':'SINGLE_LINE_TEXT','unique':True,'required':True}}),
-    ('project', {'案件名':'検証','作成日':'2026-09-28','契約予定日':'2026-10-01','担当メンバー':['user']},
+    ('project', {'案件名':'検証','作成日':'2026-09-28','契約予定日':'2026-10-01','担当メンバー':['55555555-5555-5555-5555-555555555555']},
      {'店舗名':{'type':'SINGLE_LINE_TEXT','required':True},'日付_0':{'type':'DATE','required':True},'日付':{'type':'DATE','required':True},'営業担当者':{'type':'USER_SELECT','required':True}}),
-    ('action', {'履歴メモ':'検証','担当営業':['user'],'提案サービス':['メイリー'],'👨‍👩‍👧‍👦 取引先マスター':['11111111-1111-1111-1111-111111111111']},
+    ('action', {'履歴メモ':'検証','担当営業':['55555555-5555-5555-5555-555555555555'],'提案サービス':['メイリー'],'👨‍👩‍👧‍👦 取引先マスター':['11111111-1111-1111-1111-111111111111']},
      {'comment':{'type':'MULTI_LINE_TEXT','required':True},'cnctorMember':{'type':'USER_SELECT','required':True},'service':{'type':'MULTI_SELECT','required':True,'options':{'メイリー':{}}},'client_name':{'type':'SINGLE_LINE_TEXT','required':True}}),
 ])
 def test_kintone_three_creation_routes(db, properties, fields, monkeypatch):
     from src.hub_creation import adapters
-    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified':True,'users':[{'notion_id':'user','kintone_code':'member','enabled':True}]}))
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified':True,'users':[{'notion_id':'55555555-5555-5555-5555-555555555555','kintone_code':'member','enabled':True}]}))
     def request(method, url, **kw):
         return response({'properties':fields} if 'fields.json' in url else {'records':[]})
     monkeypatch.setattr(adapters, 'request_with_retry', request)
@@ -109,8 +109,8 @@ def test_zoho_creation_preserves_all_controller_choices_and_memo():
 def test_action_unfinished_owner_rollup_does_not_use_fallback(monkeypatch):
     from src.hub_creation import adapters
     from src.hub_creation.domain import CreationHeld
-    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified': True, 'fallback_notion_id': 'user',
-        'users': [{'notion_id': 'user', 'kintone_code': 'member', 'enabled': True}]}))
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps({'verified': True, 'fallback_notion_id': '55555555-5555-5555-5555-555555555555',
+        'users': [{'notion_id': '55555555-5555-5555-5555-555555555555', 'kintone_code': 'member', 'enabled': True}]}))
     monkeypatch.setattr(adapters, 'request_with_retry', lambda *args, **kwargs: response({
         'properties': {'cnctorMember': {'type': 'USER_SELECT', 'required': True}}}))
     client = SimpleNamespace(_domain='example.invalid', _headers=lambda **kw: {},
@@ -130,7 +130,7 @@ def test_unverified_owner_directory_holds_even_optional_owner(monkeypatch):
         _timeout=1, _max_retries=0, _backoff_base=0)
     adapter = KintoneCreationAdapter({'project': SimpleNamespace(_client=client, _app='1')})
     with pytest.raises(CreationHeld, match='担当者対応の設定'):
-        adapter.plan('project', {'担当メンバー': ['user']})
+        adapter.plan('project', {'担当メンバー': ['55555555-5555-5555-5555-555555555555']})
 
 
 def test_zoho_optional_unmapped_single_owner_is_omitted_after_verified_lookup(monkeypatch):

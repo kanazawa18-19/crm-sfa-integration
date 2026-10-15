@@ -1242,7 +1242,9 @@ class ProductionSyncWiring:
             duplicate_scan = ZohoDuplicateScan(self.zoho_action_client, PostgresScanJournal())
             creation_service = HubCreationService(
                 store=self.id_mapping_store, journal=PostgresCreationJournal(), notion_clients=notion_clients,
-                adapters=[ZohoCreationAdapter(self.zoho_action_client, self.id_mapping_store, duplicate_scan), KintoneCreationAdapter(build_kintone_targets_by_db(), self.id_mapping_store)],
+                adapters=[ZohoCreationAdapter(self.zoho_action_client, self.id_mapping_store, duplicate_scan), KintoneCreationAdapter(
+                    build_kintone_targets_by_db(), self.id_mapping_store,
+                    resolve_user=notion_clients['action'].get_user if 'action' in notion_clients else None)],
                 enabled_since=since, sheet_gateway=SheetRegistrationGateway(sheet_client) if sheet_client else None,
                 project_link_prepare=lambda mapping: project_link_queue.enqueue(mapping.notion_key),
             )

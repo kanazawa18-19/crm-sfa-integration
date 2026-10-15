@@ -270,3 +270,90 @@ def test_real_kintone_client_contract_flattens_revision_and_preserves_comment(re
         'comment': {'type': 'MULTI_LINE_TEXT', 'value': comment}}})
     result = client.get_record('1', '42')
     assert result['$revision'] == '7' and result['comment'] == comment
+
+NEW_PERSON = '44444444-4444-4444-4444-444444444444'
+
+
+def user_profile(identifier=NEW_PERSON, name='追加担当者'):
+    return {'object': 'user', 'id': identifier, 'type': 'person', 'name': name}
+
+
+def test_new_explicit_actor_uses_verified_profile_without_directory_edit(directory):
+    from src.hub_creation.action_kintone import action_profile_ids
+    props = {'担当営業': [NEW_PERSON, NEW_PERSON, OTHER]}
+    assert action_profile_ids(props, None) == [NEW_PERSON]
+    assert action_actors(props, None, profiles={NEW_PERSON: user_profile()}) == ([], ['追加担当者', '検証管理者'])
+    assert action_profile_ids({'担当営業': [OTHER]}, None) == []
+
+
+@pytest.mark.parametrize('profile', [None, {}, user_profile(OTHER),
+    {**user_profile(), 'type': 'bot'}, {**user_profile(), 'object': 'page'},
+    user_profile(name=None), user_profile(name=' '), user_profile(name='名\n前'),
+    user_profile(name='【偽の枠】')])
+def test_unverified_person_response_cannot_name_or_assign_actor(directory, profile):
+    with pytest.raises(CreationHeld):
+        action_actors({'担当営業': [NEW_PERSON]}, None, profiles={NEW_PERSON: profile})
+
+
+def test_profile_resolution_does_not_bypass_invalid_directory_or_unknown_actor(monkeypatch):
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', '{bad')
+    with pytest.raises(CreationHeld, match='対応設定'):
+        action_actors({'担当営業': [NEW_PERSON]}, None, profiles={NEW_PERSON: user_profile()})
+
+
+def test_new_override_actor_still_requires_original_creator(directory, monkeypatch):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': True, 'records': {
+        PAGE: {'notion_user_id': NEW_PERSON, 'expected_created_by': PERSON}}}))
+    assert action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': PERSON},
+        profiles={NEW_PERSON: user_profile()}) == ([], ['追加担当者'])
+    with pytest.raises(CreationHeld, match='実担当者が未確定'):
+        action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': NEW_PERSON},
+            profiles={NEW_PERSON: user_profile()})
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_adapter_resolves_new_actor_and_holds_on_profile_failure(directory, monkeypatch, failure):
+    from src.hub_creation import adapters
+    fields = {'cnctorMember': {'type': 'USER_SELECT', 'required': False},
+        'service': {'type': 'MULTI_SELECT', 'required': True, 'options': {'未確定': {}}},
+        'comment': {'type': 'MULTI_LINE_TEXT'},
+        'client_name': {'type': 'SINGLE_LINE_TEXT', 'required': True},
+        'actionContent': {'type': 'DROP_DOWN', 'options': {'テレアポ': {}}}}
+    monkeypatch.setattr(adapters, 'request_with_retry', lambda method, url, **kw:
+        SimpleNamespace(ok=True, status_code=200, json=lambda: {'properties': fields} if 'fields.json' in url else {'records': []}))
+    client = SimpleNamespace(_domain='example.invalid', _headers=lambda **kw: {}, _timeout=1,
+        _max_retries=0, _backoff_base=0, get_record=lambda *a: {'顧客名': '検証施設'})
+    targets = {key: SimpleNamespace(_client=client, _app='1') for key in ['action', 'client_master']}
+    store = SimpleNamespace(get=lambda _: SimpleNamespace(db_key='client_master', kintone_id='42'))
+    calls = []
+    def resolve(identifier):
+        calls.append(identifier)
+        if failure:
+            raise RuntimeError('外部エラーの詳細は保留理由へ出さない')
+        return user_profile(identifier)
+    adapter = adapters.KintoneCreationAdapter(targets, store, resolve_user=resolve)
+    props = {'担当営業': [NEW_PERSON, NEW_PERSON], '提案サービス': [], '履歴メモ': '本文\r\n保持',
+        'アクション種別': 'テレアポ', '👨‍👩‍👧‍👦 取引先マスター': [OTHER]}
+    if failure:
+        with pytest.raises(CreationHeld, match='同期を再実行') as exc:
+            adapter.plan('action', props)
+        assert '外部エラーの詳細' not in str(exc.value)
+    else:
+        result = adapter.plan('action', props)
+        assert result['cnctorMember'] == [] and result['service'] == ['未確定']
+        assert split_comment(result['comment']) == ('本文\r\n保持', BEGIN + '\n実担当者: 追加担当者\n' + END)
+    assert calls == [NEW_PERSON]
+
+
+def test_directory_uuid_spelling_does_not_silently_remove_account(directory, monkeypatch):
+    directory['users'][1]['notion_id'] = OTHER.replace('-', '').upper()
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps(directory))
+    assert action_actors({'担当営業': [OTHER]}, None) == ([{'code': 'manager'}], [])
+
+
+@pytest.mark.parametrize('extra_id', [OTHER.replace('-', ''), 'invalid-id'])
+def test_invalid_or_canonically_duplicate_directory_id_is_held(directory, monkeypatch, extra_id):
+    directory['users'].append({'notion_id': extra_id, 'enabled': True})
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps(directory))
+    with pytest.raises(CreationHeld, match='不正または重複'):
+        action_actors({'担当営業': [NEW_PERSON]}, None, profiles={NEW_PERSON: user_profile()})

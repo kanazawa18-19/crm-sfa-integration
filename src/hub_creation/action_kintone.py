@@ -75,7 +75,7 @@ def comment_with_actor(value, names):
     return result
 
 
-def action_actors(properties, context):
+def action_actor_rows(properties, context):
     ids = properties.get('担当営業')
     if not isinstance(ids, list) or any(not isinstance(v, str) for v in ids):
         raise CreationHeld('担当営業の集計が未確定です。関連先と集計完了を確認してください')
@@ -92,17 +92,56 @@ def action_actors(properties, context):
     directory = owner_directory()
     if directory is None:
         raise CreationHeld('担当者の確認済み対応設定がありません')
-    by_id = {row['notion_id']: row for row in directory['users']}
-    rows = [by_id.get(identifier) for identifier in dict.fromkeys(ids)]
-    if any(row is None for row in rows):
-        raise CreationHeld('実担当者の確認済み対応設定がありません')
+    try:
+        ids = list(dict.fromkeys(str(UUID(identifier)) for identifier in ids))
+    except (ValueError, TypeError, AttributeError):
+        raise CreationHeld('実担当者のユーザーIDを確認してください') from None
+    if len(ids) > 100:
+        raise CreationHeld('実担当者が100名を超えています')
+    by_id = {}
+    try:
+        for row in directory['users']:
+            identifier = str(UUID(row['notion_id']))
+            if identifier in by_id:
+                raise ValueError
+            by_id[identifier] = {**row, 'notion_id': identifier}
+    except (ValueError, TypeError, AttributeError):
+        raise CreationHeld('担当者対応のユーザーIDが不正または重複しています。設定を確認してください') from None
+    return [by_id.get(identifier, {'notion_id': identifier}) for identifier in ids]
+
+
+def action_profile_ids(properties, context):
+    """氏名の確認が必要なIDだけを返す。取得は外部アダプターが担当する。"""
+    rows = action_actor_rows(properties, context)
+    if all(row.get('kintone_code') for row in rows):
+        return []
+    return [row['notion_id'] for row in rows if not row.get('display_name')]
+
+
+def action_actors(properties, context, *, profiles=None):
+    rows = action_actor_rows(properties, context)
     codes = [row.get('kintone_code') for row in rows]
     # 複数担当の一部だけをアカウント欄へ残して、残りを担当外に見せない。
     if all(codes):
         return [{'code': code} for code in codes], []
-    names = [row.get('display_name') for row in rows]
-    if any(not isinstance(name, str) or not name.strip() for name in names):
-        raise CreationHeld('実担当者の表示名が未設定です')
+    names = []
+    for row in rows:
+        name = row.get('display_name')
+        if not name:
+            profile = (profiles or {}).get(row['notion_id'])
+            try:
+                if (not isinstance(profile, dict) or profile.get('object') != 'user'
+                        or profile.get('type') != 'person'
+                        or str(UUID(profile['id'])) != row['notion_id']):
+                    raise ValueError
+                name = profile.get('name')
+            except (ValueError, KeyError, TypeError, AttributeError):
+                raise CreationHeld(f'実担当者の氏名をNotionで確認できません（ユーザーID: {row["notion_id"]}）。人間のユーザー・氏名・連携権限を確認し、解消後にこの原本の同期を再実行してください') from None
+        # 空欄・bot・別ID・管理枠を壊す氏名は書き込まない。
+        if (not isinstance(name, str) or not name.strip() or '\n' in name or '\r' in name
+                or '【' in name or '】' in name):
+            raise CreationHeld(f'実担当者の表示名が無効です（ユーザーID: {row["notion_id"]}）。空欄・改行・【】を含まない氏名へ修正し、この原本の同期を再実行してください')
+        names.append(name)
     return [], names
 
 

@@ -326,9 +326,10 @@ class ZohoCreationAdapter:
 class KintoneCreationAdapter:
     target = "kintone"
 
-    def __init__(self, targets, store=None):
+    def __init__(self, targets, store=None, *, resolve_user=None):
         self.targets = targets
         self.store = store
+        self.resolve_user = resolve_user
 
     def plan(self, db_key, properties):
         if db_key == 'action':
@@ -366,10 +367,21 @@ class KintoneCreationAdapter:
             if db_key == 'action' and '担当営業' not in properties:
                 raise CreationHeld('担当営業の集計が未確定です。Notionの関連先と集計完了を確認してください')
             if db_key == 'action':
-                from src.hub_creation.action_kintone import action_actors, action_service, comment_with_actor, creation_comment_body
+                from src.hub_creation.action_kintone import action_actors, action_profile_ids, action_service, comment_with_actor, creation_comment_body
                 from src.record_merge.creation_candidates import creation_context
                 creation_comment_body(payload.get('comment'))
-                owner, names = action_actors(properties, creation_context())
+                profiles = {}
+                for user_id in action_profile_ids(properties, creation_context()):
+                    if self.resolve_user is None:
+                        raise CreationHeld('実担当者の氏名を取得する接続がありません')
+                    try:
+                        profiles[user_id] = self.resolve_user(user_id)
+                    except Exception as exc:
+                        from src.infrastructure.http_budget import HttpBudgetExceeded
+                        if isinstance(exc, HttpBudgetExceeded):
+                            raise
+                        raise CreationHeld(f'実担当者の氏名をNotionで取得できません（ユーザーID: {user_id}）。Notionの氏名・連携権限を確認し、解消後にこの原本の同期を再実行してください') from None
+                owner, names = action_actors(properties, creation_context(), profiles=profiles)
                 payload['service'] = action_service(properties, fields)
                 if names:
                     payload['comment'] = comment_with_actor(payload.get('comment'), names)

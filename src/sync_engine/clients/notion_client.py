@@ -396,6 +396,14 @@ class HttpNotionClient:
         data = response.json()
         return data.get("results") or []
 
+    def get_user(self, user_id: str) -> dict[str, Any]:
+        """確定した担当者IDの氏名を取得する。IDから担当者自体は推測しない。"""
+        from uuid import UUID
+        user_id = str(UUID(user_id))
+        response = self._request("GET", f"/users/{user_id}")
+        raise_for_error(response, NotionApiError)
+        return response.json()
+
     def get_raw_page(self, page_id: str) -> dict[str, Any]:
         """Notion API `GET /v1/pages/{page_id}` の生レスポンスJSONをそのまま返す。
 

@@ -1504,3 +1504,25 @@ def test_multi_db_router_says_nothing_can_be_sent_when_db_key_is_unknown() -> No
     assert router.unsupported_properties({"案件名": "A社"}, db_key="project") == frozenset(
         {"案件名"}
     )
+
+
+@pytest.mark.parametrize('notion_connected', [True, False])
+def test_action_actor_profile_lookup_uses_action_notion_client(monkeypatch, requests_mock, notion_connected):
+    _isolate_tool_env(monkeypatch)
+    if notion_connected:
+        monkeypatch.setenv('NOTION_API_KEY', 'test-only')
+    else:
+        monkeypatch.delenv('NOTION_API_KEY', raising=False)
+    monkeypatch.setenv('HUB_CREATION_ENABLED_SINCE', '2026-10-01T00:00:00+00:00')
+    wiring = ProductionSyncWiring()
+    adapter = next(a for a in wiring.creation_service.adapters if a.target == 'kintone')
+    if not notion_connected:
+        assert adapter.resolve_user is None
+        assert requests_mock.call_count == 0
+        return
+    assert adapter.resolve_user.__self__ is wiring.creation_service.notion_clients['action']
+    identifier = '22222222-2222-2222-2222-222222222222'
+    profile = {'object': 'user', 'id': identifier, 'type': 'person', 'name': '検証担当者'}
+    requests_mock.get(f'https://api.notion.com/v1/users/{identifier}', json=profile)
+    assert adapter.resolve_user(identifier) == profile
+    assert requests_mock.call_count == 1
