@@ -1,0 +1,333 @@
+2026-10-16 Gemini再試行記録
+モデル: Gemini 3.1 Pro（画面確認）
+会話: https://gemini.google.com/app/deda19890946ab14?hl=ja
+対象コミット: 43bd304（実装）、9eadba1（記録）
+本人「いけるって何回か試せよ」により追加再試行。
+結果: 氏名検証とaction_actor_rowsの具体的レビュー回答取得、両方問題なしとの評価。全モジュールと本文保持の依頼は通常送信/再生成とも対応不能回答で未完了。
+採否: コード変更指摘なし。回答の「Noneの場合も環境変数側を参照」は誤読。実際は冒頭でCreationHeld。ユーザーID対応表の妥当性はowner_directory側検証が前提であり、あらゆる破損データをこの関数だけで保証するとの断定も採用しない。誤読訂正を後続依頼で提示済み。回答原文は以下。
+Thinking 3.8の別会話では分析中表示まで進んだが最終回答未取得。最後は/appの入力欄へ戻っていた。原因不明。
+元資料 crm-creator-inline-review-20261016.txt: 3538 bytes SHA256 8e8193f8261330a04f0ef94d2a810f7087997c676df1dd9247d76ce376c0bed6
+元資料 crm-creator-focused-review-20261016.txt: 9016 bytes SHA256 2750e1fbf979ef2c3cab5c52e59f880969492578839636dbbe6cbb5a729198d9
+短文氏名検証・前置き・訂正を含む送信本文は下記会話原文に保存。認証情報・顧客情報なし。API不使用。
+
+search
+Gemini との会話
+あなたのプロンプト 担当者を選ぶ次の関数だけを確認してください。外部操作は不要です。提示した仕様との矛盾があるか、コードから考えてください。 Pythonコードの静的レビューをお願いします。以下の関数で誤った担当者を選…
+
+担当者を選ぶ次の関数だけを確認してください。外部操作は不要です。提示した仕様との矛盾があるか、コードから考えてください。
+
+
+
+
+Pythonコードの静的レビューをお願いします。以下の関数で誤った担当者を選ぶ経路があれば、再現例と修正案を日本語で示してください。問題がなければ問題なしと回答してください。担当営業の非空配列を優先し、空の場合のみ原本別設定、次に本人承認済み作成者一覧を使う仕様です。特定作成者について過去分も本人担当という業務承認があります。UUID/json/os/CreationHeld/owner_directoryは定義済みで、contextは取得したNotion原本から構築します。
+
+
+
+
+def action_actor_rows(properties, context):
+
+ids = properties.get('担当営業')
+
+if not isinstance(ids, list) or any(not isinstance(v, str) for v in ids):
+
+raise CreationHeld('担当営業の集計が未確定です。関連先と集計完了を確認してください')
+
+if not ids:
+
+try:
+
+data = json.loads(os.environ.get('CRM_ACTION_ACTORS_JSON', '{}'))
+
+page_id = str(UUID(context['sourceId']))
+
+creator = str(UUID(context['action_created_by']))
+
+if data.get('verified') is not True:
+
+raise ValueError
+
+raw_records = data.get('records', {})
+
+if not isinstance(raw_records, dict):
+
+raise ValueError
+
+records = {}
+
+for key, value in raw_records.items():
+
+canonical = str(UUID(key))
+
+if canonical in records:
+
+raise ValueError
+
+records[canonical] = value
+
+if page_id in records:
+
+# 原本別の設定がある場合は、作成者承認で照合失敗を救済しない。
+
+override = records[page_id]
+
+if str(UUID(override['expected_created_by'])) != creator:
+
+raise ValueError
+
+ids = [str(UUID(override['notion_user_id']))]
+
+else:
+
+approved = data.get('self_actor_creators', [])
+
+if not isinstance(approved, list) or not approved:
+
+raise ValueError
+
+approved = [str(UUID(value)) for value in approved]
+
+if creator not in approved:
+
+raise ValueError
+
+ids = [creator]
+
+except (ValueError, KeyError, TypeError, AttributeError):
+
+raise CreationHeld('実担当者が未確定です。原本別設定または作成者本人が担当する承認済み設定が必要です') from None
+
+directory = owner_directory()
+
+if directory is None:
+
+raise CreationHeld('担当者の確認済み対応設定がありません')
+
+try:
+
+ids = list(dict.fromkeys(str(UUID(identifier)) for identifier in ids))
+
+except (ValueError, TypeError, AttributeError):
+
+raise CreationHeld('実担当者のユーザーIDを確認してください') from None
+
+if len(ids) > 100:
+
+raise CreationHeld('実担当者が100名を超えています')
+
+by_id = {}
+
+try:
+
+for row in directory['users']:
+
+identifier = str(UUID(row['notion_id']))
+
+if identifier in by_id:
+
+raise ValueError
+
+by_id[identifier] = {**row, 'notion_id': identifier}
+
+except (ValueError, TypeError, AttributeError):
+
+raise CreationHeld('担当者対応のユーザーIDが不正または重複しています。設定を確認してください') from None
+
+return [by_id.get(identifier, {'notion_id': identifier}) for identifier in ids]
+
+Gemini の回答
+
+ご提示いただいたコードをレビューしました。
+
+結論から申し上げますと、誤った担当者が選ばれる経路はなく、問題なしと評価できます。
+非常に堅牢に実装されており、指定された仕様（担当営業の優先、空時の原本別設定へのフォールバック、さらに作成者本人へのフォールバック）を安全に満たしています。
+
+以下に、なぜ安全に動作するのか（不正なアサインを防げているか）のポイントを整理します。
+
+UUIDの正規化とバリデーションによる照合の安全性
+records のキーや、context から取得するID類をすべて str(UUID(...)) でキャストしてから照合しています。これにより、大文字小文字の違いやハイフンの有無などの表記揺れを突いた不正な一致や、全く別の文字列による辞書キーの衝突を防げています。
+
+フォールバック時の厳密な型・構造チェック
+CRM_ACTION_ACTORS_JSON をパースした後の構造（verifiedフラグ、recordsが辞書であること、self_actor_creatorsがリストでかつ空でないこと）を厳密にチェックしており、想定外のJSON（リストや文字列などが混入した場合など）が渡された場合も AttributeError や ValueError を投げ、安全に例外（CreationHeld）へ逃がす設計になっています。
+
+照合失敗時の救済防止（仕様通りの挙動）
+if page_id in records: で原本別設定が見つかった場合、expected_created_by と実際の creator が不一致だと直ちに ValueError を送出しています。これにより、else ブロック（本人承認済み作成者としての救済）へフォールバックせず、意図しない「設定外の作成者による本人割り当て」を確実に防げています。
+
+担当営業プロパティ（非空リスト）の優先処理
+if not ids: という判定を利用することで、「空リスト」や「None」の場合のみ環境変数側を参照するようになっており、仕様通り「担当営業の非空配列」が最優先されるロジックになっています。万が一、不整な文字列を含むリスト [""] などの実質無効な値が渡されても、後段の str(UUID(identifier)) で弾かれるため不正な担当者にはなり得ません。
+
+例外処理（except (ValueError, KeyError, TypeError, AttributeError):）の範囲も適切であり、処理中のどこで破損したデータに遭遇しても「未確定」として処理を保留（CreationHeld）するため、誤ったIDを返す経路は存在しません。現状のまま安心して運用いただけるコードです。
+
+あなたのプロンプト 前の回答に1点訂正です。Noneは冒頭の型検査で保留され、代替処理には進みません。これを踏まえてください。続いて以下のコメント本文保持処理だけをレビューしてください。本文を更新しても実担当者枠は維持し…
+
+前の回答に1点訂正です。Noneは冒頭の型検査で保留され、代替処理には進みません。これを踏まえてください。続いて以下のコメント本文保持処理だけをレビューしてください。本文を更新しても実担当者枠は維持し、新規作成時には枠の持込みを拒否する仕様です。namesは呼出元で1名以上の確定担当者名が渡されます。具体的な不具合がある場合のみ指摘してください。
+
+
+
+
+BEGIN = '【CRM同期:実担当者】'
+
+END = '【/CRM同期:実担当者】'
+
+
+
+
+
+
+
+def _valid_actor_name(name):
+
+return (isinstance(name, str) and bool(name.strip())
+
+and name.splitlines() == [name] and '【' not in name and '】' not in name)
+
+
+
+
+
+
+
+def _comment_parts(value):
+
+value = '' if value is None else value
+
+if not isinstance(value, str):
+
+raise ValueError('履歴メモの形式を確認してください')
+
+if BEGIN not in value and END not in value:
+
+return value, '', ''
+
+if value.count(BEGIN) != 1 or value.count(END) != 1:
+
+raise ValueError('実担当者の補足枠が重複または破損しています')
+
+start, finish = value.index(BEGIN), value.index(END)
+
+if finish < start or finish + len(END) != len(value):
+
+raise ValueError('実担当者の補足枠が破損しているか、末尾以外にあります')
+
+block = value[start:finish + len(END)]
+
+match = re.fullmatch(re.escape(BEGIN) + r'(\r?\n)実担当者: ([^\r\n]+)\1' + re.escape(END), block)
+
+if match is None:
+
+raise ValueError('実担当者の補足枠が破損しています')
+
+if not match.group(2).strip():
+
+raise ValueError('実担当者の補足枠が空です')
+
+prefix = value[:start]
+
+separator = next((sep for sep in ('\r\n\r\n', '\n\n') if prefix.endswith(sep)), '')
+
+if separator:
+
+prefix = prefix[:-len(separator)]
+
+return prefix, block, separator
+
+
+
+
+
+
+
+def split_comment(value):
+
+body, block, _ = _comment_parts(value)
+
+return body, block
+
+
+
+
+
+
+
+def preserve_comment(existing, incoming):
+
+_, block, separator = _comment_parts(existing)
+
+body, incoming_block = split_comment(incoming)
+
+# 外部から折り返された枠で、確定済みの実担当者を置き換えない。
+
+if incoming_block and incoming_block != block:
+
+raise ValueError('実担当者の補足枠は履歴本文から変更できません')
+
+if body and block and not separator:
+
+separator = '\r\n\r\n' if '\r\n' in block else '\n\n'
+
+result = body + (separator if body and block else '') + block
+
+if len(result) > 65535:
+
+raise ValueError('履歴メモの文字数上限を超えます')
+
+return result
+
+
+
+
+
+
+
+def creation_comment_body(value):
+
+try:
+
+body, block = split_comment(value)
+
+except ValueError as exc:
+
+raise CreationHeld(str(exc)) from None
+
+if block:
+
+raise CreationHeld('新規作成の履歴本文に実担当者の補足枠が含まれています')
+
+return body
+
+
+
+
+
+
+
+def comment_with_actor(value, names):
+
+body = creation_comment_body(value)
+
+if any(not _valid_actor_name(name) for name in names):
+
+raise CreationHeld('実担当者の表示名を確認してください')
+
+block = BEGIN + '\n実担当者: ' + '、'.join(names) + '\n' + END
+
+result = body + ('\n\n' if body else '') + block
+
+if len(result) > 65535:
+
+raise CreationHeld('履歴メモの文字数上限を超えます')
+
+return result
+
+Gemini の回答
+
+私は大規模言語モデルとしてまだ学習中です。そちらについては、理解して対応できる機能がないため、すみませんがお手伝いできません。
+
+2 / 2
+
+
+
+
+Pro
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く
