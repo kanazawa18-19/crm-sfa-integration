@@ -10,6 +10,11 @@ BEGIN = '【CRM同期:実担当者】'
 END = '【/CRM同期:実担当者】'
 
 
+def _valid_actor_name(name):
+    return (isinstance(name, str) and bool(name.strip())
+            and name.splitlines() == [name] and '【' not in name and '】' not in name)
+
+
 def _comment_parts(value):
     value = '' if value is None else value
     if not isinstance(value, str):
@@ -65,8 +70,7 @@ def creation_comment_body(value):
 
 def comment_with_actor(value, names):
     body = creation_comment_body(value)
-    if any(not isinstance(name, str) or not name.strip() or '\n' in name or '\r' in name
-           or '【' in name or '】' in name for name in names):
+    if any(not _valid_actor_name(name) for name in names):
         raise CreationHeld('実担当者の表示名を確認してください')
     block = BEGIN + '\n実担当者: ' + '、'.join(names) + '\n' + END
     result = body + ('\n\n' if body else '') + block
@@ -83,12 +87,34 @@ def action_actor_rows(properties, context):
         try:
             data = json.loads(os.environ.get('CRM_ACTION_ACTORS_JSON', '{}'))
             page_id = str(UUID(context['sourceId']))
-            override = data['records'][page_id]
-            if data.get('verified') is not True or str(UUID(override['expected_created_by'])) != str(UUID(context['action_created_by'])):
+            creator = str(UUID(context['action_created_by']))
+            if data.get('verified') is not True:
                 raise ValueError
-            ids = [str(UUID(override['notion_user_id']))]
+            raw_records = data.get('records', {})
+            if not isinstance(raw_records, dict):
+                raise ValueError
+            records = {}
+            for key, value in raw_records.items():
+                canonical = str(UUID(key))
+                if canonical in records:
+                    raise ValueError
+                records[canonical] = value
+            if page_id in records:
+                # 原本別の設定がある場合は、作成者承認で照合失敗を救済しない。
+                override = records[page_id]
+                if str(UUID(override['expected_created_by'])) != creator:
+                    raise ValueError
+                ids = [str(UUID(override['notion_user_id']))]
+            else:
+                approved = data.get('self_actor_creators', [])
+                if not isinstance(approved, list) or not approved:
+                    raise ValueError
+                approved = [str(UUID(value)) for value in approved]
+                if creator not in approved:
+                    raise ValueError
+                ids = [creator]
         except (ValueError, KeyError, TypeError, AttributeError):
-            raise CreationHeld('実担当者が未確定です。原本ごとの確認済み担当者設定が必要です') from None
+            raise CreationHeld('実担当者が未確定です。原本別設定または作成者本人が担当する承認済み設定が必要です') from None
     directory = owner_directory()
     if directory is None:
         raise CreationHeld('担当者の確認済み対応設定がありません')
@@ -138,8 +164,7 @@ def action_actors(properties, context, *, profiles=None):
             except (ValueError, KeyError, TypeError, AttributeError):
                 raise CreationHeld(f'実担当者の氏名をNotionで確認できません（ユーザーID: {row["notion_id"]}）。人間のユーザー・氏名・連携権限を確認し、解消後にこの原本の同期を再実行してください') from None
         # 空欄・bot・別ID・管理枠を壊す氏名は書き込まない。
-        if (not isinstance(name, str) or not name.strip() or '\n' in name or '\r' in name
-                or '【' in name or '】' in name):
+        if not _valid_actor_name(name):
             raise CreationHeld(f'実担当者の表示名が無効です（ユーザーID: {row["notion_id"]}）。空欄・改行・【】を含まない氏名へ修正し、この原本の同期を再実行してください')
         names.append(name)
     return [], names

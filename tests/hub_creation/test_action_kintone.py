@@ -357,3 +357,76 @@ def test_invalid_or_canonically_duplicate_directory_id_is_held(directory, monkey
     monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps(directory))
     with pytest.raises(CreationHeld, match='不正または重複'):
         action_actors({'担当営業': [NEW_PERSON]}, None, profiles={NEW_PERSON: user_profile()})
+
+
+def test_approved_creator_is_self_actor_for_future_pages(directory, monkeypatch):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({
+        'verified': True, 'self_actor_creators': [PERSON.replace('-', '').upper()]}))
+    for page in [PAGE, OTHER]:
+        assert action_actors({'担当営業': []}, {'sourceId': page, 'action_created_by': PERSON}) == ([], ['検証担当者'])
+    # 明示済み担当者と未完了集計には適用しない。
+    assert action_actors({'担当営業': [OTHER]}, {'sourceId': PAGE, 'action_created_by': PERSON}) == ([{'code': 'manager'}], [])
+    with pytest.raises(CreationHeld, match='集計が未確定'):
+        action_actors({}, {'sourceId': PAGE, 'action_created_by': PERSON})
+
+
+@pytest.mark.parametrize('approved', [None, PERSON, {}, [], [OTHER], ['invalid'], [None], [1]])
+def test_invalid_or_unapproved_self_creator_is_held(directory, monkeypatch, approved):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': True, 'self_actor_creators': approved}))
+    with pytest.raises(CreationHeld, match='実担当者が未確定'):
+        action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': PERSON})
+
+
+def test_creator_approval_cannot_bypass_bad_record_override(directory, monkeypatch):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': True,
+        'self_actor_creators': [PERSON], 'records': {PAGE: {'expected_created_by': OTHER, 'notion_user_id': PERSON}}}))
+    with pytest.raises(CreationHeld, match='実担当者が未確定'):
+        action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': PERSON})
+
+
+@pytest.mark.parametrize('context', [None, {}, {'sourceId': PAGE}, {'sourceId': 'bad', 'action_created_by': PERSON}])
+def test_creator_approval_requires_valid_source_context(directory, monkeypatch, context):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': True, 'self_actor_creators': [PERSON]}))
+    with pytest.raises(CreationHeld, match='実担当者が未確定'):
+        action_actors({'担当営業': []}, context)
+
+
+def test_unverified_creator_approval_is_held(directory, monkeypatch):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': False, 'self_actor_creators': [PERSON]}))
+    with pytest.raises(CreationHeld, match='実担当者が未確定'):
+        action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': PERSON})
+
+
+def test_approved_creator_normalizes_alphabetic_uuid(directory, monkeypatch):
+    from src.hub_creation.action_kintone import action_actor_rows
+    person = 'abcdefab-cdef-abcd-efab-cdefabcdefab'
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({
+        'verified': True, 'self_actor_creators': [person.replace('-', '').upper()]}))
+    assert action_actor_rows({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': person.upper()}) == [{'notion_id': person}]
+
+
+def test_noncanonical_record_override_still_wins(directory, monkeypatch):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': True,
+        'self_actor_creators': [PERSON], 'records': {PAGE.replace('-', ''): {
+            'expected_created_by': PERSON, 'notion_user_id': OTHER}}}))
+    assert action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': PERSON}) == ([{'code': 'manager'}], [])
+
+
+@pytest.mark.parametrize('records', [
+    {PAGE.replace('-', ''): {'expected_created_by': OTHER, 'notion_user_id': PERSON}},
+    {PAGE: {}, PAGE.replace('-', ''): {}}, {'bad': {}}])
+def test_bad_record_override_is_not_rescued_by_creator(directory, monkeypatch, records):
+    monkeypatch.setenv('CRM_ACTION_ACTORS_JSON', json.dumps({'verified': True,
+        'self_actor_creators': [PERSON], 'records': records}))
+    with pytest.raises(CreationHeld, match='実担当者が未確定'):
+        action_actors({'担当営業': []}, {'sourceId': PAGE, 'action_created_by': PERSON})
+
+
+@pytest.mark.parametrize('separator', ['\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029'])
+def test_actor_name_rejects_unicode_line_separators(directory, monkeypatch, separator):
+    directory['users'][0]['display_name'] = '担当' + separator + '者'
+    monkeypatch.setenv('CRM_USER_MAPPING_JSON', json.dumps(directory))
+    with pytest.raises(CreationHeld, match='表示名'):
+        action_actors({'担当営業': [PERSON]}, None)
+    with pytest.raises(CreationHeld, match='表示名'):
+        comment_with_actor('本文', [directory['users'][0]['display_name']])
