@@ -43,7 +43,7 @@ def test_create_timeout_reconcile_then_updates_existing_action_only():
     repo, gateway = Repo(), Gateway()
     service = Service(repo, gateway)
     gateway.fail_create = True
-    result = service.process({'id': 'r', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
+    result = service.process({'id': 'r', 'direction': 'outbound', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
     assert result['state'] == 'unknown'
     assert gateway.created == 1
     gateway.fail_create = False
@@ -58,7 +58,7 @@ def test_delivery_failure_preserves_action_and_retry_does_not_create():
     repo, gateway = Repo(), Gateway()
     service = Service(repo, gateway)
     gateway.fail_delivery = True
-    result = service.process({'id': 'r', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
+    result = service.process({'id': 'r', 'direction': 'outbound', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
     assert result['state'] == 'done' and result['delivery'] == 'partial'
     assert result['action_id'] == 'action-id'
     gateway.fail_delivery = False
@@ -69,7 +69,7 @@ def test_delivery_failure_preserves_action_and_retry_does_not_create():
 def test_conflicting_affiliation_stops_before_any_write():
     repo, gateway = Repo(), Gateway()
     gateway.validate = lambda *args: (_ for _ in ()).throw(Conflict('所属が変化'))
-    result = Service(repo, gateway).process({'id': 'r', 'revision': 0})
+    result = Service(repo, gateway).process({'id': 'r', 'direction': 'outbound', 'revision': 0})
     assert result['state'] == 'pending'
     assert gateway.created == gateway.updated == 0
 
@@ -117,3 +117,55 @@ def test_authentication_notice_is_not_stored_but_human_discussion_is(monkeypatch
     repo.reset_mock()
     capture(replace(message, subject="お問い合わせの受付"), "me@example.test", repo=repo)
     repo.capture.assert_called_once()
+
+
+@pytest.mark.parametrize('direction', ['inbound', None])
+@pytest.mark.parametrize('existing,state', [({}, 'excluded'), ({'attempted_properties': {'title': '予約'}}, 'unknown'), ({'action_id': 'existing'}, 'held')])
+def test_non_outbound_queue_never_writes_externally(direction, existing, state):
+    from unittest.mock import Mock
+    gateway = Mock()
+    row = {'id': 'r', 'revision': 0, 'direction': direction, **existing}
+    result = Service(Repo(), gateway).process(row)
+    assert result['state'] == state
+    assert not gateway.mock_calls
+    for key, value in existing.items():
+        assert result[key] == value
+
+
+def test_inbound_capture_is_evidence_only_and_outbound_remains_action_candidate(monkeypatch):
+    from unittest.mock import Mock
+    from dataclasses import replace
+    from src.email_review.service import capture
+    from src.gmail_sync.gmail_client import GmailMessage
+    monkeypatch.setenv('EMAIL_REVIEW_ENABLED', 'true')
+    monkeypatch.setenv('EMAIL_REVIEW_START_AT', '2026-01-01T00:00:00+00:00')
+    monkeypatch.setenv('INTERNAL_EMAIL_DOMAINS', 'example.test')
+    repo = Mock()
+    message = GmailMessage(id='received', from_header='person@outside.test', to_header='me@example.test',
+                           internal_date_ms='1792130400000', body_text='会社名と署名', subject='相談', date_header=None, snippet=None)
+    capture(message, 'me@example.test', repo=repo)
+    received = repo.capture.call_args.args[0]
+    assert received['state'] == 'excluded'
+    assert received['message']['body_text'] == '会社名と署名'
+    capture(replace(message, id='sent', from_header='me@example.test', to_header='person@outside.test'), 'me@example.test', repo=repo)
+    assert repo.capture.call_args.args[0]['state'] == 'new'
+
+
+def test_received_signature_can_approve_sent_mail_but_never_received_mail():
+    from unittest.mock import Mock
+    company, person = 'company', 'person'
+    sent = {'id': 's', 'revision': 0, 'direction': 'outbound', 'canonical_key': 's',
+            'participants': [{'email': 'contact@outside.test'}],
+            'message': {'id': 's', 'body_text': '試験株式会社\n担当様\n本文'}}
+    received = {**sent, 'id': 'r', 'direction': 'inbound', 'state': 'excluded',
+                'message': {'id': 'r', 'body_text': '返信本文\n---\n試験株式会社\ncontact@outside.test'}}
+    repo, gateway = Repo(), Mock()
+    repo.thread = lambda row: [sent, received]
+    repo.masters = lambda values: [{'id': company, 'name': '試験株式会社'}]
+    gateway.contacts.return_value = [{'id': person, 'affiliations': []}]
+    gateway.validate.return_value = {'company_id': company, 'contact_id': person}
+    service = Service(repo, gateway)
+    assert service.evaluate(sent)['state'] == 'approved'
+    gateway.reset_mock()
+    assert service.evaluate(received)['state'] == 'excluded'
+    assert not gateway.mock_calls

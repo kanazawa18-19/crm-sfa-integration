@@ -125,12 +125,13 @@ def test_real_journal_to_automatic_actions_without_duplicate_replay(repo, monkey
         return f'action-{gateway.created}'
     gateway.create_action = create
     service = Service(repo, gateway)
-    assert service.drain()['processed'] == 2
-    assert gateway.created == 2
+    assert service.drain()['processed'] == 1
+    assert gateway.created == 1
     assert repo.get('sent', 'one')['delivery'] == 'delivered'
+    assert repo.get('received', 'one')['state'] == 'excluded'
     repo.capture(outgoing, 'one@example.test', 's', 'thread')
     assert service.drain()['processed'] == 0
-    assert gateway.created == 2
+    assert gateway.created == 1
 
 
 def test_missing_body_cannot_grant_shared_access_by_snippet(repo):

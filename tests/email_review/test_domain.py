@@ -73,7 +73,7 @@ def test_multiple_participants_including_cc_are_kept():
 
 
 def test_revision_and_processing_protect_old_slack_buttons():
-    row = {'id': 'a', 'revision': 2, 'state': 'pending'}
+    row = {'id': 'a', 'direction': 'outbound', 'revision': 2, 'state': 'pending'}
     args = dict(action='confirm', selection={'company_id': 'c', 'contact_id': 'p'}, actor='u', channel='slack')
     with pytest.raises(Conflict):
         decide(row, revision=1, **args)
@@ -107,3 +107,11 @@ def test_japanese_charset_is_decoded():
     text = '試験株式会社\n担当様'
     payload = {'mimeType': 'text/plain', 'headers': [{'name': 'Content-Type', 'value': 'text/plain; charset=ISO-2022-JP'}], 'body': {'data': base64.urlsafe_b64encode(text.encode('iso-2022-jp')).decode()}}
     assert plain_text(payload) == text
+
+
+@pytest.mark.parametrize('action', ['confirm', 'resume'])
+@pytest.mark.parametrize('direction', ['inbound', None])
+def test_received_mail_cannot_be_confirmed_or_resumed_from_either_ui(action, direction):
+    row = {'id': 'r', 'revision': 1, 'state': 'pending', 'direction': direction}
+    with pytest.raises(Conflict, match='送信メールだけ'):
+        decide(row, revision=1, action=action, selection={'company_id': 'c', 'contact_id': 'p'}, actor='u', channel='slack')

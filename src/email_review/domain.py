@@ -17,6 +17,14 @@ class Forbidden(ValueError):
     pass
 
 
+OUTBOUND_ONLY_REASON = "受信メールは照合根拠としてのみ保持します。アクション履歴は弊社メンバーの送信メールだけが対象です"
+
+
+def require_outbound(row: dict) -> None:
+    if row.get("direction") != "outbound":
+        raise Conflict(OUTBOUND_ONLY_REASON)
+
+
 def same_value(key: str, actual, expected) -> bool:
     if key == "アクション日" and isinstance(actual, str) and isinstance(expected, str):
         try:
@@ -142,6 +150,8 @@ def decide(row: dict, *, revision: int, action: str, selection: dict, actor: str
     if row.get("action_id") and action in {"exclude", "hold"}:
         raise Conflict("記録作成後は関連先を訂正してください。履歴は削除しません")
     next_row = dict(row)
+    if action in {"confirm", "resume"}:
+        require_outbound(row)
     if action == "confirm":
         if not selection.get("company_id") or not selection.get("contact_id"):
             raise ValueError("所属会社と連絡先を選んでください")

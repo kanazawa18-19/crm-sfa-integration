@@ -12,7 +12,7 @@ from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
 from src.sync_engine.record_sync_lock import _connect_direct, lock_key, RecordSyncBusy
 from src.sync_engine.sync_event import SyncEvent
-from src.email_review.domain import Conflict, normalized, same_value
+from src.email_review.domain import Conflict, normalized, same_value, require_outbound
 
 
 @contextmanager
@@ -121,6 +121,7 @@ class Gateway:
         return {"取引先マスター": [row["company_id"]]}, owned
 
     def action_properties(self, row: dict) -> dict:
+        require_outbound(row)
         message = row["message"]
         body = message.get("body_text")
         if not isinstance(body, str) or not body.strip():
@@ -128,7 +129,7 @@ class Gateway:
         day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).isoformat()
         title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"
         return {"商談回数・電話回数・メール回数（何回目）": title[:180],
-                "アクション種別": "メール" if row["direction"] == "outbound" else "問い合わせメール",
+                "アクション種別": "メール",
                 "アクション日": day, "先方担当者": row["contact_name"],
                 "👨‍👩‍👧‍👦 取引先マスター": [row.get("target_id") or row["company_id"]],
                 "案件名": [row["project_id"]] if row.get("project_id") else [],

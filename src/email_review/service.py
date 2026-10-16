@@ -5,7 +5,6 @@ import os
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
-from email.utils import getaddresses
 
 from src.email_review import domain
 from src.email_review.repository import Repository, public
@@ -57,7 +56,9 @@ def capture(message, owner: str, *, repo=None) -> None:
            "activity_owner": owner,
            "canonical_key": review_id if data.get("message_id_header") else None,
            "subject": data.get("subject") or "件名なし", "participants": people, "direction": direction,
-           "state": "new", "delivery": "not_started", "revision": 0, "reason": "照合処理待ち",
+           "state": "new" if direction == "outbound" else "excluded",
+           "delivery": "not_started", "revision": 0,
+           "reason": "照合処理待ち" if direction == "outbound" else domain.OUTBOUND_ONLY_REASON,
            "candidates": [], "contacts": [], "evidence": []}
     (repo or Repository()).capture(row, owner, message.id, message.thread_id)
 
@@ -68,6 +69,8 @@ class Service:
         self.gateway = gateway or Gateway()
 
     def evaluate(self, row: dict) -> dict:
+        if row.get("direction") != "outbound":
+            return self.repo.finish(row, state="excluded", reason=domain.OUTBOUND_ONLY_REASON)
         people = row["participants"]
         contacts = self.gateway.contacts([p["email"] for p in people])
         evidence_rows = []
@@ -83,12 +86,6 @@ class Service:
             result.update(state="pending", reason="メール共通IDがありません。本文取得の設定後に再取得してください")
         if len(people) != 1 or len(contacts) != 1:
             result.update(state="pending", reason="相手の連絡先を確認してください（未登録または複数候補）")
-        if row["direction"] == "inbound":
-            domains = internal_domains()
-            recipients = {a.lower() for _, a in getaddresses([row["message"].get("to_header") or "", row["message"].get("cc_header") or ""])
-                          if "@" in a and a.lower().rsplit("@", 1)[1] in domains}
-            if len(recipients) > 1:
-                result.update(state="pending", reason="共同受信です。記録担当者本人が関連先を確定してください")
         if result["state"] == "approved":
             selection = self.gateway.validate(row, {"company_id": result["company_id"], "contact_id": contacts[0]["id"]})
             result.update(selection, actor="system", channel="automatic", delivery="queued")
@@ -105,12 +102,14 @@ class Service:
             selection = {key: str(UUID(value)) if value else None for key, value in selection.items()}
             if selection["contact_id"] not in {c["id"] for c in row.get("contacts", [])}:
                 raise domain.Conflict("連絡先候補を再照合してください")
-            if row["direction"] == "inbound":
-                selection["activity_owner"] = self.repo.actor(actor_id)
         # 外部APIの実物照合は処理予約後に行う。Slackの受付応答を待たせない。
         return self.repo.decision(review_id, actor_id, revision, action, selection, channel)
 
     def process(self, row: dict) -> dict:
+        if row.get("direction") != "outbound":
+            # 旧版の予約も外部書込み前に止める。作成結果不明の追跡は残す。
+            state = "unknown" if row.get("attempted_properties") and not row.get("action_id") else "held" if row.get("action_id") else "excluded"
+            return self.repo.finish(row, state=state, reason=domain.OUTBOUND_ONLY_REASON)
         try:
             if row.get("attempted_properties") and not row.get("action_id"):
                 return self.repo.finish(row, state="unknown", reason="作成試行済みです。既存登録を照合してください")
