@@ -2407,3 +2407,29 @@ def test_引継ぎ配送は共有ロック内で原本を再確認する(store, 
         expected_source_properties={'名前': '古い保存値'}))
     assert result.skipped and result.reason == 'source_changed_after_handoff'
     assert all(not t.upsert_calls for t in targets.values())
+
+
+def test_missing_external_id_stays_incomplete_and_can_sync_after_registration(store, mapping):
+    """ID不足を登録待ちとして残し、ID補完後は同時刻の未完了項目を配送できる。"""
+    from dataclasses import replace
+    from src.sync_engine.record_sync_lock import acquire_record_sync_lock
+    store.upsert(replace(mapping, zoho_id=None))
+    targets = _all_targets()
+    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, always_skip=True)
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(source_tool=Tool.NOTION, db_key='client_master',
+                      external_id=mapping.notion_key, occurred_at=NOW,
+                      properties={'TEL': '03-1234-5678'})
+    result = dispatcher.dispatch(event)
+    assert result.properties[0].registration_pending_tools == {Tool.ZOHO}
+    assert result.properties[0].skipped_tools == {Tool.ZOHO}
+    with acquire_record_sync_lock(store, 'client_master', mapping.notion_key) as guard:
+        assert guard.eligible_fields(['TEL'], NOW) == ['TEL']
+    store.upsert(replace(store.get(mapping.notion_key), zoho_id='registered-zoho'))
+    targets[Tool.ZOHO]._always_skip = False
+    result = dispatcher.dispatch(event)
+    assert not result.has_partial_skips
+    assert not result.properties[0].registration_pending_tools
+    assert targets[Tool.ZOHO].upsert_calls[-1][0] == 'registered-zoho'
+    with acquire_record_sync_lock(store, 'client_master', mapping.notion_key) as guard:
+        assert guard.eligible_fields(['TEL'], NOW) == []

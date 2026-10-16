@@ -1,0 +1,16 @@
+Notion登録待ちと再送の分離・レビュー記録
+資料: 9813 bytes / SHA256 41baf571e0d31aa984450bdb12cf2273cebd397b1d6e61fb2e035fc998fb44dc
+差分のみ。認証値・顧客情報なしを機械検査・目視確認。
+Claude Opus 5.5・中: https://claude.ai/chat/42b16273-1c14-4f5b-941a-33ef76a23a47
+Gemini Thinking: https://gemini.google.com/app/8dad16e08b181979?hl=ja
+両者txt添付・依頼文27文字/hash31 839204582・送信と回答完了を確認。
+
+独立3者: sec BLOCKER/WARNなし。qualityの通知説明不足は対応済み、再確認済み。
+QA追加157テスト成功。製品関連236テスト成功（追加実ルーターテスト前）。
+Claude W1/Gemini B1: 主レコードだけの分類が意図。親のIDを関連先へ適用すると誤判定するため不採用。コメント追記。
+Claude import懸念/Gemini B2: 既存import dataclassesとテスト成功を確認。Geminiは補足後に両BLOCKERを取り下げ。
+Claude W2: 実Zoho/kintoneルーターにNone IDを渡して新規作成を呼ばない回帰テスト追加。
+Claude W3: 受信ルートはhandler結果のHTTP状態を維持。キューのneeds_attentionは意図して維持。
+Claude W4: 項目別未完了一覧が管理画面・診断APIに既存。登録待ちを監視から除外しない。
+Gemini通知WARN: 今回は既存通知を抑止せず、ID未登録と登録後再反映が必要な旨を明示。頻度設計の変更は対象外。
+INFOの将来ツール追加用抽象化・型強制は今回不要。

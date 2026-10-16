@@ -1,0 +1,161 @@
+Notion通知の登録待ちを500再送から分離する変更をレビューしてください。BLOCKER/WARN/INFO。外部ID不足でも未完了台帳を保持し、他配送先の失敗と例外は再送する。新規登録・保留解除は行わない。200は受信成功であり全先配送成功ではない。ID補完後は新イベントまたは直接dispatchが必要。キュー経路は今回の変更対象外。
+
+diff --git a/src/api/routes/webhooks.py b/src/api/routes/webhooks.py
+index e55fab0..d439f12 100644
+--- a/src/api/routes/webhooks.py
++++ b/src/api/routes/webhooks.py
+@@ -90,6 +90,8 @@ def _partial_skip_summary(dispatcher: Any) -> list[dict[str, Any]] | None:
+             "property": p.property_name,
+             "written_tools": sorted(t.value for t in p.written_tools),
+             "skipped_tools": sorted(t.value for t in p.skipped_tools),
++            **({"registration_pending_tools": sorted(t.value for t in p.registration_pending_tools)}
++               if p.registration_pending_tools else {}),
+         }
+         for p in last_result.properties
+         if p.skipped_tools
+diff --git a/src/sync_engine/dispatcher.py b/src/sync_engine/dispatcher.py
+index 68db3ce..28046f3 100644
+--- a/src/sync_engine/dispatcher.py
++++ b/src/sync_engine/dispatcher.py
+@@ -149,6 +149,8 @@ class PropertyDispatchResult:
+     related_db_key: str | None = None
+     related_notion_key: str | None = None
+     review_pending: bool = False
++    # skipped_toolsの部分集合。未完了のまま、登録で解消するまでNotion再送だけを抑える。
++    registration_pending_tools: frozenset[Tool] = field(default_factory=frozenset)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -509,6 +511,16 @@ class Dispatcher:
+                 _property_result(property_name, None, intended_by_property, written_by_tool)
+                 for property_name, _prop, _value in prepared
+             ]
++            # 外部ID不足は通知の再送では直らない。未完了台帳は保持し、
++            # 登録待ちと一時的な配送失敗を送り先単位で区別する。
++            missing_ids = frozenset(
++                tool for tool, external_id in (
++                    (Tool.KINTONE, mapping.kintone_id), (Tool.ZOHO, mapping.zoho_id)
++                ) if not external_id
++            )
++            results = [dataclasses.replace(
++                item, registration_pending_tools=item.skipped_tools & missing_ids,
++            ) for item in results]
+             self._write_notes(event, mapping)
+             completed_field_names = [item.property_name for item in results if not item.skipped_tools]
+             results.extend(self._link_project(mapping))
+diff --git a/src/sync_engine/production_wiring.py b/src/sync_engine/production_wiring.py
+index 334db3d..b1fb95b 100644
+--- a/src/sync_engine/production_wiring.py
++++ b/src/sync_engine/production_wiring.py
+@@ -1124,6 +1124,12 @@ class SkipTrackingDispatcher:
+                     logger.info("sync field review pending (db_key=%s property=%s)", event.db_key, prop_result.property_name)
+                     continue
+                 unexpected = self._unexpected_skips(event, prop_result)
++                registration_note = (
++                    " 外部ID未登録: " + "・".join(sorted(
++                        t.value for t in prop_result.registration_pending_tools
++                    )) + "。未完了として保持しています。登録後に再反映が必要です。"
++                    if prop_result.registration_pending_tools else ""
++                )
+                 if unexpected and self._slack_notifier is not None:
+                     self._slack_notifier.notify_update_skipped(
+                         db_key=event.db_key,
+@@ -1133,7 +1139,7 @@ class SkipTrackingDispatcher:
+                         detail=(
+                             f"「{prop_result.property_name}」を "
+                             f"{'・'.join(sorted(t.value for t in unexpected))} へ"
+-                            "書き込めませんでした（既知の未対応項目ではありません）"
++                            "書き込めませんでした（既知の未対応項目ではありません）" + registration_note
+                         ),
+                     )
+                 logger.warning(
+@@ -1141,12 +1147,13 @@ class SkipTrackingDispatcher:
+                     "されなかったツールがあります): db_key=%r external_id=%r property=%r "
+                     "written_tools=%s skipped_tools=%s (db_keyが解決できなかった、当該DB用の"
+                     "認証情報が未設定等が原因の可能性があります。IDマッピングストアの状態・"
+-                    "各ツールの環境変数設定を確認してください)",
++                    "各ツールの環境変数設定を確認してください)%s",
+                     prop_result.related_db_key or event.db_key,
+                     prop_result.related_notion_key or event.external_id,
+                     prop_result.property_name,
+                     sorted(t.value for t in prop_result.written_tools),
+                     sorted(t.value for t in prop_result.skipped_tools),
++                    registration_note,
+                 )
+         return result
+ 
+diff --git a/src/sync_engine/webhook_handlers/notion_webhook.py b/src/sync_engine/webhook_handlers/notion_webhook.py
+index 0d7e5d1..ba7cc4a 100644
+--- a/src/sync_engine/webhook_handlers/notion_webhook.py
++++ b/src/sync_engine/webhook_handlers/notion_webhook.py
+@@ -668,7 +668,8 @@ def handler_with_proxy(
+         return internal_error_response()
+ 
+     retryable_skip = bool(result is not None and (
+-        any(p.skipped_tools and not p.review_pending for p in result.properties)
++        any((p.skipped_tools - p.registration_pending_tools) and not p.review_pending
++            for p in result.properties)
+         if hasattr(result, 'properties') else result.has_partial_skips
+     ))
+     if retryable_skip:
+diff --git a/tests/sync_engine/test_dispatcher.py b/tests/sync_engine/test_dispatcher.py
+index e1288fe..aef29a6 100644
+--- a/tests/sync_engine/test_dispatcher.py
++++ b/tests/sync_engine/test_dispatcher.py
+@@ -2407,3 +2407,29 @@ def test_引継ぎ配送は共有ロック内で原本を再確認する(store,
+         expected_source_properties={'名前': '古い保存値'}))
+     assert result.skipped and result.reason == 'source_changed_after_handoff'
+     assert all(not t.upsert_calls for t in targets.values())
++
++
++def test_missing_external_id_stays_incomplete_and_can_sync_after_registration(store, mapping):
++    """ID不足を登録待ちとして残し、ID補完後は同時刻の未完了項目を配送できる。"""
++    from dataclasses import replace
++    from src.sync_engine.record_sync_lock import acquire_record_sync_lock
++    store.upsert(replace(mapping, zoho_id=None))
++    targets = _all_targets()
++    targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, always_skip=True)
++    dispatcher = Dispatcher(store, targets)
++    event = SyncEvent(source_tool=Tool.NOTION, db_key='client_master',
++                      external_id=mapping.notion_key, occurred_at=NOW,
++                      properties={'TEL': '03-1234-5678'})
++    result = dispatcher.dispatch(event)
++    assert result.properties[0].registration_pending_tools == {Tool.ZOHO}
++    assert result.properties[0].skipped_tools == {Tool.ZOHO}
++    with acquire_record_sync_lock(store, 'client_master', mapping.notion_key) as guard:
++        assert guard.eligible_fields(['TEL'], NOW) == ['TEL']
++    store.upsert(replace(store.get(mapping.notion_key), zoho_id='registered-zoho'))
++    targets[Tool.ZOHO]._always_skip = False
++    result = dispatcher.dispatch(event)
++    assert not result.has_partial_skips
++    assert not result.properties[0].registration_pending_tools
++    assert targets[Tool.ZOHO].upsert_calls[-1][0] == 'registered-zoho'
++    with acquire_record_sync_lock(store, 'client_master', mapping.notion_key) as guard:
++        assert guard.eligible_fields(['TEL'], NOW) == []
+diff --git a/tests/sync_engine/webhook_handlers/test_notion_event_dedupe.py b/tests/sync_engine/webhook_handlers/test_notion_event_dedupe.py
+index d777a82..36c6ce1 100644
+--- a/tests/sync_engine/webhook_handlers/test_notion_event_dedupe.py
++++ b/tests/sync_engine/webhook_handlers/test_notion_event_dedupe.py
+@@ -132,3 +132,22 @@ def test_record_busy_releases_claim_so_same_notification_can_retry(claims):
+     second = handler_with_proxy(_event('evt_busy'), None, notion_client=client, dispatcher=dispatcher)
+     assert second['statusCode'] == 200
+     assert dispatcher.dispatch.call_count == 2
++
++
++@pytest.mark.parametrize('other_failure', [False, True])
++def test_registration_wait_does_not_retry_but_delivery_failure_does(claims, other_failure):
++    """登録待ちは再送せず、同じ項目の別配送先の失敗は再送する。"""
++    from unittest.mock import Mock
++    from src.db_schema.base import Tool
++    from src.sync_engine.dispatcher import DispatchResult, PropertyDispatchResult
++    skipped = {Tool.ZOHO} | ({Tool.SPREADSHEET} if other_failure else set())
++    dispatcher = Mock()
++    dispatcher.dispatch.return_value = DispatchResult(False, properties=(
++        PropertyDispatchResult('履歴メモ', None, skipped_tools=frozenset(skipped),
++                               registration_pending_tools=frozenset({Tool.ZOHO})),
++    ))
++    response = handler_with_proxy(_event('registration_wait'), None,
++                                 notion_client=_FakeClient(), dispatcher=dispatcher)
++    assert response['statusCode'] == (500 if other_failure else 200)
++    assert ('registration_wait' in claims) is (not other_failure)
++    assert dispatcher.dispatch.return_value.has_partial_skips

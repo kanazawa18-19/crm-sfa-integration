@@ -668,7 +668,8 @@ def handler_with_proxy(
         return internal_error_response()
 
     retryable_skip = bool(result is not None and (
-        any(p.skipped_tools and not p.review_pending for p in result.properties)
+        any((p.skipped_tools - p.registration_pending_tools) and not p.review_pending
+            for p in result.properties)
         if hasattr(result, 'properties') else result.has_partial_skips
     ))
     if retryable_skip:

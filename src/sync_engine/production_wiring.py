@@ -1124,6 +1124,12 @@ class SkipTrackingDispatcher:
                     logger.info("sync field review pending (db_key=%s property=%s)", event.db_key, prop_result.property_name)
                     continue
                 unexpected = self._unexpected_skips(event, prop_result)
+                registration_note = (
+                    " 外部ID未登録: " + "・".join(sorted(
+                        t.value for t in prop_result.registration_pending_tools
+                    )) + "。未完了として保持しています。登録後に再反映が必要です。"
+                    if prop_result.registration_pending_tools else ""
+                )
                 if unexpected and self._slack_notifier is not None:
                     self._slack_notifier.notify_update_skipped(
                         db_key=event.db_key,
@@ -1133,7 +1139,7 @@ class SkipTrackingDispatcher:
                         detail=(
                             f"「{prop_result.property_name}」を "
                             f"{'・'.join(sorted(t.value for t in unexpected))} へ"
-                            "書き込めませんでした（既知の未対応項目ではありません）"
+                            "書き込めませんでした（既知の未対応項目ではありません）" + registration_note
                         ),
                     )
                 logger.warning(
@@ -1141,12 +1147,13 @@ class SkipTrackingDispatcher:
                     "されなかったツールがあります): db_key=%r external_id=%r property=%r "
                     "written_tools=%s skipped_tools=%s (db_keyが解決できなかった、当該DB用の"
                     "認証情報が未設定等が原因の可能性があります。IDマッピングストアの状態・"
-                    "各ツールの環境変数設定を確認してください)",
+                    "各ツールの環境変数設定を確認してください)%s",
                     prop_result.related_db_key or event.db_key,
                     prop_result.related_notion_key or event.external_id,
                     prop_result.property_name,
                     sorted(t.value for t in prop_result.written_tools),
                     sorted(t.value for t in prop_result.skipped_tools),
+                    registration_note,
                 )
         return result
 

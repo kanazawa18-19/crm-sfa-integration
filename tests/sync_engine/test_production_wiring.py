@@ -1526,3 +1526,13 @@ def test_action_actor_profile_lookup_uses_action_notion_client(monkeypatch, requ
     requests_mock.get(f'https://api.notion.com/v1/users/{identifier}', json=profile)
     assert adapter.resolve_user(identifier) == profile
     assert requests_mock.call_count == 1
+
+
+@pytest.mark.parametrize('router_type', [_MultiDbKintoneSyncTarget, _MultiDbZohoSyncTarget])
+def test_missing_external_id_never_calls_creation_target(router_type):
+    """登録待ちの通常更新は、本番ルーターでも新規登録を呼ばない。"""
+    from unittest.mock import Mock
+    inner = Mock()
+    router = router_type({'client_master': inner})
+    assert router.upsert_record(None, {'取引先名': '登録待ち確認'}, db_key='client_master') is None
+    inner.upsert_record.assert_not_called()

@@ -1,0 +1,323 @@
+- main:
+  - button "サイドバーを開く":
+    - text: side_nav_expand
+  - navigation "サイド ナビゲーション":
+    - navigation "メインの操作メニュー":
+      - link "チャットを新規作成":
+        - /url: /app
+        - img: gemini_chat
+    - navigation "その他の操作メニュー":
+      - button "チャットを検索":
+        - generic: search
+      - link "ライブラリ":
+        - /url: library
+        - img: features
+      - link "画像":
+        - /url: /images
+        - img: image_create
+      - generic "スケジュール設定済み":
+        - link "スケジュール設定済み":
+          - /url: /scheduled
+          - img: schedule
+      - link "カスタマイズ":
+        - /url: /customize
+        - img: settings_alt
+    - 'link "Google アカウント: 金沢裕貴（kanazawa@cnctor.jp）"':
+      - /url: https://accounts.google.com/SignOutOptions?continue=https://gemini.google.com
+    - button "設定":
+      - img: settings
+  - heading "Gemini との会話" [level=1]
+  - button "20261016-notion-registration-wait-input.txt":
+    - generic: TXT
+    - generic: 20261016-notion-registration-wait-input
+  - heading "あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。" [level=5]
+  - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - heading "BLOCKER" [level=3]
+  - list:
+    - paragraph:
+      - code: _link_project(mapping)
+      - text: の結果に対する
+      - code: registration_pending_tools
+      - text: の適用漏れ
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: src/sync_engine/dispatcher.py
+        - text: (L519-525)
+      - paragraph:
+        - text: "問題:"
+        - code: results
+        - text: に対して
+        - code: registration_pending_tools
+        - text: を設定した後に
+        - code: results.extend(self._link_project(mapping))
+        - text: を実行しています。もしプロジェクト紐付け処理内で外部ID不足によるスキップが発生した場合、その戻り値の
+        - code: PropertyDispatchResult.registration_pending_tools
+        - text: は空のままとなります。
+      - paragraph:
+        - text: "影響:"
+        - code: notion_webhook.py
+        - text: の
+        - code: retryable_skip
+        - text: 判定において
+        - code: (p.skipped_tools - p.registration_pending_tools)
+        - text: が真となり、外部ID不足であるにもかかわらず 500 再送ループが発生します。
+      - paragraph:
+        - text: "対策:"
+        - code: results.extend(self._link_project(mapping))
+        - text: を実行した後に、すべての結果に対して
+        - code: registration_pending_tools
+        - text: の置換処理を行うよう順序を変更してください。
+      - generic: Python
+      - button "コードをダウンロードする":
+        - img: arrow_circle_down
+      - button "コードをコピー":
+        - img: copy
+      - code: results.extend(self._link_project(mapping)) results = [ dataclasses.replace( item, registration_pending_tools=item.skipped_tools & missing_ids, ) for item in results ]
+    - paragraph:
+      - code: dispatcher.py
+      - text: 内における
+      - code: dataclasses
+      - text: モジュールの参照エラー（
+      - code: NameError
+      - text: ）の懸念
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: src/sync_engine/dispatcher.py
+        - text: (L521)
+      - paragraph:
+        - text: "問題: クラス定義では"
+        - code: "@dataclass(frozen=True)"
+        - text: および
+        - code: field(...)
+        - text: を直接使用しており、ファイル先頭で
+        - code: from dataclasses import dataclass, field
+        - text: のみインポートされている可能性が高いです。その場合、
+        - code: dataclasses.replace
+        - text: の呼び出しは実行時
+        - code: "NameError: name 'dataclasses' is not defined"
+        - text: となります（テストコード側では
+        - code: from dataclasses import replace
+        - text: を別途インポートして実行しています）。
+      - paragraph:
+        - text: "対策:"
+        - code: src/sync_engine/dispatcher.py
+        - text: のインポート文に
+        - code: import dataclasses
+        - text: または
+        - code: from dataclasses import replace
+        - text: を追加し、呼び出し形式を統一してください。
+  - heading "WARN" [level=3]
+  - list:
+    - paragraph:
+      - code: production_wiring.py
+      - text: の Slack 通知における誤検知（運用ノイズ）
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: src/sync_engine/production_wiring.py
+        - text: (L1126-1140)
+      - paragraph:
+        - text: "問題:"
+        - code: _unexpected_skips(event, prop_result)
+        - text: の判定ロジックが
+        - code: registration_pending_tools
+        - text: を考慮していない場合、外部ID未登録による待機スキップも「予期せぬスキップ（
+        - code: unexpected
+        - text: ）」として検知されます。
+      - paragraph: "影響: Slack に「『{項目名}』を {ツール} へ書き込めませんでした（既知の未対応項目ではありません） 外部ID未登録: ...」という矛盾した警告メッセージが毎回送信され、恒常的なアラート疲れを招きます。"
+      - paragraph:
+        - text: "対策:"
+        - code: unexpected = self._unexpected_skips(event, prop_result) - prop_result.registration_pending_tools
+        - text: のように登録待ちツールを除外するか、登録待ちは INFO ログまたは別系統の通知に分離することを推奨します。
+    - paragraph:
+      - code: missing_ids
+      - text: のハードコードによるツールの保守性低下
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: src/sync_engine/dispatcher.py
+        - text: (L516-520)
+      - paragraph:
+        - text: "問題:"
+        - code: ((Tool.KINTONE, mapping.kintone_id), (Tool.ZOHO, mapping.zoho_id))
+        - text: と配送先ツールおよびマッピング属性がベタ書きされています。
+      - paragraph: "影響: 今後新たな配送先ツール（Salesforce など）が追加された場合や、外部IDを持たない別ツールが存在する場合にマッピング漏れが発生し、再送抑止が機能しなくなるリスクがあります。"
+      - paragraph:
+        - text: "対策:"
+        - code: mapping
+        - text: 側に
+        - code: mapping.get_missing_id_tools(intended_tools)
+        - text: 等のヘルパーメソッドを用意し、ツールと外部IDの対応を一元管理してください。
+  - heading "INFO" [level=3]
+  - list:
+    - paragraph: 台帳未完了保持および重複排除（claim）挙動の整合性
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: tests/sync_engine/webhook_handlers/test_notion_event_dedupe.py
+        - text: /
+        - code: src/sync_engine/dispatcher.py
+      - paragraph:
+        - text: "確認結果:"
+        - code: completed_field_names
+        - text: の抽出条件は
+        - code: if not item.skipped_tools
+        - text: のままであり、外部ID不足時も未完了台帳が維持されています。また、登録待ちのみの場合は 200 が返ることで当該 Notion イベント ID が
+        - code: claims
+        - text: に保持され、同一イベントの再送が確実に抑止されます。「ID補完後は新イベントまたは直接 dispatch が必要」という仕様を満たす適切な設計です。
+    - paragraph:
+      - code: _partial_skip_summary
+      - text: のレスポンス変更に伴うスキーマ確認
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: src/api/routes/webhooks.py
+        - text: (L93-94)
+      - paragraph:
+        - text: "確認事項:"
+        - code: registration_pending_tools
+        - text: キーがオプショナルに追加されています。後方互換性は保たれていますが、管理コンソール等のクライアント側で本サマリーを参照している場合は、型定義の更新が必要ないか確認してください。
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - heading "あなたのプロンプト 補足です。import dataclasses は既存で存在し、関連236テスト成功済みです。関連レコードの結果に親mappingのmissing_idsを適用すると別レコードの配送失敗を誤抑止するた…" [level=5]
+  - paragraph: 補足です。import dataclasses は既存で存在し、関連236テスト成功済みです。関連レコードの結果に親mappingのmissing_idsを適用すると別レコードの配送失敗を誤抑止するため、対象をNotionの主レコードの直接項目に限定します。_link_projectは既存の永続キューとProductLinkIssueで保留を扱います。未完了は管理画面と診断APIでも一覧化済みです。この事実を踏まえてBLOCKERの採否を再評価してください。
+  - button "開く":
+    - img: expand_more
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - paragraph: 提示された補足事実を踏まえ、前回指摘した BLOCKER 2件をすべて「不採択（取り下げ）」 と判定します。
+  - paragraph: 現在の差分における致命的なブロッカーは 「なし」 となります。各項目の再評価結果および更新されたレビュー内容は以下の通りです。
+  - heading "BLOCKER の再評価結果" [level=3]
+  - heading "1. _link_project(mapping) の結果に対する適用漏れの指摘" [level=4]:
+    - text: "1."
+    - code: _link_project(mapping)
+    - text: の結果に対する適用漏れの指摘
+  - list:
+    - paragraph: "判定: 不採択（取り下げ）"
+    - paragraph: "理由:"
+    - list:
+      - paragraph:
+        - text: 関連レコードに親レコードの
+        - code: missing_ids
+        - text: を適用してしまうと、別レコード固有の配送失敗まで登録待ちと判定されて再送が誤抑止されるため、対象を主レコードの直接項目（
+        - code: prepared
+        - text: 由来の
+        - code: results
+        - text: ）に限定する設計は妥当です
+        - superscript
+        - text: 。
+        - 'button "TXT: 20261016-notion-registration-wait-input.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - code: _link_project
+        - text: 側の失敗・保留は既存の永続キューおよび
+        - code: ProductLinkIssue
+        - text: で独立して管理されており、Notion Webhook の 500 再送ループに依存しない仕組みが確立されているため、
+        - code: results.extend(...)
+        - text: の前で
+        - code: registration_pending_tools
+        - text: を付与する順序
+        - superscript
+        - text: が正しい挙動となります。
+        - 'button "TXT: 20261016-notion-registration-wait-input.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "2. dataclasses モジュールの参照エラー（NameError）の懸念" [level=4]:
+    - text: "2."
+    - code: dataclasses
+    - text: モジュールの参照エラー（NameError）の懸念
+  - list:
+    - paragraph: "判定: 不採択（取り下げ）"
+    - paragraph: "理由:"
+    - list:
+      - paragraph:
+        - text: diff 外で既に
+        - code: import dataclasses
+        - text: がインポートされており、関連テスト（236件）でも動作が検証済みであるため、実行時例外の懸念は解消されました。
+  - heading "残る考慮点（WARN / INFO の更新）" [level=3]
+  - heading "WARN" [level=4]
+  - list:
+    - paragraph:
+      - text: Slack通知（
+      - code: _unexpected_skips
+      - text: ）における通知設計の確認
+    - list:
+      - paragraph:
+        - text: "箇所:"
+        - code: src/sync_engine/production_wiring.py
+      - paragraph:
+        - text: "確認事項: 外部ID未登録による待機スキップも"
+        - code: _unexpected_skips
+        - text: の判定に含まれている場合、運用チャンネルへ「書き込めませんでした（既知の未対応項目ではありません）」という通知が送られます
+        - superscript
+        - text: 。
+        - 'button "TXT: 20261016-notion-registration-wait-input.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "対応: 登録待ちは想定内の状態であり、管理画面や診断APIで一覧化されている運用であれば、Slack 側では"
+        - code: unexpected
+        - text: から
+        - code: registration_pending_tools
+        - text: を除外してノイズを抑制するか、通知文言のトーンを「登録待ち検知（要マスター登録）」などに切り替えることを推奨します。
+  - heading "INFO" [level=4]
+  - list:
+    - paragraph: 設計意図との完全な合致
+    - list:
+      - paragraph:
+        - text: 主レコードの直接項目にスコープを限定した登録待ちの分離
+        - superscript
+        - text: 、Notion 側への 200 返却による不要な再送抑止
+        - superscript
+        - text: 、ならびに管理画面・診断APIでの未完了可視化が揃っており、要件に沿った安全な構成となっています。
+        - 'button "TXT: 20261016-notion-registration-wait-input.txt、TXT: 20261016-notion-registration-wait-input.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"
+- generic: 音声入力 (⌘⇧D)

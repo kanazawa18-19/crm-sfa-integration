@@ -132,3 +132,22 @@ def test_record_busy_releases_claim_so_same_notification_can_retry(claims):
     second = handler_with_proxy(_event('evt_busy'), None, notion_client=client, dispatcher=dispatcher)
     assert second['statusCode'] == 200
     assert dispatcher.dispatch.call_count == 2
+
+
+@pytest.mark.parametrize('other_failure', [False, True])
+def test_registration_wait_does_not_retry_but_delivery_failure_does(claims, other_failure):
+    """登録待ちは再送せず、同じ項目の別配送先の失敗は再送する。"""
+    from unittest.mock import Mock
+    from src.db_schema.base import Tool
+    from src.sync_engine.dispatcher import DispatchResult, PropertyDispatchResult
+    skipped = {Tool.ZOHO} | ({Tool.SPREADSHEET} if other_failure else set())
+    dispatcher = Mock()
+    dispatcher.dispatch.return_value = DispatchResult(False, properties=(
+        PropertyDispatchResult('履歴メモ', None, skipped_tools=frozenset(skipped),
+                               registration_pending_tools=frozenset({Tool.ZOHO})),
+    ))
+    response = handler_with_proxy(_event('registration_wait'), None,
+                                 notion_client=_FakeClient(), dispatcher=dispatcher)
+    assert response['statusCode'] == (500 if other_failure else 200)
+    assert ('registration_wait' in claims) is (not other_failure)
+    assert dispatcher.dispatch.return_value.has_partial_skips

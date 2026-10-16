@@ -149,6 +149,8 @@ class PropertyDispatchResult:
     related_db_key: str | None = None
     related_notion_key: str | None = None
     review_pending: bool = False
+    # skipped_toolsの部分集合。未完了のまま、登録で解消するまでNotion再送だけを抑える。
+    registration_pending_tools: frozenset[Tool] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -509,6 +511,17 @@ class Dispatcher:
                 _property_result(property_name, None, intended_by_property, written_by_tool)
                 for property_name, _prop, _value in prepared
             ]
+            # 外部ID不足は通知の再送では直らない。未完了台帳は保持し、
+            # 登録待ちと一時的な配送失敗を送り先単位で区別する。
+            # 主レコードの直接項目のみ。関連レコードへ親のID不足を適用しない。
+            missing_ids = frozenset(
+                tool for tool, external_id in (
+                    (Tool.KINTONE, mapping.kintone_id), (Tool.ZOHO, mapping.zoho_id)
+                ) if not external_id
+            )
+            results = [dataclasses.replace(
+                item, registration_pending_tools=item.skipped_tools & missing_ids,
+            ) for item in results]
             self._write_notes(event, mapping)
             completed_field_names = [item.property_name for item in results if not item.skipped_tools]
             results.extend(self._link_project(mapping))
