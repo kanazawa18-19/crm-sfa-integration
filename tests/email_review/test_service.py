@@ -71,3 +71,19 @@ def test_conflicting_affiliation_stops_before_any_write():
     result = Service(repo, gateway).process({'id': 'r', 'revision': 0})
     assert result['state'] == 'pending'
     assert gateway.created == gateway.updated == 0
+
+
+def test_additional_internal_domain_skips_company_notice_before_storage(monkeypatch):
+    from unittest.mock import Mock
+    from src.email_review.service import capture, internal_domains
+    from src.gmail_sync.gmail_client import GmailMessage
+    monkeypatch.setenv("EMAIL_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("EMAIL_REVIEW_START_AT", "2026-01-01T00:00:00+00:00")
+    monkeypatch.setenv("INTERNAL_EMAIL_DOMAINS", "example.test,existing.test")
+    monkeypatch.setenv("EMAIL_REVIEW_INTERNAL_DOMAINS", " Company.test ")
+    repo = Mock()
+    message = GmailMessage(id="notice", from_header="system@company.test", to_header="me@example.test",
+                           internal_date_ms="1792130400000", body_text="認証用本文", subject="認証", date_header=None, snippet=None)
+    capture(message, "me@example.test", repo=repo)
+    repo.capture.assert_not_called()
+    assert internal_domains() == {"example.test", "existing.test", "company.test"}

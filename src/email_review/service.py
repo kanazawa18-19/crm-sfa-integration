@@ -19,6 +19,13 @@ def enabled() -> bool:
     return os.environ.get("EMAIL_REVIEW_ENABLED", "").lower() == "true"
 
 
+def internal_domains() -> set[str]:
+    """既存の取得設定を保持し、照合だけの追加社内ドメインを除外する。"""
+    from src.gmail_sync.sync import internal_domains_from_env
+    extra = os.environ.get("EMAIL_REVIEW_INTERNAL_DOMAINS", "")
+    return set(internal_domains_from_env()) | {value.strip().lower() for value in extra.split(",") if value.strip()}
+
+
 def safe_capture(message, owner: str) -> bool:
     try:
         capture(message, owner)
@@ -40,8 +47,7 @@ def capture(message, owner: str, *, repo=None) -> None:
     if not stamp or datetime.fromtimestamp(int(stamp) / 1000, timezone.utc) < start:
         return
     owner = owner.lower()
-    from src.gmail_sync.sync import internal_domains_from_env
-    direction, people = domain.participants(data, owner, set(internal_domains_from_env()))
+    direction, people = domain.participants(data, owner, internal_domains())
     if not people:
         return
     review_id = domain.identity(data, owner)
@@ -76,8 +82,7 @@ class Service:
         if len(people) != 1 or len(contacts) != 1:
             result.update(state="pending", reason="相手の連絡先を確認してください（未登録または複数候補）")
         if row["direction"] == "inbound":
-            from src.gmail_sync.sync import internal_domains_from_env
-            domains = internal_domains_from_env()
+            domains = internal_domains()
             recipients = {a.lower() for _, a in getaddresses([row["message"].get("to_header") or "", row["message"].get("cc_header") or ""])
                           if "@" in a and a.lower().rsplit("@", 1)[1] in domains}
             if len(recipients) > 1:

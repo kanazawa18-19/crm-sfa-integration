@@ -34,7 +34,7 @@ RFC Message-IDと送信者アドレスを共通IDに使用する。同一メー�
 
 1. 承認された配備時に `dashboard/prisma/migrations/20261016090000_email_review` を適用する。`EmailReview`、所有者、判断履歴の3表と検索索引を追加する。通常のdashboard buildはマイグレーションも実行するため、本番DBに接続したまま検証用ビルドを実行しない。
 2. 既存CRMユーザー対応表 `CRM_USER_MAPPING_JSON.users` に各担当者の `email` と `notion_id` が一意に設定され、Notionユーザー実物のメールと一致することを確認する。不足は自動補完せず確認待ちになる。
-3. backendに `EMAIL_REVIEW_ENABLED=true`、`EMAIL_REVIEW_START_AT` をタイムゾーン付き日時で設定する。開始時刻以前のメールを自動記録しない。対象社内ドメインは既存Gmail設定を引き継ぐ。
+3. backendに `EMAIL_REVIEW_ENABLED=true`、`EMAIL_REVIEW_START_AT` をタイムゾーン付き日時で設定する。開始時刻以前のメールを自動記録しない。対象社内ドメインは既存Gmail設定を引き継ぐ。`EMAIL_REVIEW_INTERNAL_DOMAINS` で照合だけの追加除外ドメインをカンマ区切り指定でき、既存設定を置き換えない。社内通知は本文の照合保存より前に除外する。
 4. GAS取得を使う環境は `EMAIL_REVIEW_ENABLED=true` のScript Propertyと更新版 `gas/gmail-ingest/ingest.js` が必要。Python取得はbackendフラグで切替。本文はプレーンテキスト先頭20,000文字、添付・HTMLのみの内容は解析しない。日本語の主要文字コードを扱う。署名が取得できない場合は確認待ち。
 5. Slackは既存の署名検証・Interactivity・App Homeを使用。`SLACK_CRM_ALLOWED_TEAM_ID`、`users.info`で本人メールを取得できる権限（`users:read.email`等）、同じメールの管理画面User登録が必要。`DASHBOARD_BASE_URL` を設定すると全件表示へのリンクを出す。チャネルへの自動通知・DM配信は今回追加しない。
 6. 既存 `/api/cron/slack-crm-drain` で1回あたり最大5件ずつ照合・記録する。新しい定期実行は作らない。実行間隔と処理量は有効化後の観測対象。
