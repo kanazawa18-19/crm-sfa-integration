@@ -115,3 +115,33 @@ def test_received_mail_cannot_be_confirmed_or_resumed_from_either_ui(action, dir
     row = {'id': 'r', 'revision': 1, 'state': 'pending', 'direction': direction}
     with pytest.raises(Conflict, match='送信メールだけ'):
         decide(row, revision=1, action=action, selection={'company_id': 'c', 'contact_id': 'p'}, actor='u', channel='slack')
+
+
+def test_primary_to_uses_name_and_preserves_all_recipients():
+    from src.email_review.domain import primary_participant
+    people = [{'email': 'a@example.test', 'name': '田中 太郎'}, {'email': 'b@example.test', 'name': '佐藤花子'}]
+    msg = {'to_header': '田中 太郎 <a@example.test>', 'body_text': '試験株式会社\n田中様\n本文'}
+    assert primary_participant(msg, people, []) == people[0]
+    assert len(people) == 2
+    assert primary_participant({**msg, 'to_header': 'a@example.test, b@example.test'}, people, []) is None
+    assert primary_participant({**msg, 'body_text': '試験株式会社\n佐藤様\n本文'}, people, []) is None
+    assert primary_participant({**msg, 'body_text': '試験株式会社御中\n本文'}, people, []) is None
+    assert primary_participant({**msg, 'body_text': '試験株式会社\n田中様\n佐藤様\n本文'}, people, []) is None
+    assert primary_participant(msg, [people[0], {**people[1], 'name': '田中 花子'}], []) is None
+
+
+def test_primary_to_without_display_name_needs_registered_name():
+    from src.email_review.domain import primary_participant
+    people = [{'email': 'a@example.test'}, {'email': 'b@example.test'}]
+    msg = {'to_header': 'a@example.test', 'body_text': '試験株式会社\n田中様\n本文'}
+    assert primary_participant(msg, people, []) is None
+    assert primary_participant(msg, people, [{'email': 'a@example.test', 'name': '田中 太郎'}]) == people[0]
+    assert primary_participant(msg, people, [{'email': 'b@example.test', 'name': '田中 太郎'}]) is None
+
+
+@pytest.mark.parametrize('display', ['小川原太郎', '小川太郎', '小川原 太郎'])
+def test_primary_to_does_not_guess_surname_boundaries(display):
+    from src.email_review.domain import primary_participant
+    people = [{'email': 'a@example.test', 'name': display}, {'email': 'b@example.test'}]
+    msg = {'to_header': f'{display} <a@example.test>', 'body_text': '試験株式会社\n小川様\n本文'}
+    assert primary_participant(msg, people, []) is None

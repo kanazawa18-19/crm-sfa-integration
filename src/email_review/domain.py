@@ -94,6 +94,49 @@ def unquoted(text: str) -> list[str]:
     return lines
 
 
+def primary_participant(message: dict, people: list[dict], contacts: list[dict]) -> dict | None:
+    """単独のToと冒頭の宛名が一致するときだけ、CCから主相手を分ける。"""
+    if len(people) == 1:
+        return people[0]
+    addresses = {p["email"] for p in people}
+    to = {address.strip().lower(): name.strip()
+          for name, address in getaddresses([message.get("to_header") or ""])
+          if address.strip().lower() in addresses}
+    if len(to) != 1:
+        return None
+    lines = unquoted(message.get("body_text") or "")[:8]
+    end = next((i for i, line in enumerate(lines) if re.search(r"(?:様|御中|各位)[、。\s]*$", line)), None)
+    if end is None:
+        return None
+    if end + 1 < len(lines) and re.search(r"(?:様|御中|各位)[、。\s]*$", lines[end + 1]):
+        return None
+    salutation = re.fullmatch(r"([^様、,・／/＆&]+)様[、。\s]*", lines[end])
+    if not salutation:
+        return None
+    name = normalized(salutation[1])
+    if len(name) < 2:
+        return None
+
+    def matches(candidate: str) -> bool:
+        value = normalized(candidate)
+        # 姓の区切りが明示された日本語名だけ、姓の完全一致を許容する。
+        parts = unicodedata.normalize("NFKC", candidate).split()
+        return value == name or bool(len(parts) == 2
+                                     and all(re.fullmatch(r"[一-龯ぁ-んァ-ヶー]+", p) for p in parts)
+                                     and normalized(parts[0]) == name)
+
+    matched = set()
+    for person in people:
+        names = [person.get("name") or "", to.get(person["email"], "")]
+        names += [c.get("name") or "" for c in contacts if c.get("email") == person["email"]]
+        if any(matches(candidate) for candidate in names):
+            matched.add(person["email"])
+    address = next(iter(to))
+    if matched != {address}:
+        return None
+    return next(p for p in people if p["email"] == address)
+
+
 def evidence(message: dict, direction: str, counterpart: str) -> list[dict]:
     """送信の宛名と受信の相手署名だけを採る。引用・自社署名は採らない。"""
     lines = unquoted(message.get("body_text") or "")

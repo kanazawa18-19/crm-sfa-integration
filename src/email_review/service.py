@@ -76,21 +76,27 @@ class Service:
             return self.repo.finish(row, state="excluded", reason=domain.OUTBOUND_ONLY_REASON)
         people = row["participants"]
         contacts = self.gateway.contacts([p["email"] for p in people])
+        primary = domain.primary_participant(row["message"], people, contacts)
+        selected_contacts = (contacts if len(people) == 1 else
+                             [c for c in contacts if primary and c.get("email") == primary["email"]])
         evidence_rows = []
-        if len(people) == 1:
+        if primary:
             for item in self.repo.thread(row):
-                if len(item["participants"]) == 1 and item["participants"][0]["email"] == people[0]["email"]:
-                    evidence_rows += [{**e, "review_id": item["id"]} for e in domain.evidence(item["message"], item["direction"], people[0]["email"])]
+                other = (domain.primary_participant(item["message"], item["participants"], contacts)
+                         if item["direction"] == "outbound" else
+                         item["participants"][0] if len(item["participants"]) == 1 else None)
+                if other and other["email"] == primary["email"]:
+                    evidence_rows += [{**e, "review_id": item["id"]} for e in domain.evidence(item["message"], item["direction"], primary["email"])]
         masters = self.repo.masters([item["value"] for item in evidence_rows])
-        affiliations = contacts[0]["affiliations"] if len(contacts) == 1 else []
+        affiliations = selected_contacts[0]["affiliations"] if len(selected_contacts) == 1 else []
         result = domain.match(evidence_rows, masters, affiliations)
         result.update(contacts=contacts, evidence=evidence_rows)
         if not row.get("canonical_key"):
             result.update(state="pending", reason="メール共通IDがありません。本文取得の設定後に再取得してください")
-        if len(people) != 1 or len(contacts) != 1:
+        if not primary or len(selected_contacts) != 1:
             result.update(state="pending", reason="相手の連絡先を確認してください（未登録または複数候補）")
         if result["state"] == "approved":
-            selection = self.gateway.validate(row, {"company_id": result["company_id"], "contact_id": contacts[0]["id"]})
+            selection = self.gateway.validate(row, {"company_id": result["company_id"], "contact_id": selected_contacts[0]["id"]})
             result.update(selection, actor="system", channel="automatic", delivery="queued")
         return self.repo.finish(row, **result)
 
