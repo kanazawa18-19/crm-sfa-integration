@@ -38,12 +38,20 @@ def normalized(value: str) -> str:
 
 
 def authentication_notice(message: dict) -> bool:
-    """返信不可の送信者とコード通知の件名が揃う場合だけ保存対象から外す。"""
+    """返信不可のコード通知と、確認済み送信元の認証通知だけ保存対象から外す。"""
     senders = getaddresses([message.get("from_header") or ""])
     automatic = any(re.fullmatch(r"(?:no[-_.]?reply|do[-_.]?not[-_.]?reply)", address.lower().split("@", 1)[0])
                     for _, address in senders)
-    subject = unicodedata.normalize("NFKC", message.get("subject") or "")
-    return automatic and bool(re.search(r"認証コード|確認コード|ワンタイム(?:パスワード|コード)|verification code|security code|one[- ]time (?:password|code)", subject, re.I))
+    subject = unicodedata.normalize("NFKC", message.get("subject") or "").strip()
+    if automatic and re.search(r"認証コード|確認コード|ワンタイム(?:パスワード|パスコード|コード)|verification code|security code|one[- ]time (?:password|passcode|code)", subject, re.I):
+        return True
+    # info/supportは業務メールにも使われるため、実際に確認した件名との組だけ除外する。
+    known_notices = {
+        "info@willer.co.jp": "認証コードを送付します",
+        "info@kosokubus.com": "【高速バスドットコム】パスワード通知メール",
+        "support@up-sider.com": "UPSIDER |【重要】本人認証手続き:取引を承認または拒否してください",
+    }
+    return len(senders) == 1 and known_notices.get(senders[0][1].lower()) == subject
 
 
 def participants(message: dict, owner: str, internal_domains: set[str]) -> tuple[str, list[dict]]:

@@ -5,6 +5,34 @@ from src.email_review.domain import evidence, match, decide, identity, participa
 from src.email_review.mime import plain_text
 
 
+@pytest.mark.parametrize('sender,subject', [
+    ('no-reply@account.example.test', 'Partner Portalへのログイン用ワンタイムパスコード'),
+    ('no-reply@example.test', 'Your one-time passcode'),
+    ('info@willer.co.jp', '認証コードを送付します'),
+    ('INFO@WILLER.CO.JP', '認証コードを送付します'),
+    ('info@kosokubus.com', '【高速バスドットコム】パスワード通知メール'),
+    ('UPSIDER <support@up-sider.com>', 'UPSIDER |【重要】本人認証手続き：取引を承認または拒否してください'),
+])
+def test_authentication_notice_variants(sender, subject):
+    from src.email_review.domain import authentication_notice
+    assert authentication_notice({'from_header': sender, 'subject': subject})
+
+
+@pytest.mark.parametrize('sender,subject', [
+    ('person@example.test', '認証コードの仕様について相談'),
+    ('info@willer.co.jp', '認証コードを送付しますが、仕様について相談です'),
+    ('info@kosokubus.com', '予約受付確認書'),
+    ('support@up-sider.com', '本人認証手続きについてのご相談'),
+    ('support@another.test', 'UPSIDER |【重要】本人認証手続き：取引を承認または拒否してください'),
+    ('no-reply@example.test', 'お問い合わせを受け付けました'),
+    ('info@willer.co.jp, person@example.test', '認証コードを送付します'),
+    ('', ''),
+])
+def test_authentication_filter_preserves_other_mail(sender, subject):
+    from src.email_review.domain import authentication_notice
+    assert not authentication_notice({'from_header': sender, 'subject': subject})
+
+
 def test_same_company_in_salutation_and_signature_is_two_evidence():
     sent = {'id': 's1', 'body_text': 'テスト株式会社\n山田様\nご相談です。\n---\n自社株式会社'}
     received = {'id': 'r1', 'body_text': '金沢様\nご返信ありがとうございます。\n---\nテスト株式会社\n山田\nyamada@example.test'}

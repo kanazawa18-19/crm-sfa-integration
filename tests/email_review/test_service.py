@@ -1,5 +1,6 @@
 """外部書込みは代替し、応答紛失時の二重作成防止と同一記録の再配送を検証。"""
 from copy import deepcopy
+import pytest
 from src.email_review.service import Service
 from src.email_review.domain import Conflict
 
@@ -89,7 +90,14 @@ def test_additional_internal_domain_skips_company_notice_before_storage(monkeypa
     assert internal_domains() == {"example.test", "existing.test", "company.test"}
 
 
-def test_authentication_notice_is_not_stored_but_human_discussion_is(monkeypatch):
+@pytest.mark.parametrize('sender,subject', [
+    ('no-reply@outside.test', '2段階認証コードのご連絡'),
+    ('no-reply@outside.test', 'Partner Portalへのログイン用ワンタイムパスコード'),
+    ('info@willer.co.jp', '認証コードを送付します'),
+    ('info@kosokubus.com', '【高速バスドットコム】パスワード通知メール'),
+    ('support@up-sider.com', 'UPSIDER |【重要】本人認証手続き：取引を承認または拒否してください'),
+])
+def test_authentication_notice_is_not_stored_but_human_discussion_is(monkeypatch, sender, subject):
     from unittest.mock import Mock
     from dataclasses import replace
     from src.email_review.service import capture
@@ -98,8 +106,8 @@ def test_authentication_notice_is_not_stored_but_human_discussion_is(monkeypatch
     monkeypatch.setenv("EMAIL_REVIEW_START_AT", "2026-01-01T00:00:00+00:00")
     monkeypatch.setenv("INTERNAL_EMAIL_DOMAINS", "example.test")
     repo = Mock()
-    message = GmailMessage(id="notice", from_header="no-reply@outside.test", to_header="me@example.test",
-                           internal_date_ms="1792130400000", body_text="認証用本文", subject="2段階認証コードのご連絡", date_header=None, snippet=None)
+    message = GmailMessage(id="notice", from_header=sender, to_header="me@example.test",
+                           internal_date_ms="1792130400000", body_text="認証用本文", subject=subject, date_header=None, snippet=None)
     capture(message, "me@example.test", repo=repo)
     repo.capture.assert_not_called()
     capture(replace(message, from_header="person@outside.test", subject="認証コードの仕様について相談"), "me@example.test", repo=repo)
