@@ -80,7 +80,9 @@ def comment_with_actor(value, names):
 
 
 def action_actor_rows(properties, context):
-    ids = properties.get('担当営業')
+    context = context or {}
+    # メール受付で実ユーザー照合済みの場合は、案件担当の集計より実施者を優先する。
+    ids = [context['email_actor_id']] if context.get('email_actor_id') else properties.get('担当営業')
     if not isinstance(ids, list) or any(not isinstance(v, str) for v in ids):
         raise CreationHeld('担当営業の集計が未確定です。関連先と集計完了を確認してください')
     if not ids:

@@ -71,6 +71,9 @@ _EXPECTED_ROUTES = {
     ("GET", "/api/diagnostics/integrations"),
     ("GET", "/api/diagnostics/webhook-health"),
     ("POST", "/api/sync-review/decision"),
+    ("GET", "/api/email-review"),
+    ("GET", "/api/email-review/options"),
+    ("POST", "/api/email-review/decision"),
     ("POST", "/api/sync-operations/product-holds/list"),
     ("POST", "/api/sync-operations/product-holds/resume"),
     # 一斉配信のプレビュー（2026-09-03追加）。読み取りのみだが、本文テンプレート

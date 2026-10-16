@@ -423,7 +423,7 @@ async def webhook_slack_interactions(request: Request, background_tasks: Backgro
     except (ValueError, TypeError):
         payload = {}
     callback_id = (payload.get("view") or {}).get("callback_id", "")
-    action_id = (payload.get("actions") or [{}])[0].get("action_id", "")
+    action_id = (payload.get("actions") or [{}])[0].get("action_id", "") or payload.get("action_id", "")
     if str(callback_id).startswith("crm_") or str(action_id).startswith("crm_"):
         outcome = await _run_off_event_loop(slack_crm_handler, event)
         result = dict(outcome.result)

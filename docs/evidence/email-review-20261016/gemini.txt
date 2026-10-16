@@ -1,0 +1,174 @@
+BLOCKER（致命的な不具合・本番稼働不可）
+1. Slackリクエスト署名検証のバイパスおよび構文エラー（IndentationError）
+
+該当箇所: src/slack_crm/handler.py 290行目〜310行目付近
+
+問題点:
+
+if not _authorized(payload): の直下に追加されたインポートおよび email_actor 呼び出しのインデントが4スペース分深く（20スペース）、Python環境によっては IndentationError でモジュール読み込み時やリクエスト処理時に即座にクラッシュします。
+
+if email_handles(payload): return email_handle(payload) が既存の認可・署名検証処理（if not _authorized(payload):）より前に配置されています。これにより、攻撃者が外部から crm_email_ を含むペイロードを直接POSTした場合、Slackリクエストの署名検証（Slack Signing Secret検証）をバイパスして任意の操作を実行できる重大なセキュリティホールとなっています。
+
+修正案:
+
+handler.py の先頭で必ず正規のSlackリクエスト署名検証を通過させ、その後にメール照合の認可（email_actor）およびディスパッチ（email_handles）を行ってください。インデントの乱れを解消してください。
+
+2. ClientNameIndex の全件フルスキャンによるDB負荷と性能破綻
+
+該当箇所: src/email_review/repository.py 114行目〜121行目（masters メソッド）
+
+問題点:
+
+values（本文から抽出した候補文字列群）が渡された際、SELECT "notionPageId" AS id,"rawName" AS name FROM "ClientNameIndex" を WHERE句なしで全件取得 し、Pythonのメモリ上でループ照合しています。
+
+取引先マスターが数万件規模に達した場合、1通のメールを evaluate するたびにテーブル全件スキャンと大量データ転送が発生し、PostgreSQLの負荷急増、メモリ枯渇、ワーカーのタイムアウトを引き起こします。
+
+修正案:
+
+ClientNameIndex 側に正規化済み名称カラム（およびインデックス）を用意し、SQLの WHERE normalized_name = ANY(%s) で必要な行のみをピンポイントで取得してください。
+
+3. 共有メール・CC受信における実施者（actor）の取り違えと誤判定
+
+該当箇所: src/email_review/domain.py 27行目（participants）、src/email_review/service.py 107行目（process）
+
+問題点:
+
+participants の送信（outbound）判定が any(address.lower() == owner.lower() for _, address in sender) となっており、owner 1名のアドレスしか確認していません。自社の同僚が顧客へ送信したメール（自社送信・担当者CC）を受信した場合、送信元が owner と異なるため 「受信（inbound）」と誤判定 されます。その結果、自社同僚の本文から「相手の署名」として自社名が抽出され、誤紐付けの原因になります。
+
+共有メールや同一メールを複数人で受信した場合、先に取り込んだ担当者のメールアドレスが row["owner"] に固定されます。その後、別の営業担当者がSlackや管理画面で手動確定（confirm）しても、process 内では actor_id = self.gateway.actor(row["owner"]) となっており、実際に操作した担当者ではなく最初に取り込んだ row["owner"] のNotionアカウントで記録が作成 されます。
+
+修正案:
+
+送信判定は owner 単体ではなく、差出人のドメインが internal_domains に含まれるかどうかで判定してください。
+
+記録作成の実施者は、手動確定の場合は row.get("actor")（または操作時の認証ユーザー）を優先し、自動確定の場合のみ row["owner"] を用いるよう分岐してください。
+
+4. find_action の厳密一致失敗による結果不明（unknown）レコードの永久固定化
+
+該当箇所: src/email_review/gateway.py 115行目〜127行目（find_action）、src/email_review/service.py 130行目〜140行目（reconcile）、src/email_review/domain.py 96行目（decide）
+
+問題点:
+
+find_action 内の any(current.get(key) != value for key, value in expected.items()) で全プロパティの完全一致を要求しています。しかし、Notion APIから再取得した値（ISO日時の秒・タイムゾーン表記、リレーション配列の形式など）と送信時の辞書表現にわずかでも差異があると常に不一致と判定され、find_action が None を返します。
+
+reconcile で find_action が None を返すと state="unknown" のまま更新され、「再登録は行いません」と記録されます。
+
+さらに domain.decide では state == "unknown" の行に対して action != "reconcile" の操作（手動での再照合や強制確定）を Conflict で拒絶しているため、一度 unknown に落ちて既存記録が見つからなかったレコードは一切の操作を受け付けず、永久にデッドロック（文鎮化） します。
+
+修正案:
+
+find_action はタイトルに含まれる一意の #mail-{row['id'][:12]} を主キーとして存在確認を行い、プロパティの全件完全一致比較に依存しないようにしてください。
+
+reconcile で該当レコードが存在しないことが確認できた場合、管理者が手動で「再照合（resume）」または「対象外（exclude）」に遷移させられるエスケープハッチを domain.decide に設けてください。
+
+5. Slackモーダル内インクリメンタル検索（block_suggestion）のルーティング不達
+
+該当箇所: src/email_review/slack.py 18行目〜22行目（handles）、73行目〜79行目（detail）
+
+問題点:
+
+detail 画面の external_select 要素の action_id が "company_id", "target_id", "project_id" と設定されています。
+
+block_suggestion イベント発生時、handles(payload) は action_id や callback_id が crm_email_ で始まっているかを検査しますが、これらの検索入力は crm_email_ プレフィックスを持たないため handles が False を返し、email_handle にルーティングされず検索候補が表示されません。
+
+修正案:
+
+external_select の action_id を crm_email_company_id, crm_email_target_id, crm_email_project_id のように接頭辞付きに変更し、取得側（selected や handle）もそれに対応させてください。
+
+WARN（潜在的障害・設計改善が必要な項目）
+1. record_lock におけるセッションレベル・アドバイザリロックの解放漏れ
+
+該当箇所: src/email_review/gateway.py 21行目〜30行目
+
+問題点:
+
+pg_try_advisory_lock はセッションレベルのロックです。finally 節で pg_advisory_unlock を明示的に呼んでおらず、conn.close() のみに依存しています。
+
+_connect_direct() の内部実装がコネクションプールを使用している場合、close() は物理切断ではなくプールへの返却となり、セッション上にロックが残留します。結果として、同じレコードに対する以後の同期処理が永続的に RecordSyncBusy で失敗し続けます。
+
+修正案:
+
+finally 節で必ず SELECT pg_advisory_unlock(%s) を実行するか、トランザクションスコープの pg_try_advisory_xact_lock を使用してください。
+
+2. capture の多重呼び出しによる重複ロックと競合
+
+該当箇所: src/gmail_sync/sync.py 188行目、src/sync_engine/webhook_handlers/gmail_ingest_webhook.py 106行目
+
+問題点:
+
+gmail_ingest_webhook.py の _process_one 内で capture() を呼び出した後、下流の record_message 内でも再度 capture() を呼び出しています。
+
+1通の受信メールに対して同一プロセス内で2回重複してキャプチャが実行され、アドバイザリロックの競合や無駄なDBクエリが発生します。
+
+修正案:
+
+呼び出し経路を一元化し、_process_one または record_message のいずれか一方のみで capture() を実行してください。
+
+3. 宛名抽出における敬称（様）残存によるマッチング漏れ
+
+該当箇所: src/email_review/domain.py 49行目〜63行目（evidence）
+
+問題点:
+
+送信メールの宛名行処理で re.sub(r"(?:御中|各位)[、。\s]*$", "", line) となっており、「様」が除去されません。
+
+本文中に「株式会社〇〇 田中様」のように会社名と個人名・敬称が1行に記載されている場合、正規化後もマスターの会社名（株式会社〇〇）と完全一致（== name）せず、宛名根拠として棄却されます。
+
+修正案:
+
+行末の敬称除去正規表現に 様 を含め、さらに宛名行から会社名部分を切り出す、または会社名マスターとの部分一致（あるいは前方一致）によるトークナイズを行ってください。
+
+4. BFF / Dashboard における Origin / Sec-Fetch-Site 判定によるリクエスト遮断
+
+該当箇所: dashboard/app/api/email-review/route.ts 13行目〜17行目
+
+問題点:
+
+if (!sameOrigin || site === "cross-site" || site === "same-site") において、new URL(request.url).origin を使用しています。リバースプロキシ環境（Next.js がコンテナ内でポート3000等で稼働している構成）では request.url が http://localhost:3000 となり、ブラウザから送信された headers.origin（例: [https://crm.example.com](https://crm.example.com)）と不一致になって正規のリクエストが403で拒絶されます。
+
+サブドメイン間移動や一部ブラウザで sec-fetch-site が same-site になる場合も一律で拒否されます。
+
+修正案:
+
+プロキシ環境を考慮し、x-forwarded-host / x-forwarded-proto を反映させたオリジン比較を行うか、標準的なCSRFトークン検証方式に改修してください。
+
+5. スレッド一括更新（capture）におけるデッドロックの可能性
+
+該当箇所: src/email_review/repository.py 69行目〜73行目
+
+問題点:
+
+thread_id に属する EmailReview を一括で state='new' に更新するクエリ（UPDATE "EmailReview" ... WHERE id IN (...)）で、更新行のソート（ロック取得順序の固定）が行われていません。
+
+同一スレッドに属する複数のメールが別ワーカーで並行して取り込まれた場合や、drain の claim 処理と競合した場合に PostgreSQL の行ロック競合によるデッドロック（DeadlockDetected）が発生するリスクがあります。
+
+修正案:
+
+更新対象のIDリストをあらかじめ昇順ソートして取得してから順次ロック・更新するか、一括更新の競合例外をリトライする処理を入れてください。
+
+INFO（軽微な改善点・運用上の推奨事項）
+1. 内部エラーログの出力とトレーサビリティの確保
+
+該当箇所: src/email_review/service.py 120行目〜127行目（process）
+
+内容:
+
+外部APIエラーや例外発生時に、機密情報（メール本文や認証トークン）をDBの reason カラムに保存しない設計はセキュリティ上適切です。
+
+ただし、例外型やスタックトレースがアプリケーションの標準ロガーにも出力されない場合、本番障害時の原因究明が極めて困難になります。PII（個人情報）を含まない形で、エラーの種類やNotion APIのステータスコードをロガーに出力することを推奨します。
+
+2. ダッシュボードにおける連絡先未登録時のガイダンス強化
+
+該当箇所: dashboard/app/(dashboard)/email-review/review-list.tsx 80行目付近
+
+内容:
+
+連絡先が未登録の場合、「連絡先を登録してから『再照合』を押してください」と表示されますが、Notion側で連絡先レコードを作成した後にどのキー（メールアドレス）で照合されるのかが画面上で分かりにくいため、「相手のメールアドレス（xxx@example.com）でCRMに連絡先を登録後、再照合を実行してください」のように具体的なアドレスを表示すると運用の手戻りを防げます。
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

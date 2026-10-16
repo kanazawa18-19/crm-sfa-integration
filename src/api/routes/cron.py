@@ -393,7 +393,12 @@ def resume_daily_batch() -> dict[str, Any]:
 def run_slack_crm_drain() -> dict[str, int]:
     """応答後に止まったSlack更新だけを台帳から再開する。"""
     from src.slack_crm.service import drain
-    return drain(limit=10)
+    result = drain(limit=10)
+    from src.email_review.service import Service, enabled
+    if enabled():
+        email_result = Service().drain(limit=5)
+        result.update(email_evaluated=email_result["evaluated"], email_processed=email_result["processed"])
+    return result
 
 
 @router.get('/api/cron/gmail-late-registration', dependencies=[Depends(verify_cron_secret)])

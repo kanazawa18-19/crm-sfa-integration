@@ -215,3 +215,23 @@ test('消失通知の応答紛失後に先行IDも消えたら同じ走査で新
  assert.ok(missing.every(o=>o.scan_id===scan&&o.sequence===0));
  assert.equal(values.has('INGEST_CURSOR'),false);
 });
+
+test('照合ONは本文・CC・共通IDを取得し添付を除外する', () => {
+  const {context, values} = runtime();
+  values.set('EMAIL_REVIEW_ENABLED', 'true');
+  context.Utilities.base64DecodeWebSafe = value => Buffer.from(value, 'base64url');
+  context.Utilities.newBlob = bytes => ({getDataAsString: () => bytes.toString('utf8')});
+  const plain = (text, extra = {}) => ({mimeType: 'text/plain', body: {data: Buffer.from(text).toString('base64url')}, ...extra});
+  context.Gmail.Users.Messages.get = (_user, id, options) => {
+    assert.equal(options.format, 'full');
+    return {id, payload: {mimeType: 'multipart/mixed', headers: [{name: 'Cc', value: 'cc@example.test'}, {name: 'Message-ID', value: '<mail@example.test>'}],
+      parts: [plain('本文'), plain('添付', {filename: 'a.txt'}), plain('転送', {mimeType: 'message/rfc822'})]}};
+  };
+  const result = context.gmailIngestMessage('m');
+  assert.equal(result.body_text, '本文');
+  assert.equal(result.cc_header, 'cc@example.test');
+  assert.equal(result.message_id_header, '<mail@example.test>');
+  assert.equal(context.gmailReviewPlainText(plain('x'.repeat(20000))).length, 20000);
+  assert.equal(context.gmailReviewPlainText(plain('x'.repeat(20001))), '');
+  assert.equal(context.gmailReviewPlainText(plain('<b>html</b>', {mimeType: 'text/html'})), '');
+});

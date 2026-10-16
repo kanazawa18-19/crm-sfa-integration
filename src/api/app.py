@@ -180,6 +180,8 @@ app.include_router(cron_router)
 # 外部連携の疎通診断（読み取りのみ）。ダッシュボードAPIトークンで保護する。
 app.include_router(diagnostics_router)
 app.include_router(sync_review_router)
+from src.api.routes.email_review import router as email_review_router
+app.include_router(email_review_router)
 from src.api.routes.sync_operations import router as sync_operations_router
 app.include_router(sync_operations_router)
 

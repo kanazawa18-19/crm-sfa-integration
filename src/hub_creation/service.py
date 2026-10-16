@@ -230,6 +230,10 @@ class HubCreationService:
                                     if event.db_key == 'action':
                                         from src.record_merge.creation_candidates import creation_context
                                         creation_context()['action_created_by'] = creation_page_snapshot.get('created_by', {}).get('id')
+                                        import os
+                                        if os.environ.get('DATABASE_URL'):
+                                            from src.email_review.repository import action_actor
+                                            creation_context()['email_actor_id'] = action_actor(page_id)
                                     payload = adapter.plan(event.db_key, properties)
                                     scan = getattr(adapter, 'duplicate_scan', None)
                                     if scan is not None and scan.exists():

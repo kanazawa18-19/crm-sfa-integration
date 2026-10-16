@@ -12,6 +12,10 @@ export class BackendApiError extends Error {
   }
 }
 
+export function emailReviewRequest<T>(path: string, body?: unknown): Promise<T> {
+  return fetchBackend<T>(`/api/email-review${path}`, body === undefined ? undefined : { method: "POST", body });
+}
+
 export function getErrorMessage(error: unknown): string {
   if (error instanceof BackendApiError || error instanceof Error) {
     return error.message;

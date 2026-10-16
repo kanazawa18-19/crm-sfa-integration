@@ -1,0 +1,272 @@
+Claude の応答：全体として、版番号による楽観ロック、SKIP LOCKED による取り出し、作成前の attempted_properties 保存、時間切れ時に再POSTしない方針は妥当です。
+本文保存範囲と外部送信漏洩リスクを点検中。
+
+本文保存範囲と外部送信漏洩リスクを点検中。
+
+全体として、版番号による楽観ロック、SKIP LOCKED による取り出し、作成前の attempted_properties 保存、時間切れ時に再POSTしない方針は妥当です。
+
+ただし、本番で有効化する前に直すべき点が4件あります。
+
+Slackの未許可ユーザーの分岐が、既存のイベント処理へそのまま進みます。
+取込の例外が、既存のGmail同期を止めます。
+共有メールで共通キーが取込経路によってずれ、記録が二重に作成されます。
+結果不明からの復旧と記録の訂正が、Notion側の値の正規化によって成立しない可能性が高いです。
+
+一覧は次のとおりです。
+
+ID	重大度	箇所	要旨
+B1	BLOCKER	slack_crm/handler.py	未許可ユーザーが既存イベント処理へ進む。しかも本人確認の形式不一致でホーム表示は機能しない
+B2	BLOCKER	gmail_sync/sync.py, gmail_ingest_webhook.py	capture の例外（環境変数欠落・DB障害・Conflict）が既存のGmail取込を止める
+B3	BLOCKER	domain.identity	共通キーが From／Date の生文字列に依存し、取込経路の違いで別キーになって二重作成される
+B4	BLOCKER	gateway.find_action / update_action	値の完全一致比較のため、Notionの正規化後は一致せず、復旧も訂正も失敗し続ける
+W1	WARN	domain.decide	reconcile がどの状態からでも実行でき、行が unknown に固定される
+W2	WARN	service.reconcile	unknown から抜ける管理者向けの手段がない
+W3	WARN	service.process	作成を試みた痕跡がある行でも、再作成を防ぐ検査が「action_id の有無」だけ
+W4	WARN	service.drain / recover_stale	実行中の処理と時間切れ回収が競合すると、finish 内の Conflict で drain 全体が止まる
+W5	WARN	hub_creation / gateway.dispatch	Notion webhook 経由の配送と明示 dispatch が二重になる。action_actor は作成直後に None を返す
+W6	WARN	gateway.validate / link_contact	「自分が付けた所属」を判定できず、既存の所属を暗黙に付け替えうる
+W7	WARN	共有メール全般	先に取り込んだ担当者のスレッド由来の根拠が他の担当者に見える。実施者も先着者で決まる
+W8	WARN	共有受信箱	info@ などの所有者に User がいないと、誰も閲覧できず永久に保留される
+W9	WARN	service.process	外部の必須条件不足が「保留」ではなく done／partial になり、仕様と異なる
+W10	WARN	repository.capture	スレッド単位の pending→new 更新で版と履歴が更新されない
+W11	WARN	全体	Notion ページIDの表記（ハイフン有無）が正規化されていない
+W12	WARN	mime.plain_text	ISO-2022-JP と Shift_JIS が未対応で、日本語メールの多くで根拠がゼロになる
+W13	WARN	slack.actor	ワークスペース検証が未設定時に通過しうる。user.team_id も未検査
+W14	WARN	prisma migration	schema.prisma に3テーブルのモデルがないと、drift 検出やテーブル削除の危険がある
+W15	WARN	gmail_client	format=full の本文が既存処理の全経路に流れる。外部AIへの経路を確認する必要がある
+I1〜I9	INFO	各所	性能、索引、表示、引用検出など
+
+BLOCKER
+
+B1. Slackの未許可ユーザーが既存イベント処理へ進む（handler.py の handler 差分）
+
+現状の流れは次のとおりです。
+
+if not _authorized(payload): の中で email_actor が成功すると、return せずに後続の処理へ進みます。
+後続には app_home_opened 以外の既存イベント処理（既存CRM操作）も含まれます。
+その結果、許可リスト外のユーザーでも、管理画面に User がいれば既存機能に到達します。
+
+一方で、Events API のペイロードは team_id と event.user を持ち、team.id や user.id は持ちません。そのため現状の actor() は常に Forbidden になり、メール照合用のホームも表示されません。セキュリティ上の欠陥と機能不全が同時に起きている状態です。たまたま形式が合わずに塞がっているだけなので、修正が必要です。
+
+修正案です。未許可の場合は app_home_opened だけを受け付け、メール照合専用のホームを出して必ず return します。
+
+
+python
+if not _authorized(payload):
+    if not (enabled() and event_payload.get("type") == "app_home_opened"):
+        return _response()
+    try:
+        email_actor_for_event(payload["team_id"], event_payload["user"], Repository())
+    except Exception:
+        return _response()
+    publish_email_only_home(event_payload["user"])
+    return _response()
+
+email_actor_for_event は slack.actor と同じ検査を、イベントの形式で行う関数にします。
+
+B2. capture の例外が既存のGmail取込を止める（sync.record_message, gmail_ingest_webhook._process_one）
+
+capture() は既存処理の先頭で、例外を捕捉せずに呼ばれています。例外の発生源は次のとおりです。
+
+os.environ["EMAIL_REVIEW_START_AT"] が未設定のときの KeyError
+DB障害
+capture 内の Conflict("同じメールの受付が競合しています")
+
+いずれの場合も、既存の email_log 記録や通知まで失敗します。メール照合を有効にした瞬間に、既存の同期へ障害が波及する構造です。
+
+修正案は2点です。
+
+呼び出し側で例外を隔離します。ログには message.id だけを出し、例外本文は出しません。
+開始時刻の設定不備は、取込時ではなく起動時やヘルスチェックで検出します。
+
+python
+def safe_capture(message, owner):
+    try:
+        capture(message, owner)
+    except Exception:
+        logger.warning("email_review capture failed gmail_id=%s", message.id)
+
+B3. 共有メールの共通キーが取込経路によってずれ、二重作成になる（domain.identity）
+
+共通キーは rfc_id + from_header + date_header の生文字列から作られています。
+
+Gmail API 経路と GAS 経路では、From の表記（引用符、表示名、エンコード）や Date の書式が一致する保証がありません。
+担当者Aが API、担当者Bが GAS で同じメールを取り込むと、canonical_key が別になり、受付が2件できます。
+2件ともに宛名と署名の根拠を満たすと、両方が自動承認され、営業記録が2件作成されます。
+unique 索引はキーが同一の場合しか防げません。
+
+修正案です。Message-ID を正規化し、送信者は addr-spec（アドレス部分）だけを使います。
+
+
+python
+def canonical_key(message: dict) -> str | None:
+    mid = (message.get("message_id_header") or "").strip().strip("<>").lower()
+    senders = [a.lower() for _, a in getaddresses([message.get("from_header", "")]) if a]
+    if not mid or len(senders) != 1:
+        return None
+    return hashlib.sha256(f"rfc:{mid}:{senders[0]}".encode()).hexdigest()
+
+Message-ID の詐称への対策も必要です。既存の canonical 行へ寄せる際に、件名の正規化値と internalDate の近さ（例えば±1日）を比較し、不一致なら寄せずに保留としてください。本番未稼働なので、IDの付け方を変えても移行の問題はありません。
+
+B4. 結果不明からの復旧と訂正が成立しない（gateway.find_action, update_action）
+
+どちらも、送信したプロパティと live() が返す解析済みの値を完全一致で比較しています。Notion から読み戻すと、値が正規化されて一致しない可能性が高いです。
+
+項目	送信値	読み戻し値
+アクション日	isoformat() の結果（例: 2026-10-16T10:00:00+09:00）	ミリ秒付き（例: 2026-10-16T10:00:00.000+09:00）
+取引先マスター等の relation	ClientNameIndex 由来のID（表記が異なる可能性）	ハイフン付きのID
+rich_text・タイトル	送信した文字列	分割や空白処理の影響を受ける
+
+その結果、次の問題が起きます。
+
+find_action は常に None を返し、unknown の行は復旧できません。
+update_action は常に Conflict となり、記録作成後の訂正がすべて「外部で編集されています」で止まります。
+担当者がNotion上でメモを追記した場合も、復旧できなくなります。
+
+合成テストで Notion 側の正規化を再現していなければ、この問題は検出されていないはずです。
+
+修正案は3点です。
+
+作成や更新の直後に live("action", page_id) で読み戻し、対象キーの値を written_properties として保存します（比較の基準を Notion 側の表現に揃えます）。
+find_action は、タイトルの #mail-{id} が完全一致し、かつ履歴メモが メール受付ID: {id} で始まるページが1件だけある場合に採用します。その他の項目の差分は、採用を拒否する理由ではなく「外部編集あり」として表示します。
+比較の前に、ID・日付・空白を正規化します（W11 と共通）。
+
+WARN
+
+W1. reconcile がどの状態からでも実行できる（domain.decide）
+
+pending や new の行で reconcile を選ぶと、recheck に移ります。action_id も attempted_properties もないため、そのまま unknown（管理者照合が必要）に固定されます。Slack の選択肢にも常に表示されています。reconcile は state == "unknown" の場合のみ許可してください（done を含めるかどうかは方針次第です）。
+
+W2. unknown から抜ける手段がない
+
+理由の文言は「管理者による原本照合が必要」ですが、管理者向けの操作がありません。管理者権限で使える操作として、次の2つを追加することを提案します。
+
+既存のNotionページIDを指定して紐付ける。ページの検証には live と履歴メモの受付IDを使います。
+未作成であることを確認したうえで、再作成を許可する。確認者と理由を履歴に残します。
+
+W3. 作成を試みた痕跡がある行の再作成防止が弱い（service.process）
+
+現状、作成を防ぐ条件は action_id の有無だけです。将来、Conflict の分岐などで「attempted_properties はあるが action_id はない」行が pending に戻ると、確定操作で2件目が作成されます。
+
+修正案です。process で attempted_properties and not action_id の場合は、作成する前に find_action を必須にします。見つからなければ unknown へ送ります。
+
+W4. 時間切れ回収と実行中ワーカーの競合（service.drain, repository.recover_stale）
+
+dispatch の途中などで最後の checkpoint から20分を超えると、別の drain が unknown に変えます。そうなると、元のワーカーで次の連鎖が起きます。
+
+次の checkpoint が Conflict になる。
+except domain.Conflict の中の finish も Conflict になる。
+例外が drain の外まで伝わり、同じ回の残りの行が処理されない。
+
+reconcile 内の finish にも同じ問題があります。修正案は3点です。
+
+drain のループで1行ずつ try で囲み、finish の失敗はログに残すだけにします。
+長い処理（dispatch）の前後で heartbeat として updatedAt を更新します。
+attempted_properties がない processing の行は、unknown ではなく approved に戻します（POST 前の中断なので安全です）。
+
+W5. 二重配送と実施者の取り違え（hub_creation, gateway.dispatch）
+
+create_action によって Notion webhook 経由の既存作成処理が動き、さらに process も明示的に dispatch します。
+
+同じ action について配送が2経路で走ります。既存 dispatcher が同じ external_id を record lock と対応表で直列化しているか、確認してください。直列化されていなければ、kintone などに二重作成されます。
+webhook の到着が checkpoint(action_id=...) より早いと、action_actor(page_id) は None を返し、kintone 側の実施者が担当営業のままになります。
+
+修正案です。action_actor は action_id ではなく、ページの履歴メモにある メール受付ID から受付を引きます（作成前に確定している値なので競合しません）。あわせて data->>'action_id' に一意な部分索引を作ってください（I2）。
+
+W6. 「自分が付けた所属」の判定が不正確（gateway.validate の owned_correction, link_contact）
+
+linked_company_id は、link_contact が実際に書き換えたかどうかに関係なく、毎回記録されます。そのため、人が以前から入力していた所属Xと同じ会社で一度処理されると、「自分が付けた所属」とみなされます。その後の手動訂正でXが黙ってYに付け替わり、「既存所属の矛盾は保留」という仕様に反します。また、同じ連絡先に依存する他の受付や記録への影響も検査していません。
+
+修正案です。
+
+link_contact が実際に「空から設定」した場合に限り、linked_company_id と変更前の値（空）を記録します。
+訂正は「変更前が空」かつ「現在値＝自分が付けた値」の場合だけ許可します。
+他の受付が同じ連絡先とその会社に依存している場合は保留にします。
+
+W7. 共有メールでの情報露出と実施者の決まり方
+
+canonical 行の根拠（evidence）は row["owner"]、つまり先に取り込んだ担当者Aのスレッド全体から作られます。後から参加した担当者Bにも、Bが受け取っていない過去のやり取りの宛名や署名の行が、管理画面とSlackで表示されます。
+
+また、Notion上の実施者は gateway.actor(row["owner"]) で決まるため、確定した人ではなく取込の先着者になります。
+
+修正案は2点です。
+
+共有行で表示する根拠は、当該メッセージ由来のものに限定します。または閲覧者ごとに、その人のスレッドから再計算します。
+実施者のルールを決めて明文化します。「手動確定なら確定者、自動なら全担当者の中の主担当」などです。
+
+W8. 共有受信箱や委任で永久保留になる
+
+所有者が info@ などの場合、"User".email と一致する人がいません。そのため一覧に誰も表示されず、actor の解決にも失敗して、永久に保留されます。共有受信箱から担当者への割当表が必要です。
+
+W9. 外部の必須条件不足が「保留」にならない（service.process）
+
+仕様では「外部の必須条件が不足したら保留」です。ところが実装では、skipped があっても done／partial になり、確認待ちの一覧から消えます。
+
+修正案です。dispatch の結果からスキップ理由（ツール名と不足項目）を取り出し、state を pending か held にして、理由に記載します。done は全ツールへの配送完了時だけにします。
+
+W10. スレッド単位の一括更新が版と履歴を通らない（repository.capture 末尾）
+
+jsonb_set(state,'new') は revision を上げず、履歴も残しません。そのため、古い版の画面から出された判断が通ってしまいます。save と同じ経路で、revision+1 と履歴の記録を行ってください。recover_stale も同様です。
+
+W11. ページIDの表記が正規化されていない
+
+ClientNameIndex の notionPageId、relation の値、str(UUID()) の表記が一致する保証がありません。match、validate、link_contact、find_action に影響します。入口と比較の箇所で str(UUID(x)) に統一してください。
+
+W12. 文字コード（mime.plain_text）
+
+utf-8 固定でデコードしているため、ISO-2022-JP や Shift_JIS のメールは空文字になり、根拠がゼロになります。日本の取引先ではまだ多い形式です。修正案は2点です。
+
+part の headers から Content-Type の charset を取り出してデコードします。
+大きな本文は body.attachmentId 側に入ることがあるため、未取得として扱うことを明示します。
+
+W13. Slackの本人確認（slack.actor）
+
+SLACK_CRM_ALLOWED_TEAM_ID が未設定で、ペイロードに team がない場合、None == None で通過します。未設定なら拒否する作りにしてください。
+user.team_id == 許可チーム も検査してください（Slack Connect 対策）。
+
+W14. Prisma のモデル定義
+
+マイグレーションのSQLだけ追加され、schema.prisma に3テーブルのモデルがない場合、問題が起きます。prisma migrate dev で drift が検出され、db push ではテーブルが削除される危険があります。モデルを追加するか、管理対象外である旨を整備してください。
+
+W15. 本文の流通範囲
+
+有効化すると、すべてのメッセージで format=full が使われ、body_text が GmailMessage の既存の利用先にも流れます。既存処理で asdict、ログ出力、要約などに渡している箇所がないか確認してください。「本文を外部AIへ送らない」という条件を満たすための確認事項です。
+
+また、EmailReview.data に本文が無期限で保存されます。保持期間を決め、done または excluded になった後は本文を消去することを提案します。
+
+INFO
+
+I1: masters(values) は評価のたびに ClientNameIndex を全件読み込みます。正規化済みの名前の列と索引を用意してください。
+I2: data->>'action_id' に索引がありません。action_actor が全件走査になります。一意な部分索引にすれば、1つの記録を複数の受付が指す事態も防げます。
+I3: ダッシュボードの labels に recheck と reconciling がありません。
+I4: 引用ヘッダの検出漏れがあります。iOS 日本語版の「…のメール:」、Gmail 日本語版の「YYYY年M月D日(曜) HH:MM 名前 <addr>:」の行が本文側に残ります。また、send-as の別ドメインのエイリアスから送ったメールが「受信」と誤判定されます。
+I5: Slack で Forbidden になったとき、block_actions には何も応答されません。picker では actor の照会が4回発生し、trigger_id の3秒期限に対して余裕がありません。
+I6: GAS 経路で message_id_header が送られない場合、その受付は永久に保留されます。再取得の手段か、GAS 側の対応が必要です。
+I7: Notion の email equals 検索は大文字小文字の扱い次第で、該当する連絡先を見落として保留になる可能性があります（安全側ではあります）。
+I8: format=full の取得は、開始時刻より前のメッセージや照合対象外のメッセージにも適用されます。API の割当量に影響します。
+I9: 取り込み済みの行に本文がない場合、他の担当者が本文付きで取り込んでも補完されません。
+
+追加を推奨する合成テストは次のとおりです。
+
+観点	ケース
+重複作成	同じメールを API 経路と GAS 経路で別担当者が取り込む → 受付1件、記録1件
+重複作成	POST が成功した直後に checkpoint で失敗 → unknown → reconcile で既存ページを採用
+復旧	Notion が正規化した値（ミリ秒付きの日付、ハイフン付きのID）を返すモックで find_action と update_action が成功する
+並行処理	処理中に recover_stale が介入 → drain が停止せず、二重作成もない
+並行処理	同じスレッドへの新着と判断の送信が競合 → 版の不一致で拒否される
+Slack権限	許可リスト外のユーザーの app_home_opened → メール専用ホームのみ表示し、他のイベントは無応答
+Slack権限	他チーム（Slack Connect）のユーザー、チームの環境変数が未設定 → 拒否
+共有メール	Bに、Aのスレッド由来の根拠が見えない
+共有メール	所有者が共有受信箱の場合の扱い
+所属	人が入力済みの所属Xを持つ連絡先を、手動訂正でYにする → 保留
+取込隔離	START_AT 未設定や DB 障害でも既存の email_log 記録が成功する
+文字コード	ISO-2022-JP の宛名と署名で根拠が抽出される
+
+修正の優先順位は B2 → B1 → B3 → B4 です。B2 と B1 は数行で直せます。B3 と B4 は ID と比較の正規化を共通化すれば、W11 も同時に片付きます。
+
+
+
+
+
+
+8 分前

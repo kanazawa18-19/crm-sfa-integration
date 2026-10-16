@@ -1120,3 +1120,31 @@ model GmailLateRegistrationJob {
 
   @@index([state, updatedAt])
 }
+
+// メール照合はPython側で版と処理予約を原子的に管理する。
+model EmailReview {
+  id        String   @id
+  data      Json
+  updatedAt DateTime @default(now()) @db.Timestamptz(6)
+  owners    EmailReviewOwner[]
+  history   EmailReviewHistory[]
+}
+
+model EmailReviewOwner {
+  reviewId       String
+  ownerEmail     String
+  gmailMessageId String
+  threadId       String?
+  review         EmailReview @relation(fields: [reviewId], references: [id])
+  @@id([ownerEmail, gmailMessageId])
+  @@index([reviewId, ownerEmail], map: "EmailReviewOwner_review_idx")
+  @@index([ownerEmail, threadId], map: "EmailReviewOwner_thread_idx")
+}
+
+model EmailReviewHistory {
+  id        BigInt   @id @default(autoincrement())
+  reviewId  String
+  data      Json
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  review    EmailReview @relation(fields: [reviewId], references: [id])
+}

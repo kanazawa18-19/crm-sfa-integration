@@ -167,13 +167,30 @@ def _process_message_ref(
     共通で使う(重複実装を避けるための分割、2026-08-16)。新規に記録した場合Trueを返す。
     """
     if db.email_log_exists(message_id):
+        from src.email_review.service import enabled, safe_capture
+        if enabled():
+            message = gmail_client.get_message(access_token, message_id)
+            if not safe_capture(message, rep_email):
+                raise RuntimeError("メール照合の保存を再試行してください")
         return False
 
     message = gmail_client.get_message(access_token, message_id)
     return record_message(message, rep_email, contact_client, internal_domains=internal_domains)
 
 
-def record_message(
+def record_message(message, rep_email, contact_client, *, internal_domains, atomic_insert=False,
+                   resolve_contact=None, capture_review=True):
+    """照合保存失敗でも既存ログを処理し、呼出元には再取得が必要と知らせる。"""
+    from src.email_review.service import safe_capture
+    captured = safe_capture(message, rep_email) if capture_review else True
+    result = _record_message(message, rep_email, contact_client, internal_domains=internal_domains,
+                             atomic_insert=atomic_insert, resolve_contact=resolve_contact)
+    if not captured:
+        raise RuntimeError("メール照合の保存を再試行してください")
+    return result
+
+
+def _record_message(
     message: gmail_client.GmailMessage,
     rep_email: str,
     contact_client: HttpNotionClient,

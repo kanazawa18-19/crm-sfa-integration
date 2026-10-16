@@ -44,7 +44,8 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 raise ValueError('メールIDが不正です')
             # 一斉送信の宛先を切り捨てず受理しつつ、入力サイズは制限する。
             limits = {'from': 1000, 'to': 65536, 'subject': 1000, 'snippet': 500,
-                      'date_header': 200, 'thread_id': 100, 'internal_date_ms': 20}
+                      'date_header': 200, 'thread_id': 100, 'internal_date_ms': 20,
+                      'body_text': 20000, 'cc_header': 65536, 'message_id_header': 1000}
             if any(item.get(key) is not None and (
                 not isinstance(item[key], str) or len(item[key]) > limit
             ) for key, limit in limits.items()):
@@ -57,6 +58,8 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 subject=item.get('subject'), date_header=item.get('date_header'),
                 snippet=item.get('snippet'), thread_id=item.get('thread_id'),
                 internal_date_ms=item.get('internal_date_ms'),
+                body_text=item.get('body_text'), cc_header=item.get('cc_header'),
+                message_id_header=item.get('message_id_header'),
             ))
         observation_meta = observation.validate(body.get('observation'), dry_run=dry_run, messages=parsed)
     except (ValueError, TypeError, AttributeError) as exc:
@@ -99,6 +102,13 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
 
 
 def _process_one(message, rep_email, client, resolve, dry_run: bool) -> str:
+    from src.email_review.service import safe_capture
+    captured = True if dry_run else safe_capture(message, rep_email)
+    result = _process_logged_message(message, rep_email, client, resolve, dry_run)
+    return result if captured else 'effect_failed'
+
+
+def _process_logged_message(message, rep_email, client, resolve, dry_run: bool) -> str:
     exists = db.email_log_exists(message.id)
     effect_before = db.gmail_ingest_effect_status(message.id) if exists and not dry_run else None
     if dry_run:
@@ -115,7 +125,7 @@ def _process_one(message, rep_email, client, resolve, dry_run: bool) -> str:
         return 'existing'
     inserted = sync.record_message(
         message, rep_email, client, internal_domains=sync.internal_domains_from_env(),
-        atomic_insert=True, resolve_contact=resolve,
+        atomic_insert=True, resolve_contact=resolve, capture_review=False,
     )
     if inserted:
         return 'inserted'

@@ -181,6 +181,9 @@ class GmailMessage:
     # `Date:`ヘッダーは送信側が作る値で、PCの時計ずれ・遅延配送・壊れた書式でズレる。
     # 「相手のメールが実際に届いた時間帯」を数えるならこちらが正しい。
     internal_date_ms: str | None = None
+    body_text: str | None = None
+    cc_header: str | None = None
+    message_id_header: str | None = None
 
 
 def _header_value(headers: list[dict[str, Any]], name: str) -> str | None:
@@ -286,11 +289,14 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
 
 
 def get_message(access_token: str, message_id: str) -> GmailMessage:
+    from src.email_review.service import enabled
+    from src.email_review.mime import plain_text
+    full = enabled()
     response = request_with_retry(
         "GET",
         f"{_GMAIL_API_BASE}/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"},
-        params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
+        params={"format": "full"} if full else {"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
         max_rate_limit_retries=current_max_rate_limit_retries(),
     )
     raise_for_error(response, GmailApiError)
@@ -305,4 +311,7 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
         snippet=data.get("snippet"),
         thread_id=data.get("threadId"),
         internal_date_ms=data.get("internalDate"),
+        body_text=plain_text(data.get("payload") or {}) if full else None,
+        cc_header=_header_value(headers, "Cc") if full else None,
+        message_id_header=_header_value(headers, "Message-ID") if full else None,
     )

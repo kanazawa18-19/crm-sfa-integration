@@ -257,6 +257,14 @@ def _on_action(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def publish_home(user_id: str) -> None:
+    from src.email_review.service import enabled
+    allowed = {part.strip() for part in os.environ.get("SLACK_CRM_ALLOWED_USER_IDS", "").split(",")}
+    if enabled() and user_id not in allowed:
+        call("views.publish", {"user_id": user_id, "view": {"type": "home", "blocks": [
+            {"type": "section", "text": views.plain("自分のメールの関連先を確認できます。")},
+            {"type": "actions", "elements": [views._button("メールを照合", "crm_email_home")]},
+        ]}})
+        return
     recent = storage.recent_projects(user_id)
     call("views.publish", {"user_id": user_id, "view": views.home_view(recent)})
 
@@ -280,7 +288,15 @@ def handler(event: Mapping[str, Any]) -> dict[str, Any]:
                     return _response()
                 return _response({"challenge": envelope.get("challenge")})
             if not _authorized(payload):
-                return _response()
+                from src.email_review.service import enabled
+                from src.email_review.slack import actor as email_actor
+                from src.email_review.repository import Repository
+                if not enabled():
+                    return _response()
+                try:
+                    email_actor(payload, Repository())
+                except Exception:
+                    return _response()
             if event_payload.get("type") == "app_home_opened":
                 return {**_response(), "_background_home_user": event_payload["user"]}
             return _response()
@@ -288,6 +304,9 @@ def handler(event: Mapping[str, Any]) -> dict[str, Any]:
         payload = json.loads((values.get("payload") or ["{}"]) [0])
     except (ValueError, TypeError, KeyError):
         return {"statusCode": 400, "body": "invalid Slack request"}
+    from src.email_review.slack import handles as email_handles, handle as email_handle
+    if email_handles(payload):
+        return email_handle(payload)
     if not _authorized(payload):
         return _response()
     kind = payload.get("type")

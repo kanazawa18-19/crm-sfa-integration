@@ -114,7 +114,8 @@ function gmailIngest() {
 }
 
 function gmailIngestMessage(id) {
-  const raw = Gmail.Users.Messages.get('me', id, {
+  const full = PropertiesService.getScriptProperties().getProperty('EMAIL_REVIEW_ENABLED') === 'true';
+  const raw = Gmail.Users.Messages.get('me', id, full ? {format: 'full'} : {
     format: 'metadata', metadataHeaders: ['From', 'To', 'Subject', 'Date']
   });
   const headers = (raw.payload && raw.payload.headers) || [];
@@ -126,8 +127,30 @@ function gmailIngestMessage(id) {
     id: raw.id, thread_id: raw.threadId || null,
     from: header('From'), to: header('To'), subject: header('Subject'),
     date_header: header('Date'), snippet: raw.snippet || '',
-    internal_date_ms: raw.internalDate || null
+    internal_date_ms: raw.internalDate || null,
+    ...(full ? {body_text: gmailReviewPlainText(raw.payload || {}), cc_header: header('Cc'), message_id_header: header('Message-ID')} : {})
   };
+}
+
+function gmailReviewPlainText(part) {
+  if (part.filename || part.mimeType === 'message/rfc822') return '';
+  if (part.mimeType === 'text/plain') {
+    const encoded = (part.body || {}).data || '';
+    if (encoded.length > 200000) return '';
+    const contentType = ((part.headers || []).find(h => h.name.toLowerCase() === 'content-type') || {}).value || '';
+    const match = contentType.match(/charset\s*=\s*["']?([\w-]+)/i);
+    const charset = match ? match[1].toLowerCase() : 'utf-8';
+    if (!['utf-8', 'us-ascii', 'iso-2022-jp', 'shift_jis', 'shift-jis', 'windows-31j', 'cp932'].includes(charset)) return '';
+    try {
+      const value = Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded)).getDataAsString(charset);
+      return value.length <= 20000 && !value.includes('\uFFFD') ? value : '';
+    } catch (_) { return ''; }
+  }
+  if ((part.mimeType || '').startsWith('multipart/')) {
+    const value = (part.parts || []).slice(0, 30).map(gmailReviewPlainText).filter(Boolean).join('\n');
+    return value.length <= 20000 ? value : '';
+  }
+  return '';
 }
 
 function gmailIngestPost(url, secret, repEmail, dryRun, messages, after, before, observation) {

@@ -45,6 +45,9 @@ def home_view(recent: list[dict[str, Any]] | None = None) -> dict[str, Any]:
             _button("アクションを記録", "crm_home_action"),
         ]},
     ]
+    from src.email_review.service import enabled
+    if enabled():
+        blocks.append({"type": "actions", "elements": [_button("メールを照合", "crm_email_home")]})
     if recent:
         blocks.append(_section("*最近更新した案件*"))
         for project in recent[:3]:
