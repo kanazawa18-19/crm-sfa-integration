@@ -8,6 +8,8 @@ from src.email_review.mime import plain_text
 @pytest.mark.parametrize('sender,subject', [
     ('no-reply@account.example.test', 'Partner Portalへのログイン用ワンタイムパスコード'),
     ('no-reply@example.test', 'Your one-time passcode'),
+    ('noreply@tiket.com', 'Kode OTP konfirmasi akun'),
+    ('"tiket.com" <noreply@tiket.com>', 'Log in from a new device'),
     ('info@willer.co.jp', '認証コードを送付します'),
     ('INFO@WILLER.CO.JP', '認証コードを送付します'),
     ('info@kosokubus.com', '【高速バスドットコム】パスワード通知メール'),
@@ -20,6 +22,10 @@ def test_authentication_notice_variants(sender, subject):
 
 @pytest.mark.parametrize('sender,subject', [
     ('person@example.test', '認証コードの仕様について相談'),
+    ('noreply@tiket.com', 'Booking confirmation'),
+    ('person@example.test', 'Kode OTP konfirmasi akun'),
+    ('noreply@tiket.com', 'Re: Log in from a new device'),
+    ('noreply@tiket.com, person@example.test', 'Kode OTP konfirmasi akun'),
     ('info@willer.co.jp', '認証コードを送付しますが、仕様について相談です'),
     ('info@kosokubus.com', '予約受付確認書'),
     ('support@up-sider.com', '本人認証手続きについてのご相談'),

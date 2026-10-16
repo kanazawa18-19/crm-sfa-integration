@@ -43,6 +43,9 @@ def authentication_notice(message: dict) -> bool:
     automatic = any(re.fullmatch(r"(?:no[-_.]?reply|do[-_.]?not[-_.]?reply)", address.lower().split("@", 1)[0])
                     for _, address in senders)
     subject = unicodedata.normalize("NFKC", message.get("subject") or "").strip()
+    if (len(senders) == 1 and senders[0][1].lower() == "noreply@tiket.com"
+            and subject in {"Kode OTP konfirmasi akun", "Log in from a new device"}):
+        return True
     if automatic and re.search(r"認証コード|確認コード|ワンタイム(?:パスワード|パスコード|コード)|verification code|security code|one[- ]time (?:password|passcode|code)", subject, re.I):
         return True
     # info/supportは業務メールにも使われるため、実際に確認した件名との組だけ除外する。

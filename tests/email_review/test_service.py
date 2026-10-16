@@ -92,6 +92,8 @@ def test_additional_internal_domain_skips_company_notice_before_storage(monkeypa
 
 @pytest.mark.parametrize('sender,subject', [
     ('no-reply@outside.test', '2段階認証コードのご連絡'),
+    ('noreply@tiket.com', 'Kode OTP konfirmasi akun'),
+    ('noreply@tiket.com', 'Log in from a new device'),
     ('no-reply@outside.test', 'Partner Portalへのログイン用ワンタイムパスコード'),
     ('info@willer.co.jp', '認証コードを送付します'),
     ('info@kosokubus.com', '【高速バスドットコム】パスワード通知メール'),
