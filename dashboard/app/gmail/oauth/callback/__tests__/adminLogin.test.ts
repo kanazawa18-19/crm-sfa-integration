@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { EmailDeliveryError, EMAIL_DELIVERY_ERROR } from "@/lib/email";
 
 /**
  * 「Googleでログイン」の検証（2026-08-31）。
@@ -117,6 +118,15 @@ describe("Googleでログイン（/gmail/oauth/callback の admin_login 分岐�
     const response = await GET(makeRequest());
 
     expect(response.headers.get("location")).toBe("http://localhost/login/2fa");
+  });
+
+  it("認証メールが送れない場合は説明付きログイン画面へ戻り、認証を迂回しない", async () => {
+    establishSessionMock.mockRejectedValue(new EmailDeliveryError());
+    const response = await GET(makeRequest());
+    expect(response.status).toBe(307);
+    expect(errorOf(response)).toBe(EMAIL_DELIVERY_ERROR);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+    expect(response.cookies.get("admin_login_oauth_state")?.value).toBe("");
   });
 
   it("該当する管理者アカウントが無ければ拒否する（自動作成しない）", async () => {

@@ -1,3 +1,4 @@
+import { EmailDeliveryError, EMAIL_DELIVERY_ERROR } from "@/lib/email";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth";
@@ -146,7 +147,13 @@ async function handleAdminLogin(request: NextRequest): Promise<NextResponse> {
     return failLogin("このGoogleアカウントに対応する管理者アカウントが見つかりません");
   }
 
-  const { redirectTo } = await establishSessionForUser(user.id);
+  let redirectTo: string;
+  try {
+    ({ redirectTo } = await establishSessionForUser(user.id));
+  } catch (error) {
+    if (error instanceof EmailDeliveryError) return failLogin(EMAIL_DELIVERY_ERROR);
+    throw error;
+  }
   const response = NextResponse.redirect(new URL(redirectTo, request.url));
   response.cookies.delete({ name: LOGIN_STATE_COOKIE, path: LOGIN_STATE_COOKIE_PATH });
   return response;

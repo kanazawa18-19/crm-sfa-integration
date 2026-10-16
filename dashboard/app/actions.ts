@@ -19,6 +19,7 @@ import { EMAIL_CHANGE_DISABLED_MESSAGE, GOOGLE_ONLY_LOGIN_MESSAGE, INVITE_DOMAIN
 // ログインセッションの確立は lib/loginSession.ts に置いている。
 // このファイルは "use server" なので、ここから export するとクライアントから
 // 任意のuserIdで呼べる公開Server Functionになってしまうため（2026-08-31）。
+import { EmailDeliveryError, EMAIL_DELIVERY_ERROR } from "@/lib/email";
 import { establishSession, sendEmailOtpCode } from "@/lib/loginSession";
 import { sendEmail } from "@/lib/email";
 import { encryptToken, decryptToken } from "@/lib/tokenCrypto";
@@ -69,11 +70,16 @@ async function requirePending2FAUser() {
   return user;
 }
 
-export async function chooseEmailOtpMethod(_prevState: void | undefined, _formData: FormData) {
+export async function chooseEmailOtpMethod(_prevState: string | undefined, _formData: FormData) {
   const user = await requirePending2FAUser();
 
+  try {
+    await sendEmailOtpCode(user.id);
+  } catch (error) {
+    if (error instanceof EmailDeliveryError) return EMAIL_DELIVERY_ERROR;
+    throw error;
+  }
   await prisma.user.update({ where: { id: user.id }, data: { emailOtpEnabled: true } });
-  await sendEmailOtpCode(user.id);
   redirect("/login/2fa-email");
 }
 
@@ -114,7 +120,12 @@ export async function resendEmailOtpCode(_prevState: string | undefined, _formDa
     return "少し時間をおいてから再送してください";
   }
 
-  await sendEmailOtpCode(user.id);
+  try {
+    await sendEmailOtpCode(user.id);
+  } catch (error) {
+    if (error instanceof EmailDeliveryError) return EMAIL_DELIVERY_ERROR;
+    throw error;
+  }
   redirect("/login/2fa-email");
 }
 

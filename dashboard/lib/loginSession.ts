@@ -43,18 +43,23 @@ export async function establishSession(userId: string): Promise<void> {
 export async function sendEmailOtpCode(userId: string): Promise<void> {
   const code = generateEmailOtpPlaintext();
   const codeHash = hashPassword(code);
-  await prisma.emailOtpCode.create({
+  const record = await prisma.emailOtpCode.create({
     data: { userId, codeHash, expiresAt: new Date(Date.now() + EMAIL_OTP_TTL_MS) },
   });
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return;
 
-  await sendEmail({
-    to: user.email,
-    subject: "【営業管理ダッシュボード】ログイン確認コード",
-    text: `ログイン確認コード: ${code}\n\n10分間有効です。心当たりがない場合はこのメールを無視してください。`,
-  });
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: "【営業管理ダッシュボード】ログイン確認コード",
+      text: `ログイン確認コード: ${code}\n\n10分間有効です。心当たりがない場合はこのメールを無視してください。`,
+    });
+  } catch (error) {
+    await prisma.emailOtpCode.update({ where: { id: record.id }, data: { usedAt: new Date() } });
+    throw error;
+  }
 }
 
 /**

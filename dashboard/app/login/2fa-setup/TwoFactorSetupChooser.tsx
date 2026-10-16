@@ -14,7 +14,7 @@ export default function TwoFactorSetupChooser({
   email: string;
 }) {
   const [method, setMethod] = useState<"choice" | "totp">("choice");
-  const [, formAction, pending] = useActionState(chooseEmailOtpMethod, undefined);
+  const [error, formAction, pending] = useActionState(chooseEmailOtpMethod, undefined);
 
   if (method === "totp") {
     return <TotpSetupForm secret={secret} qrCodeDataUrl={qrCodeDataUrl} email={email} />;
@@ -29,6 +29,7 @@ export default function TwoFactorSetupChooser({
         <button type="submit" disabled={pending} className="btn-ghost w-full">
           {pending ? "送信中..." : "メールで受け取る"}
         </button>
+        {error && <p role="alert" className="mt-2 text-sm text-(--brand-danger)">{error}</p>}
       </form>
     </div>
   );
