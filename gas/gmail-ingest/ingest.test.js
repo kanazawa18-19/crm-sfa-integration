@@ -233,5 +233,7 @@ test('照合ONは本文・CC・共通IDを取得し添付を除外する', () =>
   assert.equal(result.message_id_header, '<mail@example.test>');
   assert.equal(context.gmailReviewPlainText(plain('x'.repeat(20000))).length, 20000);
   assert.equal(context.gmailReviewPlainText(plain('x'.repeat(20001))), '');
+  assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: [plain('本文'), plain('x'.repeat(20001))]}), '');
+  assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: Array(31).fill(plain('本文'))}), '');
   assert.equal(context.gmailReviewPlainText(plain('<b>html</b>', {mimeType: 'text/html'})), '');
 });

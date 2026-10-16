@@ -37,6 +37,15 @@ def normalized(value: str) -> str:
     return re.sub(r"[\s　]+", "", unicodedata.normalize("NFKC", value)).casefold()
 
 
+def authentication_notice(message: dict) -> bool:
+    """返信不可の送信者とコード通知の件名が揃う場合だけ保存対象から外す。"""
+    senders = getaddresses([message.get("from_header") or ""])
+    automatic = any(re.fullmatch(r"(?:no[-_.]?reply|do[-_.]?not[-_.]?reply)", address.lower().split("@", 1)[0])
+                    for _, address in senders)
+    subject = unicodedata.normalize("NFKC", message.get("subject") or "")
+    return automatic and bool(re.search(r"認証コード|確認コード|ワンタイム(?:パスワード|コード)|verification code|security code|one[- ]time (?:password|code)", subject, re.I))
+
+
 def participants(message: dict, owner: str, internal_domains: set[str]) -> tuple[str, list[dict]]:
     sender = getaddresses([message.get("from_header", "")])
     outbound = any(address.lower() == owner.lower() for _, address in sender)

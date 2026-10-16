@@ -87,3 +87,23 @@ def test_additional_internal_domain_skips_company_notice_before_storage(monkeypa
     capture(message, "me@example.test", repo=repo)
     repo.capture.assert_not_called()
     assert internal_domains() == {"example.test", "existing.test", "company.test"}
+
+
+def test_authentication_notice_is_not_stored_but_human_discussion_is(monkeypatch):
+    from unittest.mock import Mock
+    from dataclasses import replace
+    from src.email_review.service import capture
+    from src.gmail_sync.gmail_client import GmailMessage
+    monkeypatch.setenv("EMAIL_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("EMAIL_REVIEW_START_AT", "2026-01-01T00:00:00+00:00")
+    monkeypatch.setenv("INTERNAL_EMAIL_DOMAINS", "example.test")
+    repo = Mock()
+    message = GmailMessage(id="notice", from_header="no-reply@outside.test", to_header="me@example.test",
+                           internal_date_ms="1792130400000", body_text="認証用本文", subject="2段階認証コードのご連絡", date_header=None, snippet=None)
+    capture(message, "me@example.test", repo=repo)
+    repo.capture.assert_not_called()
+    capture(replace(message, from_header="person@outside.test", subject="認証コードの仕様について相談"), "me@example.test", repo=repo)
+    repo.capture.assert_called_once()
+    repo.reset_mock()
+    capture(replace(message, subject="お問い合わせの受付"), "me@example.test", repo=repo)
+    repo.capture.assert_called_once()

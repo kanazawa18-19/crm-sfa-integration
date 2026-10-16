@@ -76,7 +76,11 @@ def _as_id_list(value: Any) -> list[Any]:
 def _rich_text_content(value: Any) -> list[dict[str, Any]]:
     if value is None or value == "":
         return []
-    return [{"type": "text", "text": {"content": str(value)}}]
+    text = str(value)
+    if len(text) > 200000:
+        raise ValueError("Notionのテキスト保存上限を超えています")
+    return [{"type": "text", "text": {"content": text[start:start + 2000]}}
+            for start in range(0, len(text), 2000)]
 
 
 def build_notion_property_value(property_type: PropertyType, value: Any) -> dict[str, Any]:

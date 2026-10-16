@@ -122,6 +122,9 @@ class Gateway:
 
     def action_properties(self, row: dict) -> dict:
         message = row["message"]
+        body = message.get("body_text")
+        if not isinstance(body, str) or not body.strip():
+            raise Conflict("メール本文の全文を取得できないため、記録を保留します。元メールを確認してください")
         day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).isoformat()
         title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"
         return {"商談回数・電話回数・メール回数（何回目）": title[:180],
@@ -129,7 +132,7 @@ class Gateway:
                 "アクション日": day, "先方担当者": row["contact_name"],
                 "👨‍👩‍👧‍👦 取引先マスター": [row.get("target_id") or row["company_id"]],
                 "案件名": [row["project_id"]] if row.get("project_id") else [],
-                "履歴メモ": f"メール受付ID: {row['id']}\n{message.get('subject') or ''}\n{message.get('snippet') or ''}"[:1800]}
+                "履歴メモ": body}
 
     def create_action(self, properties: dict) -> str:
         return self.client("action").create_page_once(properties)

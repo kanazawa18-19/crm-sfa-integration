@@ -133,22 +133,30 @@ function gmailIngestMessage(id) {
 }
 
 function gmailReviewPlainText(part) {
+  return gmailReviewPlainTextPart(part) || '';
+}
+
+function gmailReviewPlainTextPart(part) {
   if (part.filename || part.mimeType === 'message/rfc822') return '';
   if (part.mimeType === 'text/plain') {
     const encoded = (part.body || {}).data || '';
-    if (encoded.length > 200000) return '';
+    if (!encoded || encoded.length > 200000) return null;
     const contentType = ((part.headers || []).find(h => h.name.toLowerCase() === 'content-type') || {}).value || '';
     const match = contentType.match(/charset\s*=\s*["']?([\w-]+)/i);
     const charset = match ? match[1].toLowerCase() : 'utf-8';
-    if (!['utf-8', 'us-ascii', 'iso-2022-jp', 'shift_jis', 'shift-jis', 'windows-31j', 'cp932'].includes(charset)) return '';
+    if (!['utf-8', 'us-ascii', 'iso-2022-jp', 'shift_jis', 'shift-jis', 'windows-31j', 'cp932'].includes(charset)) return null;
     try {
       const value = Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded)).getDataAsString(charset);
-      return value.length <= 20000 && !value.includes('\uFFFD') ? value : '';
-    } catch (_) { return ''; }
+      return value.length <= 20000 && !value.includes('\uFFFD') ? value : null;
+    } catch (_) { return null; }
   }
   if ((part.mimeType || '').startsWith('multipart/')) {
-    const value = (part.parts || []).slice(0, 30).map(gmailReviewPlainText).filter(Boolean).join('\n');
-    return value.length <= 20000 ? value : '';
+    const children = part.parts || [];
+    if (children.length > 30) return null;
+    const parts = children.map(gmailReviewPlainTextPart);
+    if (parts.some(value => value === null)) return null;
+    const value = parts.filter(Boolean).join('\n');
+    return value.length <= 20000 ? value : null;
   }
   return '';
 }

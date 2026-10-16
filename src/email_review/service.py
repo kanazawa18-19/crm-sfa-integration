@@ -43,6 +43,8 @@ def capture(message, owner: str, *, repo=None) -> None:
     if start.tzinfo is None:
         raise ValueError("EMAIL_REVIEW_START_ATにはタイムゾーンを指定してください")
     data = asdict(message)
+    if domain.authentication_notice(data):
+        return
     stamp = data.get("internal_date_ms")
     if not stamp or datetime.fromtimestamp(int(stamp) / 1000, timezone.utc) < start:
         return
@@ -115,10 +117,10 @@ class Service:
             validated = self.gateway.validate(row, row)
             actor_id = self.gateway.actor(row.get("activity_owner") or row["owner"])
             row = self.repo.checkpoint(row, **{k: validated[k] for k in ("company_name", "contact_name", "target_name", "project_name")}, actor_notion_id=actor_id)
+            props = self.gateway.action_properties(row)
             contact_changes, owned_link = self.gateway.link_contact(row)
             row = self.repo.checkpoint(row, linked_company_id=row["company_id"] if owned_link else None,
                                        linked_contact_id=row["contact_id"] if owned_link else None)
-            props = self.gateway.action_properties(row)
             if not row.get("action_id"):
                 # claim(processing) が作成予約。POST後に停止しても再作成しない。
                 row = self.repo.checkpoint(row, attempted_properties=props)
