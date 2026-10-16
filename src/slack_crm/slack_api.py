@@ -13,10 +13,12 @@ def call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         raise ValueError("SLACK_BOT_TOKEN is not set")
-    response = requests.post(
-        f"{_BASE}/{method}", json=payload,
-        headers={"Authorization": f"Bearer {token}"}, timeout=(0.4, 1.5),
-    )
+    options = {"headers": {"Authorization": f"Bearer {token}"}, "timeout": (0.4, 1.5)}
+    # users.infoはGETのクエリで渡す。JSON POSTではuserが認識されない。
+    if method == "users.info":
+        response = requests.get(f"{_BASE}/{method}", params=payload, **options)
+    else:
+        response = requests.post(f"{_BASE}/{method}", json=payload, **options)
     response.raise_for_status()
     data = response.json()
     if not data.get("ok"):
