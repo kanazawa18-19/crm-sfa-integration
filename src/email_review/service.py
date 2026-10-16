@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from src.email_review import domain
+from src.email_review.body import current_body
 from src.email_review.repository import Repository, public
 from src.email_review.gateway import Gateway
 from src.sync_engine.record_sync_lock import RecordSyncBusy
@@ -51,6 +52,8 @@ def capture(message, owner: str, *, repo=None) -> None:
     direction, people = domain.participants(data, owner, internal_domains())
     if not people:
         return
+    body = current_body(data.get("body_text") or "")
+    data["body_text"] = body if len(body) <= 20000 else ""
     review_id = domain.identity(data, owner)
     row = {"id": review_id, "owner": owner, "thread_id": data.get("thread_id"), "message": data,
            "activity_owner": owner,

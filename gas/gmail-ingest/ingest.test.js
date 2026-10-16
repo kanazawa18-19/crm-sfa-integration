@@ -236,4 +236,16 @@ test('照合ONは本文・CC・共通IDを取得し添付を除外する', () =>
   assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: [plain('本文'), plain('x'.repeat(20001))]}), '');
   assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: Array(31).fill(plain('本文'))}), '');
   assert.equal(context.gmailReviewPlainText(plain('<b>html</b>', {mimeType: 'text/html'})), '');
+  for (const marker of ['2026年10月16日(金) 14:50 担当 <person@example.test>:',
+    'On Fri, 16 Oct 2026 at 14:50 Someone wrote:', '担当様は書きました：',
+    '-----Original Message-----', '---------- Forwarded message ---------',
+    'From: person@example.test\r\nSent: Friday\r\nTo: me@example.test\r\nSubject: 前回']) {
+    const body = '今回の本文\r\n\r\n-- \r\n署名';
+    assert.equal(context.gmailReviewPlainText(plain(body + '\r\n\r\n' + marker + '\r\n' + '過去'.repeat(15000))), body);
+  }
+  for (const body of ['今回の本文\r\n\r\n---\r\n署名\r\n', 'From: の項目を設定してください\n日付は2026年10月16日です。\n']) {
+    assert.equal(context.gmailReviewCurrentBody(body), body);
+  }
+  assert.equal(context.gmailReviewCurrentBody('> 質問\n回答\n> 別の質問\n別の回答'), '回答\n別の回答');
+  assert.equal(context.gmailReviewCurrentBody('On Friday, A wrote:\n> 質問\n回答\n--\n署名'), '回答\n--\n署名');
 });

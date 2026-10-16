@@ -7,6 +7,7 @@ from email.utils import getaddresses
 from psycopg.types.json import Jsonb
 from src.slack_crm.storage import _connect
 from src.email_review.domain import Conflict, Forbidden, decide, normalized
+from src.email_review.body import current_body
 
 
 def same_mail(left: dict, right: dict, *, allow_incomplete: bool = False) -> bool:
@@ -20,6 +21,12 @@ def same_mail(left: dict, right: dict, *, allow_incomplete: bool = False) -> boo
     # 取得前後の情報補完は許可するが、両方に本文がある場合は一致を必須とする。
     first, second = left.get("body_text"), right.get("body_text")
     if first and second:
+        # 同じ所有者・同じGmail IDの再取得だけ、引用除去前後の移行を許可する。
+        # 別所有者への共有では旧本文の引用を公開しないよう完全一致を維持する。
+        if allow_incomplete:
+            first, second = current_body(first), current_body(second)
+            if not first.strip() or not second.strip():
+                return False
         return first.replace("\r\n", "\n") == second.replace("\r\n", "\n")
     return allow_incomplete and (left.get("snippet") or "") == (right.get("snippet") or "")
 

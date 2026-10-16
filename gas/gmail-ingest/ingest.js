@@ -136,6 +136,31 @@ function gmailReviewPlainText(part) {
   return gmailReviewPlainTextPart(part) || '';
 }
 
+function gmailReviewCurrentBody(text) {
+  const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+  const kept = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // 日付だけの本文や署名の罫線は残す。
+    let delimiter = /^On .+wrote:$/i.test(line) ||
+      /^\d{4}年\d{1,2}月\d{1,2}日.+\d{1,2}:\d{2}.+<[^<>\s]+@[^<>\s]+>[:：]$/.test(line) ||
+      /^.+(?:さん|様)は書きました[:：]$/.test(line) ||
+      /^[-ー]{2,}\s*(?:Original Message|Forwarded message|転送メッセージ)\s*[-ー]{2,}$/i.test(line);
+    if (/^(?:From|差出人)[:：]/i.test(line)) {
+      const following = lines.slice(i + 1, i + 7).join('');
+      delimiter = delimiter || (/^(?:Sent|Date|送信日時|日時)[:：]/im.test(following) &&
+        /^(?:To|宛先|Subject|件名)[:：]/im.test(following));
+    }
+    if (delimiter) {
+      const first = lines.slice(i + 1).find(value => value.trim()) || '';
+      if (first.trim().startsWith('>')) continue;
+      return kept.join('').trimEnd();
+    }
+    if (!line.startsWith('>')) kept.push(lines[i]);
+  }
+  return kept.join('');
+}
+
 function gmailReviewPlainTextPart(part) {
   if (part.filename || part.mimeType === 'message/rfc822') return '';
   if (part.mimeType === 'text/plain') {
@@ -146,7 +171,9 @@ function gmailReviewPlainTextPart(part) {
     const charset = match ? match[1].toLowerCase() : 'utf-8';
     if (!['utf-8', 'us-ascii', 'iso-2022-jp', 'shift_jis', 'shift-jis', 'windows-31j', 'cp932'].includes(charset)) return null;
     try {
-      const value = Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded)).getDataAsString(charset);
+      const decoded = Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded)).getDataAsString(charset);
+      if (decoded.includes('\uFFFD')) return null;
+      const value = gmailReviewCurrentBody(decoded);
       return value.length <= 20000 && !value.includes('\uFFFD') ? value : null;
     } catch (_) { return null; }
   }

@@ -13,6 +13,7 @@ from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_propert
 from src.sync_engine.record_sync_lock import _connect_direct, lock_key, RecordSyncBusy
 from src.sync_engine.sync_event import SyncEvent
 from src.email_review.domain import Conflict, normalized, same_value, require_outbound
+from src.email_review.body import current_body
 
 
 @contextmanager
@@ -123,9 +124,11 @@ class Gateway:
     def action_properties(self, row: dict) -> dict:
         require_outbound(row)
         message = row["message"]
-        body = message.get("body_text")
+        body = current_body(message.get("body_text") or "")
         if not isinstance(body, str) or not body.strip():
             raise Conflict("メール本文の全文を取得できないため、記録を保留します。元メールを確認してください")
+        if len(body) > 20000:
+            raise Conflict("引用を除いた本文が2万文字を超えるため、記録を保留します")
         day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).isoformat()
         title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"
         return {"商談回数・電話回数・メール回数（何回目）": title[:180],

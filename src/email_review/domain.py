@@ -72,7 +72,11 @@ def participants(message: dict, owner: str, internal_domains: set[str]) -> tuple
     people = {}
     for name, address in getaddresses(headers):
         address = address.strip().lower()
-        if "@" not in address or address == owner.lower() or address.rsplit("@", 1)[1] in internal_domains:
+        if "@" not in address or address == owner.lower():
+            continue
+        if outbound and address == "sales@cnctor.jp":
+            continue
+        if not outbound and address.rsplit("@", 1)[1] in internal_domains:
             continue
         people[address] = {"email": address, "name": name.strip()}
     return ("outbound" if outbound else "inbound"), list(people.values())

@@ -69,7 +69,7 @@ def test_own_signature_and_forward_are_not_counterparty_evidence():
 def test_multiple_participants_including_cc_are_kept():
     direction, people = participants({'from_header': 'Me <me@own.test>', 'to_header': 'A <a@external.test>', 'cc_header': 'B <b@external.test>, colleague@own.test'}, 'me@own.test', {'own.test'})
     assert direction == 'outbound'
-    assert [p['email'] for p in people] == ['a@external.test', 'b@external.test']
+    assert [p['email'] for p in people] == ['a@external.test', 'b@external.test', 'colleague@own.test']
 
 
 def test_revision_and_processing_protect_old_slack_buttons():
