@@ -1,0 +1,140 @@
+添付実装のレビュー結果を報告します。
+要件およびレビュー重点（原文の損失、戻り通知/競合の境界、作成予約の順序、metadata取得負荷など）に照らし合わせ、以下の重大な不具合（BLOCKER 3件、WARN 3件、INFO 1件）を検出しました。
+
+---
+
+### BLOCKER（即時修正が必要な不具合）
+
+#### 1. 作成予約（`reserve`）前の Notion 同期メモ更新による不整合
+
+* **具体例**: `src/hub_creation/service.py` の 258 行目付近で、`self.journal.reserve()` を呼ぶ**前**に `client.upsert_sync_notes(page_id, payload.planned_text_limit_notes)` を呼び出しています。もし直後の `reserve()` で「同じ名前の登録が進行中」などの競合を検知して `CreationHeld` が発生した場合、Zoho への作成は行われないにもかかわらず、Notion には「省略して送信する予定です」という未実行のメモが書き込まれたまま残ります。ジャーナルの「非冪等操作の前に予約を確定する」原則にも違反しています。
+
+
+* **最小修正**: `reserve()` が成功した直後、かつ `target == 'zoho'` のときのみ予定メモを送信するように順序を変更します。
+
+
+
+```python
+# src/hub_creation/service.py
+if not self.journal.reserve(source_key, target, event.db_key, target_fingerprint):
+    raise CreationHeld("同じ内容のアクション登録が進行中、または既に登録されています"
+           if event.db_key == "action" else "同じ名前の登録が進行中、または既に登録されています")
+if target == 'zoho':
+    shortening_notes = getattr(payload, "text_limit_notes", {})
+    if any(shortening_notes.values()):
+        client.upsert_sync_notes(page_id, payload.planned_text_limit_notes)
+external_id = adapter.create(event.db_key, payload)
+
+```
+
+---
+
+#### 2. Zoho 生レコードのフィールド名不一致により、戻り通知（echo）判定が常に失敗する
+
+* **具体例**: `src/sync_engine/dispatcher.py` で `record.get(property_name)`（例: `record.get("備考")` や `record.get("メモ")`）を呼び出して `_is_zoho_shortened_echo` に渡しています。しかし、`ZohoSyncTarget.get_record()` が返す辞書は Zoho API の生レスポンスであり、キーは Zoho 側の API 名（`field12` や `field70` など）です。テストコードではモックに日本語キーを入れているため通過していますが、本番環境では常に `None` が返ります。
+
+
+* **影響**: `incoming` が `None` となるため `_is_zoho_shortened_echo` は常に `False` を返します。その結果、Kintone 等の他ツール同期時に Zoho の短縮値が競合解決候補から除外されず、古い短縮値が誤って採用されたり、不要な競合アラートが発生します。
+
+
+* **最小修正**: Zoho のレコードから値を取得する際は、対応する Zoho の api_name を解決して値を取り出します。
+
+
+
+```python
+# src/sync_engine/dispatcher.py (または ZohoSyncTarget 側)
+zoho_code = zoho_outbound_field_names().get(mapping.db_key, {}).get(property_name)
+zoho_raw_value = record.get(zoho_code) if (record and zoho_code) else None
+if tool is Tool.ZOHO and self._is_zoho_shortened_echo(
+    mapping, property_name, zoho_raw_value, notion_record.get(property_name)
+):
+    projected_tools.add(tool)
+    continue
+
+```
+
+---
+
+#### 3. `is_shortened_echo` 内の `None` 参照クラッシュおよび metadata 取得失敗時の原文損失
+
+* **具体例 1（クラッシュ）**: `src/sync_engine/sync_targets/zoho_sync.py` の `is_shortened_echo` 内で `value = replace_memo_body(current.get(code), original, limit=None)` を呼び出しています。Zoho 側に該当項目（`field70`）の値が存在しない（null の）場合、`current.get(code)` は `None` を返します。`split_controller_memo(None)` が実行されることで `AttributeError` が発生し同期処理がクラッシュします。
+
+
+* **具体例 2（原文損失）**: 通信エラー等で `self._text_metadata()` が空（`[]`）を返した場合、`limit_payload` は短縮を行わず `projected == original` となります。すると `projected != original` が `False` となり、`is_shortened_echo` は `False` を返します。Zoho からの短縮値の戻り（echo）が「ユーザーによる正規の短縮編集」と誤認され、Notion の原文が短縮値で上書きされて永久に失われます。
+
+
+* **最小修正**: `current.get(code) or ''` とし、メタデータが取得できない場合は安全側に倒して例外を発生させる（または上書きを抑止する）ようにします。
+
+
+
+```python
+# src/sync_engine/sync_targets/zoho_sync.py
+fields = self._text_metadata()
+if not fields:
+    raise ApiError(503, "文字数制限メタデータの取得に失敗したため判定を中断します")
+if db_key == 'project':
+    current = self._client.get_record(self._module, external_id)
+    if current is None:
+        raise ApiError(404, "管理用メモの読取先がありません")
+    value = replace_memo_body(current.get(code) or '', original, limit=None)
+
+```
+
+---
+
+### WARN（重大な性能問題・潜在バグ）
+
+#### 1. `is_shortened_echo` によるメタデータ API の多重呼び出し（N+1・レートリミット枯渇）
+
+* **具体例**: `_dispatch_locked` 内でプロパティ照合や競合判定を行うたびに `self._is_zoho_shortened_echo()` が複数回呼ばれ、その内部で毎回キャッシュなしで `self._text_metadata()`（GET `/settings/fields`）が実行されます。`db_key == 'project'` の場合は `get_record()` も毎回叩かれます。
+
+
+* **影響**: 1件のレコード同期の中で Zoho API リクエストが急増し、Zoho の API コール上限（レートリミット）に到達して同期パイプライン全体が停止する原因になります。
+
+
+* **最小修正**: `_text_metadata` の結果をインスタンスまたはリクエスト単位でキャッシュするか、`is_shortened_echo` の引数/コンテキスト経由で使い回すようにします。
+
+
+
+---
+
+#### 2. `dispatcher.py` 内の未定義変数 `incoming_properties` 参照による `NameError`
+
+* **具体例**: `src/sync_engine/dispatcher.py` 763行目付近の以下のコード：
+```python
+record_notes({text_limit_key(name): '' for name in accepted_zoho_text
+              if name in written_by_tool.get(Tool.NOTION, ())
+              or (notion_record is not None and notion_record.get(name) == incoming_properties.get(name))})
+
+```
+
+
+`_dispatch_locked` メソッドの引数は `event: SyncEvent` であり、スコープ内に `incoming_properties` は定義されていません（`event.properties` の誤り）。
+
+
+* **影響**: Notion への書き込みがスキップされた場合など、`or` の後半が評価された瞬間に `NameError: name 'incoming_properties' is not defined` で同期処理が停止します。
+
+
+* **最小修正**: `incoming_properties.get(name)` を `event.properties.get(name)` に修正します。
+
+
+
+---
+
+#### 3. `shorten()` の `ValueError` 未捕捉によるパイプラインの異常停止
+
+* **具体例**: `src/sync_engine/zoho_text_limits.py` の `shorten()` は、管理用メモ（サイトコントローラー枠）だけで上限を超える場合に `ValueError("管理用メモだけで文字数上限を超えるため保持します")` を送出します。しかし、`ZohoSyncTarget.upsert_record` および `ZohoCreationAdapter.plan` では `limit_payload` を呼ぶ際に `ValueError` を捕捉していません。
+
+
+* **影響**: 適切なエラーハンドリング（`ApiError(422)` や `CreationHeld`）に変換されず、生の `ValueError` が上位に抜けて同期エンジンがクラッシュします。
+
+
+* **最小修正**: 呼び出し側で `try ... except ValueError as exc:` を捕捉し、適切な例外（`ApiError(422, str(exc))` や `CreationHeld(str(exc))`）に変換して再送出します。
+
+
+
+---
+
+### INFO（軽微な指摘・推奨事項）
+
+* **同期メモのクリア判定**: `accepted_zoho_text` による省略メモの解除処理において、Notion への反映が行われなかったケースで前回の省略メモが残り続ける可能性があります。同期メモのライフサイクル（いつ消去され、いつ保持されるか）を単体テストに追加することを推奨します。

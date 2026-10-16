@@ -244,6 +244,18 @@ class HttpZohoClient:
             idempotent=idempotent,
         )
 
+    def get_fields(self, module: str) -> list[dict[str, Any]]:
+        from urllib.parse import urlencode
+        response = self._request("GET", "/settings/fields?" + urlencode({"module": module}))
+        raise_for_error(response, ZohoApiError)
+        try:
+            fields = response.json()["fields"]
+            if not isinstance(fields, list) or not fields or any(not isinstance(f, dict) for f in fields):
+                raise ValueError()
+            return fields
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ZohoApiError(response.status_code, "文字数上限の設定を確認できません") from exc
+
     def get_record(self, module: str, record_id: str) -> dict[str, Any] | None:
         response = self._request("GET", f"/{module}/{record_id}")
         if response.status_code in (404, 204):

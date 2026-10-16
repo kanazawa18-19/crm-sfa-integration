@@ -34,6 +34,7 @@ def test_memo_preserves_body_and_other_blocks():
 
 def test_kintone_writes_first_choice_and_all_values_with_version():
     c = Mock()
+    c.get_fields.return_value = [{"api_name": "field70", "data_type": "textarea", "length": 2000}]
     c.get_record.return_value = {"$revision": "12", "文字列__複数行_": "既存本文"}
     t = KintoneSyncTarget(c, "test")
     props = {"ファーストタッチ": ["テレアポ", "パートナー"], "サイトコントローラー": ["ねっぱん"]}
@@ -48,6 +49,7 @@ def test_kintone_writes_first_choice_and_all_values_with_version():
 
 def test_zoho_writes_scalar_and_preserves_memo():
     c = Mock()
+    c.get_fields.return_value = [{"api_name": "field70", "data_type": "textarea", "length": 2000}]
     c.get_record.return_value = {"Modified_Time": "2026-09-28T00:00:00Z", "field70": "既存本文"}
     t = ZohoSyncTarget(c, "Deals", enabled=True)
     t.upsert_record("123", {"サイトコントローラー": ["ねっぱん", "リンカーン"]}, db_key="project")
@@ -60,6 +62,7 @@ def test_zoho_writes_scalar_and_preserves_memo():
 @pytest.mark.parametrize("current", [None, {"$revision": "13"}, {"$revision": "12", "文字列__複数行_": "【CRM同期:ファーストタッチ】壊れた枠"}])
 def test_kintone_does_not_write_on_missing_changed_or_invalid_memo(current):
     c = Mock()
+    c.get_fields.return_value = [{"api_name": "field70", "data_type": "textarea", "length": 2000}]
     c.get_record.return_value = current
     with pytest.raises((ApiError, ConcurrentModificationError)):
         KintoneSyncTarget(c, "test").upsert_record("123", {"ファーストタッチ": ["テレアポ"]}, db_key="project", expected_version="12")
@@ -68,6 +71,7 @@ def test_kintone_does_not_write_on_missing_changed_or_invalid_memo(current):
 
 def test_simultaneous_memo_edit_is_not_reverted():
     c = Mock()
+    c.get_fields.return_value = [{"api_name": "field70", "data_type": "textarea", "length": 2000}]
     c.get_record.return_value = {"Modified_Time": "v1", "field70": "旧本文"}
     ZohoSyncTarget(c, "Deals", enabled=True).upsert_record(
         "123", {"メモ": "新本文", "サイトコントローラー": ["ねっぱん"]}, db_key="project")
@@ -99,6 +103,7 @@ def test_memo_only_edit_keeps_choice_storage():
     assert split_controller_memo(new)[0] == "新本文"
     assert "ねっぱん" in new
     c = Mock()
+    c.get_fields.return_value = [{"api_name": "field70", "data_type": "textarea", "length": 2000}]
     c.get_record.return_value = {"Modified_Time": "v1", "field70": old}
     ZohoSyncTarget(c, "Deals", enabled=True).upsert_record("123", {"メモ": "新本文"}, db_key="project")
     assert c.update_record.call_args.args[2]["field70"] == new

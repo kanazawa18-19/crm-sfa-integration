@@ -1,0 +1,94 @@
+レビュー結果です。原文が失われる経路が1件あるため、このままの本番反映は推奨しません。
+
+| 区分 | 件数 | 要旨 |
+|---|---|---|
+| BLOCKER | 1 | 戻り値の判定が「現在の」metadataに依存しており、上限変更後に短縮値がNotion原文を上書きする |
+| WARN | 6 | 空白・改行の正規化、管理枠のみ更新時の無記録短縮、ValueErrorの未変換、失敗後の表示、metadata負荷、notion_recordがNoneのとき |
+| INFO | 4 | 文字数の数え方、作成メモの巻き戻し、ContextVarの伝播、空値メモの毎回書込み |
+
+---
+
+BLOCKER 1　戻り値の判定を現在のmetadataで再計算している（原文の損失）
+
+`is_shortened_echo` は「現在のNotion原文を、現在の `length` で短縮した値」と比較しています。送信した時点の上限は保存していません。
+
+- 例：255文字で短縮して送信した後に、Zoho管理者が項目上限を2000に変更したとします。再計算した値は原文そのものになり、`projected != original` が偽になるため、判定は False を返します。上限を下げた場合も同様に一致しません。
+- その後Zohoで別の項目が編集されると、`Modified_Time` が最新になります。このため、kintone起点の比較でもZohoからの戻りでも、255文字の短縮値が最新候補として採用され、Notionとkintoneの原文が短縮値で上書きされます。
+- 上限変更はZoho側の通常操作なので、起こり得る前提で扱うべきです。
+
+最小修正：送信成功時に「送った値」と「その元になった原文」のハッシュを記録し、判定ではそれと照合します。現在のmetadataによる再計算は、補助のOR条件として残す程度にします。
+
+```python
+# upsert_record 成功後（短縮が発生した項目のみ）
+self._sent_digest.put(external_id, code, sha(sent_value), sha(source_value))
+
+# is_shortened_echo
+rec = self._sent_digest.get(external_id, code)
+if rec and sha(incoming) == rec.sent and sha(original) == rec.source:
+    return True
+# 既存の再計算判定は補助として残す
+```
+
+保存先は IdMapping の付帯テーブルなどで構いません。Notionの同期メモには本文を書かない方針なので、メモ本文を保存先に使うのは避けてください。
+
+---
+
+WARN 1　空白・改行の正規化で戻り値の判定が外れる
+
+- 短縮位置が空白や改行の直前にあると、送信値の末尾が空白や改行になります。Zoho側で末尾の空白が除去されたり改行が正規化されたりすると、`incoming == projected` が成立しません。その結果、実編集として扱われ、原文が上書きされます。
+- 案件の場合、`body[:room-2]` の末尾が `\n` で終わると、`\n\n` と連結されて区切りが3連続の改行になります。この状態で `split_controller_memo` の分割結果が変わる可能性もあります。
+- 最小修正：短縮後の本文に `rstrip()` をかけてから送信します。比較も両辺を同じ規則で正規化してから行います。実データで戻り値の改行コード（`\r\n` か `\n` か）を確認してください。
+
+WARN 2　管理枠のみの更新で本文が短縮されても記録されない
+
+- 停止条件は `len(previous) >= limit` の場合だけです。たとえば以前の値が250文字で上限未満のとき、管理枠が伸びて合計が上限を超えると、`limit_payload` が本文を短縮します。
+- しかし `if not (values and not memo_edit)` の条件によって `record_notes` が呼ばれません。省略が同期メモに残らず、「省略予定/成功を同期メモへ保存」という要件に反します。
+- 最小修正：管理枠のみの更新では、空でない記録だけを追記します。これにより既存記録の解除は防いだまま、新しい省略は記録できます。
+
+```python
+notes = payload.text_limit_notes
+record_notes(notes if not (values and not memo_edit) else {k: v for k, v in notes.items() if v})
+```
+
+WARN 3　`shorten` の ValueError が定義済みの停止扱いにならない
+
+- 「管理用メモだけで上限超過」の場合、`limit_payload` が ValueError を送出します。しかし `upsert_record` では、変換用の try が replace/merge の部分だけを囲んでいます。`adapters.plan` 側も同様に変換されません。
+- その結果、ApiError(422) や CreationHeld ではなく生の例外として伝播し、スキップや保留の表示にならない可能性があります。
+- 最小修正：`limit_payload` の呼び出しを `try/except ValueError` で囲み、同期側では `ApiError(422, …)`、作成側では `CreationHeld(…)` に変換します。
+
+WARN 4　失敗後の状態表示に「送信する予定です」が残る
+
+- 予定メモは `reserve` より前に書き込まれます。そのため、`reserve` が偽を返して「同じ名前の登録が進行中」で保留になった場合や、`adapter.create` が確定的な4xxで失敗した場合でも、省略予定のメモが残ります。
+- 最小修正：これらの失敗経路で、対象キーを `''` にして同じ `upsert_sync_notes` に含めます。予定を書く順序自体は、応答不明への備えとして現状の「POST前」のままで構いません。
+
+WARN 5　metadata取得の負荷と、取得失敗が無関係な同期まで止める問題
+
+- `is_shortened_echo` は、1つのプロパティにつき最大3回（起点の判定、候補からの除外、配送先の判定）呼ばれます。そのたびに `get_fields` が実行され、案件では `get_record` も実行されます。キャッシュはありません。
+- 判定は `len(original) > len(incoming)` のたびに走ります。このため、kintoneやZohoで本文を短く編集するといった通常の操作でもZohoのAPIを消費します。そこで `get_fields` が失敗すると、kintoneからNotionへの同期まで例外で止まります。
+- 最小修正：`collect_text_limit_notes` と同じスコープ（1回の配信）で、モジュールごとのmetadataと案件の現在レコードをキャッシュします。必要であれば短いTTLのプロセス内キャッシュも併用します。
+
+WARN 6　`notion_record` が None のときに AttributeError になる
+
+- 差分内の `record_notes` 部分では `notion_record is not None` を確認しています。一方、判定の呼び出し、`adopted_value`、配送先の判定では `notion_record.get(...)` を無条件に呼んでいます。
+- None になり得る場合は、Zoho起点またはZohoが比較対象に含まれるイベントがすべて例外になります。
+- 最小修正：`original = notion_record.get(name) if notion_record is not None else None` として渡します。`is_shortened_echo` 側は、original が文字列でなければ False を返します。
+
+---
+
+INFO 1　文字数の数え方
+
+テストはPythonのコードポイント数で上限を検証しています。Zoho側がUTF-16単位で数える場合、絵文字を含む本文は短縮後でも上限を超え、422が続きます。また、ZWJで結合された絵文字の途中で切れる可能性もあります。実環境のmetadataと絵文字入りの値で、境界の挙動を一度確認してください。
+
+INFO 2　作成メモの復旧が新しい通常更新を巻き戻す可能性
+
+`store.upsert` の後、メモ保存前に停止し、その間にDispatcherが新しい省略記録を書いた場合を考えます。この場合、再開時に作成時点の古い「送信しました」で上書きされます。記録済みフラグが立つ前の時間帯に限られる問題なので、ドキュメントにある「巻き戻さない」という記述はその前提付きであると明記してください。
+
+INFO 3　ContextVarの伝播
+
+`_write_values` がスレッドプールなどで並列に書き込む実装の場合、`record_notes` は既定値の None を参照し、省略記録が黙って消えます。並列化している箇所があれば、`contextvars.copy_context().run` を使ってください。
+
+INFO 4　空値メモの毎回書込み
+
+短縮がなくても、`text_limit_notes` には `''` のキーが入ります。そのため、対象項目を同期するたびに `_write_notes` がNotionのメモを更新します。また `render_notes` は、値がすべて `''` でも区分見出しと空行を出力します（`entries or [...]` が真になるため）。上流で `''` を削除として扱っているなら問題ありませんが、確認をお願いします。
+
+参考：Zoho側で短縮済みの本文を人が編集すると、その値がNotionに採用され、見えていなかった末尾は失われます。これは仕様どおりの動作ですが、Zoho利用者向けの注意として同期メモの文言に一言添えることを推奨します。

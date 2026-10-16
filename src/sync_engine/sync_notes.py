@@ -9,6 +9,7 @@ from src.sync_engine.known_sync_gaps import KNOWN_UNMAPPED_FIELDS, KNOWN_UNMAPPE
 
 MARKER = "CRM同期メモ（自動更新 / crm-sync-notes-v1）"
 CHOICES = "選択肢・担当者・関連付け"
+TEXT_LIMITS = "文字数上限による省略（原文はNotionに保持）"
 UNAVAILABLE = "APIで取得不能・曖昧な名前・対応項目なし"
 
 
@@ -65,7 +66,9 @@ def unresolved_note(tool: Tool, name: str, value: Any = None) -> tuple[str, str]
 
 def render_notes(notes: Mapping[str, str]) -> str:
     sections = [MARKER, "この枠は自動更新されます。判断内容は枠の外に記載してください。"]
-    for category in (CHOICES, UNAVAILABLE):
+    for category in (CHOICES, UNAVAILABLE, TEXT_LIMITS):
+        if category == TEXT_LIMITS and not any(key.startswith(category + "|") for key in notes):
+            continue
         sections.append("\n" + category)
         entries = [value for key, value in sorted(notes.items()) if key.startswith(category + "|")]
         sections.extend(entries or ["該当する未解決値は検出されていません。"])
@@ -76,7 +79,7 @@ def parse_notes(text: str) -> dict[str, str]:
     result = {}
     category = None
     for line in text.splitlines():
-        if line in (CHOICES, UNAVAILABLE):
+        if line in (CHOICES, UNAVAILABLE, TEXT_LIMITS):
             category = line
         elif category and line.startswith(("[zoho:", "[kintone:", "[notion:", "[spreadsheet:")) and "] " in line:
             key = line[1:line.index("] ")]

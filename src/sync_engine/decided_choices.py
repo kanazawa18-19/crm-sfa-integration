@@ -50,7 +50,7 @@ def merge_choice_memo(existing, name, values, *, limit):
         result = existing[:start] + block + existing[finish + len(end):]
     else:
         result = existing + ("\n\n" if existing else "") + block
-    if len(result) > limit:
+    if limit is not None and len(result) > limit:
         raise ValueError("備考の文字数上限を超えるため保持します")
     return result
 
@@ -97,6 +97,6 @@ def replace_memo_body(existing, incoming, *, limit=2000):
     _, block = split_controller_memo(existing)
     body, _ = split_controller_memo(incoming)
     result = body + ("\n\n" if body and block else "") + block
-    if len(result) > limit:
+    if limit is not None and len(result) > limit:
         raise ValueError("備考の文字数上限を超えるため保持します")
     return result

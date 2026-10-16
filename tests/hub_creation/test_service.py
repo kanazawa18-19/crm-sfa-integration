@@ -27,10 +27,20 @@ class Journal:
     def hold(self, key, target, db, reason):
         if self.get(key,target) and self.get(key,target)['state'] != 'blocked': return
         self.rows[key,target] = {'state':'blocked','reason':reason}
-    def finish(self, key, target, external): self.rows[key,target].update(state='created',externalId=external)
+    def finish(self, key, target, external, *, text_limit_notes=None):
+        import json
+        self.rows[key,target].update(state='created', externalId=external,
+                                    reason=json.dumps({'text_limit_notes': text_limit_notes}) if text_limit_notes is not None else '')
     def resolve_hold(self, key, target, page):
         if self.get(key,target) and self.get(key,target)['state']=='blocked': self.finish(key,target,page)
 
+    def mark_text_limit_notes_recorded(self, key):
+        import json
+        row = self.rows.get((key, 'zoho'))
+        if row:
+            saved = json.loads(row['reason'])
+            saved['text_limit_notes_recorded'] = True
+            row['reason'] = json.dumps(saved)
     def dismiss_hold(self, key, target):
         if self.get(key,target) and self.get(key,target)['state']=='blocked': self.rows.pop((key,target))
 

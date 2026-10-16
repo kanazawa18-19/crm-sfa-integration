@@ -132,7 +132,7 @@ class ZohoCreationAdapter:
             selected = choices(properties.get('サイトコントローラー'), CONTROLLERS)
             if selected:
                 try:
-                    payload['field70'] = merge_choice_memo(payload.get('field70', ''), 'サイトコントローラー', selected, limit=2000)
+                    payload['field70'] = merge_choice_memo(payload.get('field70', ''), 'サイトコントローラー', selected, limit=None)
                 except ValueError as exc:
                     raise CreationHeld(str(exc)) from None
         # v2の案件メタデータはPipelineを返さない。作成と同じ版で必須項目を読む。
@@ -200,6 +200,11 @@ class ZohoCreationAdapter:
         from src.hub_creation.creation_payload import ZOHO_RELATIONS
         payload = normalize_creation_payload(payload, {f["api_name"]: f for f in fields},
                                              lookup_fields=frozenset(ZOHO_RELATIONS.get(db_key, {})) | {"Owner"})
+        from src.sync_engine.zoho_text_limits import limit_payload
+        try:
+            payload = limit_payload(db_key, payload, fields)
+        except ValueError as exc:
+            raise CreationHeld(str(exc)) from None
         if pipeline_layout is not None:
             payload['Layout'] = {'id': pipeline_layout}
         if db_key == 'contact':

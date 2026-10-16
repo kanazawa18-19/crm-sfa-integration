@@ -1,6 +1,7 @@
 """非冪等POSTの前に予約を確定する。応答不明は自動で作り直さない。"""
 from __future__ import annotations
 import os
+import json
 import psycopg
 from psycopg.rows import dict_row
 
@@ -40,13 +41,30 @@ class PostgresCreationJournal:
                 SET reason=EXCLUDED.reason, "updatedAt"=NOW() WHERE "HubCreationAttempt".state='blocked' ''',
                 (source_key,target,db_key,reason))
 
-    def finish(self, source_key, target, external_id):
+    def finish(self, source_key, target, external_id, *, text_limit_notes=None):
         with connect() as conn, conn.cursor() as cur:
             cur.execute('''UPDATE "HubCreationAttempt" SET state='created', "externalId"=%s,
-                reason='', "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='reserved' ''',
-                (external_id,source_key,target))
+                reason=%s, "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='reserved' ''',
+                (external_id, json.dumps({'text_limit_notes': text_limit_notes}, ensure_ascii=False)
+                 if text_limit_notes is not None else '', source_key, target))
             if cur.rowcount != 1:
                 raise RuntimeError("作成予約の確定に失敗しました")
+
+    def mark_text_limit_notes_recorded(self, source_key):
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute('''SELECT reason FROM "HubCreationAttempt" WHERE "sourceKey"=%s AND target='zoho' AND state='created' FOR UPDATE''', (source_key,))
+            row = cur.fetchone()
+            if row is None:
+                return
+            try:
+                saved = json.loads(row['reason'] or '{}')
+            except (ValueError, TypeError):
+                return
+            if not isinstance(saved, dict) or 'text_limit_notes' not in saved or saved.get('text_limit_notes_recorded'):
+                return
+            saved['text_limit_notes_recorded'] = True
+            cur.execute('''UPDATE "HubCreationAttempt" SET reason=%s WHERE "sourceKey"=%s AND target='zoho' AND state='created' ''',
+                        (json.dumps(saved, ensure_ascii=False), source_key))
 
     def conflicts(self, db_key, target, external_id):
         with connect() as conn, conn.cursor() as cur:

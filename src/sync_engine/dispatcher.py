@@ -347,7 +347,21 @@ class Dispatcher:
             watermark = guard.latest(mapping.last_synced_at)
             guard.ensure_field_baseline(mapping.last_synced_at)
             mapping = dataclasses.replace(mapping, last_synced_at=watermark)
-            return self._dispatch_locked(event, mapping, guard)
+            from src.sync_engine.zoho_text_limits import collect_text_limit_notes
+            with collect_text_limit_notes():
+                return self._dispatch_locked(event, mapping, guard)
+
+    def _write_notes(self, event, mapping):
+        from src.sync_engine.zoho_text_limits import collected_notes
+        notes = {**event.sync_notes, **collected_notes()}
+        if self._note_writer is not None and notes:
+            self._note_writer(dataclasses.replace(event, sync_notes=notes), mapping)
+
+    def _is_zoho_shortened_echo(self, mapping, name, incoming, original):
+        target = self._targets.get(Tool.ZOHO)
+        check = getattr(target, 'is_shortened_echo', None)
+        return bool(check and check(name, incoming, original, db_key=mapping.db_key,
+                                    external_id=mapping.zoho_id))
 
     def _dispatch_locked(self, event: SyncEvent, mapping: IdMapping, guard: RecordSyncGuard) -> DispatchResult:
         if event.expected_source_properties is not None:
@@ -495,8 +509,7 @@ class Dispatcher:
                 _property_result(property_name, None, intended_by_property, written_by_tool)
                 for property_name, _prop, _value in prepared
             ]
-            if self._note_writer is not None and event.sync_notes:
-                self._note_writer(event, mapping)
+            self._write_notes(event, mapping)
             completed_field_names = [item.property_name for item in results if not item.skipped_tools]
             results.extend(self._link_project(mapping))
             guard.advance(event.occurred_at)
@@ -510,8 +523,7 @@ class Dispatcher:
             # 実処理の対象プロパティが1つも無い（全てスキーマ未定義だった）場合は、
             # 現在値の取得自体が不要。ここで取得しに行くと、以前は発生しなかったAPI呼び出しと
             # その失敗（＝イベント全体のスキップ）を新たに生んでしまう。
-            if self._note_writer is not None and event.sync_notes:
-                self._note_writer(event, mapping)
+            self._write_notes(event, mapping)
             related = self._link_project(mapping)
             guard.advance(event.occurred_at)
             self._store.update_last_synced_at(mapping.notion_key, event.occurred_at)
@@ -601,6 +613,7 @@ class Dispatcher:
         # 書く必要が無いと判定されたプロパティ。報告の並び順を元のプロパティ順に保つため、
         # 逐次appendせずここへ入れておく（2026-09-01、shirokuma-secレビューINFO）。
         no_op_results: dict[str, PropertyDispatchResult] = {}
+        accepted_zoho_text = set()
 
         # 版は書き込みのたびに進むので、専用に管理する（`_VersionTracker`参照）。
         # **`records_by_tool`はここから一切変更しない**（競合解決が見るスナップショット）。
@@ -630,6 +643,22 @@ class Dispatcher:
                 )
                 continue
 
+            if event.source_tool is Tool.ZOHO and self._is_zoho_shortened_echo(
+                mapping, property_name, new_value, notion_record.get(property_name)
+            ):
+                no_op_results[property_name] = PropertyDispatchResult(property_name, None)
+                continue
+
+            from src.sync_engine.zoho_text_limits import ambiguous_shortening, ambiguity_note, record_notes
+            if event.source_tool is Tool.ZOHO and ambiguous_shortening(
+                event.db_key, property_name, new_value, notion_record.get(property_name)
+            ):
+                record_notes(ambiguity_note(property_name))
+                no_op_results[property_name] = PropertyDispatchResult(
+                    property_name, None, skipped_tools=frozenset({Tool.NOTION}) | other_tools
+                )
+                continue
+
             candidates = [
                 ToolValue(
                     tool=Tool.NOTION,
@@ -643,12 +672,19 @@ class Dispatcher:
                 ToolValue(tool=event.source_tool, value=new_value, updated_at=event.occurred_at),
             ]
             missing_tools: set[Tool] = set()
+            projected_tools: set[Tool] = set()
             for tool in _ALL_TOOLS:
                 if tool not in other_tools:
                     continue
                 record = records_by_tool.get(tool)
                 if record is None:
                     missing_tools.add(tool)
+                    continue
+                if tool is Tool.ZOHO and (
+                    self._is_zoho_shortened_echo(mapping, property_name, record.get(property_name), notion_record.get(property_name))
+                    or ambiguous_shortening(event.db_key, property_name, record.get(property_name), notion_record.get(property_name))
+                ):
+                    projected_tools.add(tool)
                     continue
                 candidates.append(
                     ToolValue(
@@ -681,7 +717,23 @@ class Dispatcher:
                     resolution = resolve_conflict(mapping.notion_key, property_name, candidates,
                         db_key=event.db_key, detected_at=event.occurred_at, allow_delete=False)
 
-            if resolution.action is ResolutionAction.NO_OP:
+            # NO_OPの結果には採用値が入らないため、一致確認済みのNotion本文を使う。
+            adopted_value = (notion_record.get(property_name) if resolution.action is ResolutionAction.NO_OP
+                             else resolution.resolved_value)
+            # 比較候補から外した短縮値も、新しい採用本文の配送先には残す。
+            projection_targets = {
+                tool for tool in projected_tools
+                if records_by_tool[tool].get(property_name) != adopted_value
+                and not self._is_zoho_shortened_echo(
+                    mapping, property_name, records_by_tool[tool].get(property_name), adopted_value
+                )
+            }
+            from src.sync_engine.zoho_text_limits import TEXT_PROPERTIES
+            if (event.source_tool is Tool.ZOHO and property_name in TEXT_PROPERTIES.get(event.db_key, ())
+                    and adopted_value == new_value):
+                accepted_zoho_text.add(property_name)
+
+            if resolution.action is ResolutionAction.NO_OP and not projection_targets:
                 no_op_results[property_name] = PropertyDispatchResult(
                     property_name=property_name, resolution=resolution
                 )
@@ -694,8 +746,8 @@ class Dispatcher:
                 _DecidedWrite(
                     property_name=property_name,
                     resolution=resolution,
-                    value=resolution.resolved_value,
-                    intended=frozenset(resolution.target_tools | missing_tools),
+                    value=adopted_value,
+                    intended=frozenset(resolution.target_tools | missing_tools | projection_targets),
                 )
             )
 
@@ -720,6 +772,11 @@ class Dispatcher:
         written_by_tool, mapping = self._write_values(
             payload_by_tool, mapping, versions, new_row_properties=new_row_properties
         )
+        from src.sync_engine.zoho_text_limits import record_notes, text_limit_key, ambiguity_key
+        record_notes({key: '' for name in accepted_zoho_text
+                      if name in written_by_tool.get(Tool.NOTION, ())
+                      or (notion_record is not None and notion_record.get(name) == incoming_properties.get(name))
+                      for key in (text_limit_key(name), ambiguity_key(name))})
         written_results = {
             item.property_name: _property_result(
                 item.property_name, item.resolution, intended_by_property, written_by_tool
@@ -743,8 +800,7 @@ class Dispatcher:
                 for rejected_item in item.resolution.rejected:
                     self._slack_notifier.notify_conflict(rejected_item)
 
-        if self._note_writer is not None and event.sync_notes:
-            self._note_writer(event, mapping)
+        self._write_notes(event, mapping)
         # 競合解決後にNotionへ送る採用値だけを見る。無関係項目の部分スキップは従来通り報告する。
         relevant = {"営業ステータス", "サービス・商品", "取引先マスター"}
         missing_notion = set(payload_by_tool.get(Tool.NOTION, {})) - written_by_tool.get(Tool.NOTION, frozenset())

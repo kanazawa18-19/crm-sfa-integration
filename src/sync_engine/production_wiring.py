@@ -274,7 +274,7 @@ class _MultiDbZohoSyncTarget(SyncTarget):
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
         target = self._resolve(db_key)
-        return target.get_record(external_id) if target is not None else None
+        return target.get_record(external_id, db_key=db_key) if target is not None else None
 
     def upsert_record(
         self,
@@ -303,6 +303,11 @@ class _MultiDbZohoSyncTarget(SyncTarget):
         return target.upsert_record(
             external_id, properties, db_key=db_key, expected_version=expected_version
         )
+
+    def is_shortened_echo(self, name, incoming, original, *, db_key=None, external_id=None):
+        target = self._resolve(db_key)
+        return target.is_shortened_echo(name, incoming, original, db_key=db_key,
+                                        external_id=external_id) if target is not None else False
 
     def unsupported_properties(
         self, properties: dict[str, Any], *, db_key: str | None = None

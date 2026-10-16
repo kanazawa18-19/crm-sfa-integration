@@ -79,7 +79,14 @@ class ZohoSyncTarget(SyncTarget):
         if not self._enabled:
             return None
         try:
-            return self._client.get_record(self._module, external_id)
+            record = self._client.get_record(self._module, external_id)
+            if record is None:
+                return None
+            from src.sync_engine.zoho_text_limits import normalized_text_record
+            try:
+                return normalized_text_record(db_key, record)
+            except ValueError as exc:
+                raise ApiError(422, str(exc)) from None
         except Exception:
             # 2026-08-27本番障害対応（kintone_sync.KintoneSyncTarget.get_record()と同じ
             # 理由）: 例外はここでは握らず伝播させ、呼び出し元（Dispatcher）にスキップ判断を
@@ -119,9 +126,9 @@ class ZohoSyncTarget(SyncTarget):
             try:
                 memo = current.get("field70", "")
                 if memo_edit:
-                    memo = replace_memo_body(memo, payload["field70"])
+                    memo = replace_memo_body(memo, payload["field70"], limit=None)
                 if values:
-                    memo = merge_choice_memo(memo, "サイトコントローラー", values, limit=2000)
+                    memo = merge_choice_memo(memo, "サイトコントローラー", values, limit=None)
             except ValueError as exc:
                 raise ApiError(422, str(exc)) from None
             payload = {**(payload or {}), "field70": memo}
@@ -132,12 +139,60 @@ class ZohoSyncTarget(SyncTarget):
             # ここでexternal_idを返すとDispatcher._write_value()が「書き込み成功」と数え、
             # まさにこの変更が無くそうとしている「スキップが成功に見える」状態に戻る。
             return None
+        from src.sync_engine.zoho_text_limits import limit_payload, text_fields, record_notes
+        fields = self._text_metadata() if text_fields(db_key, payload) else []
+        if values and not memo_edit:
+            from src.sync_engine.decided_choices import split_controller_memo
+            metadata = next((field for field in fields if field.get('api_name') == 'field70'), {})
+            limit = metadata.get('length')
+            previous = current.get('field70') or ''
+            if (type(limit) is int and len(previous) >= limit
+                    and len(split_controller_memo(previous)[1]) != len(split_controller_memo(payload['field70'])[1])):
+                raise ApiError(422, '短縮済みメモの管理枠を変更するにはNotionのメモ本文も同時に再送してください')
+        try:
+            payload = limit_payload(db_key, payload, fields)
+        except ValueError as exc:
+            raise ApiError(422, str(exc)) from None
         if external_id is None:
-            return self._client.insert_record(self._module, payload)
-        self._client.update_record(
-            self._module, external_id, payload, expected_version=expected_version
-        )
+            external_id = self._client.insert_record(self._module, payload)
+        else:
+            self._client.update_record(
+                self._module, external_id, payload, expected_version=expected_version
+            )
+        # 管理枠だけの更新では、以前の本文省略の記録を解除しない。
+        record_notes({key: value for key, value in payload.text_limit_notes.items()
+                      if value or not (values and not memo_edit)})
+        from src.sync_engine.zoho_text_limits import ambiguity_key
+        record_notes({ambiguity_key(name): '' for name in text_fields(db_key, payload)
+                      if name in properties})
         return external_id
+
+    def _text_metadata(self):
+        reader = getattr(self._client, "get_fields", None)
+        from src.sync_engine.zoho_text_limits import cached_metadata
+        return cached_metadata(self._client, self._module, reader) if reader is not None else []
+
+    def is_shortened_echo(self, name, incoming, original, *, db_key=None, external_id=None):
+        from src.sync_engine.zoho_text_limits import TEXT_PROPERTIES, limit_payload
+        if (name not in TEXT_PROPERTIES.get(db_key, ()) or not isinstance(incoming, str)
+                or not isinstance(original, str) or len(original) <= len(incoming)):
+            return False
+        code = zoho_outbound_field_names().get(db_key, {}).get(name)
+        value = original
+        if db_key == 'project':
+            current = self._client.get_record(self._module, external_id)
+            if current is None:
+                raise ApiError(404, "管理用メモの読取先がありません")
+            value = replace_memo_body(current.get(code), original,
+                                      limit=None)
+        try:
+            projected = limit_payload(db_key, {code: value}, self._text_metadata())[code]
+        except ValueError as exc:
+            raise ApiError(422, str(exc)) from None
+        if db_key == 'project':
+            from src.sync_engine.decided_choices import split_controller_memo
+            projected = split_controller_memo(projected)[0]
+        return projected != original and incoming == projected
 
     def unsupported_properties(
         self, properties: dict[str, Any], *, db_key: str | None = None

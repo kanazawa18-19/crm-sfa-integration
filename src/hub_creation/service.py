@@ -123,7 +123,8 @@ class HubCreationService:
                 existing = self.store.get(event.external_id)
                 if existing is not None and not self.journal.has_source(source_key):
                     return None
-                if existing is not None and all(
+                from src.sync_engine.zoho_text_limits import creation_notes_pending
+                if existing is not None and not creation_notes_pending(self.journal.get(source_key, "zoho")) and all(
                     getattr(existing, {"zoho": "zoho_id", "kintone": "kintone_id"}[adapter.target])
                     or not supports_database(Tool(adapter.target), event.db_key)
                     for adapter in self.adapters
@@ -209,11 +210,18 @@ class HubCreationService:
                             if mapping is None or mapping.db_key != event.db_key:
                                 raise CreationHeld("作成中の対応表を確認してください")
                             if getattr(mapping, column):
+                                attempt = self.journal.get(source_key, target)
+                                if target == 'zoho' and attempt and attempt['state'] == 'created':
+                                    from src.sync_engine.zoho_text_limits import recovered_creation_notes
+                                    notes.update(recovered_creation_notes(attempt, event.db_key, properties))
                                 notes[note_key] = ""
                                 continue
                             attempt = self.journal.get(source_key, target)
                             if attempt and attempt["state"] == "created":
                                 external_id = attempt["externalId"]
+                                if target == 'zoho':
+                                    from src.sync_engine.zoho_text_limits import recovered_creation_notes
+                                    notes.update(recovered_creation_notes(attempt, event.db_key, properties))
                             elif attempt and attempt["state"] == "reserved":
                                 raise CreationHeld("作成結果が不明です。自動で再作成せず確認を待っています")
                             else:
@@ -248,11 +256,21 @@ class HubCreationService:
                                 if event.db_key == 'action':
                                     from src.hub_creation.action_identity import fingerprint as action_fingerprint
                                     target_fingerprint = action_fingerprint(properties, external=True)
+                                # 作成後の応答・メモ保存が途切れても、原文の省略予定は残す。
+                                shortening_notes = getattr(payload, "text_limit_notes", {})
+                                if any(shortening_notes.values()):
+                                    client.upsert_sync_notes(page_id, payload.planned_text_limit_notes)
                                 if not self.journal.reserve(source_key, target, event.db_key, target_fingerprint):
+                                    # 作成していないことが確定した競合では、今回の省略予定を取り下げる。
+                                    if any(shortening_notes.values()):
+                                        client.upsert_sync_notes(page_id, {key: '' for key in shortening_notes})
                                     raise CreationHeld("同じ内容のアクション登録が進行中、または既に登録されています"
                                            if event.db_key == "action" else "同じ名前の登録が進行中、または既に登録されています")
                                 external_id = adapter.create(event.db_key, payload)
-                                self.journal.finish(source_key, target, external_id)
+                                self.journal.finish(source_key, target, external_id, **(
+                                    {'text_limit_notes': shortening_notes} if target == 'zoho' else {}
+                                ))
+                                notes.update(getattr(payload, "text_limit_notes", {}))
                             updated = replace(mapping, **{column: external_id})
                             self.store.upsert(updated, expected_last_synced_at=mapping.last_synced_at)
                             mapping = updated
@@ -282,6 +300,9 @@ class HubCreationService:
                         notes[note_key] = f"[{origin}:新規登録（{target}）] {reason}。"
                         held.append(target + ": " + reason)
                 client.upsert_sync_notes(page_id, notes)
+                from src.sync_engine.zoho_text_limits import creation_notes_pending
+                if creation_notes_pending(self.journal.get(source_key, "zoho")):
+                    self.journal.mark_text_limit_notes_recorded(source_key)
                 if origin == "spreadsheet" and self.sheet_gateway is not None:
                     registration_key = source_key.removeprefix("sheet:")
                     status = "Notion登録済み / " + ("・".join(held) if held else "外部登録完了")
