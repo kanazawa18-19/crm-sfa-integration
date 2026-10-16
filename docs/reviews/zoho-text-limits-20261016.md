@@ -1,6 +1,6 @@
 # Zoho自由記述の上限内登録：検証記録
 
-対象は法人備考・チェーンメモ・案件メモ・履歴メモ。送り先の実上限で送信値だけを短縮し、Notion原文を保持する。本番反映は未実施。
+対象は法人備考・チェーンメモ・案件メモ・履歴メモ。送り先の実上限で送信値だけを短縮し、Notion原文を保持する。以下は本番反映前の検証と、その後の配備記録。
 
 ## 独立レビュー
 
@@ -41,4 +41,10 @@ Gemini思考モードとClaude Opus 5.5（中）へ、専用の新規チャッ�
 - 独立QAの関連回帰：1705成功・65スキップ。その後、案内どおりNotionで編集して解決した際の保留表示解除漏れを3者が指摘。本文のZoho保存成功時だけ解除するよう修正。
 - 最後の表示修正後、新規文字数テスト全41件を独立QAが実行して成功。送信失敗・管理枠のみ更新では保留を維持。未解消BLOCKER/WARNなし。
 - 外部モデルは初回差分をレビューし、その指摘の採否・修正後確認はローカルの独立レビュー/テストで実施した。最終差分を外部モデルが再承認したという意味ではない。
-- 本番デプロイ・新実装による実サービス書込みは未実施。DBスキーマ変更なし。
+- この検証段階では本番デプロイ・新実装による実サービス書込みは未実施。DBスキーマ変更なし。
+
+### 本番配備
+
+製品コミット`a81c3e9`をmainへpush。本人がAGENTS.mdで明示したCRMのcommit/push自律権限に基づく。CI [38835588752](https://github.com/kanazawa18-19/crm-sfa-integration/actions/runs/38835588752) はPython・GAS・Dockerビルド/起動確認のすべて成功。
+
+Vercelは[API](https://vercel.com/cnctor1/crm-sfa-integration/ERS4b2kmkTaWRJXzmTqmir9pkd53)・[管理画面](https://vercel.com/cnctor1/crm-sfa-integration-dashboard/CLJRzTpAFdfmP9sZDNkDzn7vDLA1)とも成功。APIの`/healthz`は`{"status":"ok"}`。新しい短縮処理による実データの登録・更新は未観測であり、配備成功と区別する。
