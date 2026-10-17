@@ -223,4 +223,4 @@ def action_actor(page_id: str) -> str | None:
 
 
 def public(row: dict) -> dict:
-    return {key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties"}}
+    return {key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties", "contact_completion"}}

@@ -169,3 +169,56 @@ def test_persisted_email_match_rechecks_affiliation_before_creation(repo, monkey
     assert result['state'] == 'pending'
     assert '所属が変わって' in result['reason']
     gateway.create_action.assert_not_called()
+
+
+@pytest.mark.parametrize('mode', ['email_change', 'company_fill', 'duplicate_name', 'duplicate_company'])
+def test_contact_completion_through_persisted_service(repo, monkeypatch, mode):
+    from copy import deepcopy
+    from contextlib import nullcontext
+    from unittest.mock import Mock
+    from src.email_review.gateway import Gateway
+    from src.email_review.service import Service
+    company = '11111111-1111-1111-1111-111111111111'
+    person = {'id': '22222222-2222-2222-2222-222222222222', '名前': '田中 太郎',
+              'メールアドレス': 'new@example.test' if mode == 'company_fill' else 'old@example.test',
+              '取引先マスター': [] if mode == 'company_fill' else [company],
+              '備考': '既存メモ', '_last_edited_time': '2026-10-01T00:00:00Z'}
+    people = [person]
+    if mode == 'duplicate_name': people.append({**person, 'id': '33333333-3333-3333-3333-333333333333'})
+    masters = [{'id': company, 'name': '試験株式会社'}]
+    if mode == 'duplicate_company': masters.append({'id': 'other', 'name': '試験株式会社'})
+    monkeypatch.setattr(repo, 'masters', lambda values: masters)
+    source = {**row('completion', 'completion'), 'direction': 'outbound', 'owner': 'one@example.test',
+              'participants': [{'email': 'new@example.test'}], 'message': {'id': 'completion',
+              'body_text': '試験株式会社\n田中様、\n本文', 'internal_date_ms': '1791244800000'}}
+    repo.capture(source, 'one@example.test', 'gmail-completion', 'thread')
+    gateway = Gateway()
+    monkeypatch.setattr(gateway, 'live', lambda key, pid: deepcopy(person) if key == 'contact' else {'取引先名': '試験株式会社'})
+    monkeypatch.setattr(gateway, 'contacts', lambda addresses: [{'id': p['id'], 'email': p['メールアドレス'], 'affiliations': p['取引先マスター']} for p in people if p['メールアドレス'] == addresses[0]])
+    monkeypatch.setattr(gateway, 'company_contacts', lambda cid: people)
+    monkeypatch.setattr('src.email_review.gateway.record_lock', lambda *args: nullcontext())
+    client = Mock()
+    client.update_page.side_effect = lambda pid, patch: person.update(patch)
+    monkeypatch.setattr(gateway, 'client', lambda key: client)
+    monkeypatch.setattr(gateway, 'actor', lambda owner: 'actor')
+    create = Mock(return_value='action')
+    monkeypatch.setattr(gateway, 'create_action', create)
+    monkeypatch.setattr(gateway, 'dispatch', lambda *args: 'delivered')
+    service = Service(repo, gateway)
+    evaluated = service.evaluate(repo.claim('new', 'evaluating'))
+    if mode.startswith('duplicate'):
+        assert evaluated['state'] == 'pending'
+        client.update_page.assert_not_called()
+        create.assert_not_called()
+        return
+    assert evaluated['state'] == 'approved'
+    pending = repo.claim('approved', 'processing')
+    assert pending['match_basis'] == 'contact_completion'
+    assert pending['contact_completion']['expected']['備考'] == '既存メモ'
+    done = service.process(pending)
+    assert done['state'] == 'done' and done['delivery'] == 'delivered'
+    assert person['メールアドレス'] == 'new@example.test'
+    assert person['取引先マスター'] == [company]
+    assert person['姓'] == '田中' and person['名'] == '太郎'
+    if mode == 'email_change': assert person['備考'] == '既存メモ\n過去メールアドレス: old@example.test'
+    create.assert_called_once()

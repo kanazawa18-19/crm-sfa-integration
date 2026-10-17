@@ -1,0 +1,934 @@
+既存連絡先補完のレビュー。メール一致+所属空なら宛名の取引先完全一致1件を補完。メール不一致なら会社と氏名が一意の既存連絡先のメールを上書きし旧アドレスを備考へ追記。既存備考と姓名は保持。分割不能な名前は全体を姓へ。古いメール/時刻不明では差替え禁止。作成結果不明は再POSTしない。誤登録、再試行、権限漏れをBLOCKER/WARN/INFOで日本語レビュー。DB結合13件込み233成功。姓の部分一致は採用しない。実顧客情報は含まない。
+
+### src/email_review/contact_completion.py
+"""既存連絡先の補完計画。外部I/Oを持たず、曖昧な候補は更新しない。"""
+from __future__ import annotations
+
+import re
+from src.email_review.domain import normalized
+
+
+def name_parts(properties: dict) -> dict:
+    """判別できる氏名は分割し、不明なら名前全体を姓へ空欄補完する。"""
+    parts = str(properties.get('名前') or '').split()
+    if len(parts) != 2 or not all(re.fullmatch(r'[一-龯々〆ヵヶぁ-ゖァ-ヺー]+', p) for p in parts):
+        return {'姓': str(properties.get('名前') or '').strip()} if str(properties.get('名前') or '').strip() and not properties.get('姓') and not properties.get('名') else {}
+    expected = dict(zip(('姓', '名'), parts))
+    if any(properties.get(k) and normalized(properties[k]) != normalized(v) for k, v in expected.items()):
+        return {}
+    return {k: v for k, v in expected.items() if not properties.get(k)}
+
+
+def contact_changes(current: dict, *, email: str, company_id: str, replace_email: bool) -> dict:
+    """旧メール・既存備考を保存し、過去メールへの巻き戻しを拒否する。"""
+    changes = name_parts(current)
+    affiliations = set(current.get('取引先マスター') or [])
+    if affiliations and affiliations != {company_id}:
+        raise ValueError('既存所属が異なります')
+    if not affiliations:
+        changes['取引先マスター'] = [company_id]
+    old = str(current.get('メールアドレス') or '').strip()
+    email = email.strip().casefold()
+    if old.casefold() != email:
+        if not replace_email:
+            raise ValueError('メールが変わっています')
+        memo = str(current.get('備考') or '')
+        history = re.findall(r'^過去メールアドレス[:：]\s*(\S+)\s*$', memo, re.M)
+        if email in {v.casefold() for v in history}:
+            raise ValueError('過去メールアドレスへの差替えは確認が必要です')
+        changes['メールアドレス'] = email
+        if old:
+            line = '過去メールアドレス: ' + old
+            changes['備考'] = memo + ('\n' if memo and not memo.endswith('\n') else '') + line
+    return changes
+
+
+def unique_named_contact(contacts: list[dict], names: list[str]) -> dict | None:
+    """会社所属内で、宛名と完全一致または明示された姓に一致する人を1件に絞る。"""
+    wanted = {normalized(re.sub(r'(?:様|さん|殿)[、。\s]*$', '', n).strip()) for n in names if n.strip()}
+    hits = {}
+    for contact in contacts:
+        full = str(contact.get('名前') or '')
+        surname = str(contact.get('姓') or '')
+        if not surname:
+            surname = name_parts({'名前': full}).get('姓', '')
+        if surname == full.strip() and normalized(full) not in wanted and any(normalized(full).startswith(n) for n in wanted):
+            # 姓を分割できない別人が同姓の可能性を残す場合、一意とは扱わない。
+            return None
+        if normalized(full) in wanted or surname and normalized(surname) in wanted:
+            hits[contact['id']] = contact
+    return next(iter(hits.values())) if len(hits) == 1 else None
+
+### src/email_review/gateway.py
+"""既存のNotion正本・共通配送処理への接続。"""
+from __future__ import annotations
+
+from contextlib import contextmanager, ExitStack
+from datetime import datetime, timezone
+from uuid import UUID
+from zoneinfo import ZoneInfo
+
+from src.db_schema.registry import get_schema
+from src.db_schema.base import Tool
+from src.sync_engine.clients.notion_client import HttpNotionClient
+from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
+from src.sync_engine.record_sync_lock import _connect_direct, lock_key, RecordSyncBusy
+from src.sync_engine.sync_event import SyncEvent
+from src.email_review.domain import Conflict, normalized, same_value, require_outbound, match_existing_contact
+from src.email_review.body import current_body
+
+
+@contextmanager
+def record_lock(db_key: str, key: str):
+    conn = _connect_direct()
+    try:
+        conn.autocommit = True
+        if not conn.execute('SELECT pg_try_advisory_lock(%s) AS locked', (lock_key(db_key, key),)).fetchone()["locked"]:
+            raise RecordSyncBusy("同じ対象を処理中です")
+        yield
+    finally:
+        conn.close()
+
+
+class Gateway:
+    def client(self, key: str):
+        schema = get_schema(key)
+        return HttpNotionClient(key, schema.notion_database_id)
+
+    def live(self, key: str, page_id: str) -> dict:
+        from src.record_merge.aliases import resolve_alias, require_record_available
+        page_id = str(UUID(page_id))
+        if resolve_alias(key, Tool.NOTION, page_id):
+            raise Conflict("統合済みの候補です。正本を選び直してください")
+        require_record_available(key, page_id)
+        client = self.client(key)
+        schema = get_schema(key)
+        raw = client.get_raw_page_with_relations(page_id, {p.name for p in schema.properties if p.relation_target})
+        if not raw or raw.get("archived") or raw.get("in_trash"):
+            raise Conflict("候補が削除・保管されています")
+        parent = raw.get("parent") or {}
+        if str(parent.get("database_id", "")).replace("-", "") != schema.notion_database_id.replace("-", ""):
+            raise Conflict("候補の種類が違います")
+        result = {"_last_edited_time": raw.get("last_edited_time")}
+        for name, value in (raw.get("properties") or {}).items():
+            if value.get("type") in {"title", "rich_text", "relation", "email", "select", "date", "phone_number"}:
+                result[name] = parse_notion_property_value(value)
+        return result
+
+    def contacts(self, addresses: list[str]) -> list[dict]:
+        result = []
+        client = self.client("contact")
+        for address in sorted({value.strip().casefold() for value in addresses}):
+            pages = client.query_all_pages(filter={"property": "メールアドレス", "email": {"equals": address}})
+            for page in pages:
+                if page.get("archived") or page.get("in_trash"):
+                    continue
+                props = page.get("properties") or {}
+                email = parse_notion_property_value(props["メールアドレス"])
+                if not isinstance(email, str) or email.strip().casefold() != address:
+                    continue
+                current = self.live("contact", page["id"])
+                if str(current.get("メールアドレス") or "").strip().casefold() != address:
+                    continue
+                result.append({"id": page["id"], "name": current.get("名前") or address,
+                               "email": address, "affiliations": current.get("取引先マスター") or []})
+        return list({item["id"]: item for item in result}.values())
+
+    def company_contacts(self, company_id: str) -> list[dict]:
+        pages = self.client("contact").query_all_pages(filter={"property": "取引先マスター", "relation": {"contains": company_id}})
+        return [{"id": p["id"], **self.live("contact", p["id"])} for p in pages if not p.get("archived") and not p.get("in_trash")]
+
+    def plan_completion(self, row: dict, companies: list[dict], names: list[str], email: str) -> dict | None:
+        from src.email_review.contact_completion import contact_changes, unique_named_contact
+        companies = {c["id"]: c for c in companies}
+        if len(companies) != 1:
+            return None
+        company_id, company = next(iter(companies.items()))
+        if normalized(self.live("client_master", company_id).get("取引先名") or "") != normalized(company["name"]):
+            return None
+        matches = self.contacts([email])
+        if len(matches) > 1:
+            return None
+        replace = not matches
+        if matches:
+            contact = {"id": matches[0]["id"], **self.live("contact", matches[0]["id"])}
+            if contact.get("取引先マスター"):
+                return None
+        else:
+            contact = unique_named_contact(self.company_contacts(company_id), names)
+            if not contact:
+                return None
+        try:
+            if replace:
+                self.require_recent_email(row, contact)
+            changes = contact_changes(contact, email=email, company_id=company_id, replace_email=replace)
+        except (ValueError, Conflict) as exc:
+            return {"state": "pending", "reason": str(exc)}
+        expected = {k: contact.get(k) for k in set(changes) | {"名前", "メールアドレス", "取引先マスター", "姓", "名", "備考"}}
+        return {"state": "approved", "reason": "メール・取引先・氏名から既存連絡先を補完", "match_basis": "contact_completion",
+                "contact_id": contact["id"], "company_id": company_id, "target_id": company_id, "project_id": None,
+                "contact_completion": {"expected": expected, "changes": changes, "email": email,
+                    "company_name": company["name"], "names": names, "replace_email": replace}}
+
+    @staticmethod
+    def require_recent_email(row: dict, contact: dict) -> None:
+        try:
+            sent = datetime.fromtimestamp(int(row["message"]["internal_date_ms"]) / 1000, timezone.utc)
+            edited = datetime.fromisoformat(contact["_last_edited_time"].replace("Z", "+00:00"))
+            if sent >= edited:
+                return
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+        raise Conflict("連絡先更新前のメールによるアドレス差替えは保留します")
+
+    def validate_completion(self, row: dict, selection: dict) -> None:
+        from src.email_review.contact_completion import unique_named_contact
+        plan = row["contact_completion"]
+        if any(selection.get(k) != row.get(k) for k in ("company_id", "contact_id", "target_id", "project_id")):
+            raise Conflict("補完計画の対象が変わっています")
+        if normalized(self.live("client_master", row["company_id"]).get("取引先名") or "") != normalized(plan["company_name"]):
+            raise Conflict("補完対象の会社名が変わっています")
+        current = self.live("contact", row["contact_id"])
+        before, after = plan["expected"], {**plan["expected"], **plan["changes"]}
+        def equal(expected):
+            return all((current.get(k) or None) == (v or None) for k, v in expected.items())
+        if plan["replace_email"] and not equal(after):
+            self.require_recent_email(row, current)
+        if not equal(before) and not equal(after):
+            raise Conflict("連絡先が更新されています。再照合してください")
+        matches = self.contacts([plan["email"]])
+        if matches and {c["id"] for c in matches} != {row["contact_id"]}:
+            raise Conflict("メールアドレスが別の連絡先に登録されています")
+        if not plan["replace_email"] and len(matches) != 1:
+            raise Conflict("メールアドレスの一致を確認できません")
+        if plan["replace_email"]:
+            winner = unique_named_contact(self.company_contacts(row["company_id"]), plan["names"])
+            if not winner or winner["id"] != row["contact_id"]:
+                raise Conflict("同じ取引先の氏名候補が変わっています")
+
+    def validate(self, row: dict, selection: dict) -> dict:
+        company_id = selection["company_id"]
+        company = self.live("client_master", company_id)
+        completion = row.get("match_basis") == "contact_completion" and bool(row.get("contact_completion"))
+        email_match = row.get("channel") == "automatic" and row.get("match_basis") == "contact_email"
+        if completion:
+            self.validate_completion(row, selection)
+        elif email_match:
+            # 評価後にメール・所属・同一メールの件数が変わっていないか、作成直前にも確認する。
+            current = match_existing_contact(row["message"], row["participants"],
+                self.contacts([p["email"] for p in row["participants"]]))
+            if current["state"] != "approved" or any(current[k] != selection.get(k) for k in ("company_id", "contact_id", "target_id", "project_id")):
+                raise Conflict("メールアドレスまたは連絡先の所属が変わっています。再照合してください")
+        elif row.get("channel") == "automatic":
+            chosen = next((c for c in row.get("candidates", []) if c["id"] == company_id), None)
+            if not chosen or normalized(chosen["name"]) != normalized(company.get("取引先名") or ""):
+                raise Conflict("会社名が変わっています。再照合してください")
+        contact = self.live("contact", selection["contact_id"])
+        addresses = {p["email"].strip().casefold() for p in row["participants"]}
+        if not completion and str(contact.get("メールアドレス") or "").strip().casefold() not in addresses:
+            raise Conflict("メールの相手と連絡先が一致しません")
+        # 手動確定でも別会社への所属付け替えを暗黙に行わない。
+        affiliations = contact.get("取引先マスター") or []
+        if email_match and set(affiliations) != {company_id}:
+            raise Conflict("連絡先の所属が変わっています。再照合してください")
+        owned_correction = (row.get("channel") in {"dashboard", "slack"}
+                            and row.get("linked_contact_id") == selection["contact_id"]
+                            and set(affiliations) == {row.get("linked_company_id")})
+        if affiliations and set(affiliations) != {company_id} and not owned_correction:
+            raise Conflict("連絡先の既存所属と異なります。所属を確認してください")
+        target = selection.get("target_id") or company_id
+        target_company = self.live("client_master", target)
+        project_name = None
+        if selection.get("project_id"):
+            project = self.live("project", selection["project_id"])
+            if set(project.get("取引先マスター") or []) != {target}:
+                raise Conflict("案件と対象施設の組合せが変わっています")
+            project_name = project.get("案件名") or "名称なし"
+        return {**selection, "company_name": company.get("取引先名") or "名称なし", "contact_name": contact.get("名前") or "名前未設定",
+                "target_name": target_company.get("取引先名") or "名称なし", "project_name": project_name}
+
+    def actor(self, owner: str) -> str:
+        from src.sync_engine.owner_mapping import owner_directory
+        directory = owner_directory()
+        matches = [r for r in (directory or {}).get("users", []) if str(r.get("email") or "").lower() == owner.lower()]
+        if len(matches) != 1:
+            raise Conflict("メール担当者とCRMユーザーの確認済み対応を設定してください")
+        user_id = str(UUID(matches[0]["notion_id"]))
+        user = self.client("action").get_user(user_id)
+        if user.get("type") != "person" or str((user.get("person") or {}).get("email") or "").lower() != owner.lower():
+            raise Conflict("メール担当者とNotionユーザーが一致しません")
+        return user_id
+
+    def link_contact(self, row: dict) -> tuple[dict, bool]:
+        with ExitStack() as locks:
+            if row.get("contact_completion"):
+                locks.enter_context(record_lock("contact", "email:" + row["contact_completion"]["email"].strip().casefold()))
+            locks.enter_context(record_lock("contact", row["contact_id"]))
+            self.validate(row, row)
+            current = self.live("contact", row["contact_id"])
+            changed = set(current.get("取引先マスター") or []) != {row["company_id"]}
+            from src.email_review.contact_completion import name_parts
+            changes = name_parts(current)
+            if changed:
+                changes["取引先マスター"] = [row["company_id"]]
+            if row.get("match_basis") == "contact_completion" and row.get("contact_completion"):
+                changes.update(row["contact_completion"]["changes"])
+            patch = {k: v for k, v in changes.items() if (current.get(k) or None) != (v or None)}
+            if patch:
+                self.client("contact").update_page(row["contact_id"], patch)
+                saved = self.live("contact", row["contact_id"])
+                if any((saved.get(k) or None) != (v or None) for k, v in changes.items()):
+                    raise Conflict("連絡先補完の保存値を確認できません")
+        owned = changed or (row.get("linked_contact_id") == row["contact_id"] and row.get("linked_company_id") == row["company_id"])
+        return {"取引先マスター": [row["company_id"]], **changes}, owned
+
+    def action_properties(self, row: dict) -> dict:
+        require_outbound(row)
+        message = row["message"]
+        body = current_body(message.get("body_text") or "").replace("\r\n", "\n")
+        if not isinstance(body, str) or not body.strip():
+            raise Conflict("メール本文の全文を取得できないため、記録を保留します。元メールを確認してください")
+        if len(body) > 20000:
+            raise Conflict("引用を除いた本文が2万文字を超えるため、記録を保留します")
+        # Notionの保存精度（分単位・ミリ秒表記）に揃える。元の送信時刻は受付に保持する。
+        day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).replace(second=0, microsecond=0).isoformat(timespec="milliseconds")
+        title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"
+        return {"商談回数・電話回数・メール回数（何回目）": title[:180],
+                "アクション種別": "メール",
+                "アクション日": day, "先方担当者": row["contact_name"],
+                "👨‍👩‍👧‍👦 取引先マスター": [row.get("target_id") or row["company_id"]],
+                "案件名": [row["project_id"]] if row.get("project_id") else [],
+                "履歴メモ": body}
+
+    def create_action(self, properties: dict) -> str:
+        return self.client("action").create_page_once(properties)
+
+    def find_action(self, row: dict) -> str | None:
+        expected = row.get("attempted_properties") or {}
+        title_key = "商談回数・電話回数・メール回数（何回目）"
+        if not expected.get(title_key):
+            return None
+        pages = self.client("action").query_all_pages(filter={"property": title_key, "title": {"equals": expected[title_key]}})
+        ids = [p["id"] for p in pages if not p.get("archived") and not p.get("in_trash")]
+        if len(ids) != 1:
+            return None
+        current = self.live("action", ids[0])
+        if any(not same_value(key, current.get(key), value) for key, value in expected.items()):
+            return None
+        return ids[0]
+
+    def update_action(self, row: dict, properties: dict) -> None:
+        with record_lock("action", row["action_id"]):
+            current = self.live("action", row["action_id"])
+            previous = row.get("written_properties") or {}
+            if any(not same_value(key, current.get(key), previous.get(key)) and not same_value(key, current.get(key), value) for key, value in properties.items()):
+                raise Conflict("記録が外部で編集されています。内容を比較してください")
+            self.client("action").update_page(row["action_id"], properties)
+
+    def dispatch(self, key: str, page_id: str, properties: dict) -> str:
+        from src.sync_engine.production_wiring import get_production_wiring
+        raw = self.client(key).get_raw_page(page_id)
+        occurred = datetime.fromisoformat(raw["last_edited_time"].replace("Z", "+00:00"))
+        event = SyncEvent(source_tool=Tool.NOTION, db_key=key, external_id=page_id, occurred_at=occurred,
+                          properties=properties, expected_source_properties=properties)
+        result = get_production_wiring().dispatcher.dispatch(event)
+        return "partial" if result.skipped or result.has_partial_skips else "delivered"
+
+### src/email_review/service.py
+"""メール取得と照合・登録・配送を分け、同じ受付を再開する。"""
+from __future__ import annotations
+
+import os
+import re
+import logging
+from dataclasses import asdict
+from datetime import datetime, timezone
+
+from src.email_review import domain
+from src.email_review.body import current_body
+from src.email_review.repository import Repository, public
+from src.email_review.gateway import Gateway
+from src.sync_engine.record_sync_lock import RecordSyncBusy
+
+logger = logging.getLogger(__name__)
+
+
+def enabled() -> bool:
+    return os.environ.get("EMAIL_REVIEW_ENABLED", "").lower() == "true"
+
+
+def internal_domains() -> set[str]:
+    """既存の取得設定を保持し、照合だけの追加社内ドメインを除外する。"""
+    from src.gmail_sync.sync import internal_domains_from_env
+    extra = os.environ.get("EMAIL_REVIEW_INTERNAL_DOMAINS", "")
+    return set(internal_domains_from_env()) | {value.strip().lower() for value in extra.split(",") if value.strip()}
+
+
+def safe_capture(message, owner: str) -> bool:
+    try:
+        capture(message, owner)
+        return True
+    except Exception as exc:
+        logger.warning("メール照合受付の保存失敗: id=%s type=%s", message.id, type(exc).__name__)
+        return False
+
+
+def capture(message, owner: str, *, repo=None) -> None:
+    if not enabled():
+        return
+    # 開始時刻が無ければ既存メールの大量登録を防いで設定エラーとする。
+    start = datetime.fromisoformat(os.environ["EMAIL_REVIEW_START_AT"].replace("Z", "+00:00"))
+    if start.tzinfo is None:
+        raise ValueError("EMAIL_REVIEW_START_ATにはタイムゾーンを指定してください")
+    data = asdict(message)
+    if domain.authentication_notice(data):
+        return
+    stamp = data.get("internal_date_ms")
+    if not stamp or datetime.fromtimestamp(int(stamp) / 1000, timezone.utc) < start:
+        return
+    owner = owner.lower()
+    direction, people = domain.participants(data, owner, internal_domains())
+    if not people:
+        return
+    body = current_body(data.get("body_text") or "")
+    data["body_text"] = body if len(body) <= 20000 else ""
+    review_id = domain.identity(data, owner)
+    row = {"id": review_id, "owner": owner, "thread_id": data.get("thread_id"), "message": data,
+           "activity_owner": owner,
+           "canonical_key": review_id if data.get("message_id_header") else None,
+           "subject": data.get("subject") or "件名なし", "participants": people, "direction": direction,
+           "state": "new" if direction == "outbound" else "excluded",
+           "delivery": "not_started", "revision": 0,
+           "reason": "照合処理待ち" if direction == "outbound" else domain.OUTBOUND_ONLY_REASON,
+           "candidates": [], "contacts": [], "evidence": []}
+    (repo or Repository()).capture(row, owner, message.id, message.thread_id)
+
+
+class Service:
+    def __init__(self, repo=None, gateway=None):
+        self.repo = repo or Repository()
+        self.gateway = gateway or Gateway()
+
+    def evaluate(self, row: dict) -> dict:
+        if row.get("direction") != "outbound":
+            return self.repo.finish(row, state="excluded", reason=domain.OUTBOUND_ONLY_REASON)
+        if row.get("action_id"):
+            # 再配送では本人が確定した施設・案件を保持する。
+            return self.repo.finish(row, state="approved", delivery="queued", reason="登録済みの選択を保持して再配送します")
+        if row.get("attempted_properties"):
+            return self.repo.finish(row, state="unknown", reason="作成試行済みです。既存登録を照合してください")
+        people = row["participants"]
+        contacts = self.gateway.contacts([p["email"] for p in people])
+        result = domain.match_existing_contact(row["message"], people, contacts)
+        if result["state"] == "pending" and row.get("canonical_key"):
+            from email.utils import getaddresses
+            addresses = {p["email"].strip().casefold() for p in people}
+            recipients = {a.strip().casefold() for _, a in getaddresses([row["message"].get("to_header") or ""])} & addresses
+            primary = addresses if len(addresses) == 1 else recipients
+            if len(primary) == 1:
+                email = next(iter(primary))
+                evidence = domain.evidence(row["message"], "outbound", email)
+                names = [e["value"] for e in evidence if re.search(r"(?:様|さん|殿)[、。\s]*$", e["value"])]
+                companies = self.repo.masters([e["value"] for e in evidence])
+                completion = self.gateway.plan_completion(row, companies, names, email)
+                if completion:
+                    result.update(completion)
+        if result.get("match_basis") != "contact_completion":
+            result["contact_completion"] = None
+        result["contacts"] = contacts
+        if not row.get("canonical_key"):
+            result.update(state="pending", reason="メール共通IDがありません。本文取得の設定後に再取得してください")
+        if result["state"] == "approved":
+            selection = self.gateway.validate({**row, **result, "channel": "automatic"},
+                {key: result[key] for key in ("company_id", "contact_id", "target_id", "project_id")})
+            result.update(selection, actor="system", channel="automatic", delivery="queued")
+            result["candidates"] = [{"id": result["company_id"], "name": selection["company_name"], "sources": [], "evidence": []}]
+        return self.repo.finish(row, **result)
+
+    def decision(self, review_id: str, actor_id: str, revision: int, action: str, selection: dict, channel="dashboard") -> dict:
+        row = self.repo.get(review_id, actor_id)
+        # 重い外部照合より前にも版と状態を検査。保存時にもう一度原子的に検査する。
+        domain.decide(row, revision=revision, action=action, selection=selection, actor=actor_id, channel=channel)
+        if action == "confirm":
+            if not row.get("canonical_key"):
+                raise domain.Conflict("メール共通IDの取得が必要です")
+            from uuid import UUID
+            selection = {key: str(UUID(value)) if value else None for key, value in selection.items()}
+            if selection["contact_id"] not in {c["id"] for c in row.get("contacts", [])}:
+                raise domain.Conflict("連絡先候補を再照合してください")
+        # 外部APIの実物照合は処理予約後に行う。Slackの受付応答を待たせない。
+        return self.repo.decision(review_id, actor_id, revision, action, selection, channel)
+
+    def process(self, row: dict) -> dict:
+        if row.get("direction") != "outbound":
+            # 旧版の予約も外部書込み前に止める。作成結果不明の追跡は残す。
+            state = "unknown" if row.get("attempted_properties") and not row.get("action_id") else "held" if row.get("action_id") else "excluded"
+            return self.repo.finish(row, state=state, reason=domain.OUTBOUND_ONLY_REASON)
+        try:
+            if row.get("attempted_properties") and not row.get("action_id"):
+                return self.repo.finish(row, state="unknown", reason="作成試行済みです。既存登録を照合してください")
+            validated = self.gateway.validate(row, row)
+            actor_id = self.gateway.actor(row.get("activity_owner") or row["owner"])
+            row = self.repo.checkpoint(row, **{k: validated[k] for k in ("company_name", "contact_name", "target_name", "project_name")}, actor_notion_id=actor_id)
+            props = self.gateway.action_properties(row)
+            contact_changes, owned_link = self.gateway.link_contact(row)
+            row = self.repo.checkpoint(row, linked_company_id=row["company_id"] if owned_link else None,
+                                       linked_contact_id=row["contact_id"] if owned_link else None)
+            if not row.get("action_id"):
+                # claim(processing) が作成予約。POST後に停止しても再作成しない。
+                row = self.repo.checkpoint(row, attempted_properties=props)
+                page_id = self.gateway.create_action(props)
+                row = self.repo.checkpoint(row, action_id=page_id, written_properties=props)
+            else:
+                self.gateway.update_action(row, props)
+                row = self.repo.checkpoint(row, written_properties=props)
+            contact_state = self.gateway.dispatch("contact", row["contact_id"], contact_changes)
+            action_state = self.gateway.dispatch("action", row["action_id"], props)
+            return self.repo.finish(row, state="done", delivery="delivered" if contact_state == action_state == "delivered" else "partial",
+                                    reason="記録作成済み", delivery_details={"contact": contact_state, "action": action_state})
+        except domain.Conflict as exc:
+            return self.repo.finish(row, state="pending", reason=str(exc), delivery="partial" if row.get("action_id") else "not_started")
+        except RecordSyncBusy:
+            return self.repo.finish(row, state="approved", reason="同じ対象の処理が終わってから再開します")
+        except Exception as exc:
+            # 例外本文はメール・認証情報を含み得るので保存しない。
+            logger.warning("メール照合の外部処理失敗: id=%s type=%s", row["id"], type(exc).__name__)
+            if row.get("action_id"):
+                return self.repo.finish(row, state="done", delivery="partial", reason="記録作成済み・配送未完了。関連先を確認して再受付できます")
+            unknown = bool(row.get("attempted_properties"))
+            return self.repo.finish(row, state="unknown" if unknown else "pending", delivery="unknown" if unknown else "not_started",
+                                    reason="登録結果を確認してください。再登録は行いません" if unknown else "処理に失敗しました。関連先を確認して再受付してください")
+
+    def reconcile(self, row: dict) -> dict:
+        try:
+            page_id = row.get("action_id") or self.gateway.find_action(row)
+            if page_id:
+                return self.repo.finish(row, action_id=page_id, written_properties=row.get("attempted_properties") or row.get("written_properties"),
+                                        state="approved", reason="既存の登録を確認。同じ記録の配送を再開します")
+        except Exception:
+            pass
+        return self.repo.finish(row, state="unknown", reason="既存登録を一意に確認できません。管理者による原本照合が必要です。再登録は行いません")
+
+    def drain(self, limit=5) -> dict:
+        if not enabled():
+            return {"enabled": False, "evaluated": 0, "processed": 0}
+        self.repo.recover_stale()
+        evaluated = processed = 0
+        for _ in range(limit):
+            row = self.repo.claim("recheck", "reconciling")
+            if not row:
+                break
+            self.reconcile(row)
+        for _ in range(limit):
+            row = self.repo.claim("new", "evaluating")
+            if not row:
+                break
+            try:
+                self.evaluate(row)
+            except Exception:
+                self.repo.finish(row, state="pending", reason="候補の読込みに失敗しました。再照合してください")
+            evaluated += 1
+        for _ in range(limit):
+            row = self.repo.claim("approved", "processing")
+            if not row:
+                break
+            try:
+                self.process(row)
+            except domain.Conflict:
+                logger.warning("メール照合の処理権が更新されました: id=%s", row["id"])
+            processed += 1
+        return {"enabled": True, "evaluated": evaluated, "processed": processed}
+
+### src/email_review/repository.py
+"""照合受付・版の比較・処理予約を同じトランザクションで保存する。"""
+from __future__ import annotations
+
+from contextlib import contextmanager
+from email.utils import getaddresses
+
+from psycopg.types.json import Jsonb
+from src.slack_crm.storage import _connect
+from src.email_review.domain import Conflict, Forbidden, decide, normalized
+from src.email_review.body import current_body
+
+
+def same_mail(left: dict, right: dict, *, allow_incomplete: bool = False) -> bool:
+    """共通IDの衝突だけで別の受信者に本文へのアクセス権を渡さない。"""
+    def addresses(message, key):
+        return sorted(a.lower() for _, a in getaddresses([message.get(key) or ""]))
+    if any(addresses(left, key) != addresses(right, key) for key in ("from_header", "to_header", "cc_header")):
+        return False
+    if (left.get("subject") or "") != (right.get("subject") or ""):
+        return False
+    # 取得前後の情報補完は許可するが、両方に本文がある場合は一致を必須とする。
+    first, second = left.get("body_text"), right.get("body_text")
+    if first and second:
+        # 同じ所有者・同じGmail IDの再取得だけ、引用除去前後の移行を許可する。
+        # 別所有者への共有では旧本文の引用を公開しないよう完全一致を維持する。
+        if allow_incomplete:
+            first, second = current_body(first), current_body(second)
+            if not first.strip() or not second.strip():
+                return False
+        return first.replace("\r\n", "\n") == second.replace("\r\n", "\n")
+    return allow_incomplete and (left.get("snippet") or "") == (right.get("snippet") or "")
+
+
+class Repository:
+    def actor(self, actor_id: str) -> str:
+        with _connect() as conn:
+            row = conn.execute('SELECT email FROM "User" WHERE id=%s', (actor_id,)).fetchone()
+        if not row:
+            raise Forbidden("ログイン情報を確認できません")
+        return row["email"].lower()
+
+    def slack_actor(self, email: str) -> str:
+        with _connect() as conn:
+            row = conn.execute('SELECT id FROM "User" WHERE lower(email)=%s', (email.lower(),)).fetchone()
+        if not row:
+            raise Forbidden("管理画面に登録された本人のSlackで操作してください")
+        return row["id"]
+
+    def capture(self, row: dict, owner: str, gmail_id: str, thread_id: str | None) -> None:
+        with _connect() as conn:
+            # 同じGmail IDの情報補完で受付を増やさない。共有メールの共通IDも直列化する。
+            keys = ["email-owner:" + owner + ":" + gmail_id]
+            if row.get("canonical_key"):
+                keys.append("email-canonical:" + row["canonical_key"])
+            for key in sorted(keys):
+                conn.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))', (key,))
+            existing = conn.execute('''SELECT r.data FROM "EmailReview" r JOIN "EmailReviewOwner" o ON o."reviewId"=r.id
+                WHERE o."ownerEmail"=%s AND o."gmailMessageId"=%s FOR UPDATE OF r''', (owner, gmail_id)).fetchone()
+            canonical = conn.execute('SELECT data FROM "EmailReview" WHERE data->>\'canonical_key\'=%s FOR UPDATE',
+                                     (row.get("canonical_key"),)).fetchone() if row.get("canonical_key") else None
+            own_existing = bool(existing and canonical and existing["data"]["id"] == canonical["data"]["id"])
+            if canonical and not same_mail(canonical["data"]["message"], row["message"], allow_incomplete=own_existing):
+                raise Conflict("共通IDが同じ別内容のメールです。管理者による照合が必要です")
+            if existing:
+                old = existing["data"]
+                if canonical and canonical["data"]["id"] != old["id"]:
+                    # 共通ID未取得の行は作成不可。共通ID取得後は既存の受付へ寄せる。
+                    if old.get("action_id") or old.get("canonical_key"):
+                        raise Conflict("同じメールの受付が競合しています")
+                    conn.execute('UPDATE "EmailReviewOwner" SET "reviewId"=%s WHERE "reviewId"=%s', (canonical["data"]["id"], old["id"]))
+                    self.save(conn, old, {**old, "state": "excluded", "reason": "同じメールの受付に統合済み", "revision": old["revision"] + 1})
+                    return
+                if old["state"] in {"new", "pending", "held", "excluded"} and (
+                    not old["message"].get("body_text") and row["message"].get("body_text")
+                    or not old.get("canonical_key") and row.get("canonical_key")
+                ):
+                    updated = {**old, "message": row["message"], "canonical_key": row.get("canonical_key") or old.get("canonical_key"),
+                               "revision": old["revision"] + 1}
+                    if old["state"] in {"pending", "new"}:
+                        updated["state"] = "new"
+                    self.save(conn, old, updated)
+                return
+            if canonical:
+                row = canonical["data"]
+            inserted = conn.execute('INSERT INTO "EmailReview" (id,data) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING id', (row["id"], Jsonb(row))).fetchone()
+            conn.execute('''INSERT INTO "EmailReviewOwner" ("reviewId","ownerEmail","gmailMessageId","threadId")
+                VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING''', (row["id"], owner, gmail_id, thread_id))
+            if inserted and thread_id:
+                waiting = conn.execute('''SELECT data FROM "EmailReview" WHERE data->>'state'='pending' AND id IN
+                    (SELECT "reviewId" FROM "EmailReviewOwner" WHERE "ownerEmail"=%s AND "threadId"=%s)
+                    ORDER BY id FOR UPDATE''', (owner, thread_id)).fetchall()
+                for item in waiting:
+                    old = item["data"]
+                    self.save(conn, old, {**old, "state": "new", "revision": old["revision"] + 1,
+                                         "reason": "同じ会話にメールが追加されたため再照合します"})
+
+    def list(self, actor_id: str, *, state: str = "pending", offset: int = 0) -> list[dict]:
+        owner = self.actor(actor_id)
+        states = {"pending": ["new", "evaluating", "pending"], "held": ["held"], "excluded": ["excluded"], "approved": ["approved", "processing", "done", "unknown", "recheck", "reconciling"]}.get(state)
+        if not states:
+            raise ValueError("表示状態が不正です")
+        with _connect() as conn:
+            rows = conn.execute('''SELECT r.data, o."gmailMessageId" FROM "EmailReview" r
+                JOIN "EmailReviewOwner" o ON o."reviewId"=r.id WHERE o."ownerEmail"=%s
+                AND r.data->>'state'=ANY(%s) ORDER BY r."updatedAt" DESC,r.id LIMIT 30 OFFSET %s''', (owner, states, offset)).fetchall()
+        return [{**self.visible(row["data"], owner), "gmail_id": row["gmailMessageId"], "owner": owner} for row in rows]
+
+    def get(self, review_id: str, actor_id: str) -> dict:
+        owner = self.actor(actor_id)
+        with _connect() as conn:
+            row = conn.execute('''SELECT r.data FROM "EmailReview" r WHERE r.id=%s AND EXISTS
+                (SELECT 1 FROM "EmailReviewOwner" o WHERE o."reviewId"=r.id AND o."ownerEmail"=%s)''', (review_id, owner)).fetchone()
+        if not row:
+            raise Forbidden("本人の照合対象を開いてください")
+        return self.visible(row["data"], owner)
+
+    def visible(self, row: dict, owner: str) -> dict:
+        evidence = row.get("evidence") or []
+        ids = list({e.get("review_id") for e in evidence if e.get("review_id")})
+        allowed = {row["id"]}
+        if ids:
+            with _connect() as conn:
+                allowed.update(r["reviewId"] for r in conn.execute('''SELECT "reviewId" FROM "EmailReviewOwner"
+                    WHERE "ownerEmail"=%s AND "reviewId"=ANY(%s)''', (owner, ids)).fetchall())
+        # 共同受信者へ、別メールで集めた他人の署名や本文断片を公開しない。
+        visible = lambda e: e.get("review_id") in allowed
+        result = public(row)
+        result["evidence"] = [e for e in evidence if visible(e)]
+        result["candidates"] = [{**c, "evidence": [e for e in c.get("evidence", []) if visible(e)]} for c in row.get("candidates", [])]
+        return result
+
+    def thread(self, row: dict) -> list[dict]:
+        if not row.get("thread_id"):
+            return [row]
+        with _connect() as conn:
+            rows = conn.execute('''SELECT r.data FROM "EmailReview" r JOIN "EmailReviewOwner" o ON o."reviewId"=r.id
+                WHERE o."ownerEmail"=%s AND o."threadId"=%s ORDER BY r."updatedAt" DESC LIMIT 100''', (row["owner"], row["thread_id"])).fetchall()
+        return [item["data"] for item in rows]
+
+    def masters(self, values: list[str] | None = None, query: str = "") -> list[dict]:
+        with _connect() as conn:
+            if values is not None:
+                from src.migration.zoho_client_master import normalize_company_name_strong
+                keys = list({normalize_company_name_strong(value).lower() for value in values})
+                if not keys:
+                    return []
+                # 既存索引で候補だけ取得し、弱い正規化の完全一致で最終判定する。
+                rows = conn.execute('SELECT "notionPageId" AS id,"rawName" AS name FROM "ClientNameIndex" WHERE lower("normalizedName")=ANY(%s)', (keys,)).fetchall()
+                names = {normalized(value) for value in values}
+                return [row for row in rows if normalized(row["name"]) in names]
+            if not 2 <= len(query.strip()) <= 80:
+                return []
+            escaped = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return conn.execute('''SELECT "notionPageId" AS id,"rawName" AS name FROM "ClientNameIndex"
+                WHERE "rawName" ILIKE %s ESCAPE '\\' ORDER BY "rawName",id LIMIT 20''', (f"%{escaped}%",)).fetchall()
+
+    @contextmanager
+    def locked(self, review_id: str):
+        with _connect() as conn:
+            row = conn.execute('SELECT data FROM "EmailReview" WHERE id=%s FOR UPDATE', (review_id,)).fetchone()
+            if not row:
+                raise Conflict("受付がありません")
+            yield conn, row["data"]
+
+    def save(self, conn, old: dict, new: dict) -> None:
+        conn.execute('UPDATE "EmailReview" SET data=%s,"updatedAt"=now() WHERE id=%s', (Jsonb(new), old["id"]))
+        # 本文を判断履歴に複製しない。根拠・選択・操作主体・時刻を残す。
+        conn.execute('INSERT INTO "EmailReviewHistory" ("reviewId",data) VALUES (%s,%s)', (old["id"], Jsonb({"before": public(old), "after": public(new)})))
+
+    def decision(self, review_id: str, actor_id: str, revision: int, action: str, selection: dict, channel: str) -> dict:
+        self.get(review_id, actor_id)
+        with self.locked(review_id) as (conn, row):
+            updated = decide(row, revision=revision, action=action, selection=selection, actor=actor_id, channel=channel)
+            self.save(conn, row, updated)
+        return self.visible(updated, self.actor(actor_id))
+
+    def claim(self, state: str, next_state: str) -> dict | None:
+        with _connect() as conn:
+            row = conn.execute('''SELECT data FROM "EmailReview" WHERE data->>'state'=%s
+                ORDER BY "updatedAt",id FOR UPDATE SKIP LOCKED LIMIT 1''', (state,)).fetchone()
+            if not row:
+                return None
+            old = row["data"]
+            updated = {**old, "state": next_state, "revision": old["revision"] + 1}
+            self.save(conn, old, updated)
+            return updated
+
+    def finish(self, row: dict, **changes) -> dict:
+        with self.locked(row["id"]) as (conn, current):
+            if current["revision"] != row["revision"]:
+                raise Conflict("処理中に状態が変わりました")
+            updated = {**current, **changes, "revision": current["revision"] + 1}
+            self.save(conn, current, updated)
+        return updated
+
+    def checkpoint(self, row: dict, **changes) -> dict:
+        return self.finish(row, **changes)
+
+    def recover_stale(self) -> None:
+        with _connect() as conn:
+            # 作成中断は時間切れを理由に再POSTしない。結果照合待ちに隔離する。
+            rows = conn.execute('''SELECT data FROM "EmailReview"
+                WHERE data->>'state' IN ('evaluating','processing','reconciling')
+                AND "updatedAt" < now()-interval '20 minutes' ORDER BY id FOR UPDATE SKIP LOCKED''').fetchall()
+            for item in rows:
+                old = item["data"]
+                state = "new" if old["state"] == "evaluating" else "unknown"
+                if old["state"] == "processing" and not old.get("attempted_properties") and not old.get("action_id"):
+                    state = "approved"
+                self.save(conn, old, {**old, "state": state, "revision": old["revision"] + 1,
+                                     "reason": "処理が中断しました。保存済みの段階から確認します"})
+
+
+def action_actor(page_id: str) -> str | None:
+    """作成済みの受付だけから、検証済み実施者を共通登録処理へ渡す。"""
+    with _connect() as conn:
+        if conn.execute('SELECT to_regclass(%s) AS name', ('"EmailReview"',)).fetchone()["name"] is None:
+            return None
+        rows = conn.execute('SELECT data FROM "EmailReview" WHERE data->>\'action_id\'=%s', (page_id,)).fetchall()
+    if len(rows) != 1:
+        return None
+    return rows[0]["data"].get("actor_notion_id")
+
+
+def public(row: dict) -> dict:
+    return {key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties", "contact_completion"}}
+
+### tests/email_review/test_contact_completion.py
+"""所属・メール・姓名補完が別人や過去アドレスを採用しないことを検証。"""
+from copy import deepcopy
+from contextlib import nullcontext
+from unittest.mock import Mock
+
+import pytest
+from src.email_review.contact_completion import name_parts, contact_changes, unique_named_contact
+from src.email_review.domain import Conflict
+from src.email_review.gateway import Gateway
+from src.email_review.repository import public
+
+
+@pytest.mark.parametrize('source,expected', [
+    ({'名前': '田中 太郎'}, {'姓': '田中', '名': '太郎'}),
+    ({'名前': '田中太郎'}, {'姓': '田中太郎'}),
+    ({'名前': 'John Smith'}, {'姓': 'John Smith'}),
+    ({'名前': '田中'}, {'姓': '田中'}),
+    ({'名前': ''}, {}),
+    ({'名前': '田中 太郎', '姓': '田中'}, {'名': '太郎'}),
+    ({'名前': '田中 太郎', '姓': '別姓'}, {}),
+    ({'名前': '田中太郎', '名': '太郎'}, {}),
+])
+def test_name_completion_preserves_existing_values(source, expected):
+    assert name_parts(source) == expected
+
+
+def test_old_email_is_preserved_with_existing_memo_and_not_restored():
+    old = {'名前': '田中 太郎', 'メールアドレス': 'old@example.test', '備考': '既存の連絡事項', '取引先マスター': ['company']}
+    patch = contact_changes(old, email='new@example.test', company_id='company', replace_email=True)
+    assert patch['備考'] == '既存の連絡事項\n過去メールアドレス: old@example.test'
+    updated = {**old, **patch}
+    assert contact_changes(updated, email='new@example.test', company_id='company', replace_email=True) == {}
+    with pytest.raises(ValueError): contact_changes(updated, email='old@example.test', company_id='company', replace_email=True)
+    with pytest.raises(ValueError): contact_changes(old, email='new@example.test', company_id='other', replace_email=True)
+
+
+def test_same_surname_within_company_is_ambiguous():
+    contacts = [{'id': 'one', '名前': '田中 太郎'}, {'id': 'two', '名前': '田中 次郎'}]
+    assert unique_named_contact(contacts, ['田中様']) is None
+    assert unique_named_contact(contacts, ['田中 太郎様'])['id'] == 'one'
+
+
+def setup_gateway(monkeypatch, *, email_match=False):
+    g = Gateway()
+    person = {'id': 'person', '名前': '田中 太郎', 'メールアドレス': 'new@example.test' if email_match else 'old@example.test',
+              '取引先マスター': [] if email_match else ['company'], '備考': '既存メモ', '_last_edited_time': '2026-10-01T00:00:00Z'}
+    people = [person]
+    monkeypatch.setattr(g, 'live', lambda key, pid: deepcopy(person) if key == 'contact' else {'取引先名': '試験株式会社'})
+    monkeypatch.setattr(g, 'company_contacts', lambda cid: people)
+    monkeypatch.setattr(g, 'contacts', lambda addresses: [{'id': c['id']} for c in people if c['メールアドレス'] == addresses[0]])
+    source = {'message': {'internal_date_ms': '1791244800000'}}
+    plan = g.plan_completion(source, [{'id': 'company', 'name': '試験株式会社'}], ['田中様'], 'new@example.test')
+    assert plan and plan["state"] == "approved"
+    plan.update(source)
+    return g, person, people, plan
+
+
+@pytest.mark.parametrize('email_match', [True, False])
+def test_plan_is_read_only_and_write_revalidates_then_is_idempotent(monkeypatch, email_match):
+    g, person, people, row = setup_gateway(monkeypatch, email_match=email_match)
+    before = deepcopy(person)
+    row.update(direction='outbound', participants=[{'email': 'new@example.test'}], channel='automatic')
+    g.validate(row, row)
+    assert person == before
+    monkeypatch.setattr('src.email_review.gateway.record_lock', lambda *args: nullcontext())
+    client = Mock()
+    client.update_page.side_effect = lambda pid, patch: person.update(patch)
+    monkeypatch.setattr(g, 'client', lambda key: client)
+    changes, owned = g.link_contact(row)
+    assert person['取引先マスター'] == ['company']
+    assert person['姓'] == '田中' and person['名'] == '太郎'
+    assert person['メールアドレス'] == 'new@example.test'
+    if not email_match: assert '過去メールアドレス: old@example.test' in person['備考']
+    assert client.update_page.call_count == 1
+    g.link_contact(row)
+    assert client.update_page.call_count == 1
+    assert 'contact_completion' not in public(row)
+
+
+@pytest.mark.parametrize('change', ['memo', 'email', 'company', 'duplicate_email', 'duplicate_name'])
+def test_changed_or_duplicate_contact_stops_before_write(monkeypatch, change):
+    g, person, people, row = setup_gateway(monkeypatch)
+    if change == 'memo': person['備考'] += '追記'
+    if change == 'email': person['メールアドレス'] = 'other@example.test'
+    if change == 'company': person['取引先マスター'] = ['other']
+    if change == 'duplicate_email': people.append({**person, 'id': 'second', 'メールアドレス': 'new@example.test'})
+    if change == 'duplicate_name': people.append({**person, 'id': 'second', 'メールアドレス': 'second@example.test'})
+    with pytest.raises(Conflict): g.validate_completion(row, row)
+
+
+def test_old_backlog_cannot_replace_manually_updated_address(monkeypatch):
+    g, person, people, row = setup_gateway(monkeypatch)
+    person['_last_edited_time'] = '2026-10-17T00:00:00Z'
+    with pytest.raises(Conflict, match='更新前'):
+        g.validate_completion(row, row)
+    result = g.plan_completion(row, [{'id': 'company', 'name': '試験株式会社'}], ['田中様'], 'new@example.test')
+    assert result['state'] == 'pending' and '更新前' in result['reason']
+
+
+def test_unknown_surname_does_not_hide_another_possible_person():
+    assert unique_named_contact([{'id': 'one', '名前': '田中 太郎'}, {'id': 'two', '名前': '田中次郎'}], ['田中様']) is None
+    assert unique_named_contact([{'id': 'one', '名前': 'John Smith'}], ['John様']) is None
+
+diff --git a/tests/email_review/test_postgres.py b/tests/email_review/test_postgres.py
+index 3253c03..227b34a 100644
+--- a/tests/email_review/test_postgres.py
++++ b/tests/email_review/test_postgres.py
+@@ -169,3 +169,56 @@ def test_persisted_email_match_rechecks_affiliation_before_creation(repo, monkey
+     assert result['state'] == 'pending'
+     assert '所属が変わって' in result['reason']
+     gateway.create_action.assert_not_called()
++
++
++@pytest.mark.parametrize('mode', ['email_change', 'company_fill', 'duplicate_name', 'duplicate_company'])
++def test_contact_completion_through_persisted_service(repo, monkeypatch, mode):
++    from copy import deepcopy
++    from contextlib import nullcontext
++    from unittest.mock import Mock
++    from src.email_review.gateway import Gateway
++    from src.email_review.service import Service
++    company = '11111111-1111-1111-1111-111111111111'
++    person = {'id': '22222222-2222-2222-2222-222222222222', '名前': '田中 太郎',
++              'メールアドレス': 'new@example.test' if mode == 'company_fill' else 'old@example.test',
++              '取引先マスター': [] if mode == 'company_fill' else [company],
++              '備考': '既存メモ', '_last_edited_time': '2026-10-01T00:00:00Z'}
++    people = [person]
++    if mode == 'duplicate_name': people.append({**person, 'id': '33333333-3333-3333-3333-333333333333'})
++    masters = [{'id': company, 'name': '試験株式会社'}]
++    if mode == 'duplicate_company': masters.append({'id': 'other', 'name': '試験株式会社'})
++    monkeypatch.setattr(repo, 'masters', lambda values: masters)
++    source = {**row('completion', 'completion'), 'direction': 'outbound', 'owner': 'one@example.test',
++              'participants': [{'email': 'new@example.test'}], 'message': {'id': 'completion',
++              'body_text': '試験株式会社\n田中様、\n本文', 'internal_date_ms': '1791244800000'}}
++    repo.capture(source, 'one@example.test', 'gmail-completion', 'thread')
++    gateway = Gateway()
++    monkeypatch.setattr(gateway, 'live', lambda key, pid: deepcopy(person) if key == 'contact' else {'取引先名': '試験株式会社'})
++    monkeypatch.setattr(gateway, 'contacts', lambda addresses: [{'id': p['id'], 'email': p['メールアドレス'], 'affiliations': p['取引先マスター']} for p in people if p['メールアドレス'] == addresses[0]])
++    monkeypatch.setattr(gateway, 'company_contacts', lambda cid: people)
++    monkeypatch.setattr('src.email_review.gateway.record_lock', lambda *args: nullcontext())
++    client = Mock()
++    client.update_page.side_effect = lambda pid, patch: person.update(patch)
++    monkeypatch.setattr(gateway, 'client', lambda key: client)
++    monkeypatch.setattr(gateway, 'actor', lambda owner: 'actor')
++    create = Mock(return_value='action')
++    monkeypatch.setattr(gateway, 'create_action', create)
++    monkeypatch.setattr(gateway, 'dispatch', lambda *args: 'delivered')
++    service = Service(repo, gateway)
++    evaluated = service.evaluate(repo.claim('new', 'evaluating'))
++    if mode.startswith('duplicate'):
++        assert evaluated['state'] == 'pending'
++        client.update_page.assert_not_called()
++        create.assert_not_called()
++        return
++    assert evaluated['state'] == 'approved'
++    pending = repo.claim('approved', 'processing')
++    assert pending['match_basis'] == 'contact_completion'
++    assert pending['contact_completion']['expected']['備考'] == '既存メモ'
++    done = service.process(pending)
++    assert done['state'] == 'done' and done['delivery'] == 'delivered'
++    assert person['メールアドレス'] == 'new@example.test'
++    assert person['取引先マスター'] == [company]
++    assert person['姓'] == '田中' and person['名'] == '太郎'
++    if mode == 'email_change': assert person['備考'] == '既存メモ\n過去メールアドレス: old@example.test'
++    create.assert_called_once()

@@ -160,6 +160,7 @@ def test_signature_does_not_fill_missing_affiliation_or_register_received_mail()
     received = {**sent, 'id': 'r', 'direction': 'inbound', 'state': 'excluded',
                 'message': {'id': 'r', 'body_text': '返信本文\n---\n試験株式会社\ncontact@outside.test'}}
     repo, gateway = Repo(), Mock()
+    gateway.plan_completion.return_value = None
     repo.thread = lambda row: [sent, received]
     repo.masters = lambda values: [{'id': company, 'name': '試験株式会社'}]
     gateway.contacts.return_value = [{'id': person, 'email': 'contact@outside.test', 'affiliations': []}]
@@ -184,6 +185,7 @@ def test_single_to_email_with_cc_ignores_signature_sender(missing, duplicate, wr
     received = {**sent, 'id': 'r', 'direction': 'inbound', 'participants': [sender],
                 'message': {'id': 'r', 'body_text': '返信\n---\n試験株式会社\n' + sender['email']}}
     repo, gateway = Repo(), Mock()
+    gateway.plan_completion.return_value = None
     repo.thread = lambda row: [sent, received]
     repo.masters = lambda values: [{'id': 'company', 'name': '試験株式会社'}]
     contact = {'id': 'a', 'email': primary['email'], 'name': primary['name'], 'affiliations': ['company']}

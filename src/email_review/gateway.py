@@ -1,8 +1,8 @@
 """既存のNotion正本・共通配送処理への接続。"""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import datetime, timezone
+from contextlib import contextmanager, ExitStack
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -47,7 +47,11 @@ class Gateway:
         parent = raw.get("parent") or {}
         if str(parent.get("database_id", "")).replace("-", "") != schema.notion_database_id.replace("-", ""):
             raise Conflict("候補の種類が違います")
-        result = {}
+        memo = (raw.get("properties", {}).get("備考") or {}).get("rich_text", [])
+        plain = all(v.get("type") == "text" and not v.get("href") and not (v.get("text") or {}).get("link")
+                    and not any(value for k, value in (v.get("annotations") or {}).items() if k != "color")
+                    and (v.get("annotations") or {}).get("color", "default") == "default" for v in memo)
+        result = {"_last_edited_time": raw.get("last_edited_time"), "_memo_plain": plain}
         for name, value in (raw.get("properties") or {}).items():
             if value.get("type") in {"title", "rich_text", "relation", "email", "select", "date", "phone_number"}:
                 result[name] = parse_notion_property_value(value)
@@ -72,11 +76,92 @@ class Gateway:
                                "email": address, "affiliations": current.get("取引先マスター") or []})
         return list({item["id"]: item for item in result}.values())
 
+    def company_contacts(self, company_id: str) -> list[dict]:
+        pages = self.client("contact").query_all_pages(filter={"property": "取引先マスター", "relation": {"contains": company_id}})
+        # 一意性の候補一覧は検索結果で数え、採用候補だけをliveで再取得する。
+        return [{"id": p["id"], **{k: parse_notion_property_value(v) for k, v in p.get("properties", {}).items()
+                                  if k in {"名前", "姓", "名", "メールアドレス"}}}
+                for p in pages if not p.get("archived") and not p.get("in_trash")]
+
+    def plan_completion(self, row: dict, companies: list[dict], names: list[str], email: str) -> dict | None:
+        from src.email_review.contact_completion import contact_changes, unique_named_contact
+        companies = {c["id"]: c for c in companies}
+        if len(companies) != 1:
+            return None
+        company_id, company = next(iter(companies.items()))
+        if normalized(self.live("client_master", company_id).get("取引先名") or "") != normalized(company["name"]):
+            return None
+        matches = self.contacts([email])
+        if len(matches) > 1:
+            return None
+        replace = not matches
+        if matches:
+            contact = {"id": matches[0]["id"], **self.live("contact", matches[0]["id"])}
+            if contact.get("取引先マスター"):
+                return None
+        else:
+            contact = unique_named_contact(self.company_contacts(company_id), names)
+            if not contact:
+                return None
+            contact = {"id": contact["id"], **self.live("contact", contact["id"])}
+        try:
+            if replace:
+                self.require_recent_email(row, contact)
+            changes = contact_changes(contact, email=email, company_id=company_id, replace_email=replace)
+        except (ValueError, Conflict) as exc:
+            return {"state": "pending", "reason": str(exc)}
+        expected = {k: contact.get(k) for k in set(changes) | {"名前", "メールアドレス", "取引先マスター", "姓", "名", "備考"}}
+        return {"state": "approved", "reason": "メール・取引先・氏名から既存連絡先を補完", "match_basis": "contact_completion",
+                "contact_id": contact["id"], "company_id": company_id, "target_id": company_id, "project_id": None,
+                "contact_completion": {"expected": expected, "changes": changes, "email": email,
+                    "company_name": company["name"], "names": names, "replace_email": replace}}
+
+    @staticmethod
+    def require_recent_email(row: dict, contact: dict) -> None:
+        try:
+            sent = datetime.fromtimestamp(int(row["message"]["internal_date_ms"]) / 1000, timezone.utc)
+            edited = datetime.fromisoformat(contact["_last_edited_time"].replace("Z", "+00:00"))
+            if sent >= edited + timedelta(minutes=1):
+                return
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+            pass
+        raise Conflict("連絡先更新前のメールによるアドレス差替えは保留します")
+
+    def validate_completion(self, row: dict, selection: dict) -> None:
+        from src.email_review.contact_completion import unique_named_contact
+        plan = row["contact_completion"]
+        if any(selection.get(k) != row.get(k) for k in ("company_id", "contact_id", "target_id", "project_id")):
+            raise Conflict("補完計画の対象が変わっています")
+        if normalized(self.live("client_master", row["company_id"]).get("取引先名") or "") != normalized(plan["company_name"]):
+            raise Conflict("補完対象の会社名が変わっています")
+        current = self.live("contact", row["contact_id"])
+        if "備考" in plan["changes"] and not current.get("_memo_plain", True):
+            raise Conflict("備考に書式・リンクがあるため、メール変更は手動確認してください")
+        before, after = plan["expected"], {**plan["expected"], **plan["changes"]}
+        def equal(expected):
+            return all((current.get(k) or None) == (v or None) for k, v in expected.items())
+        if plan["replace_email"] and not equal(after):
+            self.require_recent_email(row, current)
+        if not equal(before) and not equal(after):
+            raise Conflict("連絡先が更新されています。再照合してください")
+        matches = self.contacts([plan["email"]])
+        if matches and {c["id"] for c in matches} != {row["contact_id"]}:
+            raise Conflict("メールアドレスが別の連絡先に登録されています")
+        if not plan["replace_email"] and len(matches) != 1:
+            raise Conflict("メールアドレスの一致を確認できません")
+        if plan["replace_email"]:
+            winner = unique_named_contact(self.company_contacts(row["company_id"]), plan["names"])
+            if not winner or winner["id"] != row["contact_id"]:
+                raise Conflict("同じ取引先の氏名候補が変わっています")
+
     def validate(self, row: dict, selection: dict) -> dict:
         company_id = selection["company_id"]
         company = self.live("client_master", company_id)
+        completion = row.get("match_basis") == "contact_completion" and bool(row.get("contact_completion")) and not row.get("contact_completion_applied")
         email_match = row.get("channel") == "automatic" and row.get("match_basis") == "contact_email"
-        if email_match:
+        if completion:
+            self.validate_completion(row, selection)
+        elif email_match:
             # 評価後にメール・所属・同一メールの件数が変わっていないか、作成直前にも確認する。
             current = match_existing_contact(row["message"], row["participants"],
                 self.contacts([p["email"] for p in row["participants"]]))
@@ -88,7 +173,7 @@ class Gateway:
                 raise Conflict("会社名が変わっています。再照合してください")
         contact = self.live("contact", selection["contact_id"])
         addresses = {p["email"].strip().casefold() for p in row["participants"]}
-        if str(contact.get("メールアドレス") or "").strip().casefold() not in addresses:
+        if not completion and str(contact.get("メールアドレス") or "").strip().casefold() not in addresses:
             raise Conflict("メールの相手と連絡先が一致しません")
         # 手動確定でも別会社への所属付け替えを暗黙に行わない。
         affiliations = contact.get("取引先マスター") or []
@@ -123,14 +208,30 @@ class Gateway:
         return user_id
 
     def link_contact(self, row: dict) -> tuple[dict, bool]:
-        with record_lock("contact", row["contact_id"]):
+        with ExitStack() as locks:
+            if row.get("contact_completion"):
+                locks.enter_context(record_lock("contact", "email:" + row["contact_completion"]["email"].strip().casefold()))
+            locks.enter_context(record_lock("contact", row["contact_id"]))
             self.validate(row, row)
             current = self.live("contact", row["contact_id"])
             changed = set(current.get("取引先マスター") or []) != {row["company_id"]}
+            from src.email_review.contact_completion import name_parts
+            changes = name_parts(current)
             if changed:
-                self.client("contact").update_page(row["contact_id"], {"取引先マスター": [row["company_id"]]})
+                changes["取引先マスター"] = [row["company_id"]]
+            if row.get("match_basis") == "contact_completion" and row.get("contact_completion"):
+                if row.get("contact_completion_applied"):
+                    changes.update({k: current.get(k) for k in row["contact_completion"]["changes"]})
+                else:
+                    changes.update(row["contact_completion"]["changes"])
+            patch = {k: v for k, v in changes.items() if (current.get(k) or None) != (v or None)}
+            if patch:
+                self.client("contact").update_page(row["contact_id"], patch)
+                saved = self.live("contact", row["contact_id"])
+                if any((saved.get(k) or None) != (v or None) for k, v in changes.items()):
+                    raise Conflict("連絡先補完の保存値を確認できません")
         owned = changed or (row.get("linked_contact_id") == row["contact_id"] and row.get("linked_company_id") == row["company_id"])
-        return {"取引先マスター": [row["company_id"]]}, owned
+        return {"取引先マスター": [row["company_id"]], **changes}, owned
 
     def action_properties(self, row: dict) -> dict:
         require_outbound(row)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -82,6 +83,22 @@ class Service:
         people = row["participants"]
         contacts = self.gateway.contacts([p["email"] for p in people])
         result = domain.match_existing_contact(row["message"], people, contacts)
+        if result["state"] == "pending" and row.get("canonical_key"):
+            from email.utils import getaddresses
+            addresses = {p["email"].strip().casefold() for p in people}
+            recipients = {a.strip().casefold() for _, a in getaddresses([row["message"].get("to_header") or ""])} & addresses
+            primary = addresses if len(addresses) == 1 else recipients
+            if len(primary) == 1:
+                email = next(iter(primary))
+                evidence = domain.evidence(row["message"], "outbound", email)
+                names = [line for line in domain.unquoted(row["message"].get("body_text") or "")[:8] if re.search(r"(?:様|さん|殿)[、。\s]*$", line)]
+                companies = self.repo.masters([e["value"] for e in evidence])
+                completion = self.gateway.plan_completion(row, companies, names, email)
+                if completion:
+                    result.update(completion)
+        if result.get("match_basis") != "contact_completion":
+            result["contact_completion"] = None
+        result["contact_completion_applied"] = False
         result["contacts"] = contacts
         if not row.get("canonical_key"):
             result.update(state="pending", reason="メール共通IDがありません。本文取得の設定後に再取得してください")
@@ -120,7 +137,8 @@ class Service:
             props = self.gateway.action_properties(row)
             contact_changes, owned_link = self.gateway.link_contact(row)
             row = self.repo.checkpoint(row, linked_company_id=row["company_id"] if owned_link else None,
-                                       linked_contact_id=row["contact_id"] if owned_link else None)
+                                       linked_contact_id=row["contact_id"] if owned_link else None,
+                                       contact_completion_applied=bool(row.get("contact_completion")))
             if not row.get("action_id"):
                 # claim(processing) が作成予約。POST後に停止しても再作成しない。
                 row = self.repo.checkpoint(row, attempted_properties=props)

@@ -105,10 +105,10 @@ def primary_participant(message: dict, people: list[dict], contacts: list[dict])
     if len(to) != 1:
         return None
     lines = unquoted(message.get("body_text") or "")[:8]
-    end = next((i for i, line in enumerate(lines) if re.search(r"(?:様|御中|各位)[、。\s]*$", line)), None)
+    end = next((i for i, line in enumerate(lines) if re.search(r"(?:様|さん|殿|御中|各位)[、。\s]*$", line)), None)
     if end is None:
         return None
-    if end + 1 < len(lines) and re.search(r"(?:様|御中|各位)[、。\s]*$", lines[end + 1]):
+    if end + 1 < len(lines) and re.search(r"(?:様|さん|殿|御中|各位)[、。\s]*$", lines[end + 1]):
         return None
     salutation = re.fullmatch(r"([^様、,・／/＆&]+)様[、。\s]*", lines[end])
     if not salutation:
@@ -164,7 +164,7 @@ def evidence(message: dict, direction: str, counterpart: str) -> list[dict]:
     lines = unquoted(message.get("body_text") or "")
     if direction == "outbound":
         # 宛名の終端（様・御中・各位）まで。本文に現れる顧客名は数えない。
-        end = next((i for i, line in enumerate(lines[:8]) if re.search(r"(?:様|御中|各位)[、。\s]*$", line)), None)
+        end = next((i for i, line in enumerate(lines[:8]) if re.search(r"(?:様|さん|殿|御中|各位)[、。\s]*$", line)), None)
         selected = lines[:end + 1] if end is not None else []
         source = "salutation"
     else:
