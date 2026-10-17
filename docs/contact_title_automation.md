@@ -57,7 +57,7 @@ if(prop("タイトル自動化"), prop("氏名（連携用）"), prop("名前"))
 ```notion
 if(empty(prop("タイトル用氏名")), "",
   prop("タイトル用氏名") + "（" +
-  prop("取引先マスター").map(current.prop("取引先名")).join("、") + "／" +
+  prop("取引先マスター").map(format(current)).join("、") + "／" +
   prop("メールアドレス") + "／" +
   ifs(not empty(prop("携帯番号")), prop("携帯番号"),
       not empty(prop("直通TEL")), prop("直通TEL"), prop("会社TEL")) + "）")
@@ -95,3 +95,6 @@ Zoho・スプレッドシートへの架空データ送信は行っていない�
 実行中プロセスの再起動・コード差し替えは行わない。
 
 本番設定・反映状況は `docs/evidence/contact-title-20261017/status.md` に記録する。
+
+2026-10-18 本番反映時：関連先の明示的なprop参照はAPIで型エラーとなったため、
+`format(current)`でページ表示名を取り出す式へ変更。既存1件を読み取り、実際の取引先名との一致を確認。
