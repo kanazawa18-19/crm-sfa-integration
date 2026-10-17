@@ -151,7 +151,7 @@ def test_inbound_capture_is_evidence_only_and_outbound_remains_action_candidate(
     assert repo.capture.call_args.args[0]['state'] == 'new'
 
 
-def test_received_signature_can_approve_sent_mail_but_never_received_mail():
+def test_signature_does_not_fill_missing_affiliation_or_register_received_mail():
     from unittest.mock import Mock
     company, person = 'company', 'person'
     sent = {'id': 's', 'revision': 0, 'direction': 'outbound', 'canonical_key': 's',
@@ -162,17 +162,18 @@ def test_received_signature_can_approve_sent_mail_but_never_received_mail():
     repo, gateway = Repo(), Mock()
     repo.thread = lambda row: [sent, received]
     repo.masters = lambda values: [{'id': company, 'name': '試験株式会社'}]
-    gateway.contacts.return_value = [{'id': person, 'affiliations': []}]
+    gateway.contacts.return_value = [{'id': person, 'email': 'contact@outside.test', 'affiliations': []}]
     gateway.validate.return_value = {'company_id': company, 'contact_id': person}
     service = Service(repo, gateway)
-    assert service.evaluate(sent)['state'] == 'approved'
+    assert service.evaluate(sent)['state'] == 'pending'
+    gateway.validate.assert_not_called()
     gateway.reset_mock()
     assert service.evaluate(received)['state'] == 'excluded'
     assert not gateway.mock_calls
 
 
 @pytest.mark.parametrize('missing,duplicate,wrong_sender', [(False, False, False), (True, False, False), (False, True, False), (False, False, True)])
-def test_to_salutation_with_cc_keeps_contact_and_signature_identity(missing, duplicate, wrong_sender):
+def test_single_to_email_with_cc_ignores_signature_sender(missing, duplicate, wrong_sender):
     from unittest.mock import Mock
     primary = {'email': 'a@example.test', 'name': '田中 太郎'}
     cc = {'email': 'b@example.test', 'name': '佐藤花子'}
@@ -185,17 +186,17 @@ def test_to_salutation_with_cc_keeps_contact_and_signature_identity(missing, dup
     repo, gateway = Repo(), Mock()
     repo.thread = lambda row: [sent, received]
     repo.masters = lambda values: [{'id': 'company', 'name': '試験株式会社'}]
-    contact = {'id': 'a', 'email': primary['email'], 'name': primary['name'], 'affiliations': []}
+    contact = {'id': 'a', 'email': primary['email'], 'name': primary['name'], 'affiliations': ['company']}
     gateway.contacts.return_value = [{'id': 'b', 'email': cc['email'], 'name': cc['name'], 'affiliations': ['other']}]
     if not missing:
         gateway.contacts.return_value.append(contact)
     if duplicate:
         gateway.contacts.return_value.append({**contact, 'id': 'duplicate'})
-    gateway.validate.side_effect = lambda row, selection: selection
+    gateway.validate.side_effect = lambda row, selection: {**selection, 'company_name': '会社'}
     result = Service(repo, gateway).evaluate(sent)
     assert result['participants'] == [primary, cc]
     assert len(result['contacts']) == len(gateway.contacts.return_value)
-    if missing or duplicate or wrong_sender:
+    if missing or duplicate:
         assert result['state'] == 'pending'
         gateway.validate.assert_not_called()
     else:

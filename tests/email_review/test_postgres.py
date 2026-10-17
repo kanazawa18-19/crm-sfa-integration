@@ -119,7 +119,7 @@ def test_real_journal_to_automatic_actions_without_duplicate_replay(repo, monkey
     repo.capture(outgoing, 'one@example.test', 's', 'thread')
     repo.capture(incoming, 'one@example.test', 'r', 'thread')
     gateway = Gateway()
-    gateway.contacts = lambda addresses: [{'id': person, 'name': '試験担当', 'affiliations': []}]
+    gateway.contacts = lambda addresses: [{'id': person, 'email': 'contact@outside.test', 'name': '試験担当', 'affiliations': [company]}]
     def create(props):
         gateway.created += 1
         return f'action-{gateway.created}'
@@ -142,3 +142,30 @@ def test_missing_body_cannot_grant_shared_access_by_snippet(repo):
         repo.capture(incomplete, 'two@example.test', 'g2', 'thread2')
     with pytest.raises(Forbidden):
         repo.get('same', 'two')
+
+
+def test_persisted_email_match_rechecks_affiliation_before_creation(repo, monkeypatch):
+    from unittest.mock import Mock
+    from src.email_review.gateway import Gateway
+    from src.email_review.service import Service
+    company = '11111111-1111-1111-1111-111111111111'
+    person = '22222222-2222-2222-2222-222222222222'
+    saved = {**row('email-match', 'email-match'), 'direction': 'outbound',
+             'participants': [{'email': 'person@example.test'}]}
+    repo.capture(saved, 'one@example.test', 'gmail-match', 'thread')
+    gateway = Gateway()
+    contacts = [{'id': person, 'email': 'person@example.test', 'affiliations': [company]}]
+    monkeypatch.setattr(gateway, 'contacts', lambda addresses: contacts)
+    monkeypatch.setattr(gateway, 'live', lambda key, pid: {'名前': '試験担当', 'メールアドレス': 'person@example.test',
+        '取引先マスター': [company]} if key == 'contact' else {'取引先名': '試験会社'})
+    monkeypatch.setattr(gateway, 'create_action', Mock())
+    service = Service(repo, gateway)
+    service.evaluate(repo.claim('new', 'evaluating'))
+    restored = repo.claim('approved', 'processing')
+    assert restored['match_basis'] == 'contact_email'
+    assert restored['channel'] == 'automatic'
+    contacts[0]['affiliations'] = []
+    result = service.process(restored)
+    assert result['state'] == 'pending'
+    assert '所属が変わって' in result['reason']
+    gateway.create_action.assert_not_called()

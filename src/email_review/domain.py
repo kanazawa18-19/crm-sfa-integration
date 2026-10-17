@@ -17,7 +17,7 @@ class Forbidden(ValueError):
     pass
 
 
-OUTBOUND_ONLY_REASON = "受信メールは照合根拠としてのみ保持します。アクション履歴は弊社メンバーの送信メールだけが対象です"
+OUTBOUND_ONLY_REASON = "受信メールは履歴登録の対象外です。アクション履歴は弊社メンバーの送信メールだけが対象です"
 
 
 def require_outbound(row: dict) -> None:
@@ -135,6 +135,28 @@ def primary_participant(message: dict, people: list[dict], contacts: list[dict])
     if matched != {address}:
         return None
     return next(p for p in people if p["email"] == address)
+
+
+def match_existing_contact(message: dict, people: list[dict], contacts: list[dict]) -> dict:
+    """メールが一意な既存連絡先と所属を使う。氏名・宛名・署名は条件にしない。"""
+    pending = {"state": "pending", "match_basis": "contact_email", "candidates": [], "evidence": [],
+               "contact_id": None, "company_id": None, "target_id": None, "project_id": None}
+    addresses = {p["email"].strip().casefold() for p in people}
+    recipients = {address.strip().casefold() for _, address in getaddresses([message.get("to_header") or ""])} & addresses
+    primary = addresses if len(addresses) == 1 else recipients
+    if len(primary) != 1:
+        return {**pending, "reason": "宛先が複数あるため、登録する相手を選んでください"}
+    email = next(iter(primary))
+    found = {c["id"]: c for c in contacts if str(c.get("email") or "").strip().casefold() == email}
+    if len(found) != 1:
+        return {**pending, "reason": "メールアドレスに一致する連絡先がありません" if not found else "同じメールアドレスの連絡先が複数あります"}
+    contact = next(iter(found.values()))
+    affiliations = set(contact.get("affiliations") or [])
+    if len(affiliations) != 1:
+        return {**pending, "contact_id": contact["id"], "reason": "連絡先の所属を1件に確定してください"}
+    company = next(iter(affiliations))
+    return {**pending, "state": "approved", "reason": "メールアドレスと既存の所属で照合済み",
+            "contact_id": contact["id"], "company_id": company, "target_id": company}
 
 
 def evidence(message: dict, direction: str, counterpart: str) -> list[dict]:

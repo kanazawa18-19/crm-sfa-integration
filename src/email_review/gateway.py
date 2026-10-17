@@ -12,7 +12,7 @@ from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
 from src.sync_engine.record_sync_lock import _connect_direct, lock_key, RecordSyncBusy
 from src.sync_engine.sync_event import SyncEvent
-from src.email_review.domain import Conflict, normalized, same_value, require_outbound
+from src.email_review.domain import Conflict, normalized, same_value, require_outbound, match_existing_contact
 from src.email_review.body import current_body
 
 
@@ -56,16 +56,18 @@ class Gateway:
     def contacts(self, addresses: list[str]) -> list[dict]:
         result = []
         client = self.client("contact")
-        for address in addresses:
+        for address in sorted({value.strip().casefold() for value in addresses}):
             pages = client.query_all_pages(filter={"property": "メールアドレス", "email": {"equals": address}})
             for page in pages:
                 if page.get("archived") or page.get("in_trash"):
                     continue
                 props = page.get("properties") or {}
                 email = parse_notion_property_value(props["メールアドレス"])
-                if not isinstance(email, str) or email.casefold() != address.casefold():
+                if not isinstance(email, str) or email.strip().casefold() != address:
                     continue
                 current = self.live("contact", page["id"])
+                if str(current.get("メールアドレス") or "").strip().casefold() != address:
+                    continue
                 result.append({"id": page["id"], "name": current.get("名前") or address,
                                "email": address, "affiliations": current.get("取引先マスター") or []})
         return list({item["id"]: item for item in result}.values())
@@ -73,16 +75,25 @@ class Gateway:
     def validate(self, row: dict, selection: dict) -> dict:
         company_id = selection["company_id"]
         company = self.live("client_master", company_id)
-        if row.get("channel") == "automatic":
+        email_match = row.get("channel") == "automatic" and row.get("match_basis") == "contact_email"
+        if email_match:
+            # 評価後にメール・所属・同一メールの件数が変わっていないか、作成直前にも確認する。
+            current = match_existing_contact(row["message"], row["participants"],
+                self.contacts([p["email"] for p in row["participants"]]))
+            if current["state"] != "approved" or any(current[k] != selection.get(k) for k in ("company_id", "contact_id", "target_id", "project_id")):
+                raise Conflict("メールアドレスまたは連絡先の所属が変わっています。再照合してください")
+        elif row.get("channel") == "automatic":
             chosen = next((c for c in row.get("candidates", []) if c["id"] == company_id), None)
             if not chosen or normalized(chosen["name"]) != normalized(company.get("取引先名") or ""):
                 raise Conflict("会社名が変わっています。再照合してください")
         contact = self.live("contact", selection["contact_id"])
-        addresses = {p["email"] for p in row["participants"]}
-        if str(contact.get("メールアドレス") or "").lower() not in addresses:
+        addresses = {p["email"].strip().casefold() for p in row["participants"]}
+        if str(contact.get("メールアドレス") or "").strip().casefold() not in addresses:
             raise Conflict("メールの相手と連絡先が一致しません")
         # 手動確定でも別会社への所属付け替えを暗黙に行わない。
         affiliations = contact.get("取引先マスター") or []
+        if email_match and set(affiliations) != {company_id}:
+            raise Conflict("連絡先の所属が変わっています。再照合してください")
         owned_correction = (row.get("channel") in {"dashboard", "slack"}
                             and row.get("linked_contact_id") == selection["contact_id"]
                             and set(affiliations) == {row.get("linked_company_id")})
@@ -124,12 +135,13 @@ class Gateway:
     def action_properties(self, row: dict) -> dict:
         require_outbound(row)
         message = row["message"]
-        body = current_body(message.get("body_text") or "")
+        body = current_body(message.get("body_text") or "").replace("\r\n", "\n")
         if not isinstance(body, str) or not body.strip():
             raise Conflict("メール本文の全文を取得できないため、記録を保留します。元メールを確認してください")
         if len(body) > 20000:
             raise Conflict("引用を除いた本文が2万文字を超えるため、記録を保留します")
-        day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).isoformat()
+        # Notionの保存精度（分単位・ミリ秒表記）に揃える。元の送信時刻は受付に保持する。
+        day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).replace(second=0, microsecond=0).isoformat(timespec="milliseconds")
         title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"
         return {"商談回数・電話回数・メール回数（何回目）": title[:180],
                 "アクション種別": "メール",

@@ -22,11 +22,11 @@ def test_history_memo_preserves_full_body_and_notion_chunks_without_summary():
     row = {'id': 'mail-id', 'message': {'body_text': body, 'snippet': '短い抜粋', 'subject': '件名', 'internal_date_ms': '1792130400000'},
            'direction': 'outbound', 'contact_name': '相手', 'company_id': 'company'}
     properties = Gateway().action_properties(row)
-    assert properties['履歴メモ'] == body
+    assert properties['履歴メモ'] == body.replace('\r\n', '\n')
     chunks = _rich_text_content(properties['履歴メモ'])
     assert len(chunks) > 1
     assert all(len(chunk['text']['content']) <= 2000 for chunk in chunks)
-    assert ''.join(chunk['text']['content'] for chunk in chunks) == body
+    assert ''.join(chunk['text']['content'] for chunk in chunks) == body.replace('\r\n', '\n')
 
 
 @pytest.mark.parametrize('body', [None, '', '  \n'])
