@@ -1,0 +1,40 @@
+{
+  "database_id": "3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae",
+  "name": "CRM同期テスト_タイトル自動化_20261018",
+  "checks": [
+    {
+      "case": "新規作成・空欄",
+      "expected": "CRM同期テスト_タイトル自動化_20261018（／／）",
+      "actual": "CRM同期テスト_タイトル自動化_20261018（／／）",
+      "passed": true
+    },
+    {
+      "case": "入力後更新・携帯優先",
+      "expected": "CRM同期テスト_タイトル自動化_20261018_更新（／title-test@example.invalid／090-0000-0000）",
+      "actual": "CRM同期テスト_タイトル自動化_20261018_更新（／title-test@example.invalid／090-0000-0000）",
+      "passed": true
+    },
+    {
+      "case": "携帯なし・部署TEL",
+      "expected": "CRM同期テスト_タイトル自動化_20261018_更新（／title-test@example.invalid／03-0000-0001）",
+      "actual": "CRM同期テスト_タイトル自動化_20261018_更新（／title-test@example.invalid／03-0000-0001）",
+      "passed": true
+    },
+    {
+      "case": "携帯部署なし・会社TEL",
+      "expected": "CRM同期テスト_タイトル自動化_20261018_更新（／title-test@example.invalid／03-0000-0002）",
+      "actual": "CRM同期テスト_タイトル自動化_20261018_更新（／title-test@example.invalid／03-0000-0002）",
+      "passed": true
+    },
+    {
+      "case": "未入力に戻す",
+      "expected": "CRM同期テスト_タイトル自動化_20261018_更新（／／）",
+      "actual": "CRM同期テスト_タイトル自動化_20261018_更新（／／）",
+      "passed": true
+    }
+  ],
+  "archived": true,
+  "id": "3fcd8ea8-d4f3-8167-9484-d1e0c49ac7f1",
+  "creation_journal": [],
+  "external_mapping_present": false
+}
