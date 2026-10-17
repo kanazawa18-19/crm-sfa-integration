@@ -1,0 +1,200 @@
+- heading "Gemini の回答" [level=6]
+  - heading "レビュー結果サマリー" [level=2]
+  - list:
+    - paragraph: "BLOCKER: なし"
+    - paragraph: "WARN: 1件"
+    - paragraph: "INFO: 2件"
+  - paragraph:
+    - text: 実装は提示された要件（秘密漏洩の防止、成否不明時の
+    - code: reserved
+    - text: 維持、再送・予約解除の抑止、元例外の維持、リトライを増やさない設計）を十分に満たしています。
+  - heading "判定一覧と根拠" [level=2]
+  - 'heading "BLOCKER: なし" [level=3]'
+  - paragraph: 本差分において、二重POSTの発生、状態破壊、秘密情報の漏洩、意図しないリトライループなどの致命的な欠陥は存在しません。
+  - 'heading "WARN: 1件" [level=3]'
+  - heading "1. 実PostgreSQL環境での動作未検証（OS共有メモリ不足によるスキップ）" [level=4]
+  - list:
+    - paragraph:
+      - text: "分類:"
+      - code: WARN
+    - paragraph:
+      - text: "対象:"
+      - code: src/hub_creation/journal.py
+      - text: (
+      - code: PostgresCreationJournal.record_creation_failure
+      - text: )
+    - paragraph: "根拠:"
+    - list:
+      - paragraph:
+        - text: 差分で追加されたクエリ
+        - code: UPDATE "HubCreationAttempt" SET reason=%s, "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='reserved'
+        - text: は、既存のテーブルスキーマ（
+        - code: "\"sourceKey\""
+        - text: ","
+        - code: target
+        - text: ","
+        - code: state
+        - text: ","
+        - code: reason
+        - text: ","
+        - code: "\"updatedAt\""
+        - text: ）と一致しており文法上の問題はありません。
+      - paragraph:
+        - text: しかし、指示文にある通り「実PGテストがOS共有メモリ不足で未実施（66件skip）」となっています。インメモリのモック（
+        - code: test_service.py
+        - text: ）ではパスしているものの、実DBのトランザクション分離レベルや接続タイムアウト時の挙動を実機またはCIのPostgreSQL環境で本番デプロイ前に最低1回実行・確認することを推奨します。
+  - 'heading "INFO: 2件" [level=3]'
+  - heading "1. _handle_locked 内の except Exception と hold() の連携挙動" [level=4]:
+    - text: "1."
+    - code: _handle_locked
+    - text: 内の
+    - code: except Exception
+    - text: と
+    - code: hold()
+    - text: の連携挙動
+  - list:
+    - paragraph:
+      - text: "分類:"
+      - code: INFO
+    - paragraph:
+      - text: "対象:"
+      - code: src/hub_creation/service.py
+      - text: (
+      - code: _handle_locked
+      - text: および
+      - code: _create_once
+      - text: )
+    - paragraph: "根拠:"
+    - list:
+      - paragraph:
+        - code: adapter.create()
+        - text: が例外を送出した場合、
+        - code: _create_once
+        - text: 内で
+        - code: journal.record_creation_failure
+        - text: が実行されて
+        - code: reason
+        - text: が失敗診断に更新され、その後元の例外が再送出（
+        - code: raise
+        - text: ）されます。
+      - paragraph:
+        - text: 外側の
+        - code: _handle_locked
+        - text: でその例外が捕捉され、
+        - code: self.journal.hold(source_key, target, event.db_key, reason)
+        - text: が呼び出されます。
+      - paragraph:
+        - code: PostgresCreationJournal.hold
+        - text: の実装は
+        - code: ON CONFLICT ... WHERE "HubCreationAttempt".state='blocked'
+        - text: となっているため、
+        - code: state='reserved'
+        - text: の行に対しては UPDATE が実行されず、
+        - code: record_creation_failure
+        - text: で書き込んだ診断
+        - code: reason
+        - text: が上書きされることはありません。状態保護は完全に保たれていますが、例外発生時に2回のDBクエリ（UPDATE と no-op な INSERT ON CONFLICT）が走る動作仕様である点は留意してください。
+  - heading "2. 他ターゲット（kintone / Notion等）のエラーコード拡張性" [level=4]
+  - list:
+    - paragraph:
+      - text: "分類:"
+      - code: INFO
+    - paragraph:
+      - text: "対象:"
+      - code: src/hub_creation/failure_diagnostics.py
+    - paragraph: "根拠:"
+    - list:
+      - paragraph:
+        - text: 現在の
+        - code: failure_diagnostics.py
+        - text: は、固有エラーコードのホワイトリスト抽出を
+        - code: ZohoApiError
+        - text: （
+        - code: CREATION_ERROR_CODES
+        - text: ）に限定しています。
+      - paragraph:
+        - text: Notion や kintone の作成失敗時は
+        - code: ApiError
+        - text: 経由で
+        - code: "HTTP {status}"
+        - text: （100〜599）および通信カテゴリ（時間切れ・接続エラー等）のみが記録され、未知の詳細文字列は確実に遮断されます（安全側に倒した適切な設計です）。将来的に他サービスのエラーコードも診断情報に含める場合は、同様にホワイトリスト方式を追加してください。
+  - heading "要件別評価詳細" [level=2]
+  - table:
+    - rowgroup:
+      - row "評価項目 判定 評価根拠":
+        - columnheader "評価項目"
+        - columnheader "判定"
+        - columnheader "評価根拠"
+    - rowgroup:
+      - row "1. 外部POST成否不明時の reserved 維持 適合 record_creation_failure は reason と updatedAt のみを更新し、 state は 'reserved' のまま変更しません。予約削除や解除は行われません。":
+        - cell "1. 外部POST成否不明時の reserved 維持":
+          - text: 1. 外部POST成否不明時の
+          - code: reserved
+          - text: 維持
+        - cell "適合":
+          - generic: 適合
+        - cell "record_creation_failure は reason と updatedAt のみを更新し、 state は 'reserved' のまま変更しません。予約削除や解除は行われません。":
+          - code: record_creation_failure
+          - text: は
+          - code: reason
+          - text: と
+          - code: updatedAt
+          - text: のみを更新し、
+          - code: state
+          - text: は
+          - code: "'reserved'"
+          - text: のまま変更しません。予約削除や解除は行われません。
+      - row "2. 新規失敗のみ記録 / 過去予約の保護 適合 過去予約（既存の reserved ）が存在する場合、作成処理の手前で CreationHeld が送出されて早期脱出するため _create_once は呼ばれず、過去の理由は変更されません。":
+        - cell "2. 新規失敗のみ記録 / 過去予約の保護":
+          - generic: 2. 新規失敗のみ記録 / 過去予約の保護
+        - cell "適合":
+          - generic: 適合
+        - cell "過去予約（既存の reserved ）が存在する場合、作成処理の手前で CreationHeld が送出されて早期脱出するため _create_once は呼ばれず、過去の理由は変更されません。":
+          - text: 過去予約（既存の
+          - code: reserved
+          - text: ）が存在する場合、作成処理の手前で
+          - code: CreationHeld
+          - text: が送出されて早期脱出するため
+          - code: _create_once
+          - text: は呼ばれず、過去の理由は変更されません。
+      - 'row "3. 診断保存失敗時の元例外維持 適合 _create_once 内で self.journal.record_creation_failure を try...except Exception: で捕捉し、ログ出力（ logger.warning ）のみ行って元の例外 exc をそのまま raise しています。"':
+        - cell "3. 診断保存失敗時の元例外維持":
+          - generic: 3. 診断保存失敗時の元例外維持
+        - cell "適合":
+          - generic: 適合
+        - 'cell "_create_once 内で self.journal.record_creation_failure を try...except Exception: で捕捉し、ログ出力（ logger.warning ）のみ行って元の例外 exc をそのまま raise しています。"':
+          - code: _create_once
+          - text: 内で
+          - code: self.journal.record_creation_failure
+          - text: を
+          - code: "try...except Exception:"
+          - text: で捕捉し、ログ出力（
+          - code: logger.warning
+          - text: ）のみ行って元の例外
+          - code: exc
+          - text: をそのまま
+          - code: raise
+          - text: しています。
+      - row "4. リトライ不増加（HTTP/DB） 適合 _create_once 内にループは存在せず、 HttpZohoClient.insert_record も idempotent=False でリトライしません。DB接続も1回の UPDATE のみでリトライは増えていません。":
+        - cell "4. リトライ不増加（HTTP/DB）":
+          - generic: 4. リトライ不増加（HTTP/DB）
+        - cell "適合":
+          - generic: 適合
+        - cell "_create_once 内にループは存在せず、 HttpZohoClient.insert_record も idempotent=False でリトライしません。DB接続も1回の UPDATE のみでリトライは増えていません。":
+          - code: _create_once
+          - text: 内にループは存在せず、
+          - code: HttpZohoClient.insert_record
+          - text: も
+          - code: idempotent=False
+          - text: でリトライしません。DB接続も1回の UPDATE のみでリトライは増えていません。
+      - row "5. 秘密漏洩および状態破壊の防止 適合 ZohoApiError のメッセージを固定文字列に置換し、エラーコードも CREATION_ERROR_CODES （ホワイトリスト）のみ許可。レスポンス本文やURLは一切保存・出力されず、状態（ハッシュやキー）の破壊もありません。":
+        - cell "5. 秘密漏洩および状態破壊の防止":
+          - generic: 5. 秘密漏洩および状態破壊の防止
+        - cell "適合":
+          - generic: 適合
+        - cell "ZohoApiError のメッセージを固定文字列に置換し、エラーコードも CREATION_ERROR_CODES （ホワイトリスト）のみ許可。レスポンス本文やURLは一切保存・出力されず、状態（ハッシュやキー）の破壊もありません。":
+          - code: ZohoApiError
+          - text: のメッセージを固定文字列に置換し、エラーコードも
+          - code: CREATION_ERROR_CODES
+          - text: （ホワイトリスト）のみ許可。レスポンス本文やURLは一切保存・出力されず、状態（ハッシュやキー）の破壊もありません。
+  

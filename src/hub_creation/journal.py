@@ -41,6 +41,14 @@ class PostgresCreationJournal:
                 SET reason=EXCLUDED.reason, "updatedAt"=NOW() WHERE "HubCreationAttempt".state='blocked' ''',
                 (source_key,target,db_key,reason))
 
+    def record_creation_failure(self, source_key, target, error):
+        """今回の作成例外だけを記録する。予約・重複防止の状態は維持する。"""
+        from src.hub_creation.failure_diagnostics import creation_failure_reason
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute('''UPDATE "HubCreationAttempt" SET reason=%s, "updatedAt"=NOW()
+                WHERE "sourceKey"=%s AND target=%s AND state='reserved' ''',
+                (creation_failure_reason(error), source_key, target))
+
     def finish(self, source_key, target, external_id, *, text_limit_notes=None):
         with connect() as conn, conn.cursor() as cur:
             cur.execute('''UPDATE "HubCreationAttempt" SET state='created', "externalId"=%s,

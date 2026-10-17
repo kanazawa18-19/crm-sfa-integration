@@ -83,6 +83,10 @@ class NotionFixture:
                 for text in value[value['type']]:
                     text['plain_text'] = text['text']['content']
         if self.db == 'action':
+            # 実APIは未入力でも照合に必要な欄を返す。欠落とは区別する。
+            raw.setdefault('案件名', {'type': 'relation', 'relation': []})
+            raw.setdefault('アクション日', {'type': 'date', 'date': None})
+            raw.setdefault('先方担当者', {'type': 'rich_text', 'rich_text': []})
             raw['担当営業'] = {'type': 'rollup', 'rollup': {'type': 'array', 'array': [
                 {'type': 'people', 'people': [{'id': OWNER}]}]}}
             raw['提案サービス'] = {'type': 'rollup', 'rollup': {'type': 'array', 'array': [
@@ -202,4 +206,58 @@ def test_entry_plan_persist_and_redelivery(target, db, origin, post_timeout, jou
         assert service.journal.get(key, 'notion')['state'] == 'created'
     else:
         assert notion.creates == 0
+    store.close()
+
+
+def test_creation_failure_diagnostic_preserves_states_and_unrelated_rows(journal):
+    from src.sync_engine.clients.zoho_client import ZohoApiError
+    for key in ('failed', 'created', 'old'):
+        assert journal.reserve(key, 'zoho', 'chain', key)
+    journal.finish('created', 'zoho', '123')
+    journal.hold('blocked', 'zoho', 'chain', '入力の確認待ち')
+    before = {key: journal.get(key, 'zoho') for key in ('created', 'blocked', 'old')}
+    error = ZohoApiError(400, 'private customer value')
+    error.creation_error_code = 'MANDATORY_NOT_FOUND'
+    for key in ('failed', 'created', 'blocked', 'missing'):
+        journal.record_creation_failure(key, 'zoho', error)
+    row = journal.get('failed', 'zoho')
+    assert row['state'] == 'reserved'
+    assert 'HTTP 400' in row['reason'] and 'MANDATORY_NOT_FOUND' in row['reason']
+    assert 'private customer value' not in row['reason']
+    assert not journal.reserve('failed', 'zoho', 'chain', 'failed')
+    assert journal.get('missing', 'zoho') is None
+    for key, expected in before.items():
+        assert journal.get(key, 'zoho') == expected
+
+
+def test_notion_creation_failure_is_saved_without_reposting(journal, monkeypatch, tmp_path):
+    """シートからのNotion作成失敗も実DBに診断を残し、再通知で再作成しない。"""
+    store = SQLiteIdMappingStore(str(tmp_path / 'notion-failure.sqlite'))
+    notion = NotionFixture('chain', deepcopy(PROPERTIES['chain']))
+    posts = []
+    def fail(properties):
+        posts.append(properties)
+        raise TimeoutError('private response with customer value')
+    monkeypatch.setattr(notion, 'create_page_once', fail)
+    registration = 'new:' + PAGE
+    key = 'sheet:' + registration
+    sheet = SimpleNamespace(read=lambda *a, **k: (deepcopy(PROPERTIES['chain']), 12, 9),
+                            update=lambda *a, **k: 9)
+    service = HubCreationService(store=store, journal=journal, notion_clients={'chain': notion},
+                                 adapters=[], enabled_since=NOW, sheet_gateway=sheet)
+    event = spreadsheet_payload_to_sync_event({
+        'sheet': get_schema('chain').spreadsheet_sheet_name, 'row': 9,
+        'editedAt': NOW.isoformat(), 'action': 'register_new',
+        'values': {'同期キー': registration}}, {})
+    with pytest.raises(TimeoutError):
+        service.handle(event)
+    row = journal.get(key, 'notion')
+    assert row['state'] == 'reserved'
+    assert '時間切れ' in row['reason']
+    assert 'private response' not in row['reason']
+    service.journal = PostgresCreationJournal()
+    assert service.handle(event) == 'hub_creation_held'
+    assert service.journal.get(key, 'notion') == row
+    assert len(posts) == 1
+    assert store.get(PAGE) is None
     store.close()

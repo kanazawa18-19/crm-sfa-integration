@@ -374,3 +374,62 @@ def test_get_record_retries_on_429_then_succeeds(
     assert record == {"id": "12345"}
     record_calls = [req for req in requests_mock.request_history if req.url == RECORD_URL]
     assert len(record_calls) == 2
+
+
+@pytest.mark.parametrize('status', [200, 400, 500])
+@pytest.mark.parametrize('code,expected', [('MANDATORY_NOT_FOUND', 'MANDATORY_NOT_FOUND'),
+                                           ('private customer value', 'UNKNOWN'), (['secret'], 'UNKNOWN')])
+def test_insert_error_exposes_only_allowlisted_diagnostics(requests_mock, client, status, code, expected):
+    from src.hub_creation.failure_diagnostics import creation_failure_reason
+    _mock_token(requests_mock)
+    requests_mock.post(MODULE_URL, status_code=status, json={
+        'data': [{'code': code, 'message': 'private customer value',
+                  'details': {'secret': 'private customer value'}}]})
+    with pytest.raises(ZohoApiError) as caught:
+        client.insert_record('Deals', {'Deal_Name': 'private customer value'})
+    assert caught.value.status_code == status
+    assert caught.value.creation_error_code == expected
+    assert 'private customer value' not in str(caught.value)
+    reason = creation_failure_reason(caught.value)
+    assert f'HTTP {status}' in reason
+    assert 'private customer value' not in reason
+    assert len([req for req in requests_mock.request_history if req.url == MODULE_URL]) == 1
+
+
+def test_insert_read_timeout_is_classified_without_retry(requests_mock, client):
+    import requests
+    from src.hub_creation.failure_diagnostics import creation_failure_reason
+    _mock_token(requests_mock)
+    requests_mock.post(MODULE_URL, exc=requests.exceptions.ReadTimeout('private response'))
+    with pytest.raises(requests.exceptions.ReadTimeout) as caught:
+        client.insert_record('Deals', {'Deal_Name': '架空案件'})
+    reason = creation_failure_reason(caught.value)
+    assert '時間切れ' in reason and 'private response' not in reason
+    assert len([req for req in requests_mock.request_history if req.url == MODULE_URL]) == 1
+
+
+@pytest.mark.parametrize('status', [400, 401])
+def test_insert_top_level_error_retains_only_safe_code(requests_mock, client, status):
+    from src.hub_creation.failure_diagnostics import creation_failure_reason
+    _mock_token(requests_mock)
+    requests_mock.post(MODULE_URL, status_code=status, json={
+        'code': 'INVALID_TOKEN', 'message': 'private response'})
+    with pytest.raises(ZohoApiError) as caught:
+        client.insert_record('Deals', {'Deal_Name': '架空案件'})
+    reason = creation_failure_reason(caught.value)
+    assert f'HTTP {status}' in reason and 'INVALID_TOKEN' in reason
+    assert 'private response' not in reason
+    assert len([req for req in requests_mock.request_history if req.url == MODULE_URL]) == 1
+
+
+@pytest.mark.parametrize('status', [200, 502])
+def test_insert_non_json_response_is_safe(requests_mock, client, status):
+    from src.hub_creation.failure_diagnostics import creation_failure_reason
+    _mock_token(requests_mock)
+    requests_mock.post(MODULE_URL, status_code=status, text='<html>private response</html>')
+    with pytest.raises(ZohoApiError) as caught:
+        client.insert_record('Deals', {'Deal_Name': '架空案件'})
+    reason = creation_failure_reason(caught.value)
+    assert f'HTTP {status}' in reason
+    assert 'private response' not in reason and 'private response' not in str(caught.value)
+    assert len([req for req in requests_mock.request_history if req.url == MODULE_URL]) == 1

@@ -117,7 +117,7 @@ class HubCreationService:
                         raise CreationHeld("同じ内容のアクション登録が進行中、または既に登録されています"
                                            if event.db_key == "action" else "同じ名前の登録が進行中、または既に登録されています")
                     # 予約後の失敗はreservedのまま残し、二度目のPOSTを禁止する。
-                    page_id = client.create_page_once(properties)
+                    page_id = self._create_once(source_key, "notion", lambda: client.create_page_once(properties))
                     self.journal.finish(source_key, "notion", page_id)
             else:
                 existing = self.store.get(event.external_id)
@@ -270,7 +270,7 @@ class HubCreationService:
                                         client.upsert_sync_notes(page_id, {key: '' for key in shortening_notes})
                                     raise CreationHeld("同じ内容のアクション登録が進行中、または既に登録されています"
                                            if event.db_key == "action" else "同じ名前の登録が進行中、または既に登録されています")
-                                external_id = adapter.create(event.db_key, payload)
+                                external_id = self._create_once(source_key, target, lambda: adapter.create(event.db_key, payload))
                                 self.journal.finish(source_key, target, external_id, **(
                                     {'text_limit_notes': shortening_notes} if target == 'zoho' else {}
                                 ))
@@ -327,6 +327,18 @@ class HubCreationService:
                 except CreationHeld:
                     pass  # 行の一意性が失われた場合は触らず、保存済みの保留を週次通知する。
             return "hub_creation_held"
+
+    def _create_once(self, source_key, target, create):
+        """今回取得した作成予約の直後に呼び、失敗時も予約を維持する。"""
+        try:
+            return create()
+        except Exception as exc:
+            try:
+                self.journal.record_creation_failure(source_key, target, exc)
+            except Exception:
+                # 診断保存の失敗でも予約は維持し、元の例外を呼び出し元へ返す。
+                logger.warning("新規登録の失敗診断を保存できませんでした。作成予約は維持します")
+            raise
 
     @staticmethod
     def _creation_properties(db_key, raw):

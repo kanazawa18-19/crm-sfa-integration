@@ -73,6 +73,22 @@ class ZohoApiError(ApiError):
     """Zoho CRM API呼び出し失敗時に送出する例外。"""
 
 
+# 外部の自由文・詳細値を診断へ持ち込まない。
+CREATION_ERROR_CODES = frozenset({
+    "MANDATORY_NOT_FOUND", "INVALID_DATA", "DUPLICATE_DATA", "INVALID_MODULE",
+    "NO_PERMISSION", "AUTHENTICATION_FAILURE", "OAUTH_SCOPE_MISMATCH",
+    "INVALID_TOKEN", "INVALID_OAUTHTOKEN", "LIMIT_EXCEEDED", "TOO_MANY_REQUESTS",
+    "INTERNAL_ERROR", "INVALID_REQUEST",
+})
+
+
+def _creation_error(response, result=None):
+    code = result.get("code") if isinstance(result, dict) else None
+    error = ZohoApiError(response.status_code, "作成APIの応答を確認してください")
+    error.creation_error_code = code if isinstance(code, str) and code in CREATION_ERROR_CODES else "UNKNOWN"
+    return error
+
+
 class HttpZohoClient:
     """Zoho CRM API (GET/POST/PUT) を用いた `ZohoClient` Protocol実装。
 
@@ -276,14 +292,22 @@ class HttpZohoClient:
             "POST", f"/{module}", json_body={"data": [record]}, idempotent=False,
             **({'api_version': api_version} if api_version is not None else {}),
         )
-        raise_for_error(response, ZohoApiError)
         try:
-            result = response.json()["data"][0]
+            body = response.json()
+        except (ValueError, TypeError):
+            raise _creation_error(response) from None
+        if response.status_code >= 400:
+            result = body
+            if isinstance(body, dict) and isinstance(body.get("data"), list) and body["data"]:
+                result = body["data"][0]
+            raise _creation_error(response, result)
+        try:
+            result = body["data"][0]
             if result.get("code") != "SUCCESS":
-                raise ZohoApiError(response.status_code, str(result.get("message", result)))
+                raise _creation_error(response, result)
             return str(result["details"]["id"])
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
-            raise ZohoApiError(response.status_code, extract_error_message(response)) from exc
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise _creation_error(response) from None
 
     def update_record(
         self,

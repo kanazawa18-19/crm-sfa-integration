@@ -27,6 +27,10 @@ class Journal:
     def hold(self, key, target, db, reason):
         if self.get(key,target) and self.get(key,target)['state'] != 'blocked': return
         self.rows[key,target] = {'state':'blocked','reason':reason}
+    def record_creation_failure(self, key, target, error):
+        from src.hub_creation.failure_diagnostics import creation_failure_reason
+        if self.get(key, target) and self.get(key, target)['state'] == 'reserved':
+            self.rows[key,target]['reason'] = creation_failure_reason(error)
     def finish(self, key, target, external, *, text_limit_notes=None):
         import json
         self.rows[key,target].update(state='created', externalId=external,
@@ -474,3 +478,31 @@ def test_Notionの変換関数は同じ再公開オブジェクト():
     assert service.parse_notion_property_value is notion_webhook.parse_notion_property_value
     assert notion_client.parse_notion_property_value is notion_webhook.parse_notion_property_value
     assert lead_inquiry_webhook.parse_notion_property_value is notion_webhook.parse_notion_property_value
+
+
+def test_creation_diagnostic_survives_retry_and_does_not_change_old_reservations():
+    service,event,journal,notion,adapter,store = setup()
+    adapter.fail = True
+    service.handle(event)
+    row = dict(journal.get('notion:page', 'zoho'))
+    assert '時間切れ' in row['reason']
+    assert 'private response' not in row['reason']
+    service.handle(event)
+    assert journal.get('notion:page', 'zoho') == row
+    assert adapter.creates == 1
+    journal.rows['notion:page', 'zoho'] = {'state': 'reserved', 'reason': '過去の結果不明'}
+    service.handle(event)
+    assert journal.get('notion:page', 'zoho')['reason'] == '過去の結果不明'
+    assert adapter.creates == 1
+
+
+def test_diagnostic_save_failure_still_prevents_second_post(monkeypatch):
+    service,event,journal,notion,adapter,store = setup()
+    adapter.fail = True
+    def fail(*args):
+        raise RuntimeError('private storage failure')
+    monkeypatch.setattr(journal, 'record_creation_failure', fail)
+    assert service.handle(event) == 'hub_creation_held'
+    assert service.handle(event) == 'hub_creation_held'
+    assert adapter.creates == 1
+    assert journal.get('notion:page', 'zoho')['state'] == 'reserved'

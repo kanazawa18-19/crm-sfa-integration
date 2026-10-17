@@ -1,0 +1,183 @@
+- heading "Claude の応答：結論として、BLOCKERはありません。ただし、マージ前にWARN 1〜3を確認することを推奨します。" [level=2]
+      - generic "レビュー結果の整理とまとめ方を検討中。":
+        - generic: レビュー結果の整理とまとめ方を検討中。
+        - button "レビュー結果の整理とまとめ方を検討中。":
+          - generic: 
+      - status: レビュー結果の整理とまとめ方を検討中。
+      - paragraph: 結論として、BLOCKERはありません。ただし、マージ前にWARN 1〜3を確認することを推奨します。
+      - paragraph: 評価観点ごとの判定
+      - table:
+        - rowgroup:
+          - row "観点 判定 根拠":
+            - columnheader "観点"
+            - columnheader "判定"
+            - columnheader "根拠"
+        - rowgroup:
+          - row "HTTPの実リトライ増加 なし _create_once は create() を1回だけ呼びます。insert_record の idempotent=False も変わっていません。テストでもPOSTが1回であることを確認しています（len(...)==1、adapter.creates == 1）":
+            - cell "HTTPの実リトライ増加"
+            - cell "なし"
+            - cell "_create_once は create() を1回だけ呼びます。insert_record の idempotent=False も変わっていません。テストでもPOSTが1回であることを確認しています（len(...)==1、adapter.creates == 1）":
+              - code: _create_once
+              - text: は
+              - code: create()
+              - text: を1回だけ呼びます。
+              - code: insert_record
+              - text: の
+              - code: idempotent=False
+              - text: も変わっていません。テストでもPOSTが1回であることを確認しています（
+              - code: len(...)==1
+              - text: 、
+              - code: adapter.creates == 1
+              - text: ）
+          - row "DBの実リトライ増加 なし（接続は1回増える） 失敗時に record_creation_failure が新しい接続でUPDATEを1回実行します。再試行ループはありません":
+            - cell "DBの実リトライ増加"
+            - cell "なし（接続は1回増える）"
+            - cell "失敗時に record_creation_failure が新しい接続でUPDATEを1回実行します。再試行ループはありません":
+              - text: 失敗時に
+              - code: record_creation_failure
+              - text: が新しい接続でUPDATEを1回実行します。再試行ループはありません
+          - row "reserved維持・再送禁止 問題なし UPDATEの条件が state='reserved' で、stateの列は更新しません。後続の except Exception 内の hold() は state='blocked' のときだけ更新するため、診断文が上書きされることもありません":
+            - cell "reserved維持・再送禁止"
+            - cell "問題なし"
+            - cell "UPDATEの条件が state='reserved' で、stateの列は更新しません。後続の except Exception 内の hold() は state='blocked' のときだけ更新するため、診断文が上書きされることもありません":
+              - text: UPDATEの条件が
+              - code: state='reserved'
+              - text: で、stateの列は更新しません。後続の
+              - code: except Exception
+              - text: 内の
+              - code: hold()
+              - text: は
+              - code: state='blocked'
+              - text: のときだけ更新するため、診断文が上書きされることもありません
+          - row "過去予約の不変 問題なし _create_once に到達するのは、同じ実行の中で reserve() が True を返した後だけです。既存の reserved は CreationHeld で手前に止まります（テスト 過去の結果不明 で確認済み）":
+            - cell "過去予約の不変"
+            - cell "問題なし"
+            - cell "_create_once に到達するのは、同じ実行の中で reserve() が True を返した後だけです。既存の reserved は CreationHeld で手前に止まります（テスト 過去の結果不明 で確認済み）":
+              - code: _create_once
+              - text: に到達するのは、同じ実行の中で
+              - code: reserve()
+              - text: が True を返した後だけです。既存の reserved は
+              - code: CreationHeld
+              - text: で手前に止まります（テスト
+              - code: 過去の結果不明
+              - text: で確認済み）
+          - row "予約解除・finishの範囲 問題なし finish() はラップの外にあり、作成成功後の確定失敗が「作成失敗」と誤って記録されることはありません":
+            - cell "予約解除・finishの範囲"
+            - cell "問題なし"
+            - cell "finish() はラップの外にあり、作成成功後の確定失敗が「作成失敗」と誤って記録されることはありません":
+              - code: finish()
+              - text: はラップの外にあり、作成成功後の確定失敗が「作成失敗」と誤って記録されることはありません
+          - row "元例外の維持 問題なし 内側の except を抜けた後の素の raise は、Python 3 では外側の exc を再送出します":
+            - cell "元例外の維持"
+            - cell "問題なし"
+            - cell "内側の except を抜けた後の素の raise は、Python 3 では外側の exc を再送出します":
+              - text: 内側の
+              - code: except
+              - text: を抜けた後の素の
+              - code: raise
+              - text: は、Python 3 では外側の
+              - code: exc
+              - text: を再送出します
+          - row "秘密漏洩 問題なし reason に入るのは固定分類、100〜599の整数HTTP状態（boolは除外）、許可リストのコードだけです。from None で元応答の連鎖も切っています":
+            - cell "秘密漏洩"
+            - cell "問題なし"
+            - cell "reason に入るのは固定分類、100〜599の整数HTTP状態（boolは除外）、許可リストのコードだけです。from None で元応答の連鎖も切っています":
+              - text: reason に入るのは固定分類、100〜599の整数HTTP状態（boolは除外）、許可リストのコードだけです。
+              - code: from None
+              - text: で元応答の連鎖も切っています
+      - paragraph: WARN
+      - list:
+        - code: insert_record
+        - text: の変更が、hub_creation 以外の全呼び出し元にも及びます
+        - text: "根拠:"
+        - code: HttpZohoClient.insert_record
+        - text: は共通クライアントです。変更後は例外メッセージが常に「作成APIの応答を確認してください」に固定され、Zoho側の
+        - code: message
+        - text: が失われます。通常同期やリード登録など他の経路でも
+        - code: insert_record
+        - text: を使っている場合、ログ・同期メモ・運用調査で得られる情報が減ります。また、呼び出し元が
+        - code: str(exc)
+        - text: から
+        - code: DUPLICATE_DATA
+        - text: や文字数超過などを判定していると、その分岐が黙って機能しなくなります。
+        - code: grep -rn "insert_record\|ZohoApiError" src/
+        - text: で文字列に依存する箇所がないか確認してください。影響範囲を限定するなら、作成専用の経路だけでメッセージを伏せる、または
+        - code: creation_error_code
+        - text: を付けたうえで従来の message は別の属性に保持しログにだけ出さない、といった選択肢があります。
+        - code: raise_for_error
+        - text: を外したことで、例外の型や付随処理が変わる可能性があります
+        - text: "根拠: 差分では"
+        - code: raise_for_error(response, ZohoApiError)
+        - text: を削除し、独自に
+        - code: _creation_error
+        - text: を送出しています。
+        - code: raise_for_error
+        - text: が 401 でのトークン無効化、429 での
+        - code: retry_after
+        - text: 付きの専用例外、
+        - code: ApiError
+        - text: の別サブクラスなどを担っていた場合、POSTの失敗時だけその挙動が失われます。リトライ回数は増えませんが、上位のキューがバックオフ判定やトークン再取得に例外型を使っているなら影響します。
+        - code: _http.raise_for_error
+        - text: の実装を確認してください。
+        - text: 実PGテストが未実施です
+        - text: "根拠:"
+        - code: test_creation_failure_diagnostic_preserves_states_and_unrelated_rows
+        - text: は実Postgresでしか意味を持たないテストで、66件のスキップに含まれていると考えられます。SQLは単純ですが、識別子の引用（
+        - code: "\"sourceKey\""
+        - text: 、
+        - code: "\"updatedAt\""
+        - text: ）や、state条件で created / blocked の行を変更しないことは、実DBで一度確認してからマージしてください。共有メモリ不足は、
+        - code: docker run --shm-size=256m
+        - text: などで回避できることが多いです。
+        - text: 実クライアント経由のタイムアウト分類が検証されていません
+        - text: "根拠: 「時間切れ」の検証は、フェイクのアダプタが"
+        - code: TimeoutError
+        - text: を直接送出するケースだけです。実際の
+        - code: _http
+        - text: 層が
+        - code: requests.Timeout
+        - text: を
+        - code: ApiError(status_code=None)
+        - text: などに包んでいる場合、診断は「API応答エラー」だけになり、HTTP状態も付きません。この変更の主目的は「結果が不明な失敗の分類」なので、
+        - code: requests_mock
+        - text: で
+        - code: exc=requests.exceptions.ReadTimeout
+        - text: を設定し、
+        - code: insert_record
+        - text: から
+        - code: creation_failure_reason
+        - text: までを通すテストを1件追加することを推奨します。
+      - paragraph: INFO
+      - list:
+        - text: 診断保存の失敗ログに例外の型名だけでも残すと、調査しやすくなります。
+        - code: type(e).__name__
+        - text: には秘密が含まれません。
+        - code: UNKNOWN
+        - text: は許可リストにないため reason に出ません。コードがなかったのか未知のコードだったのかを区別したい場合は、
+        - code: UNKNOWN
+        - text: を診断側で許可してください。
+        - code: MANDATORY_NOT_FOUND
+        - text: のように作成されていないことが確定した4xxでも、文言は「作成結果の確認待ち」になります。仕様（自動再作成しない）としては正しいですが、運用者向けには「未作成の可能性が高い」ことを分類から読み取れるとより親切です。
+        - code: record_creation_failure
+        - text: は
+        - code: state='reserved'
+        - text: だけで照合しています。現状の呼び出し順では問題ありませんが、長時間ハングしている間に運用者が手動で解除・再予約するといった極端なケースまで防ぐなら、予約時の
+        - code: identityHash
+        - text: や
+        - code: updatedAt
+        - text: も条件に加えられます。
+        - text: シート経由（Notion作成）の
+        - code: _create_once
+        - text: には、サービス層のテストがありません。Zoho経路と同じヘルパーなのでリスクは低いですが、1件あると安心です。
+        - text: DB障害時は
+        - code: connect_timeout=10
+        - text: により、失敗経路が最大10秒程度長くなります。既存の
+        - code: hold()
+        - text: や
+        - code: get()
+        - text: も同じなので許容範囲と考えますが、Webhookの応答期限に余裕がない場合は留意してください。
+        - code: http_budget
+        - text: 由来の
+        - code: HttpBudgetExceeded
+        - text: は「不明なエラー」に分類されます。送信前に打ち切られたのか送信中だったのかを区別したい場合は、別の分類を追加してください。
+      
