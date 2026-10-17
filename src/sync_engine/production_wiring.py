@@ -126,10 +126,10 @@ class _MultiDbNotionSyncTarget(SyncTarget):
         self._fallback_client = next(iter(clients_by_db_key.values()))
 
     def get_record(self, external_id: str, *, db_key: str | None = None) -> dict[str, Any] | None:
-        # db_key引数は受け取るが使わない（他の_MultiDbXSyncTargetと違い、Notionのpage_idは
-        # グローバルに一意なため、外部ID＝external_idだけで衝突なく一意に解決できる。
-        # `_client_for()`がnotion_key自体からdb_keyを逆引きする既存の仕組みで十分）。
-        return self._fallback_client.get_page(external_id)
+        # 純氏名などDB固有の読み取り規則も、書き込みと同じクライアントで扱う。
+        client = (self._clients_by_db_key.get(db_key) if db_key is not None
+                  else self._client_for(external_id))
+        return (client or self._fallback_client).get_page(external_id)
 
     def upsert_record(
         self,

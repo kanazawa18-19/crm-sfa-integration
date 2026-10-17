@@ -133,9 +133,10 @@ class FieldReviewService:
         if tool is Tool.NOTION and hasattr(target, '_fallback_client'):
             from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
             from src.sync_engine.clients.notion_client import PARSEABLE_NOTION_PROPERTY_TYPES
+            from src.sync_engine.contact_title import canonical_properties
             names = {prop.name} if prop.property_type is PropertyType.RELATION else set()
             raw = target._fallback_client.get_raw_page_with_relations(identifier, names)
-            record = ({name: parse_notion_property_value(value) for name, value in raw['properties'].items()
+            record = ({name: parse_notion_property_value(value) for name, value in canonical_properties(mapping.db_key, raw['properties']).items()
                        if value.get('type') in PARSEABLE_NOTION_PROPERTY_TYPES} if raw else None)
         elif tool is Tool.SPREADSHEET:
             record = target.get_record_by_sync_key(mapping.notion_key, db_key=mapping.db_key)

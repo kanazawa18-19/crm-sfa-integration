@@ -347,7 +347,8 @@ class HubCreationService:
         if db_key == 'action':
             from src.hub_creation.action_identity import validate_notion_identity
             validate_notion_identity(raw)
-        for name, value in raw.get('properties', {}).items():
+        from src.sync_engine.contact_title import canonical_properties
+        for name, value in canonical_properties(db_key, raw.get('properties', {})).items():
             try:
                 prop = get_schema(db_key).get_property(name)
             except KeyError:
@@ -409,7 +410,10 @@ class HubCreationService:
 
     @staticmethod
     def _check_notion_duplicates(client, name, title, self_id=None):
-        response = client.query_raw({"page_size": 2, "filter": {"property": name, "title": {"equals": title}}})
+        matcher = getattr(client, "title_match_filter", None)
+        query_filter = (matcher(name, {"equals": title}) if matcher else
+                        {"property": name, "title": {"equals": title}})
+        response = client.query_raw({"page_size": 2, "filter": query_filter})
         if response.get("has_more") or any(p["id"].replace("-", "") != (self_id or "").replace("-", "") for p in response["results"]):
             raise CreationHeld("Notionに同名の候補があります。重複かどうかの確認が必要です")
 

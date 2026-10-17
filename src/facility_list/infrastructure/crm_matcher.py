@@ -233,7 +233,8 @@ class CrmMatcher:
             data = self._contact_db().query_raw(body)
             self._check_budget()
             for page in data["results"]:
-                props = page.get("properties") or {}
+                from src.sync_engine.contact_title import canonical_properties
+                props = canonical_properties("contact", page.get("properties") or {})
                 contacts.append(CrmContact(
                     contact_page_id=page["id"], name=_plain_text(props.get("名前")),
                     email=_plain_text(props.get("メールアドレス")),

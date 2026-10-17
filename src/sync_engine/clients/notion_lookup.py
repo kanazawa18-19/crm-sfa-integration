@@ -52,11 +52,16 @@ def find_page_id_by_title(
     ではなく、各呼び出し元のモジュールに委ねる。
     """
     normalized = value.strip()
+    title_filter = getattr(client, "title_match_filter", None)
     candidates = client.query_all_pages(
-        filter={"property": property_name, "title": {"equals": normalized}}
+        filter=(title_filter(property_name, {"equals": normalized}) if title_filter else
+                {"property": property_name, "title": {"equals": normalized}})
     )
     for page in candidates:
         props = page.get("properties") or {}
+        if getattr(client, "_db_key", None) == "contact":
+            from src.sync_engine.contact_title import canonical_properties
+            props = canonical_properties("contact", props)
         if property_name not in props:
             continue
         parsed = parse_notion_property_value(props[property_name])

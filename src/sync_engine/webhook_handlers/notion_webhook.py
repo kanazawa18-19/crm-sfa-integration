@@ -358,6 +358,7 @@ def _normalize_fetched_page(
     page_id = page.get("id")
     parent = page.get("parent") or {}
     properties = dict(page.get("properties") or {})
+    full_properties = dict(properties)
     explicit_change = False
     if updated_property_ids:
         wanted = set(updated_property_ids)
@@ -376,6 +377,16 @@ def _normalize_fetched_page(
                 sorted(wanted),
                 page_id,
             )
+    if _normalize_notion_id(parent.get("database_id")) == _normalize_notion_id(get_schema("contact").notion_database_id):
+        from src.sync_engine.contact_title import canonical_properties, NAME, CANONICAL_NAME, MANAGED
+        normalized = canonical_properties(
+            "contact", full_properties, updated_property_ids if explicit_change else None,
+        )
+        properties = {
+            name: value for name, value in normalized.items()
+            if name in properties or (name == NAME and
+                (CANONICAL_NAME in properties or MANAGED in properties))
+        }
     if not explicit_change:
         # 新たに同期する項目は、未同期時代の空値で外部の実値を消さない。
         # この3項目の外向き更新は、変更した項目IDが明示された通知に限る。

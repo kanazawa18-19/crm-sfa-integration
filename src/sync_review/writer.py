@@ -98,7 +98,9 @@ class ApprovedFieldWriter:
             from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value
             raw = target._fallback_client.get_raw_page_with_relations(expected['id'],
                 {prop.name} if prop.property_type is PropertyType.RELATION else set())
-            current = {prop.name: parse_notion_property_value(raw['properties'][prop.name])}
+            from src.sync_engine.contact_title import canonical_properties
+            properties = canonical_properties(mapping.db_key, raw['properties'])
+            current = {prop.name: parse_notion_property_value(properties[prop.name])}
         else:
             current = target.get_record(expected['id'], db_key=mapping.db_key)
         if current is not None:

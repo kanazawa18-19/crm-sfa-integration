@@ -1,11 +1,8 @@
 """③ 連絡先DB（CNT-xxx、新規独立）。
 
-既存4DBと異なり、Notion側は現時点でtitleプロパティ「名前」のみを持つ空DB
-（database_id=3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae）として存在する。
-titleは仕様書03節が想定していた「連絡先ID（自動採番）」ではなく、既存のNotion側
-「名前」をそのまま使う（Notion側で既にtitleとして存在するため、名前を変更すると
-Notion API側で不整合が起きる可能性がある）。氏名は「名前」titleが担うため、
-仕様書03節の「氏名」テキストプロパティは重複となり新設しない。
+タイトル「名前」は既存連絡先では氏名、新規の自動化対象では表示用タイトル。
+自動化対象だけ「氏名（連携用）」を同期・照合に使用する。
+対象フラグがない既存連絡先は従来どおり扱う。
 
 その他のプロパティは仕様書03節の定義をベースに、既存4DBの命名慣習（relationの
 参照先プロパティ名は「取引先マスター」等）に合わせて設計する。
@@ -32,6 +29,18 @@ CONTACT_SCHEMA = DatabaseSchema(
     spreadsheet_sheet_name="連絡先",
     notion_database_id="3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae",
     properties=(
+        PropertyDefinition(name="氏名（連携用）", property_type=PropertyType.TEXT,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.NOTION_ONLY,
+            description="自動タイトル対象の純氏名。同期境界では論理項目「名前」として扱う",
+        ),
+        PropertyDefinition(name="タイトル自動化", property_type=PropertyType.CHECKBOX,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.NOTION_ONLY,
+            description="新規連絡先だけを表示タイトル自動化の対象にする内部フラグ",
+        ),
+        PropertyDefinition(name="会社TEL", property_type=PropertyType.PHONE,
+            requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.NOTION_ONLY,
+            description="当人の連絡先に登録された会社電話。外部対応は未設定",
+        ),
         PropertyDefinition(name='備考', property_type=PropertyType.TEXT,
             requirement=RequirementLevel.OPTIONAL, sync_scope=SyncScope.NOTION_ONLY,
             description="既存備考を保持し、変更前のメールアドレスを追記する",

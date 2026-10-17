@@ -25,7 +25,13 @@ class NotionMergeGateway:
     def values(self, db_key, raw):
         schema = get_schema(db_key)
         result = {}
-        for name, value in raw['properties'].items():
+        from src.sync_engine.contact_title import canonical_properties, CANONICAL_NAME, MANAGED
+        properties = canonical_properties(db_key, raw['properties'])
+        if db_key == 'contact':
+            # 表示方法は統合先の設定を保持し、統合元から移植しない。
+            properties.pop(CANONICAL_NAME, None)
+            properties.pop(MANAGED, None)
+        for name, value in properties.items():
             kind = value.get('type')
             if kind == 'files':
                 if value.get('files'):

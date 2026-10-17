@@ -338,7 +338,13 @@ class HttpNotionClient:
                 result[NOTION_LAST_EDITED_TIME_KEY] = parse_iso_datetime(last_edited_time)
         except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
             raise NotionApiError(response.status_code, extract_error_message(response)) from exc
-        return result
+        from src.sync_engine.contact_title import canonical_values
+        # 任意DB用クライアントでのページ取得も、実際の親DBを優先する。
+        from src.db_schema.registry import get_schema
+        parent_id = ((page.get("parent") or {}).get("database_id") or "").replace("-", "")
+        contact_id = get_schema("contact").notion_database_id.replace("-", "")
+        db_key = "contact" if parent_id == contact_id else self._db_key
+        return canonical_values(db_key, result)
 
     def query_all_pages(
         self, *, page_size: int = 100, filter: dict[str, Any] | None = None
@@ -476,6 +482,23 @@ class HttpNotionClient:
             prop["relation"] = relations
             prop["has_more"] = False
 
+    def title_match_filter(self, property_name: str, condition: dict[str, Any]) -> dict[str, Any]:
+        from src.sync_engine.contact_title import name_filter
+        schema_ready = (self._db_key == "contact" and
+                        os.environ.get("NOTION_CONTACT_TITLES_SCHEMA_READY") == "1")
+        return name_filter(property_name, condition, enabled=schema_ready or self._contact_titles_enabled())
+
+    def _contact_titles_enabled(self) -> bool:
+        return self._db_key == "contact" and os.environ.get("NOTION_CONTACT_TITLES_ENABLED") == "1"
+
+    def _new_page_properties(self, properties: dict[str, Any]) -> dict[str, Any]:
+        from src.sync_engine.contact_title import NAME, CANONICAL_NAME, MANAGED
+        values = dict(properties)
+        if self._contact_titles_enabled():
+            values[CANONICAL_NAME] = values.get(NAME)
+            values[MANAGED] = True
+        return build_notion_properties(values, self._schema)
+
     def _recover_created_page_id(self, properties: dict[str, Any]) -> str | None:
         """`create_page()`の通信が例外で終わったあと、「実は作成されていた」ページのIDを探す。
 
@@ -501,7 +524,7 @@ class HttpNotionClient:
         ).isoformat()
         query_filter = {
             "and": [
-                {"property": title_property.name, "title": {"equals": title_value}},
+                self.title_match_filter(title_property.name, {"equals": title_value}),
                 {
                     "timestamp": "created_time",
                     "created_time": {"on_or_after": created_on_or_after},
@@ -551,7 +574,7 @@ class HttpNotionClient:
     def create_page_once(self, properties: dict[str, Any], *, children: list[dict[str, Any]] | None = None) -> str:
         """永続予約済みの新規登録用。同名ページの推測回収も自動再POSTもしない。"""
         body = {"parent": {"database_id": self._database_id},
-                "properties": build_notion_properties(properties, self._schema)}
+                "properties": self._new_page_properties(properties)}
         if children is not None:
             body["children"] = children
         response = self._request("POST", "/pages", idempotent=False, timeout=_CREATE_PAGE_TIMEOUT_SECONDS,
@@ -571,7 +594,7 @@ class HttpNotionClient:
         """
         body = {
             "parent": {"database_id": self._database_id},
-            "properties": build_notion_properties(properties, self._schema),
+            "properties": self._new_page_properties(properties),
         }
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複ページ作成を避けリトライしない。
         # タイムアウトだけは既定の10秒から延ばす（62172の実例が読み取りタイムアウトだったため。
@@ -623,8 +646,20 @@ class HttpNotionClient:
         # 取得に失敗した場合（ページ削除・権限エラー・API障害・テストでのモック未設定等）は
         # 監査ログの記録自体を諦めるのみで、本来のPATCH処理には影響させない
         # （詳細は`_fetch_current_values_for_audit`/`src/audit_log/recorder.py`参照）。
-        before = self._fetch_current_values_for_audit(page_id, properties)
-        body = {"properties": build_notion_properties(properties, self._schema)}
+        from src.sync_engine.contact_title import NAME, CANONICAL_NAME, MANAGED
+        write_values = dict(properties)
+        if self._db_key == "contact" and NAME in properties:
+            # 読取失敗時に表示タイトルを純氏名で上書きすることは許さない。
+            # フラグOFFの旧連絡先は従来の保存先を維持する。
+            current = self.get_page(page_id)
+            if current is None:
+                raise NotionApiError(404, "連絡先の現在値を確認できません")
+            before = {name: current.get(name) for name in properties}
+            if current.get(MANAGED) is True:
+                write_values[CANONICAL_NAME] = write_values.pop(NAME)
+        else:
+            before = self._fetch_current_values_for_audit(page_id, properties)
+        body = {"properties": build_notion_properties(write_values, self._schema)}
         response = self._request("PATCH", f"/pages/{page_id}", json_body=body)
         raise_for_error(response, NotionApiError)
         record_notion_write(

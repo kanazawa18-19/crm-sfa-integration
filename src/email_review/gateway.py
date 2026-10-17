@@ -14,6 +14,7 @@ from src.sync_engine.record_sync_lock import _connect_direct, lock_key, RecordSy
 from src.sync_engine.sync_event import SyncEvent
 from src.email_review.domain import Conflict, normalized, same_value, require_outbound, match_existing_contact
 from src.email_review.body import current_body
+from src.sync_engine.contact_title import canonical_values, canonical_properties
 
 
 @contextmanager
@@ -53,9 +54,9 @@ class Gateway:
                     and (v.get("annotations") or {}).get("color", "default") == "default" for v in memo)
         result = {"_last_edited_time": raw.get("last_edited_time"), "_memo_plain": plain}
         for name, value in (raw.get("properties") or {}).items():
-            if value.get("type") in {"title", "rich_text", "relation", "email", "select", "date", "phone_number"}:
+            if value.get("type") in {"title", "rich_text", "relation", "email", "select", "date", "phone_number", "checkbox"}:
                 result[name] = parse_notion_property_value(value)
-        return result
+        return canonical_values(key, result)
 
     def contacts(self, addresses: list[str]) -> list[dict]:
         result = []
@@ -79,7 +80,7 @@ class Gateway:
     def company_contacts(self, company_id: str) -> list[dict]:
         pages = self.client("contact").query_all_pages(filter={"property": "取引先マスター", "relation": {"contains": company_id}})
         # 一意性の候補一覧は検索結果で数え、採用候補だけをliveで再取得する。
-        return [{"id": p["id"], **{k: parse_notion_property_value(v) for k, v in p.get("properties", {}).items()
+        return [{"id": p["id"], **{k: parse_notion_property_value(v) for k, v in canonical_properties("contact", p.get("properties", {})).items()
                                   if k in {"名前", "姓", "名", "メールアドレス"}}}
                 for p in pages if not p.get("archived") and not p.get("in_trash")]
 

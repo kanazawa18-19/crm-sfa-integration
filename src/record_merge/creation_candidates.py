@@ -80,10 +80,12 @@ class CreationCandidates:
         from src.sync_engine.outbound_field_mapping import zoho_outbound_field_names, kintone_outbound_field_names
         from src.sync_engine.webhook_handlers.notion_webhook import parse_notion_property_value, PARSEABLE_NOTION_PROPERTY_TYPES
         table = (zoho_outbound_field_names() if row['tool'] == 'zoho' else kintone_outbound_field_names()).get(row['dbKey'], {})
+        from src.sync_engine.contact_title import canonical_properties
+        source_properties = canonical_properties(row['dbKey'], page['properties'])
         display = []
         for name, code in table.items():
-            if name not in page['properties'] and code not in external: continue
-            prop = page['properties'].get(name, {})
+            if name not in source_properties and code not in external: continue
+            prop = source_properties.get(name, {})
             value = parse_notion_property_value(prop) if prop.get('type') in PARSEABLE_NOTION_PROPERTY_TYPES else None
             display.append({'name': name, 'notion': value, 'external': external.get(code)})
         return {'snapshot': snapshot, 'hash': digest(snapshot), 'display': display}
@@ -214,7 +216,9 @@ def recovery_preview(operations, actor_id, identifier, page_id):
     expected = row['snapshot'].get('importProperties')
     if not isinstance(expected, dict) or not expected:
         raise MergeHeld('取り込み時の内容を照合できません')
-    actual = {name: parse_notion_property_value(page['properties'][name]) for name in expected if name in page['properties']}
+    from src.sync_engine.contact_title import canonical_properties
+    source_properties = canonical_properties(row['dbKey'], page['properties'])
+    actual = {name: parse_notion_property_value(source_properties[name]) for name in expected if name in source_properties}
     if actual != expected:
         raise MergeHeld('取り込み時と現在の値が異なります。個別確認を続けてください')
     existing = operations.store.get(page_id)
