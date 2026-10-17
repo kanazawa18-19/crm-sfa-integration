@@ -1,0 +1,13 @@
+{
+  "checked_at": "2026-10-17T15:40:26.536260+00:00",
+  "types": {
+    "氏名（連携用）": "rich_text",
+    "タイトル自動化": "checkbox",
+    "タイトル用氏名": "formula",
+    "生成タイトル": "formula"
+  },
+  "canonical_field_description": "新規連絡先の氏名入力・訂正はこちら。ページタイトルは「氏名（取引先／メール／電話）」として自動生成されます。既存連絡先は従来の「名前」を使用します。",
+  "managed_count_in_page": 0,
+  "has_more": false,
+  "managed_checks": []
+}
