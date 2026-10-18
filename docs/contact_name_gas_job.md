@@ -67,7 +67,28 @@ GAS所有者はWorkspace利用を前提に5分間隔とした。1回25秒は次�
 独立3レビューとGemini/Claudeレビューを実施し、判断は `docs/reviews/contact-name-gas-20261018/README.md`。
 
 GAS実体は [CRM姓名補完・GAS定期実行](https://script.google.com/home/projects/1rg8a6aDQivx6h2XGsE3ceQeesAYHgwk17erRcMrlU1ZYLGWMqIxsuNjt/edit)。
-Code.jsとmanifestの保存内容を読戻し照合済み。新規の実行権限は未許可、トリガー未作成。
-Notion接続2〜5の認証値をVercel本番へ登録する操作は、自動承認審査で具体的移送の明示承認不足として拒否された。
-鍵の移送とGoogle新規権限をまとめて本人へ確認する。Mac側処理はこの段階では停止しない。
-実GAS定期実行・クラウドからのNotion保存は未検証。切替後に稼働証跡を追記する。
+Code.jsとmanifestの保存内容を読戻し照合済み。
+2026-10-18本人がGoogle権限を許可。Notion接続2〜5を既存Vercel productionの秘密設定へ登録し、
+専用GASのaud/sub許可リストを反映。実配備は `dpl_3FctYNauNve5qFq4U57D6ywLgn9U`、Production Ready。
+GAS `previewNameJob` は12:27に認証成功・未取込状態を取得した。
+
+旧Mac親/子5プロセス停止・parallel.lock解放を確認して、33,042件をDBへ移した。
+元計画の全内容/順序/ハッシュ一致、保存確認3,764・未処理29,278・無効状態を読取確認後に有効化。
+12:28:27に `startNameJob` を開始、12:29:02に正常終了。
+初回64件を追加して保存確認3,828・残29,214、retry/held/failedすべて0。
+各系統1件ずつの計4件をNotionから独立に再読し、名前/姓/名が計画と一致した。
+トリガーはnameJobTick=5分、nameJobWatchdog=15分の2本。編集画面の選択値を読取確認。
+旧Mac処理は再起動しない。クラウドの処理状況はCLI statusで読める。
+初回と実標本の証跡は私有 `name-completion-approved-20261017/cloud-cutover-20261018.json`。
+
+### 継続稼働と頻度の判断（2026-10-18）
+
+16:11時点でverified6,820・pending26,222・retry/held/failed0。
+16:10:34の時間主導型nameJobTickは29.872秒で完了、16:14:41のnameJobWatchdogも正常終了。
+継続後の最新標本4件もNotion実値が一致した。Macなしで定期処理が継続している。
+
+本人から1分化の提案と「弊害を考えて、ないなら続けて」と追加指示。
+現状約30秒/回のまま1分化すると約12時間/日となり、Workspaceのトリガー枠6時間/日を超える。
+同一アカウントの他GASも共用する枠であるため、弊害なしとは判断せず5分を維持した。
+1分化には短い処理単位への変更と、実行時間・他GAS枠・実速度の検証が必要。設定変更は未実施。
+完了/異常メールの実配送は未発生で未検証（通知コードの模擬試験のみ）。
