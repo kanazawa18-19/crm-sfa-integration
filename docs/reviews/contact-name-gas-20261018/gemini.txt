@@ -1,0 +1,306 @@
+search
+Gemini との会話
+TXT
+crm-name-gas-review-20261018
+あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。
+
+添付資料の指示に沿って、日本語でレビューしてください。
+
+Gemini の回答
+
+添付されたコードおよび運用設計を「セキュリティ」「中断再開」「競合」「運用」の4つの観点からレビューしました。本番投入前に修正が必須となる BLOCKER が 5 件、安定運用のために対応を強く推奨する WARN が 4 件存在します。
+TXT
+
+1. セキュリティ (Security)
+【BLOCKER】auth.py: verify_oauth2_token のラッパー関数シグネチャ不整合による常時 401 エラー
+
+該当箇所: src/contact_name_job/auth.py
+
+
+TXT
+
+Python
+claims = verify_oauth2_token(authorization[7:], lambda **kw: request(**{**kw, 'timeout': 10}),
+                            audience=audience, clock_skew_in_seconds=30)
+
+
+問題点:
+Google Auth ライブラリの内部（google.auth.jwt.decode）では公開鍵証明書取得時に request(certs_url, method="GET") のように第1引数を位置引数として渡します。定義されているラムダ式はキーワード専用（**kw）となっているため、実行時に必ず TypeError: <lambda>() takes 0 positional arguments but 1 was given が発生し、例外ハンドリングによってすべての正規リクエストが 401 Unauthorized と判定されます。
+TXT
+
+最小修正:
+位置引数を受け取れるように変更します。
+TXT
+
+Python
+claims = verify_oauth2_token(
+    authorization[7:],
+    lambda *args, **kw: request(*args, **{**kw, 'timeout': 10}),
+    audience=audience,
+    clock_skew_in_seconds=30,
+)
+
+2. 中断再開 (Resume / Data Integrity)
+【BLOCKER】repository.py: statement_timeout (10秒) による確定計画インポートの強制タイムアウト
+
+該当箇所: src/contact_name_job/repository.py（connect 関数および import_plan メソッド）
+TXT
+
+Python
+return psycopg.connect(url, row_factory=dict_row, connect_timeout=10,
+                       options='-c statement_timeout=10000', autocommit=True)
+
+
+問題点:
+接続初期化時に statement_timeout=10000（10秒）が強制されています。MacからクラウドDBに対して 33,042 件の大きな JSONB を含む一括 executemany を単一トランザクションで発行すると、ネットワークレイテンシと書込み負荷により 10 秒をほぼ確実に超過し、query_canceled 例外でインポートが失敗します。
+TXT
+他 1 件
+
+最小修正:
+インポート処理の直前で一時的にステートメントタイムアウトを緩和し、メモリ圧迫を避けるためバッチ分割して投入します。
+TXT
+
+Python
+def import_plan(self, entries, verified):
+    digest = validate_plan(entries)
+    if not set(verified) <= {e['id'] for e in entries}:
+        raise ValueError('計画外の保存確認IDがあります')
+    with connect() as conn:
+        conn.execute('SET statement_timeout = 300000')  # 5分に緩和
+        with conn.transaction():
+            conn.execute('SELECT pg_advisory_xact_lock(%s)', (lock_key('contact_name_job', 'import'),))
+            old = conn.execute('SELECT "planHash" FROM "ContactNameJob" WHERE id=%s', (JOB_ID,)).fetchone()
+            if old:
+                if old['planHash'] != digest:
+                    raise ValueError('既存計画との差替えはできません')
+                return
+            conn.execute('INSERT INTO "ContactNameJob" (id,"planHash") VALUES (%s,%s)', (JOB_ID, digest))
+            chunk_size = 1000
+            for start in range(0, len(entries), chunk_size):
+                chunk = entries[start:start + chunk_size]
+                with conn.cursor() as cur:
+                    cur.executemany('''INSERT INTO "ContactNameJobItem"
+                        ("jobId","notionId",ordinal,shard,plan,state) VALUES (%s,%s,%s,%s,%s,%s)''',
+                        [(JOB_ID, e['id'], start + i, (start + i) % 4, Jsonb(e),
+                          'verified' if e['id'] in verified else 'pending')
+                         for i, e in enumerate(chunk)])
+
+【WARN】manage_contact_name_job.py: 一部ファイル欠落時の FileNotFoundError
+
+該当箇所: scripts/manage_contact_name_job.py
+
+
+TXT
+
+Python
+files = [args.root/'name-results.jsonl', args.root/'single-connection2/name-results.jsonl',
+         *[args.root/f'parallel-{i}/name-results.jsonl' for i in range(2,6)]]
+for file in files:
+    for line in file.read_text().splitlines():
+
+
+問題点:
+Mac側の実行履歴において、一部のワーカーディレクトリや単一接続時のファイルが存在しない場合に FileNotFoundError でインポートが中断します。
+TXT
+
+最小修正:
+ファイルの存在チェックを追加します。
+TXT
+
+Python
+for file in files:
+    if not file.is_file():
+        continue
+    for line in file.read_text().splitlines():
+
+3. 競合 (Concurrency & Locking)
+【BLOCKER】repository.py: 1件完了ごとの親テーブル行ロック競合
+
+該当箇所: src/contact_name_job/repository.py
+
+
+TXT
+
+Python
+def finish(self, conn, entry, state, error_type=None):
+    with conn.transaction():
+        ...
+        if state == 'verified':
+            conn.execute('UPDATE "ContactNameJob" SET "lastSuccessAt"=now() WHERE id=%s', (JOB_ID,))
+
+
+問題点:
+全レコード共通の親レコード（ContactNameJob）が 1 行しか存在しないテーブルに対し、4 並列のワーカーが 1 件完了（verified）するたびに行ロックを奪い合います。更新が直列化してスループットが大幅に低下するだけでなく、ロック待ちの滞留によって statement_timeout やデッドロックを誘発します。
+TXT
+
+最小修正:
+親テーブルの lastSuccessAt 更新はレコード毎のトランザクションから外し、run_shard の終了時に 1 度だけ更新するか、状態監視用の集計クエリ側で算出するように変更します。
+TXT
+
+Python
+# finish メソッド内の親更新を削除
+def finish(self, conn, entry, state, error_type=None):
+    with conn.transaction():
+        conn.execute('''UPDATE "ContactNameJobItem" SET
+            state=CASE WHEN %s='retry' AND attempts>=7 THEN 'failed' ELSE %s END,
+            attempts=attempts+1, "errorType"=%s, "updatedAt"=now(),
+            "nextAttemptAt"=now()+make_interval(secs=>LEAST(1800,300*(attempts+1)))
+            WHERE "jobId"=%s AND "notionId"=%s''',
+            (state, state, error_type, JOB_ID, entry['id']))
+
+Python
+# worker.py の run_shard 終了直前（conn 解放前）で更新
+if result['verified'] > 0:
+    conn.execute('UPDATE "ContactNameJob" SET "lastSuccessAt"=now() WHERE id=%s', (JOB_ID,))
+
+【BLOCKER】worker.py: Notion レートリミット (429) の即死・shard 中断
+
+該当箇所: src/contact_name_job/worker.py
+
+
+TXT
+
+Python
+def client(self, key):
+    return NameOnlyClient(key, get_schema(key).notion_database_id, api_key=self.api_key,
+                          timeout=15, max_retries=0, max_rate_limit_retries=0)
+
+
+問題点:
+1件の補完処理あたり照合と更新で計 2〜3 回の Notion API 呼び出しを行います。処理が高速に回転すると、単一接続のレートリミット（平均 3 req/sec）を瞬間的に超過し 429 Too Many Requests が返る可能性があります。max_rate_limit_retries=0 となっているため即座に例外となり、shard の run_shard ループが中断され、その対象は 5 分以上の待機（nextAttemptAt）に送られてしまいます。
+TXT
+他 2 件
+
+最小修正:
+一時的な 429 に対して Notion クライアント側の自動リトライを許可します。
+TXT
+
+Python
+def client(self, key):
+    return NameOnlyClient(key, get_schema(key).notion_database_id, api_key=self.api_key,
+                          timeout=15, max_retries=0, max_rate_limit_retries=3)
+
+【WARN】repository.py: アドバイザリロックの明示的な解放欠落
+
+該当箇所: src/contact_name_job/repository.py
+
+
+TXT
+
+Python
+@contextmanager
+def shard(self, number):
+    if number not in range(4):
+        raise ValueError('処理番号が不正です')
+    with connect() as conn:
+        acquired = conn.execute('SELECT pg_try_advisory_lock(%s) AS locked',
+                                (lock_key('contact_name_job', f'{JOB_ID}:{number}'),)).fetchone()['locked']
+        yield conn if acquired else None
+
+
+問題点:
+pg_try_advisory_lock はセッションレベルのロックです。connect() は直接接続のため接続終了時に破棄されますが、コネクション切断の遅延や将来的なプーリング導入時にロックが保持され続け、次回以降の実行がすべて busy でスキップされる恐れがあります。
+TXT
+他 1 件
+
+最小修正:
+コンテキスト終了時に明示的にアンロックを試みます。
+TXT
+
+Python
+@contextmanager
+def shard(self, number):
+    if number not in range(4):
+        raise ValueError('処理番号が不正です')
+    key = lock_key('contact_name_job', f'{JOB_ID}:{number}')
+    with connect() as conn:
+        acquired = conn.execute('SELECT pg_try_advisory_lock(%s) AS locked', (key,)).fetchone()['locked']
+        try:
+            yield conn if acquired else None
+        finally:
+            if acquired:
+                conn.execute('SELECT pg_advisory_unlock(%s)', (key,))
+
+4. 運用 (Operations & GAS Constraints)
+【BLOCKER】Code.js: 1 shard の一時障害による全体判定中断
+
+該当箇所: gas/contact-name-job/Code.js
+
+
+TXT
+
+JavaScript
+var responses = UrlFetchApp.fetchAll(requests);
+responses.forEach(nameJobResult_);
+var after = nameJobStatus_();
+
+
+問題点:
+UrlFetchApp.fetchAll で 4 shard に並列リクエストを投げますが、もし 1 つの shard でも一時障害（503 等）を返すと、nameJobResult_ が例外を投げます。その結果、後続の nameJobStatus_() による最新状態の取得や、完了（completed）・要確認（needs_attention）の検知とトリガー停止処理がスキップされ、catch 節の接続エラー通知に倒れてしまいます。
+TXT
+他 3 件
+
+最小修正:
+レスポンスの検証を個別にハンドリングし、他 shard の完了を阻害しないようにします。
+TXT
+
+JavaScript
+var responses = UrlFetchApp.fetchAll(requests);
+responses.forEach(function(res, idx) {
+  if (res.getResponseCode() !== 200) {
+    console.warn('Shard ' + idx + ' 一時エラー: HTTP ' + res.getResponseCode());
+  }
+});
+var after = nameJobStatus_();
+
+【BLOCKER】Code.js: 定常稼働中における「保留・再試行」通知スパム
+
+該当箇所: gas/contact-name-job/Code.js
+
+
+TXT
+
+JavaScript
+} else if (after.status === 'paused' || after.status === 'not_imported' || after.counts.retry || after.counts.failed) {
+  nameJobNotify_('保留・再試行', after);
+}
+
+
+問題点:
+ジョブが正常に running 状態であっても、過去の実行で生じた再試行待ち（retry）や失敗（failed）が 1 件でも残っていると、通知抑制期間（1時間）が明けるたびに「保留・再試行」メールが送信され続けます。
+TXT
+
+最小修正:
+ジョブが稼働中（status === 'running'）の場合は通常通知を行わず、明示的にジョブが一時停止または未登録の場合のみ通知するように条件を絞ります。
+TXT
+
+JavaScript
+} else if (after.status === 'paused' || after.status === 'not_imported') {
+  nameJobNotify_('一時停止', after);
+}
+
+【WARN】worker.py / Code.js: GAS の UrlFetch タイムアウト (60秒) に対するバジェットマージン不足
+
+該当箇所: src/contact_name_job/worker.py（budget=40）
+TXT
+
+問題点:
+GAS の UrlFetchApp には 60 秒の固定タイムアウト上限が存在します。サーバー側は budget=40 秒で新規着手を止めますが、40秒到達直前に着手した最後の1件が Notion 側の通信遅延（クライアントタイムアウト 15秒）を起こすと、全体の処理時間が 55 秒を超え、GAS 側でタイムアウト例外が発生する境界線上にあります。
+TXT
+他 1 件
+
+最小修正:
+バックエンド側のループ許容バジェットを budget=30 秒に短縮し、GAS の 60 秒制限に対して十分な安全マージンを確保します。
+TXT
+
+Python
+def run_shard(shard, *, repository=None, gateway=None, clock=time.monotonic, budget=30):
+
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

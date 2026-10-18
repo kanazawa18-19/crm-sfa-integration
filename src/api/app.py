@@ -182,6 +182,8 @@ app.include_router(diagnostics_router)
 app.include_router(sync_review_router)
 from src.api.routes.email_review import router as email_review_router
 app.include_router(email_review_router)
+from src.api.routes.contact_names import router as contact_names_router
+app.include_router(contact_names_router)
 from src.api.routes.sync_operations import router as sync_operations_router
 app.include_router(sync_operations_router)
 

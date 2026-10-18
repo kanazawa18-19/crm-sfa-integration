@@ -1148,3 +1148,30 @@ model EmailReviewHistory {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   review    EmailReview @relation(fields: [reviewId], references: [id])
 }
+
+// 承認済み姓名補完のクラウド進捗。GASから固定計画のみ再開する。
+model ContactNameJob {
+  id String @id
+  planHash String
+  enabled Boolean @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  lastRunAt DateTime? @db.Timestamptz
+  lastSuccessAt DateTime? @db.Timestamptz
+  items ContactNameJobItem[]
+}
+
+model ContactNameJobItem {
+  jobId String
+  notionId String
+  ordinal Int
+  shard Int
+  plan Json
+  state String
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz
+  errorType String?
+  updatedAt DateTime @default(now()) @db.Timestamptz
+  job ContactNameJob @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  @@id([jobId, notionId])
+  @@unique([jobId, ordinal])
+}

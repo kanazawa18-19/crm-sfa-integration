@@ -1,0 +1,66 @@
+Claude の応答：レビュー結果です。BLOCKERは2件、WARNは9件あります。重要度の高い順に並べています。
+セッションロック滞留と重大度の切り分けを検討中。
+
+セッションロック滞留と重大度の切り分けを検討中。
+
+レビュー結果です。BLOCKERは2件、WARNは9件あります。重要度の高い順に並べています。
+
+結論：このままでは本番のGAS認証がすべて401になる可能性が高いです。また、「強制終了で接続が閉じれば再開可能」という前提はVercel上では保証されません。この2点を直してから切替に進むことをお勧めします。
+
+BLOCKER
+
+#	箇所	問題	最小修正
+B1	auth.py verify_oauth2_token(..., lambda **kw: request(...))	google-authは証明書を取得するとき request(certs_url, method='GET') のようにURLを位置引数で渡します。このlambdaはキーワード引数しか受け取らないため、呼び出し時にTypeErrorになります。その例外は except Exception で握りつぶされるので、実トークンはすべて401になります。模擬GASのテストで認証部分をモックしていた場合、この不具合は表に出ません。	下記コード参照
+B2	repository.py shard()（セッション単位のadvisory lock）	Vercelが関数を時間切れで止めたとき、プロセスが即終了するとは限らず、凍結や再利用されることがあります。その場合TCP接続が残り、Postgres側が切断を検知するまで（keepaliveの既定値では最長で数時間）ロックが解放されません。その間、該当系統は busy を返し続けます。しかも busy はHTTP 200なので、GASはエラーとして扱いません。	下記コード参照
+
+B1の修正：
+
+
+python
+from functools import partial
+claims = verify_oauth2_token(authorization[7:], partial(Request(), timeout=10),
+                             audience=audience, clock_skew_in_seconds=30)
+
+あわせて、実際の ScriptApp.getIdentityToken() で発行したトークンを使い、200になることを1回確認してください（手順3の直後）。
+
+B2の修正：アイドル状態のセッションをサーバ側で切断するよう設定します。1件の処理中、Notion呼び出しの間はDB接続がアイドルになるため、タイムアウトは1件の最長処理時間より長くしてください。
+
+
+python
+options='-c statement_timeout=10000 -c idle_session_timeout=180000',
+keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+
+もう一つの対策として、run_shard の戻り値が busy だったらGAS側でカウントし、連続した回数が閾値を超えたら通知する方法もあります。現状では、ロックが詰まっても通知されるのは「進捗停止」だけで、原因の切り分けができません。
+
+WARN
+
+#	観点	箇所	問題	最小修正
+W1	運用（GAS枠）	5分トリガー＋budget=40	1回の実行時間は、fetchAllで最も遅い系統（40秒＋最後の1件分）と、status取得2回の合計です。50〜70秒×288回/日で約4〜5.6時間/日になり、Workspaceのトリガー合計6時間/日に近づきます。楽天収集GASやnotes-syncのGASを同じアカウントで動かしていれば、上限を超えるおそれがあります。超過すると監視（watchdog）も同じ枠で止まるため、停止の通知自体が届かなくなります。	budget=25 に下げるか、トリガー間隔を10分にする。初日の実行履歴で1回あたりの実測時間を確認する。
+W2	中断再開	worker.py max_rate_limit_retries=0	Notionの429（レート制限）も通常の失敗と同じく attempts を1消費します。混雑が続くと、データに問題のない正常な対象が8回でfailedになります。	429を示す例外では attempts を増やさず、nextAttemptAt だけを延ばす（finish に count_attempt=False 引数を追加）。もしくは max_rate_limit_retries=1 にしてRetry-Afterを尊重する。
+W3	運用（通知）	Code.js after.counts.retry || after.counts.failed	3.3万件を処理する間、retryが1件でもあれば「保留・再試行」メールが毎時届きます。完了まで数十時間続く見込みで、通知が埋もれる原因になります。	条件を failed > 前回値 に変える（前回値はScript Propertiesに保存）。retryは件数が閾値（例：20件）を超えた場合だけ通知する。
+W4	運用（通知）	Code.js paused 分岐	CLIの pause だけを実行すると、GASは動き続け、毎時メールを送り続けます。	paused のときは通知を1回送ったうえで stopNameJob() も呼ぶ（再開は手順どおり startNameJob で行う）。
+W5	中断再開（引継ぎ）	manage_contact_name_job.py の結果読込	Macを停止したときにJSONLの最終行が書きかけで残っていると、json.loads で例外になりインポートできません。ドキュメントの「終了途中の保存は再読で回収できる」と挙動が一致していません。	各ファイルの最終行に限って JSONDecodeError を無視し、件数を表示する。そのIDはpendingとして取り込まれ、クラウド側の再読で回収されます。
+W6	実装の脆さ	worker.py JobGateway.__init__	super().__init__() を呼んでいません。Gateway.live が親クラスの初期化で作られる属性（キャッシュやスキーマなど）に依存している場合、全件がAttributeErrorでretryになり、最終的にfailedへ流れます。	親の初期化を呼んでから api_key を上書きする。またはテストで live を実物のまま1件通す。
+W7	競合	worker.py record_lock	この関数の待ち時間の上限がレビュー範囲から確認できません。通常同期がロックを長く保持すると、1件の処理時間が延びます（B2・W1に影響）。また、人がNotionの画面で編集した場合はこのロックの対象外です。読取から更新までの数秒の間に人が直した姓名は上書きされます。	record_lock に try方式（取れなければ即retry）または数秒のタイムアウトを指定する。人の編集との競合は残存リスクとしてドキュメントに明記する。
+W8	運用（通知）	Code.js catch内の nameJobNotify_('接続エラー', {message:...})	counts がないため、本文が「保存確認済み：0件」などとなり、事実と異なる内容になります。	件数を表示しない専用文面に分ける。status.counts がない場合は件数行を省く。
+W9	競合（Mac側）	手順4	ロックファイルが解放されていることは確認していますが、launchd等によるMac側workerの自動再起動を止める手順がありません。書く値は同じなので上書き事故にはなりませんが、Notion接続2〜5のレート枠をMac側と取り合います。	手順4に「LaunchAgent等の自動起動を解除する」を追記する。
+
+INFO（対応は任意）
+
+箇所	内容
+auth.py	audienceはGASのOAuthクライアントIDです。GASを標準GCPプロジェクトへ移すと、同じプロジェクト内の別スクリプトでも同じ本人として認証を通過できます。既定のプロジェクトのまま運用する前提をドキュメントに一行書いておくと安全です。
+auth.py	リクエストのたびにGoogleの証明書を取得しています。1回の実行で6回程度なので実害は小さいですが、CacheControl 付きのsessionを使えば削減できます。
+auth.py	トークンはリクエストに紐付いていないため、漏洩した場合は約1時間リプレイ可能です。ただし実行できるのは固定計画を進めることと件数の取得だけなので、許容できる範囲です。
+CLI	import を2回目以降に実行すると、既存の計画があるため何もせずに戻り、その旨も出力されません。「既存計画と一致・進捗は変更なし」と表示すれば、手順5の照合がしやすくなります。pause を --apply なしで実行した場合も無言です。
+構成	Vercelの maxDuration の設定ファイルがレビュー範囲にありません。300秒が実際に適用されているかは、設定ファイルで確認してください。
+
+問題ないと判断した点：計画の固定（ハッシュ・UUID・姓名以外の変更禁止）、保存前後の照合とheldの判定、DB保存失敗時に再読してverifiedとする回収、import_plan が進捗を巻き戻さないこと、ログや応答に個人名・認証値が出ないこと、失敗時にその回の処理を中断すること。いずれも要件どおりです。
+
+修正の優先順は B1 → B2 → W1・W2 → 通知系（W3・W4・W8） → W5〜W7 を推奨します。B1とB2は、実GASからの1回の呼び出しと、意図的に時間切れを起こすテスト（budgetを大きくしてmaxDurationを超えさせる）で確認できます。
+
+
+
+
+
+
+3 分前
