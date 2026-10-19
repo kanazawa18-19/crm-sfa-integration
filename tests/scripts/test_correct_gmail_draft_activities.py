@@ -508,3 +508,62 @@ def test_correction_page_lookup_has_bitmap_indexes_for_both_branches(sql_plan):
     explain = json.dumps(result,default=str)
     assert 'EmailReview_action_idx' in explain and 'EmailReview_correction_pages_idx' in explain
     assert 'BitmapOr' in explain and 'Seq Scan' not in explain
+
+
+def zoho_comparison_records():
+    before = {'id':'42','field':'旧本文','Name':'活動','field6':{'id':'parent'},
+              'Modified_Time':'2026-10-19T01:00:00+09:00','Last_Activity_Time':'2026-10-19T01:00:00+09:00'}
+    expected = {**before,'field':'最終本文\n'}
+    actual = {**expected,'field':'最終本文','Modified_Time':'2026-10-19T02:00:00+09:00',
+              'Last_Activity_Time':'2026-10-19T02:00:00+09:00'}
+    return before,expected,actual
+
+
+def test_zoho_only_one_removed_final_lf_and_matching_system_time():
+    before,expected,actual = zoho_comparison_records()
+    saved = deepcopy((expected,actual))
+    assert ops.LiveIO.native_equal(actual,expected,tool='zoho')
+    assert (expected,actual) == saved
+    for tool in ['kintone','spreadsheet',None]:
+        assert not ops.LiveIO.native_equal(actual,expected,tool=tool)
+
+
+@pytest.mark.parametrize('change', [
+    {'field':'別の本文'}, {'field':'最終\n本文'}, {'field':'最終本文 '}, {'field':'\n最終本文'},
+    {'Name':'別の活動'}, {'field6':{'id':'other'}}, {'unexpected':'追加項目'},
+    {'Last_Activity_Time':'2026-10-19T03:00:00+09:00'}, {'Last_Activity_Time':None},
+])
+def test_zoho_other_content_or_unexplained_activity_time_remains_mismatch(change):
+    _,expected,actual = zoho_comparison_records()
+    assert not ops.LiveIO.native_equal({**actual,**change},expected,tool='zoho')
+
+
+@pytest.mark.parametrize('body', ['最終本文\n\n','最終本文\r\n','\n'])
+def test_zoho_does_not_trim_multiple_lf_crlf_or_empty_body(body):
+    _,expected,actual = zoho_comparison_records()
+    expected['field'] = body
+    actual['field'] = body.rstrip('\r\n')
+    assert not ops.LiveIO.native_equal(actual,expected,tool='zoho')
+
+
+def test_reserved_zoho_success_recovers_without_put_and_keeps_plan_hash(monkeypatch):
+    before,expected,actual = zoho_comparison_records()
+    p = plan()
+    p['external'] = [
+        {'tool':'kintone','id':'200','page':'a2','canonical':True,'before':{'comment':'old'},'update':{'comment':'final'},'extra':{}},
+        {'tool':'zoho','id':'42','page':'a2','canonical':True,'before':before,'update':{'field':expected['field']},'extra':{}},
+    ]
+    p['planHash'] = ops.plan_hash(p)
+    original = deepcopy(p)
+    journal = MemoryJournal()
+    journal.states = {'external:kintone:200':'done','external:zoho:42':'reserved'}
+    monkeypatch.setattr(ops,'Journal',lambda *_:journal)
+    io = object.__new__(ops.LiveIO); io.actor = 'manager'; io.targets = Mock()
+    io.extras = Mock(side_effect=AssertionError('成功後は再更新しない'))
+    io.native = lambda tool,*_: {'comment':'final'} if tool=='kintone' else deepcopy(actual)
+    io.external_change(p,True)
+    io.external_change(p,True)
+    io.verify('canonical',p)
+    assert journal.state('external:zoho:42') == 'done'
+    assert p == original and ops.plan_hash(p) == p['planHash']
+    assert not io.targets.mock_calls and not io.extras.mock_calls

@@ -534,11 +534,28 @@ class LiveIO:
             MergeService(journal, gateway, lambda _: nullcontext()).execute(job['id'], self.actor)
 
     @staticmethod
-    def native_equal(actual, expected):
+    def native_equal(actual, expected, *, tool=None):
         if actual is None or expected is None:
             return actual is expected
         volatile = {'$revision','Modified_Time','Modified_By','更新日時','更新者'}
-        return {k:v for k,v in actual.items() if k not in volatile} == {k:v for k,v in expected.items() if k not in volatile}
+        left = {k:v for k,v in actual.items() if k not in volatile}
+        right = {k:v for k,v in expected.items() if k not in volatile}
+        if tool == 'zoho':
+            from src.sync_engine.outbound_field_mapping import zoho_outbound_field_names
+            body_field = zoho_outbound_field_names().get('action', {}).get('履歴メモ')
+            body = right.get(body_field) if body_field else None
+            current = left.get(body_field) if body_field else None
+            # 実読で確認した「末尾LFがちょうど1つ除かれる」場合だけ許容する。
+            if (isinstance(body, str) and isinstance(current, str) and current
+                    and body.endswith('\n') and not body.endswith(('\n\n', '\r\n'))
+                    and current == body[:-1]):
+                right[body_field] = current
+            # 今回の更新時刻と同値になった活動時刻だけをシステム更新として扱う。
+            if ('Last_Activity_Time' in left and 'Last_Activity_Time' in right
+                    and left['Last_Activity_Time'] and left['Last_Activity_Time'] == actual.get('Modified_Time')):
+                left.pop('Last_Activity_Time')
+                right.pop('Last_Activity_Time')
+        return left == right
 
     def desired_external(self, item):
         if item['update'] is None:
@@ -549,7 +566,7 @@ class LiveIO:
         from src.sync_engine.clients._http import request_with_retry, raise_for_error, ApiError
         actual = self.native(item['tool'], item['id'], item['page'])
         desired = self.desired_external(item)
-        if self.native_equal(actual, desired):
+        if self.native_equal(actual, desired, tool=item['tool']):
             return
         require(actual == item['before'], '外部活動が比較後に変わりました')
         require(self.extras(item['tool'], item['id']) == item['extra'], '外部の添付・コメントが変わりました')
@@ -594,7 +611,7 @@ class LiveIO:
             journal.reserve(stage)
             if previous != 'done':
                 self.write_external(item)
-            require(self.native_equal(self.native(item['tool'],item['id'],item['page']), self.desired_external(item)),
+            require(self.native_equal(self.native(item['tool'],item['id'],item['page']), self.desired_external(item), tool=item['tool']),
                     '外部訂正の読戻しが一致しません')
             journal.done(stage)
 
@@ -661,7 +678,7 @@ class LiveIO:
         elif stage in {'canonical','retire'}:
             for item in plan['external']:
                 if item['canonical'] != (stage=='canonical'): continue
-                require(self.native_equal(self.native(item['tool'],item['id'],item['page']),self.desired_external(item)),
+                require(self.native_equal(self.native(item['tool'],item['id'],item['page']),self.desired_external(item), tool=item['tool']),
                         '外部実物の訂正結果が一致しません')
         elif stage=='email_logs':
             with connect() as conn:

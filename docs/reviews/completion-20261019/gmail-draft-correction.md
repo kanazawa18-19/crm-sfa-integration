@@ -45,3 +45,9 @@ Zoho DELETE に `If-Unmodified-Since` の原子的な版条件保証は公式仕
 この固定5件のアクション日は実読で同一であるため、不変条件を維持する。kintone活動に同じタイトル/アクション日を書き込む対応欄はなく、本文だけを訂正し他の既存欄を保持する。適用中は対象Sheetの並べ替え・行挿入を行わない。完全退避を保存するSyncOperationHistoryは管理者の運用経路から扱い、私有証拠を一般画面/外部レビューへ公開しない。
 
 通常のaction_id索引と訂正旧ページ配列のGIN索引を併用する。`20261019030000_email_review_correction_guard` をDB先行で適用してからAPIを配備する。ローカルPostgreSQLのEXPLAINで両索引を使うBitmapOr経路を確認した（小さな合成表で索引経路を検証するためenable_seqscanをOFFにした。実データの速度実測とは区別する）。
+
+## Zoho訂正の読戻し差への限定対応
+
+適用途中で安全停止したZoho正本は、保存された実差で期待本文862文字に対し実物861文字、`期待本文 == 実物本文 + LF`、実物末尾LFなしを確認した。さらにLast_Activity_Timeは実物Modified_Timeと同値へ更新されていた。
+
+同じplan/hashを保持し、Zohoに限って「本文欄の末尾LFがちょうど1個除かれた場合」と「実物Modified_Timeと同値のLast_Activity_Time」を比較時だけ許容する。複数LF・CRLF・空本文・途中の改行・別項目/親/タイトルの差は許容しない。書込前のbefore完全一致と版条件は変更しない。既成功kintone/予約済みZohoの同計画再開で再PUTしないことを試験した。独立読戻しスクリプトも送り先を明示して同じ限定比較を使用する。

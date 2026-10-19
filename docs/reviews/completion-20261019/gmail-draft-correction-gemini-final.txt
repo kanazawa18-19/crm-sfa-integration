@@ -1,0 +1,128 @@
+判定一覧
+
+BLOCKER: 0件（Claude B1「SENT受付・ページが通常操作やWebhook経由で外部新規作成される脆弱性」に対する多層防御が成立しており、致命的欠陥はありません）
+TXT
+
+WARN: 3件（マイグレーションの先行適用、運用手順シーケンスの厳守、外部UI同時編集の競合窓）
+TXT
+
+INFO: 3件（ロック取得後の再チェックによるTOCTOU排除、SENTのみ解除と旧ID恒久ブロックの分離、digestedAt 変動許容と直前アトミック退避）
+TXT
+
+レビュー詳細
+【BLOCKER検証結果】該当なし（Claude B1の解消確認）
+
+多層防御による通常操作・新規作成経路の完全遮断
+
+
+TXT
+
+UI層（Web / Slack）: 受付に correction_active がある場合、操作フォームや決定ボタン（再照合・確認・登録済み照合）を一切描画せず、専用の案内テキストを表示してオペレーターの誤操作を遮断しています。
+TXT
+
+ドメイン層（require_outbound, decide）: correction_active を検出した時点で Conflict を送出し、API直接呼び出しによる状態遷移を拒否します。
+TXT
+
+同期ディスパッチャ / 新規作成サービス: action_registration_blocked が action_id だけでなく blocked_action_ids（GINインデックス照会）および correction_hold.active を検査するため、Notion側からの通常通知やHub新規作成経路で email_sent_evidence_required として確実にスキップされます。
+TXT
+
+ページロック内での二重検査（TOCTOU排除）
+
+
+TXT
+
+HubCreationService._handle_locked において、acquire_record_sync_lock を取得した直後にも action_registration_blocked(page_id) の再検査が追加されました。
+TXT
+
+これにより、ロック待機中にスクリプトの reserve が実行された場合でも、ロック取得後に確実に検知して新規作成をブロックできるため、レースコンディションの隙間が完全に排除されています。
+TXT
+
+通常管理画面からの再開・中止の遮断
+
+
+TXT
+
+MergeOperations.resume に加え、_abandon_snapshot にも workflow == 'gmail_draft_correction' のガードが追加され、管理画面からの誤ったジョブ中断・ロック解除が防止されています。
+TXT
+
+【WARN】
+
+DBマイグレーション（20261019030000_email_review_correction_guard）の先行適用
+
+
+TXT
+
+事象: 新設された GIN インデックス（EmailReview_correction_pages_idx）は、action_registration_blocked 内の (data->'correction_hold'->'blocked_action_ids') ?| %s クエリを高速に処理するために必須です。
+TXT
+
+リスク: マイグレーションを適用せずにAPIコードを配備して reserve を実行すると、Notion Webhookが飛来するたびに EmailReview の全件走査（Seq Scan）が発生し、DB負荷増大やタイムアウトを引き起こす懸念があります。
+TXT
+
+対策: 必ずマイグレーションの適用完了を確認してから、APIデプロイおよびスクリプトの reserve を実行してください。
+TXT
+
+実行シーケンス（reserve → preview → 承認 → apply）の厳守
+
+
+TXT
+
+事象: build（preview）は全5件に correction_hold が存在することを前提としており、run（apply）も予約マーカーの完全一致を検証します。
+TXT
+
+リスク: 予約前の旧計画ファイル（plan）は 訂正予約前の計画は実行できません として弾かれます。また、reserve 時に対象受付が processing 等の実行中ステータスである場合は安全にロールバックされるため、予約完了を確認せずに次工程へ進むことはできません。
+TXT
+他 1 件
+
+対策: ドキュメント記載の通り、「ガード配備 → reserve 実行（reservationHash確認） → preview 再生成（新planHash取得） → 独立承認 → apply」の手順を厳密に順守してください。
+TXT
+
+Zoho DELETE および Google Sheets における外部UI競合窓の制約
+
+
+TXT
+
+事象: Zoho CRM API の DELETE に対する If-Unmodified-Since や Google Sheets の行更新は、外部UI（人間による直接編集）との間における完全な楽観的排他を公式仕様として保証していません。
+TXT
+
+確認事項: スクリプト側では実行直前の COQL / GET 実読、添付・コメント確認、SyncOperationHistory への全件退避、および wf_trigger=false による通知抑止を尽くしており、システム連携側の排他制御としては万全ですが、運用中は該当レコードに対する外部UI上での手動編集・行操作を避ける体制を徹底してください。
+TXT
+
+【INFO】
+
+解除（release）段階における権限・ブロック印の分離設計
+
+
+TXT
+
+verify_final が完全に通過した後にのみ release 段階が実行され、SENT正本（r4）のみ active=False かつ blocked_action_ids=[] に解放されます。
+TXT
+
+旧4下書き受付（r0〜r3）および旧4活動ページは active=True のマーカーが意図して維持されるため、訂正完了後も将来にわたって旧ページからの誤った再取込・再配送が恒久的に遮断される優れた安全設計です。
+TXT
+
+EmailLog の digestedAt 変動許容と直前アトミック退避
+
+
+TXT
+
+remove_draft_logs では、バックグラウンド処理で更新され得る digestedAt を除外して log_evidence で実物一致を照合することで、無害なダイジェスト更新による予期せぬ保留停止を回避しています。
+TXT
+
+同時に、削除直前の同一トランザクション内で最新の全行（更新された digestedAt 含む）を email_logs_observed として SyncOperationHistory へ退避してから DELETE を実行しており、監査証跡の完全性が維持されています。
+TXT
+
+下書き取消時の配送状態ログ保持
+
+
+TXT
+
+旧下書き受付の reason に「配送状態は取消前の履歴です」と明記され、過去の配送ステータスを偽装・改ざんせず、監査ログとして事実関係を正確に残す配慮がなされています。
+TXT
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く
