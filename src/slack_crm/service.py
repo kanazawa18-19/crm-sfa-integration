@@ -141,12 +141,14 @@ def process_sync(operation_id: str | None = None) -> dict[str, str] | None:
                        if occurred_raw else datetime.now(timezone.utc))
         event = SyncEvent(source_tool=Tool.NOTION, db_key=db_key, external_id=page_id,
                           occurred_at=occurred_at, properties=dict(operation["changes"]))
-        if db_key == "project":
+        from src.sync_engine.test_isolation import is_test_record, test_record_scope
+        if db_key == "project" and not is_test_record(page_id):
             if wiring.project_mirror_sync_callable is not None:
                 wiring.project_mirror_sync_callable(event.properties, page_id)
             if "次回アクション日" in event.properties and wiring.calendar_sync_callable is not None:
                 wiring.calendar_sync_callable(event.properties, page_id)
-        result = wiring.dispatcher.dispatch(event)
+        with test_record_scope(page_id):
+            result = wiring.dispatcher.dispatch(event)
         if result.skipped:
             state = "unmapped" if result.reason == "unknown_record" else "partial"
             storage.finish_sync(operation["id"], state=state, error=result.reason)

@@ -293,6 +293,21 @@ def test_dispatch_processes_event_from_other_origin(
 
 # --- レコード特定・差分更新 -------------------------------------------------------------
 
+@pytest.mark.parametrize('source,external_id', [(Tool.NOTION, 'CLI-001'), (Tool.KINTONE, '1001'), (Tool.ZOHO, 'zoho-1')])
+def test_固定試験原本は各Webhook経路でも通知を隔離する(store, mapping, monkeypatch, source, external_id):
+    from src.sync_engine.test_isolation import notifications_suppressed
+    monkeypatch.setenv('CRM_TEST_NOTION_IDS', mapping.notion_key)
+    dispatcher = Dispatcher(store, _all_targets(), sync_system_id='試験')
+    observed = []
+    original = dispatcher._dispatch_locked
+    def check(*args):
+        observed.append(notifications_suppressed())
+        return original(*args)
+    monkeypatch.setattr(dispatcher, '_dispatch_locked', check)
+    dispatcher.dispatch(SyncEvent(source, 'client_master', external_id, NOW, properties={}))
+    assert observed == [True]
+    assert not notifications_suppressed()
+
 
 def test_dispatch_skips_unknown_record(store: SQLiteIdMappingStore) -> None:
     dispatcher = Dispatcher(store, _all_targets())

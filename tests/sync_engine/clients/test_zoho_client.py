@@ -433,3 +433,19 @@ def test_insert_non_json_response_is_safe(requests_mock, client, status):
     assert f'HTTP {status}' in reason
     assert 'private response' not in reason and 'private response' not in str(caught.value)
     assert len([req for req in requests_mock.request_history if req.url == MODULE_URL]) == 1
+
+
+def test_試験原本だけ自動通知を抑え通常処理へ漏らさない(monkeypatch, requests_mock, client):
+    from src.sync_engine.test_isolation import test_record_scope
+    monkeypatch.setenv('CRM_TEST_NOTION_IDS', 'test-page')
+    _mock_token(requests_mock)
+    response = {'data': [{'code': 'SUCCESS', 'details': {'id': '12345'}}]}
+    requests_mock.put(RECORD_URL, json=response)
+    requests_mock.post(MODULE_URL, json=response)
+    with test_record_scope('test-page'):
+        client.update_record('Deals', '12345', {'Deal_Name': '試験'})
+        assert requests_mock.last_request.json()['trigger'] == []
+        client.insert_record('Deals', {'Deal_Name': '試験'})
+        assert requests_mock.last_request.json()['trigger'] == []
+    client.update_record('Deals', '12345', {'Deal_Name': '通常'})
+    assert 'trigger' not in requests_mock.last_request.json()

@@ -1,0 +1,18 @@
+結論として、未解消のBLOCKERはありません。
+
+前回のB1は解消を確認しました。復旧時のシート更新（成功時と保留時の2箇所）と project_link_prepare は、どちらも recovery is not None の場合に実行されません。W1・W2・W4〜W6の対処も、補足いただいた前提の範囲では、BLOCKERに当たる経路を残していません。
+
+| 項目 | 確認結果 |
+|---|---|
+| B1 | 解消。シート行・spreadsheet_row・project_link_prepare は復旧時に実行されない |
+| W1 | complete_zoho_payload が所属2件以上で作成前に保留するため、指摘は成立しない |
+| W2 | Zoho側（_zoho_company=None）、Notion側（can_distinguish）とも保留側に倒れる |
+| W4 | 復旧中の照合は held となり、定期処理で完了扱いになる経路がない |
+| W5 | dispatcher 内でも固定原本で判定される。既存原本のみの試験であれば成立する |
+| W6 | 最新1件の取得に変更済み |
+
+BLOCKERではありませんが、試験の前に確認しておくとよい点を3つ挙げます。
+
+1. 復旧時の照合保留で呼ぶ scan.journal.hold(source_key, reason) について、ZohoDuplicateScan の journal（差分上は get と save のみ見えています）にこのメソッドがあるか確認してください。無い場合は例外ハンドラ内で AttributeError になり、本体 journal の保留記録とメモの書込みが飛ばされて、CLIが異常終了します。作成は起きないので安全側ですが、再実行のたびにトレースバックが出ます。
+2. 上記の held 状態では、再実行時の check() が no_progress_runs と catchup_rounds をリセットし、delta フェーズは先頭から読み直します。進捗が止まっても held へ昇格しないため、復旧CLIの繰り返し回数は運用側で上限を決めておくことを推奨します。
+3. 試験対象の既存原本は、Zoho・kintone の両方で対応表が埋まっている状態にしておいてください。HUB_CREATION_ENABLED_SINCE 以降に作られ、かつ不足先がある原本だと、Notion webhook 経由の hub_creation が dispatcher の外で作成を行い、通知抑止がかかりません。また kintone 側の条件通知は引き続き抑止されないため、試験原本が通知条件に当たらないことも確認してください。

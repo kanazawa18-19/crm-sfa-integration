@@ -84,3 +84,13 @@ test('遅延登録の過去取込を9項目応答として検証し専用の継�
  assert.equal(second.events[0].key,'gmail_late_registration');
  assert.match(second.events[0].text,/遅延登録/);
 });
+test('Gmail観測停滞を10項目で受け付け、重複通知を抑えて復旧を1回伝える', () => {
+ const keys=['receipt_store','notion_delivery','kintone_delivery','zoho_subscription','zoho_delivery','spreadsheet_delivery','unfinished_sync','registration_holds','gmail_late_registration'];
+ const checks=keys.map(key=>({key,status:'ok',reason:'正常'}));
+ const c={key:'gmail_gas_observation',status:'warning',reason:'30分停滞'};
+ health.validate({schema_version:1,observed_at:new Date(now).toISOString(),checks:[...checks,c]},now);
+ const p=health.plan([c],null,now); assert.equal(p.events.length,1);
+ assert.equal(health.plan([c],p.next,now+H).events.length,0);
+ const ok={...c,status:'ok'};const r=health.plan([ok],p.next,now+H);
+ assert.equal(r.events.length,1);assert.equal(health.plan([ok],r.next,now+2*H).events.length,0);
+});

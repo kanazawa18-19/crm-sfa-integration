@@ -1,0 +1,133 @@
+添付の差分と全文に基づく静的レビューです。実データとの照合や実行確認はしていません。各指摘は、この差分の外にある実装（定期処理、journal、dispatcher など）の挙動に依存する場合、その前提を明記しています。
+
+総括
+| ID | 区分 | 重点観点 | 箇所 | 概要 |
+|---|---|---|---|---|
+| B1 | BLOCKER | 対象外更新 | service._handle_locked（末尾・外側except） | 復旧CLIでもシート行の状態と spreadsheet_row を更新してしまう |
+| W1 | WARN | 二重作成 | adapters / contact_matcher | Zoho側は所属を1件で比較するため、複数所属の連絡先を「所属が異なる」と誤判定しうる |
+| W2 | WARN | 旧ID・二重作成 | adapters._check_contact_duplicates | 別名履歴が使えないときに照合が緩む方向へ倒れる（フェイルオープン） |
+| W3 | WARN | 旧ID | adapters._check_contact_duplicates | 無関係な別名1件の不備で、全連絡先のZoho作成が止まる。この経路は未テスト |
+| W4 | WARN | 分割照合・停滞検知 | 復旧×duplicate_scan | 旧原本の分割照合が定期処理では進まず、停滞としても上がらない可能性 |
+| W5 | WARN | 通知隔離 | test_isolation の適用範囲 | 隔離が Slack CRM の1回の呼び出し内に限られ、派生処理・kintone・別スレッドへ届かない |
+| W6 | WARN | 停滞検知 | read_gmail_observation | 全期間を集計するため、データ増加で5秒タイムアウト→unknown が常態化しうる |
+| I1〜I9 | INFO | 各種 | — | 下記参照 |
+
+BLOCKER
+
+B1 復旧時のシート更新（対象外更新）
+根拠：_handle_with_budget では source_for_page により、シート由来の原本の source_key が「sheet:…」になり、origin は spreadsheet になります。復旧で対象先を1つに絞っても、末尾の次の処理は recovery 判定なしで実行されます。
+・sheet_gateway.update(status="Notion登録済み / 外部登録完了")
+・store.upsert(spreadsheet_row)
+・外側 except CreationHeld 内の status="保留: …"
+影響：
+・zoho だけを復旧したときに kintone が未作成のままでも、シートに「外部登録完了」と表示されます。不足が見えなくなり、固定計画の約束（原本と送り先だけを扱う）にも反します。
+・ハッシュ不一致などで復旧が保留になると、既存の正しい状態表示が「保留: 復旧計画後に原本が変わりました」で上書きされます。
+修正案：
+・recovery is not None のときはシート更新と spreadsheet_row の upsert を両方とも省略します。
+・あわせて project_link_prepare（db_key=project）も、Zoho作成に必須でなければ復旧時は省略するか、冪等であることを確認してください。
+・シート由来の原本を復旧するテストを1件追加してください。
+
+WARN
+
+W1 Zoho側照合の所属が単一値
+根拠：Zoho側は payload['field25']（1件のルックアップ）だけを自社所属として distinct_contacts に渡しています。一方、Notion側は取引先マスターを集合で比較しています。
+影響：Notion側が [A, B] の2社所属で field25 が A だけを表す場合、Zoho に B 所属・別メールの同一人物がいても {A} と {B} は互いに素と判定されます。その結果、保留されずに二重作成されます。Notion側の規則（重なりがあれば保留）とも一致しません。
+修正案：次のいずれかを推奨します。
+・Notion側の所属が2件以上のときは、Zoho側では別管理の例外を使わない（従来どおり姓名・メール一致で保留）。
+・全所属の Zoho ID を '_zoho_companies' として渡し、集合で比較する。
+plan が複数所属をどう field25 に変換しているか確認してください。片方だけを送っているなら、この指摘は BLOCKER 相当です。
+
+W2 別名履歴が使えないときのフェイルオープン
+根拠：history_available() が False だと aliases は {} のまま照合に進みます。この状態で既存 Zoho 連絡先の field25 が統合済みの旧 Zoho ID を指していると、正本 ID とは別所属に見えます。メールも異なれば「別管理」と判定され、新規作成されます。Notion側の resolve_alias も、履歴を引けないときに None（=元IDのまま）を返す実装なら同じ構造です。
+修正案：履歴が使えない状態では、連絡先の別管理例外（distinct_contacts による非一致）を無効にし、従来の保留側へ倒してください。
+
+W3 旧ID対応の構築による影響範囲とテスト不足
+根拠：作成のたびに client_master/zoho の全別名を読み込み、1件でも正本の zoho_id を引けなければ CreationHeld で止めています。また、resolve_alias('client_master', 'zoho', oldId) が Notion キーを返す前提で store.get(canonical) を呼んでいます。test_旧Zoho所属 は matcher 単体のテストで、この構築部分は検証されていません。
+影響：
+・無関係な取引先の統合が途中状態なだけで、全連絡先の Zoho 作成が保留になります。
+・戻り値の前提が誤っていれば、全件が常に保留になります。
+修正案：
+・別名の解決を、照合中に field25 として実際に出現した旧IDだけに遅延させます。未解決の場合も、その候補レコードの照合だけを保留にします。
+・Tool.ZOHO と 'zoho' の型の扱いを含め、構築部分の単体テストを追加してください。
+
+W4 旧原本の分割照合の継続主体
+根拠：復旧中に分割照合が PENDING になると、journal とメモには「続きは定期処理で確認します」と記録されます。しかし定期処理が通常の handle(event, scan_journal=…) で再開する場合、旧原本は created < enabled_since で None を返します。
+影響（定期処理の実装によります）：
+・outcome が None なので scan_journal.done が呼ばれ、照合が完了扱いのまま途切れます。
+・duplicate_scan.check 自体が呼ばれないため no_progress_runs が増えず、held に昇格しません。停滞として検知されない pending が残ります。
+・運用上は「同一計画のCLI再実行」が正しい手順ですが、表示文言と矛盾します。
+修正案：
+・復旧起点の照合には、scan journal に recovery フラグを残してください。
+・定期処理はそれを再開対象から外し、done にもしないようにします。
+・保留理由の文言を「同じ計画ファイルでCLIを再実行してください」に変えます。
+・残存 pending を健全性チェック（unfinished_sync 等）で拾えるか確認してください。
+
+W5 通知隔離の適用範囲
+根拠：隔離は ContextVar で、process_sync の dispatch 中だけ有効です。
+影響（いずれも隔離の漏れになりえます）：
+1. 試験操作で新規作成されたページ（action_create のアクション等）は許可リストにないため、隔離されません。さらにその後の Notion webhook → hub_creation は別の呼び出しで処理されます。Zoho の insert に trigger が付かず、ワークフロー（メール送信を含みうる）や運用DMが通常どおり発火します。
+2. Zoho・kintone 更新後の折り返し webhook も別の呼び出しで処理されるため、そこで出る通知は抑止されません。
+3. kintone には trigger=[] に相当する抑止がなく、アプリの条件通知は API 更新でも発火します。
+4. dispatcher が送り先ごとにスレッドプールを使っている場合、ContextVar は伝播しません（copy_context が必要）。
+修正案：
+・試験判定を「呼び出しスコープ」ではなく「レコードの識別子」で行い、通知・クライアント側で is_test_record を引いてください。試験用の取引先・案件に関連するレコードも試験として扱う規則を推奨します。
+・kintone については、試験用アプリまたは通知条件で除外してください。
+・スレッドを使う場合は context をコピーしてください。
+試験で新規作成を伴う操作を行う予定があれば、修正を先行させてください。
+
+W6 Gmail観測クエリの集計範囲
+根拠：phase='complete' の全履歴に対して自己結合し、max(receivedAt) を取っています。結合条件は o."scanId" || ':started:0' という式です。
+影響：テーブルの増加に伴い statement_timeout（5秒）に達し、unknown が常態化して停滞を検知できなくなります。
+修正案：
+・(phase, receivedAt DESC) と eventId に索引を張ります。
+・ORDER BY o."receivedAt" DESC LIMIT 1 で、条件に合う最新行だけを探す形にしてください。
+・期間で絞る場合、範囲内が0件なら unknown ではなく warning として扱う必要があります。
+
+INFO
+
+I1 停滞通知の方針：テスト上、初回の warning で即通知され、以後の継続中は再通知されません。
+・Google 側のトリガー遅延1回で誤報が出ないか、確認してください。2回連続で確認してから通知する方式も検討の余地があります。
+・長期停滞の再通知も検討してください。
+・Gmail GAS の実行間隔が30分より十分短いこと、休日も稼働することも前提として確認してください。
+
+I2 時計ずれ：last > now で unknown になります。DB 時刻と API 時刻の差による一時的な unknown を避けるため、数十秒の許容幅を推奨します。
+
+I3 GMAIL_INGEST_REP_EMAIL が未設定だと unverified になります。GAS 側で unverified が毎時通知されないことを確認してください。
+
+I4 開始イベントの eventId が「:started:0」固定であることに依存しています。採番規則が変わると、全完了が除外されて誤警報になります。
+
+I5 復旧の失敗理由（ハッシュ不一致等）が、source の保留と利用者向けの Notion メモに書かれます。registration_holds の健全性にも影響するため、意図どおりか確認してください。
+
+I6 連絡先の予約キーがメール＋所属に変わりましたが、競合時の文言は「同じ名前の登録…」のままです。
+
+I7 trigger=[] による抑止は insert と update だけです。upsert、メモ、関連リスト等の他の Zoho 書込み経路も確認してください。また、試験時に運用DMを止めると失敗にも気づけないため、代替のログを残すことを推奨します。
+
+I8 Slack の権限案内について：
+・SLACK_CRM_ALLOWED_TEAM_ID が未設定で payload に team がない場合、None == None で案内が出ます。環境変数が空でないことを条件に加えてください。
+・モーダル内の block_actions に対して views.open は失敗するため、payload に view があるときは views.push を使ってください。
+
+I9 運用面：
+・GAS を先に配備する順序は正しいです。ロールバック時は逆順（API を先に戻す）にしてください。
+・復旧計画には有効期限がなく、計画作成時に supports_database も検証していません。
+・元ページの取得は get_raw_page のため、所属が25件を超えると has_more で保留になります（安全側の挙動です）。
+
+確認できた点（問題なし）
+| 観点 | 内容 |
+|---|---|
+| 対象先の限定 | メモ生成と作成の両ループが recovery['target'] 以外を処理しない |
+| 再実行の冪等性 | 対応表の列が埋まっている、または attempt=created なら再作成しない。reserved なら保留 |
+| 原本の保護 | ハッシュ不一致・統合済みの原本・統合中（require_record_available）で作成しない |
+| 送信前の再照合 | 復旧時は送信直前に原本を取り直し、ダイジェストを比較する |
+| 分割照合のしおり | matcherVersion 2 と contactComparison（会社・別名）で、条件変更時に再照合する |
+| 同名判定 | メールの空白・大文字小文字を正規化。欠損・メール一致・所属重複は保留側 |
+| Zohoトリガー抑止 | スコープ外へ漏れないことをテストで確認済み |
+| GAS受理 | 10項目を受け付け、重複を抑制し、復旧は1回だけ通知 |
+
+不足しているテスト
+| 対象 | 内容 |
+|---|---|
+| adapters の別名構築 | 正本の解決・未解決時の挙動・履歴が使えない場合 |
+| service._check_contact_duplicates | 統合済み所属の正規化・ページ送り・アーカイブ除外 |
+| シート由来の原本の復旧 | B1 の再発防止 |
+| 復旧中の PENDING → 同一計画での再実行による完了 | W4 |
+| 通知隔離 | 運用DM・管理者DMの抑止、派生作成時の挙動（W5） |

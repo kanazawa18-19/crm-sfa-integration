@@ -27,12 +27,12 @@ class HubCreationService:
         self.notion_clients, self.adapters = notion_clients, adapters
         self.enabled_since, self.sheet_gateway = enabled_since, sheet_gateway
 
-    def handle(self, event, *, scan_journal=None):
+    def handle(self, event, *, scan_journal=None, recovery=None):
         from src.infrastructure.http_budget import http_budget
         with http_budget(240):
-            return self._handle_with_budget(event, scan_journal=scan_journal)
+            return self._handle_with_budget(event, scan_journal=scan_journal, recovery=recovery)
 
-    def _handle_with_budget(self, event, *, scan_journal=None):
+    def _handle_with_budget(self, event, *, scan_journal=None, recovery=None):
         """通常更新はNone、新規を扱ったときは結果理由を返す。"""
         if is_own_system_event(event.sync_system_id, expected=get_sync_system_id()):
             return None
@@ -48,7 +48,7 @@ class HubCreationService:
         with acquire_record_sync_lock(self.store, event.db_key, lock_id):
             pending_targets = set()
             try:
-                outcome = self._handle_locked(event, source_key, pending_targets)
+                outcome = self._handle_locked(event, source_key, pending_targets, recovery=recovery)
             except Exception as exc:
                 if scan_journal is not None and getattr(exc, 'status_code', None) == 404:
                     scan_journal.hold(source_key, '登録元が見つかりません。確認後に登録元を再通知してください')
@@ -87,7 +87,13 @@ class HubCreationService:
             except Exception:
                 logger.warning("新規登録の再判定保留を保存できませんでした")
 
-    def _handle_locked(self, event, source_key, pending_targets):
+    def _handle_locked(self, event, source_key, pending_targets, *, recovery=None):
+        if recovery is not None:
+            if (event.source_tool != Tool.NOTION or event.registration_key
+                    or recovery.get('db_key') != event.db_key or recovery.get('id') != event.external_id
+                    or recovery.get('target') not in {a.target for a in self.adapters}
+                    or not isinstance(recovery.get('hash'), str)):
+                raise CreationHeld('不足先復旧の対象を確認できません')
         client = self.notion_clients.get(event.db_key)
         if client is None:
             return "new_record_notion_unavailable"
@@ -121,7 +127,7 @@ class HubCreationService:
                     self.journal.finish(source_key, "notion", page_id)
             else:
                 existing = self.store.get(event.external_id)
-                if existing is not None and not self.journal.has_source(source_key):
+                if recovery is None and existing is not None and not self.journal.has_source(source_key):
                     return None
                 from src.sync_engine.zoho_text_limits import creation_notes_pending
                 if existing is not None and not creation_notes_pending(self.journal.get(source_key, "zoho")) and all(
@@ -139,10 +145,14 @@ class HubCreationService:
                     self.journal.retire_archived(source_key, event.db_key, event.external_id)
                     return "new_record_archived"
                 created = datetime.fromisoformat(raw["created_time"].replace("Z", "+00:00"))
-                if created < self.enabled_since:
+                if recovery is None and created < self.enabled_since:
                     return None  # 過去の未登録は週次点検だけに残す。
                 page_id = event.external_id
                 properties = self._creation_properties(event.db_key, raw)
+                if recovery is not None:
+                    from src.record_merge.domain import digest
+                    if digest(properties) != recovery['hash']:
+                        raise CreationHeld('復旧計画後に原本が変わりました')
                 # 問い合わせで保存した会社未確定ページは、後日の通常通知でも新規作成しない。
                 inquiry = self.journal.get('notion:' + page_id, 'inquiry_handoff') if event.db_key == 'contact' else None
                 if inquiry and not (existing and existing.zoho_id):
@@ -155,6 +165,11 @@ class HubCreationService:
                 self._check_creation_duplicates(event.db_key, client, name, title, properties, page_id)
 
             with acquire_record_sync_lock(self.store, event.db_key, page_id):
+                if recovery is not None:
+                    from src.record_merge.aliases import resolve_alias, require_record_available
+                    if resolve_alias(event.db_key, Tool.NOTION, page_id):
+                        raise CreationHeld('統合済みの原本は復旧できません。正本を選び直してください')
+                    require_record_available(event.db_key, page_id)
                 if event.expected_source_properties is not None:
                     latest = client.get_raw_page(page_id)
                     current = self._creation_properties(event.db_key, latest)
@@ -180,12 +195,14 @@ class HubCreationService:
                         value = creation_rollup(action_page.get('properties', {}).get(name))
                         if value is not None:
                             properties[name] = value
-                if event.db_key == "project" and self.project_link_prepare is not None:
+                if recovery is None and event.db_key == "project" and self.project_link_prepare is not None:
                     # Notion登録・対応表成立後、CRM作成・シート配送・メモより先に保持する。
                     self.project_link_prepare(mapping)
                 self.journal.resolve_hold(source_key, "source", page_id)
                 notes = {f"{UNAVAILABLE}|{origin}:新規登録": ""}
                 for adapter in self.adapters:
+                    if recovery is not None and adapter.target != recovery['target']:
+                        continue
                     if not supports_database(Tool(adapter.target), event.db_key):
                         continue
                     target_tool = Tool(adapter.target)
@@ -200,6 +217,8 @@ class HubCreationService:
                         notes[key] = value + " 未同期の送り先: " + adapter.target + "。"
                 held = []
                 for adapter in self.adapters:
+                    if recovery is not None and adapter.target != recovery['target']:
+                        continue
                     target = adapter.target
                     column = {"zoho": "zoho_id", "kintone": "kintone_id"}[target]
                     note_key = f"{UNAVAILABLE}|{origin}:新規登録（{target}）"
@@ -236,7 +255,7 @@ class HubCreationService:
                                             creation_context()['email_actor_id'] = action_actor(page_id)
                                     payload = adapter.plan(event.db_key, properties)
                                     scan = getattr(adapter, 'duplicate_scan', None)
-                                    if scan is not None and scan.exists():
+                                    if recovery is not None or (scan is not None and scan.exists()):
                                         # 分割照合中の編集・アーカイブを、古い入力のまま送らない。
                                         from src.record_merge.domain import digest
                                         latest = client.get_raw_page(page_id)
@@ -291,6 +310,11 @@ class HubCreationService:
                         from src.hub_creation.duplicate_scan import PENDING
                         if reason == PENDING:
                             pending_targets.add(target)
+                            if recovery is not None:
+                                reason = '不足先の照合途中です。同じ復旧計画で再実行してください'
+                                scan = getattr(adapter, 'duplicate_scan', None)
+                                if scan is not None:
+                                    scan.journal.hold(source_key, reason)
                         self.journal.hold(source_key, target, event.db_key, reason)
                         notes[note_key] = f"[{origin}:新規登録（{target}）] {reason}。既存候補への自動紐付けは行っていません。"
                         held.append(target + ": " + reason)
@@ -307,7 +331,7 @@ class HubCreationService:
                 from src.sync_engine.zoho_text_limits import creation_notes_pending
                 if creation_notes_pending(self.journal.get(source_key, "zoho")):
                     self.journal.mark_text_limit_notes_recorded(source_key)
-                if origin == "spreadsheet" and self.sheet_gateway is not None:
+                if recovery is None and origin == "spreadsheet" and self.sheet_gateway is not None:
                     registration_key = source_key.removeprefix("sheet:")
                     status = "Notion登録済み / " + ("・".join(held) if held else "外部登録完了")
                     row = self.sheet_gateway.update(sheet, registration_key, notion_key=page_id, status=status)
@@ -320,7 +344,7 @@ class HubCreationService:
             if page_id:
                 key = f"{UNAVAILABLE}|{origin}:新規登録"
                 client.upsert_sync_notes(page_id, {key: f"[{origin}:新規登録] {reason}。"})
-            if origin == "spreadsheet" and self.sheet_gateway is not None:
+            if recovery is None and origin == "spreadsheet" and self.sheet_gateway is not None:
                 registration_key = source_key.removeprefix("sheet:")
                 try:
                     self.sheet_gateway.update(sheet, registration_key, notion_key=page_id, status="保留: " + reason)
@@ -344,6 +368,8 @@ class HubCreationService:
     def _creation_properties(db_key, raw):
         """作成に用いる入力だけを抽出し、直前照合にも同じ規則を使う。"""
         properties = {}
+        if db_key == 'contact' and raw.get('properties', {}).get('取引先マスター', {}).get('has_more'):
+            raise CreationHeld('連絡先の所属を全件確認できません')
         if db_key == 'action':
             from src.hub_creation.action_identity import validate_notion_identity
             validate_notion_identity(raw)
@@ -370,9 +396,17 @@ class HubCreationService:
         if db_key == 'action':
             from src.hub_creation.action_identity import fingerprint
             return fingerprint(properties)
+        if db_key == 'contact' and properties.get('メールアドレス') and properties.get('取引先マスター'):
+            from src.record_merge.domain import digest
+            from src.record_merge.aliases import resolve_alias
+            return digest([db_key, properties['メールアドレス'].strip().casefold(),
+                           sorted((resolve_alias('client_master', Tool.NOTION, x) or x).replace('-', '')
+                                  for x in properties['取引先マスター'])])
         return identity_hash(db_key, title)
 
     def _check_creation_duplicates(self, db_key, client, name, title, properties, self_id=None):
+        if db_key == 'contact':
+            return self._check_contact_duplicates(client, name, title, properties, self_id)
         if db_key != 'action':
             return self._check_notion_duplicates(client, name, title, self_id)
         from src.hub_creation.action_identity import CLIENT, identity, relation_ids
@@ -407,6 +441,43 @@ class HubCreationService:
             seen.add(cursor)
             body['start_cursor'] = cursor
         raise CreationHeld('Notionのアクション候補が照合上限を超えています')
+
+    def _check_contact_duplicates(self, client, name, title, properties, self_id):
+        """同名でもメール・所属の両方が異なる登録は別管理する。欠損は保留。"""
+        from src.hub_creation.contact_identity import distinct_contacts
+        from src.record_merge.aliases import resolve_alias, history_available
+        can_distinguish = history_available()
+        def canonical(values):
+            values = dict(values)
+            values['取引先マスター'] = [resolve_alias('client_master', Tool.NOTION, value) or value
+                                      for value in values.get('取引先マスター') or []]
+            return values
+        properties = canonical(properties)
+        matcher = getattr(client, 'title_match_filter', None)
+        query = matcher(name, {'equals': title}) if matcher else {'property': name, 'title': {'equals': title}}
+        body = {'page_size': 100, 'filter': query}
+        seen = set()
+        for _ in range(100):
+            response = client.query_raw(body)
+            if not isinstance(response.get('results'), list) or type(response.get('has_more')) is not bool:
+                raise CreationHeld('同名の連絡先を最後まで確認できません')
+            for page in response['results']:
+                if page['id'].replace('-', '') == (self_id or '').replace('-', ''):
+                    continue
+                raw = client.get_raw_page_with_relations(page['id'], {'取引先マスター'})
+                if raw.get('archived') or raw.get('in_trash'):
+                    continue
+                candidate = canonical(self._creation_properties('contact', raw))
+                if not can_distinguish or not distinct_contacts(properties, candidate):
+                    raise CreationHeld('同名の連絡先のメール・所属を確認してください')
+            if not response['has_more']:
+                return
+            cursor = response.get('next_cursor')
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise CreationHeld('同名の連絡先を最後まで確認できません')
+            seen.add(cursor)
+            body['start_cursor'] = cursor
+        raise CreationHeld('同名の連絡先が照合上限を超えています')
 
     @staticmethod
     def _check_notion_duplicates(client, name, title, self_id=None):

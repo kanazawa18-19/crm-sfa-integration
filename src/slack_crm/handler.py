@@ -33,6 +33,15 @@ def _authorized(payload: Mapping[str, Any]) -> bool:
     return bool(allowed and team_id == os.environ.get("SLACK_CRM_ALLOWED_TEAM_ID") and user_id in allowed)
 
 
+def _notice(payload, message):
+    if payload.get('type') == 'view_submission':
+        return _response({'response_action': 'update', 'view': views.receipt_view(message)})
+    if payload.get('type') == 'block_actions' and payload.get('trigger_id'):
+        method = 'views.push' if (payload.get('view') or {}).get('type') == 'modal' else 'views.open'
+        call(method, {'trigger_id': payload['trigger_id'], 'view': views.receipt_view(message)})
+    return _response()
+
+
 def _metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
     raw = ((payload.get("view") or {}).get("private_metadata") or "{}")
     try:
@@ -308,6 +317,11 @@ def handler(event: Mapping[str, Any]) -> dict[str, Any]:
     if email_handles(payload):
         return email_handle(payload)
     if not _authorized(payload):
+        if os.environ.get('SLACK_CRM_ALLOWED_TEAM_ID') and (payload.get('team') or {}).get('id') == os.environ['SLACK_CRM_ALLOWED_TEAM_ID']:
+            try:
+                return _notice(payload, 'このSlackアカウントはCRM操作の対象外です。管理者に利用権限を確認してください。')
+            except Exception:
+                logger.warning('CRM利用権限の案内を表示できませんでした')
         return _response()
     kind = payload.get("type")
     try:
@@ -324,5 +338,10 @@ def handler(event: Mapping[str, Any]) -> dict[str, Any]:
         if kind == "view_submission":
             return _response({"response_action": "update", "view": views.receipt_view(
                 "読み込めませんでした。画面を開き直してください。")})
+        if kind == 'block_actions':
+            try:
+                return _notice(payload, '処理結果を確認できません。再操作する前にCRMの現在値を確認してください。')
+            except Exception:
+                logger.warning('CRMの読込失敗を画面へ表示できませんでした')
         return {"statusCode": 500, "body": "Slack CRM request failed"}
     return _response()

@@ -152,6 +152,30 @@ def _read_watch(now: datetime) -> dict:
         return check("zoho_subscription", "unknown", "購読APIの照会に失敗しました（設定・認証・接続を確認）")
 
 
+def evaluate_gmail_observation(last_complete, *, now):
+    last = utc(last_complete)
+    evidence = {'last_received_at': stamp(last)}
+    if last is None or last > now:
+        return check('gmail_gas_observation', 'unknown', 'Gmail観測の完了時刻を確認できません', **evidence)
+    if (now - last).total_seconds() > 1800:
+        return check('gmail_gas_observation', 'warning', 'Gmail観測の完了が30分以上途絶えています', **evidence)
+    return check('gmail_gas_observation', 'ok', '観測走査が完了しています（移管合格は別判定）', **evidence)
+
+
+def read_gmail_observation(now):
+    owner = os.environ.get('GMAIL_INGEST_REP_EMAIL', '').strip().lower()
+    if not owner:
+        return check('gmail_gas_observation', 'unverified', 'Gmail GASの観測対象は未設定です')
+    with psycopg.connect(os.environ['DATABASE_URL'], connect_timeout=TIMEOUT, row_factory=dict_row) as conn:
+        conn.read_only = True
+        conn.execute("SET LOCAL statement_timeout = '5000ms'")
+        row = conn.execute('''SELECT o."receivedAt" AS last FROM "GmailIngestObservation" o
+            JOIN "GmailIngestObservation" s ON s."eventId"=o."scanId" || ':started:0'
+            WHERE o.phase='complete' AND s.evidence->>'observationKind'='natural'
+            AND lower(s.evidence->>'repEmail')=%s ORDER BY o."receivedAt" DESC LIMIT 1''', (owner,)).fetchone()
+    return evaluate_gmail_observation(row['last'] if row else None, now=now)
+
+
 def collect_webhook_health() -> dict:
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -196,6 +220,10 @@ def collect_webhook_health() -> dict:
         checks.append(late_registration_health())
     except Exception:
         checks.append(check('gmail_late_registration', 'unknown', '遅延登録の過去取込を確認できません'))
+    try:
+        checks.append(read_gmail_observation(datetime.now(timezone.utc)))
+    except Exception:
+        checks.append(check('gmail_gas_observation', 'unknown', 'Gmail観測の完了記録を取得できません'))
     return {"schema_version": 1, "observed_at": stamp(datetime.now(timezone.utc)),
             "elapsed_ms": round((time.monotonic() - started) * 1000), "checks": checks,
             "receipts": {s: {"last_received_at": stamp(receipts.get(s, {}).get("last")),

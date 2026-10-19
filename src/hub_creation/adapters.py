@@ -208,7 +208,7 @@ class ZohoCreationAdapter:
         if pipeline_layout is not None:
             payload['Layout'] = {'id': pipeline_layout}
         if db_key == 'contact':
-            self._check_contact_duplicates(module, properties)
+            self._check_contact_duplicates(module, {**properties, '_zoho_company': payload.get('field25')})
             return payload
         if db_key == 'action':
             from src.hub_creation.action_identity import action_day
@@ -259,12 +259,32 @@ class ZohoCreationAdapter:
 
     def _check_contact_duplicates(self, module, properties):
         from src.hub_creation.duplicate_scan import contact_matcher
+        from src.record_merge.aliases import history_available, resolve_alias
+        from src.sync_operations.product_holds import connect
+        aliases = {}
+        if history_available():
+            with connect() as conn:
+                old_ids = conn.execute('SELECT "oldId" FROM "RecordMergeAlias" WHERE "dbKey"=\'client_master\' AND tool=\'zoho\'').fetchall()
+            for row in old_ids:
+                canonical = resolve_alias('client_master', 'zoho', row['oldId'])
+                mapping = self.store.get(canonical) if self.store and canonical else None
+                if mapping is None or not mapping.zoho_id:
+                    raise CreationHeld('旧所属の対応を確認できません')
+                aliases[row['oldId']] = mapping.zoho_id
+        else:
+            # 旧所属を照合できない環境では、別所属という理由で同名候補を除外しない。
+            properties = {**properties, '_zoho_company': None}
+        properties = {**properties, '_zoho_company_aliases': aliases}
+        from src.record_merge.creation_candidates import creation_context
+        context = creation_context()
+        if context is not None:
+            context['contactComparison'] = {'version': 2, 'company': properties.get('_zoho_company'), 'aliases': aliases}
         if self.duplicate_scan is not None and self.duplicate_scan.exists():
-            return self.duplicate_scan.check('contact', module, ['Last_Name','First_Name','Email'], contact_matcher(properties))
+            return self.duplicate_scan.check('contact', module, ['Last_Name','First_Name','Email','field25'], contact_matcher(properties))
         seen = set()
-        surname, given, email = (properties.get('姓') or '').strip(), (properties.get('名') or '').strip(), properties.get('メールアドレス')
+        matches = contact_matcher(properties)
         for page in range(1, 11):
-            data = self._get(f"/{module}?" + urlencode({'fields': 'id,Last_Name,First_Name,Email', 'per_page': 200, 'page': page}))
+            data = self._get(f"/{module}?" + urlencode({'fields': 'id,Last_Name,First_Name,Email,field25', 'per_page': 200, 'page': page}))
             records, info = data.get('data'), data.get('info')
             if not isinstance(records, list) or not isinstance(info, dict) or not isinstance(info.get('more_records'), bool):
                 raise CreationHeld('連絡先の重複を最後まで確認できません')
@@ -273,15 +293,14 @@ class ZohoCreationAdapter:
                 if not isinstance(identifier, str) or not identifier or identifier in seen:
                     raise CreationHeld('連絡先の一覧照合結果を確認できません')
                 seen.add(identifier)
-                if ((str(record.get('Last_Name') or '').strip() == surname and str(record.get('First_Name') or '').strip() == given)
-                        or (email and str(record.get('Email') or '').casefold() == email.casefold())):
+                if matches(record):
                     hold_duplicate('zoho', 'contact', identifier, record, '外部に姓名またはメールが一致する連絡先があります。統合候補を確認してください', fetch=lambda: self.client.get_record(module, identifier))
             if not info['more_records']:
                 return
             if not records:
                 break
         if self.duplicate_scan is not None:
-            return self.duplicate_scan.check('contact', module, ['Last_Name','First_Name','Email'], contact_matcher(properties))
+            return self.duplicate_scan.check('contact', module, ['Last_Name','First_Name','Email','field25'], contact_matcher(properties))
         raise CreationHeld('連絡先の重複を最後まで確認できません')
 
     def _check_list_duplicates(self, db_key, module, title_field, title):

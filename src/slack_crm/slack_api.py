@@ -41,7 +41,13 @@ def send_result(user_id: str, operation: dict[str, Any], result: dict[str, Any])
     elif state == "unknown":
         message = "CRMの応答を確認できませんでした。再操作せず、CRMの現在値を確認してください。"
     else:
-        message = "CRMを更新できませんでした。現在値を確認してからやり直してください。"
+        reasons = {
+            'not_found': '対象が削除・移動されたため更新できません。CRMの対象を選び直してください。',
+            'project_not_found': '案件が見つかりません。案件を選び直してください。',
+            'invalid_expected': '比較する元の値を確認できません。画面を開き直してください。',
+            'record_busy': '他の処理が続いているため保存できませんでした。少し待って画面を開き直してください。',
+        }
+        message = reasons.get(result.get('error_code'), "CRMを更新できませんでした。現在値を確認してからやり直してください。")
     labels = {"project_update": "案件の更新", "action_update": "アクションの更新", "action_create": "アクションの記録"}
     target_id = result.get("page_id") or operation["targetId"]
     link = "https://www.notion.so/" + str(target_id).replace("-", "")

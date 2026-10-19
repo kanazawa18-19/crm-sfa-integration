@@ -23,6 +23,8 @@ def scan_input_hash(context):
     if context['dbKey'] == 'action':
         from src.hub_creation.action_identity import VERSION
         return digest({'context': context, 'matcherVersion': VERSION})
+    if context['dbKey'] == 'contact':
+        return digest({'context': context, 'matcherVersion': 2})
     return digest(context)
 
 
@@ -205,6 +207,19 @@ def contact_matcher(properties):
         if any(record.get(field) is not None and not isinstance(record[field], str)
                for field in ('Last_Name', 'First_Name', 'Email')) or not isinstance(record.get('Last_Name'), str):
             raise CreationHeld('外部の連絡先を確認できません')
+        from src.hub_creation.contact_identity import distinct_contacts
+        company = properties.get('_zoho_company')
+        other = record.get('field25')
+        def ids(value):
+            if isinstance(value, dict):
+                value = value.get('id')
+            value = properties.get('_zoho_company_aliases', {}).get(value, value)
+            return [value] if isinstance(value, str) and value else []
+        if distinct_contacts(
+            {'メールアドレス': email, '取引先マスター': ids(company)},
+            {'メールアドレス': record.get('Email'), '取引先マスター': ids(other)},
+        ):
+            return False
         return (((record.get('Last_Name') or '').strip() == surname and (record.get('First_Name') or '').strip() == given)
-                or bool(email and (record.get('Email') or '').casefold() == email.casefold()))
+                or bool(email and (record.get('Email') or '').strip().casefold() == email.strip().casefold()))
     return matches

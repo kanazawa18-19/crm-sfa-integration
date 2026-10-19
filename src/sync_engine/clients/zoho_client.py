@@ -288,8 +288,12 @@ class HttpZohoClient:
 
     def insert_record(self, module: str, record: dict[str, Any], *, api_version: str | None = None) -> str:
         # 作成系（非冪等）操作のため、タイムアウト/5xx時の重複レコード作成を避けリトライしない。
+        from src.sync_engine.test_isolation import notifications_suppressed
+        payload = {"data": [record]}
+        if notifications_suppressed():
+            payload['trigger'] = []
         response = self._request(
-            "POST", f"/{module}", json_body={"data": [record]}, idempotent=False,
+            "POST", f"/{module}", json_body=payload, idempotent=False,
             **({'api_version': api_version} if api_version is not None else {}),
         )
         try:
@@ -323,6 +327,9 @@ class HttpZohoClient:
         理由はkintone側と同じ（`kintone_client.update_record`のdocstring参照）。
         """
         body = {"data": [{**record, "id": record_id}]}
+        from src.sync_engine.test_isolation import notifications_suppressed
+        if notifications_suppressed():
+            body['trigger'] = []
         extra_headers = (
             {"If-Unmodified-Since": expected_version} if expected_version is not None else None
         )

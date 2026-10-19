@@ -350,7 +350,8 @@ class Dispatcher:
             guard.ensure_field_baseline(mapping.last_synced_at)
             mapping = dataclasses.replace(mapping, last_synced_at=watermark)
             from src.sync_engine.zoho_text_limits import collect_text_limit_notes
-            with collect_text_limit_notes():
+            from src.sync_engine.test_isolation import test_record_scope
+            with collect_text_limit_notes(), test_record_scope(mapping.notion_key):
                 return self._dispatch_locked(event, mapping, guard)
 
     def _write_notes(self, event, mapping):

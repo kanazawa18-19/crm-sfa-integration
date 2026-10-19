@@ -329,3 +329,16 @@ def test_action_creation_copies_confirmed_client_and_reports_unknown(monkeypatch
 def test_empty_person_edit_keeps_current_value(value):
     payload={'view':{'state':{'values':{'person':{'person_value':{'value':value}}}}}}
     assert '先方担当者' not in handler._form_values(payload,'action_update','op')
+
+
+def test_利用権限がない本人へ理由を表示する(monkeypatch):
+    sent = []
+    monkeypatch.setattr(handler, 'call', lambda method, body: sent.append((method, body)))
+    payload = _base(user={'id': 'U_OTHER'}, trigger_id='trigger')
+    assert handler.handler(_event(payload))['statusCode'] == 200
+    assert sent[0][0] == 'views.open'
+    assert '利用権限' in json.dumps(sent[0][1], ensure_ascii=False)
+    sent.clear()
+    payload['team'] = {'id': 'OTHER_TEAM'}
+    handler.handler(_event(payload))
+    assert sent == []

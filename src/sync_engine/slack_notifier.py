@@ -186,6 +186,9 @@ class WebhookSlackNotifier:
 
     def _post(self, text: str) -> None:
         """運用DMの失敗で同期処理を止めない。例外本文はログに出さない。"""
+        from src.sync_engine.test_isolation import notifications_suppressed
+        if notifications_suppressed():
+            return
         try:
             operations_dm.send_operations_dm(text)
         except Exception as exc:
@@ -204,6 +207,9 @@ class WebhookSlackNotifier:
         本モジュール、という循環importが発生するため（`dispatcher.py`が`SlackNotifier`
         Protocolをモジュールレベルでimportしている）。
         """
+        from src.sync_engine.test_isolation import notifications_suppressed
+        if notifications_suppressed():
+            return
         from src.notifications import manager_dm
 
         try:

@@ -12,6 +12,13 @@ NOW = datetime(2026, 9, 27, 9, tzinfo=timezone.utc)
 CALLBACK = 'https://example.test/api/webhooks/zoho'
 
 
+@pytest.mark.parametrize('age,status', [(1799, 'ok'), (1800, 'ok'), (1801, 'warning'), (-1, 'unknown'), (None, 'unknown')])
+def test_Gmail観測完了の停滞(age, status):
+    from src.diagnostics.webhook_health import evaluate_gmail_observation
+    last = NOW - timedelta(seconds=age) if age is not None else None
+    assert evaluate_gmail_observation(last, now=NOW)['status'] == status
+
+
 def watch(hours=12):
     return {'watch': [{'channel_id': '123', 'notify_url': CALLBACK,
                        'channel_expiry': (NOW + timedelta(hours=hours)).isoformat(),
