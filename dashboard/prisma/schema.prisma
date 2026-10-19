@@ -1194,3 +1194,41 @@ model ContactNameJobItem {
   @@id([jobId, notionId])
   @@unique([jobId, ordinal])
 }
+
+// 独立した原本2系統による未所属連絡先の定期照合。
+model ContactAffiliationJob {
+  metrics Json @default("{}")
+  mailCursor Json @default("{}")
+  id String @id @default("main")
+  enabled Boolean @default(false)
+  dryRun Boolean @default(true)
+  discovery Json @default("{}")
+  lastRunAt DateTime? @db.Timestamptz
+  lastSuccessAt DateTime? @db.Timestamptz
+  lastError String?
+}
+model ContactAffiliationItem {
+  email String?
+  @@index([email], map: "ContactAffiliationItem_email_idx")
+  notionId String @id
+  state String @default("pending")
+  decision Json @default("{}")
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @default(now()) @db.Timestamptz
+  errorType String?
+  @@index([nextAttemptAt, notionId], map: "ContactAffiliationItem_due_idx")
+}
+model ContactAffiliationHistory {
+  id BigInt @id @default(autoincrement())
+  notionId String
+  state String
+  decision Json
+  createdAt DateTime @default(now()) @db.Timestamptz
+}
+model ContactAffiliationEvidence {
+  sourceId String @id
+  email String
+  data Json
+  createdAt DateTime @default(now()) @db.Timestamptz
+  @@index([email], map: "ContactAffiliationEvidence_email_idx")
+}

@@ -577,3 +577,6 @@ app.include_router(record_merge_router)
 
 from src.api.routes.sync_exclusions import router as sync_exclusions_router
 app.include_router(sync_exclusions_router)
+
+from src.api.routes.contact_affiliations import router as contact_affiliations_router
+app.include_router(contact_affiliations_router)
