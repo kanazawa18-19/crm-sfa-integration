@@ -113,6 +113,31 @@ def test_読み取り中に原本が変わったら完了しない(setup):
     assert c.saved == []
 
 
+def test_所属だけの同時刻再配送は全対象の実物を照合する(setup):
+    c = setup('contact')
+    properties = {c.name: ['parent']}
+    c.event = replace(c.event, properties=properties, expected_source_properties=properties)
+    c.result = DispatchResult(True, reason='stale_event')
+    c.guard.conn = None
+    c.guard.state = {'field:' + c.name: {'acceptedAt': c.event.occurred_at, 'completedAt': c.event.occurred_at}}
+    assert confirm(c)
+    c.records[Tool.ZOHO, 'contact', 'z1']['field25'] = {'id': 'wrong'}
+    assert not confirm(c)
+
+
+@pytest.mark.parametrize('change', ['other_field', 'pending', 'other_reason'])
+def test_省略された再配送を無条件に成功へしない(setup, change):
+    c = setup('contact')
+    properties = {c.name: ['parent']}
+    if change == 'other_field': properties['姓'] = '合成'
+    c.event = replace(c.event, properties=properties, expected_source_properties=properties)
+    c.result = DispatchResult(True, reason='unknown_record' if change == 'other_reason' else 'stale_event')
+    c.guard.conn = None
+    c.guard.state = {'field:' + c.name: {'acceptedAt': c.event.occurred_at, 'completedAt': None if change == 'pending' else c.event.occurred_at}}
+    assert not confirm(c)
+    assert c.saved == []
+
+
 def test_実物取得失敗はGatewayでpartialへ残る(setup, monkeypatch):
     from src.email_review.gateway import Gateway
     from src.sync_engine import production_wiring

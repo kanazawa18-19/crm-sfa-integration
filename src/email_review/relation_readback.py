@@ -42,19 +42,40 @@ def _external_matches(tool, target, key, mapping, parent):
     return False
 
 
+def _completed_at_same_time(guard, name, occurred):
+    if guard.conn is None:
+        row = guard.state.get('field:' + name, {})
+    else:
+        with guard.conn.cursor() as cursor:
+            cursor.execute('SELECT "acceptedAt", "completedAt" FROM "RecordSyncFieldWatermark" '
+                           'WHERE "dbKey"=%s AND "notionKey"=%s AND "propertyName"=%s',
+                           (guard.db_key, guard.notion_key, name))
+            row = cursor.fetchone() or {}
+    return row.get('acceptedAt') == occurred and row.get('completedAt') == occurred
+
+
 def confirm_parent_relation(gateway, wiring, event, result):
     """証拠が揃わない場合は未完了のまま。外部への書込や候補推測は行わない。"""
-    if result.skipped or event.db_key not in {'contact', 'action'}:
+    if event.db_key not in {'contact', 'action'}:
         return False
     skipped = [item for item in result.properties if item.skipped_tools]
     relations = ZOHO_RELATIONS[event.db_key]
-    if len(relations) != 1 or not skipped:
+    if len(relations) != 1:
         return False
     name, parent_key = next(iter(relations.values()))
     prop = next((p for p in get_schema(event.db_key).properties if p.name == name), None)
     if not prop or prop.property_type is not PropertyType.RELATION or prop.relation_target != parent_key:
         return False
     allowed = {Tool.ZOHO} | ({Tool.KINTONE} if event.db_key == 'action' else set())
+    # 所属だけの再配送は、既に同時刻で完了していると通常同期が省略する。
+    # 他の項目を含む省略は成功扱いせず、この関連を再び実物照合する。
+    already_completed = (result.skipped and result.reason == 'stale_event'
+                         and set(event.properties) == {name}
+                         and event.expected_source_properties == event.properties)
+    if result.skipped and not already_completed:
+        return False
+    if not skipped and not already_completed:
+        return False
     if any(item.property_name != name or item.related_db_key or item.related_notion_key
            or item.review_pending or item.registration_pending_tools
            or not item.skipped_tools <= allowed for item in skipped):
@@ -71,6 +92,8 @@ def confirm_parent_relation(gateway, wiring, event, result):
         guard = guards[event.db_key, event.external_id]
         if guard.rejects(event.occurred_at):
             return False
+        if already_completed and not _completed_at_same_time(guard, name, event.occurred_at):
+            return False
         mapping = _mapping(store, event.db_key, event.external_id)
         parent = _mapping(store, parent_key, ids[0])
         if not mapping or not parent:
@@ -84,7 +107,7 @@ def confirm_parent_relation(gateway, wiring, event, result):
                 current.get(k) == v for k, v in event.expected_source_properties.items())
         if not source_matches():
             return False
-        tools = set().union(*(item.skipped_tools for item in skipped))
+        tools = allowed if already_completed else set().union(*(item.skipped_tools for item in skipped))
         if not all(tool in targets and _external_matches(tool, targets[tool], event.db_key, mapping, parent)
                    for tool in tools):
             return False
