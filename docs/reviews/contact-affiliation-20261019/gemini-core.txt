@@ -1,0 +1,102 @@
+1. writing 再開時における「人が解除した所属」の自動復元・重複書込み
+
+重要度: 高   
+TXT
+
+具体的な根拠:
+
+要件では「人が解除した所属を自動復元しない」「writingは外部保存の結果不明状態」と定められています。   
+TXT
+
+しかし worker.py の process 内で所属が空欄の場合に「人の解除」として released に倒す判定は、item['state'] == 'delivery_pending' のケースに限定されています。   
+TXT
+
+item['state'] == 'writing' でジョブが中断・再開した場合、前回実行時に外部保存（client.update_page）が実は成功しており、その後に人間がCRM側で誤りを修正して所属を解除（空欄化）していたとしても、contact.get('取引先マスター') が空であれば if not affiliation: の再書込みブロックに進入します。   
+TXT
+
+過去のメール根拠が残っていれば decide が再び ready を返し、client.update_page を再実行して人間が意図的に解除した所属を自動復元（上書き）してしまいます。   
+TXT
+
+情報不足の点: 外部CRM側で該当レコードの更新者や更新履歴（人間による解除か、自システムの更新か）をAPIから判別できる監査ログや履歴取得機能が存在するかどうかは、提供コードからは確認できません。   
+TXT
+
+2. company_lines の呼び出し漏れによる署名ブロック混入と誤所属リスク
+
+重要度: 高   
+TXT
+
+具体的な根拠:
+
+evidence.py の signature_evidence は、区切り線内の署名ブロックと判定されたすべての行（最大15行）をそのまま value: line[:300] として返却します。   
+TXT
+
+同ファイル内には「署名の電話・氏名行を会社名の矛盾として扱わない。完全一致の社名行だけを使う」ための company_lines(rows, masters) が定義されているにもかかわらず、mail_evidence や domain.py、worker.py から一切呼び出されていません。   
+TXT
+
+このため、氏名・電話番号・住所・肩書など署名の全行が company_name として usable に混入します。   
+TXT
+
+domain.py の decide では names = {normalized(e['company_name']) for e in usable + checks} と処理されるため、行ごとに異なる文字列で len(names) != 1 となり、正常な場合でも「所属根拠が不足または矛盾」として恒常的に判定保留となります。   
+TXT
+
+さらに、署名に含まれる役職名やビル名、関連会社名などが取引先マスターと偶然一致（または正規化一致）した場合、誤った取引先IDへ補完される「誤所属」を誘発します。   
+TXT
+
+3. origin の粒度不足による「独立2原本」判定の機能不全と推測への依存
+
+重要度: 高   
+TXT
+
+具体的な根拠:
+
+要件では「独立2原本」「本文やドメインの推測は票にしない」と規定されています。   
+TXT
+
+しかし evidence.py では、受信メールの origin が一律 'mail:counterpart-signature:' + email、送信メールが一律 'mail:our-salutation'、Zohoは 'zoho-eight'（ただし check_only: True のため除外）と固定文字列で付与されています。   
+TXT
+
+domain.py の len({e['origin'] for e in usable}) < 2 では origin の種類数しか見ていないため、同一人物から届いた日時の異なる2通の受信メール（真正な独立2原本）が存在しても、origin が1種類にしかならず「独立した原本が2つ未満」として棄却されます。   
+TXT
+
+逆に、自社側が相手の所属を推測して宛名冒頭に書いた送信メール（mail:our-salutation）と、同一スレッドの相手返信メール（mail:counterpart-signature）がある場合、同一のやり取り（依存関係のある1系統）であるにもかかわらず 2 原本と誤認されます。自社担当者の推測・入力誤りがそのまま誤所属につながるリスクがあります。   
+TXT
+他 1 件
+
+4. Zoho（check_only）における有効期限チェックの欠落と空文字混入
+
+重要度: 中   
+TXT
+
+具体的な根拠:
+
+domain.py の decide では、usable に対しては1年以内（now - timedelta(days=365) <= stamp <= now）の日時検証を実施していますが、checks（Zohoレコード）に対しては日時の検証を行っていません。   
+TXT
+
+数年前の古い異動前のZoho更新データであっても checks に残り続け、現在の最新社名と不一致を起こして正当な補完を不当に阻害します。   
+TXT
+
+また、evidence.py の zoho_evidence において、field25（ルックアップ）の値が辞書形式で name が空や None の場合でも、company_name: '' の空文字エントリが生成されて checks に追加されます。これが names に混入すると len(names) が増加し、判定が常に失敗します。   
+TXT
+他 1 件
+
+情報不足の点: Zoho APIが返却する Modified_Time のフォーマット仕様や、field25 の未設定時・削除時のレスポンス構造に関する詳細がコードからは不足しています。   
+TXT
+
+5. delivery_pending 再開時のロック解放と外部システムへの重複配送リスク
+
+重要度: 中   
+TXT
+
+具体的な根拠:
+
+worker.py では with ExitStack() as stack: の排他ロック（record_lock）を抜けた後に、外部システム連携である gateway.dispatch('contact', key, patch, ...) を実行しています。   
+TXT
+
+ジョブが delivery_pending 状態で中断し再開された場合、前回の実行で配送処理（別システムへの通知やAPI呼出し）がすでに外部へ送出されていたとしても、再開時に無条件で再度 gateway.dispatch が呼び出されます。   
+TXT
+
+原本APIとDBが別システムである環境において、配送処理の冪等性を担保するリクエストIDや配送履歴の確認機構が存在しないため、再開時に外部システムへの二重配送・重複書込みが発生します。   
+TXT
+
+情報不足の点: JobGateway.dispatch が外部APIに対して冪等性（Idempotency Key等の利用）を担保しているか、および Repository.save が conn のトランザクションをどのタイミングでコミットしているか（自動コミットか否か）の実装詳細がコードに含まれていません。   
+TXT
