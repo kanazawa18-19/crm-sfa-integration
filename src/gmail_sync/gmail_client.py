@@ -184,6 +184,8 @@ class GmailMessage:
     body_text: str | None = None
     cc_header: str | None = None
     message_id_header: str | None = None
+    # 統合保留時だけ取得する原文。判定用の本文抽出とは分離する。
+    raw_message: str | None = None
 
 
 def _header_value(headers: list[dict[str, Any]], name: str) -> str | None:
@@ -286,6 +288,19 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
         history_id=latest_history_id,
         message_history_ids=message_history_ids,
     )
+
+
+def get_raw_message(access_token: str, message_id: str) -> str:
+    response = request_with_retry(
+        'GET', f'{_GMAIL_API_BASE}/messages/{message_id}',
+        headers={'Authorization': f'Bearer {access_token}'}, params={'format': 'raw'},
+        max_rate_limit_retries=current_max_rate_limit_retries(),
+    )
+    raise_for_error(response, GmailApiError)
+    data = response.json()
+    if data.get('id') != message_id or not isinstance(data.get('raw'), str) or not data['raw']:
+        raise RuntimeError('保留メールの原文を取得できません')
+    return data['raw']
 
 
 def get_message(access_token: str, message_id: str) -> GmailMessage:

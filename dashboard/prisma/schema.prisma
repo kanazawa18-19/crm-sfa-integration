@@ -196,6 +196,25 @@ model RepGmailConnection {
 // 連絡先とのメール送受信ログ(2026-08-16、Gmail連携移管)。Notion側はAPIレート制限・
 // 件数の都合上生ログは持たず、連絡先ページには「最終メール日時」等のロールアップの
 // みを書き込む(src/gmail_sync/参照)。gmailMessageIdでの重複排除はPython側で行う。
+// 統合保留中のメール。抽出不能の原文は完了後も監査用に保持する。
+model GmailDeferredMessage {
+  repEmail String
+  gmailMessageId String
+  contactPageId String
+  contactEmail String
+  message Json
+  internalDomains Json
+  state String @default("pending")
+  attempts Int @default(0)
+  lastErrorType String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @default(now()) @db.Timestamptz
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz
+  completedAt DateTime? @db.Timestamptz
+  @@id([repEmail, gmailMessageId])
+  @@index([state, nextAttemptAt], map: "GmailDeferredMessage_due_idx")
+}
+
 model EmailLog {
   id               String    @id @default(cuid())
   // Notion連絡先DB(3b4d8ea8-d4f3-808d-9853-d9cdd3de39ae)のpage_id。

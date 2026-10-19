@@ -995,3 +995,9 @@ def test_sync_rep_incremental_passes_the_deadline_to_the_full_scan_fallbacks(mon
     )
 
     assert seen == [50.0, 60.0]
+
+
+@pytest.fixture(autouse=True)
+def _isolated_contact_guard(monkeypatch):
+    from contextlib import nullcontext
+    monkeypatch.setattr(sync, "contact_record_guard", lambda page_id, contact_email="": nullcontext(page_id))

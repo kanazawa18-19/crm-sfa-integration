@@ -1,0 +1,7 @@
+crm-email-preservation-review.txt crm-completion-review-followup.txt
+      - generic: "+1"
+    - generic: 各ファイルを開くボタンが表示されます — Tabキーを押してカードにフォーカスを移動し、Escapeキーで戻ります。
+  - status
+- status
+- status
+- region "Notifications"

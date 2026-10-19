@@ -58,3 +58,9 @@ def test_保存後失敗を再送で再開する(monkeypatch):
     assert len(delivered) == 1
     assert sync.record_message(message, 'rep@example.com', client, **kwargs) is False
     assert len(delivered) == 1
+
+
+@pytest.fixture(autouse=True)
+def _isolated_contact_guard(monkeypatch):
+    from contextlib import nullcontext
+    monkeypatch.setattr(sync, "contact_record_guard", lambda page_id, contact_email="": nullcontext(page_id))

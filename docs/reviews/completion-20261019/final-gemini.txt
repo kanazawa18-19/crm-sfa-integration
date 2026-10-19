@@ -1,0 +1,310 @@
+button "crm-final-completion-review.txt":
+    - generic: TXT
+    - generic: crm-final-completion-review
+  - heading "あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。" [level=5]
+  - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - heading "判定一覧" [level=3]
+  - list:
+    - paragraph:
+      - generic: "BLOCKER: 0件（前回B1の統合待ちによるGmail全体停止、および既反映リレーションの永久partialは適切に解消されており、致命的欠陥なし）"
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "WARN: 3件（マイグレーションの先行配備、cron実行時間枠とdrain予算の兼ね合い、旧バックフィルCLIの並行抑止）"
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "INFO: 3件（本文抽出不可原文の長期保管管理、kintone親取引先名の完全一致仕様、Window関数のインデックス最適化）"
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - heading "レビュー詳細" [level=3]
+  - heading "【BLOCKER検証結果】該当なし（解消確認）" [level=4]
+  - list:
+    - paragraph:
+      - text: B1（連絡先統合中の保留によるGmail同期全体停止）の完全解消
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "保全と履歴前進の整合性:"
+        - code: RecordSyncBusy
+        - text: 発生時に
+        - code: DeferredContactBusy
+        - text: を介して MIME 原文付きで
+        - code: GmailDeferredMessage
+        - text: へ永続化される
+        - superscript
+        - text: 。DB保存が失敗した場合は例外が伝播して Gmail の
+        - code: historyId
+        - text: を進めず、保存成功時のみ
+        - code: DEFERRED
+        - text: （falsy）を返して後続メールの処理を続行し、正常に
+        - code: historyId
+        - text: を前進させる挙動が担保されている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt、TXT: crm-final-completion-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - paragraph:
+        - text: "公平な再開と二重作成抑止: 5分 cron の"
+        - code: drain()
+        - text: では、
+        - code: row_number() OVER (PARTITION BY "contactPageId" ...)
+        - text: により連絡先ごとに1件ずつ公平に処理される
+        - superscript
+        - text: 。また、再開時は
+        - code: atomic_insert=True
+        - text: で実行され、
+        - code: GmailIngestEffect
+        - text: の効果印（
+        - code: incidentAttempted
+        - text: ","
+        - code: notionDone
+        - text: ","
+        - code: engagementAttempted
+        - text: ）を確認・記録しながら進めるため、中断・再試行時にもログや通知の二重生成が発生しない
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt、TXT: crm-final-completion-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph:
+      - text: 既反映リレーションの永久 partial 解消
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - generic: "安全な読み戻しと原本保護: 対象を連絡先・アクションの親取引先（Zoho lookup / kintone 顧客名）に限定し、対象と親の双方の排他ロックをソート順で取得してデッドロックを防止している"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "TOCTOU対策: 外部API照会の前後で Notion 原本（"
+        - code: _last_edited_time
+        - text: および期待プロパティ）の完全一致を2度確認（
+        - code: source_matches()
+        - text: ）しており、外部照会中の第三者編集による誤認更新が厳格に遮断されている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "単調更新: 対象フィールドの完了 watermark のみを"
+        - code: guard.save_fields([name], ..., completed=True)
+        - text: で記録し、レコード全体の更新時刻を汚染しない安全な実装となっている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【WARN】" [level=4]
+  - list:
+    - paragraph:
+      - text: DBマイグレーションの先行配備徹底（
+      - code: 20261019000000_gmail_deferred_message
+      - text: ）
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象: 新キューは"
+        - code: GmailDeferredMessage
+        - text: テーブルへの INSERT を前提としている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "リスク: アプリケーションコードを先行してデプロイした場合、連絡先の統合と Gmail 同期が競合した瞬間にテーブル未存在エラー（"
+        - code: UndefinedTable
+        - text: ）が発生し、例外によって
+        - code: sync_rep_incremental
+        - text: の履歴前進がブロックされる
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "対策: ドキュメント記載の通り、必ず本番 DB へマイグレーションを適用してからアプリケーションをリリースする手順を厳守すること"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - text: 既存 5分 cron 枠内での
+      - code: drain
+      - text: 実行予算と関数タイムアウト
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象:"
+        - code: drain(seconds=45)
+        - text: は開始予算として 45秒 を割り当てており、各メールにも最大 10秒 の HTTP 予算が設定されている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "リスク: 既存 cron（"
+        - code: gmail-late-registration
+        - text: ）と同一ハンドラ内で直列実行される場合、前段の処理遅延と合算されてサーバーレス関数全体のタイムアウト（Vercel等の上限）に抵触し、プロセスが強制終了される懸念がある
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "対策: cron ハンドラ側で「関数の残り実行時間」を算出し、残り時間から安全マージンを差し引いた秒数を"
+        - code: drain(seconds=...)
+        - text: に渡す動的予算制御を導入すること。
+    - paragraph:
+      - text: 旧バックフィルスクリプトの並行実行禁止の徹底
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象:"
+        - code: scripts/backfill_gmail_history.py
+        - text: は共通統合鍵（
+        - code: contact_record_guard
+        - text: ）や新保留キューを経由しない
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "リスク: 連絡先統合や新キューの稼働中にバックフィル CLI を手動実行すると、統合中の排他制御をすり抜けてメールが保存され、データ不整合や重複保存の原因となる"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "対策: ドキュメントの注意喚起に加え、CLI スクリプトの冒頭で実行時警告を出すか、不要であればスクリプト自体を非推奨化・アーカイブすること"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【INFO】" [level=4]
+  - list:
+    - paragraph:
+      - text: 本文抽出不可メールの原文MIME保持と容量管理
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "確認結果: 正常に本文が抽出できたメールは完了時に"
+        - code: "message = '{}'"
+        - text: でクリアされ、抽出不可のメールのみ将来の全文回収・監査用に原文MIMEが保持される設計となっており、個人情報・DB容量の最小化方針に沿っている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "推奨: 抽出不可メールが将来的に大量蓄積した場合に備え、定期的な保留件数監視（"
+        - code: health()
+        - text: の
+        - code: deferred_pending_count
+        - text: 等）とパージ方針を運用手順に定めておくと安全である
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - text: kintone親取引先名の完全一致照合の特性
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "確認結果: kintone のアクションには親取引先ID欄がないため、対応表で特定した親レコードの"
+        - code: 顧客名
+        - text: とアクション側の
+        - code: client_name
+        - text: の完全一致で検証している
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "特性: 表記揺れやスペースの差異がある場合は意図通り"
+        - code: partial
+        - text: のまま保留されるため誤認登録の危険はないが、運用上解消されない場合はCRM側の取引先名表記の確認が必要となる
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - text: 保留キュー抽出クエリ（
+      - code: _due
+      - text: ）のインデックス最適化
+      - superscript
+      - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "確認結果:"
+        - code: _due
+        - text: では
+        - code: PARTITION BY "contactPageId" ORDER BY "nextAttemptAt", "createdAt"
+        - text: の Window 関数が用いられている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "推奨: 保留レコードが増加した際のクエリ遅延（statement_timeout 5秒抵触）を防ぐため、"
+        - code: ("state", "nextAttemptAt", "contactPageId")
+        - text: を含む複合インデックスがマイグレーション側で適切に貼られているか確認しておくことが望ましい
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-final-completion-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"
+- generic: 音声入力 (⌘⇧D)

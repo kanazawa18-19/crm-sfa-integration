@@ -147,7 +147,7 @@ class NotionMergeGateway:
         target_blocks = [copy_block(block) for block in self.blocks(db_key, target_id)]
         from src.hub_creation.creation_payload import ZOHO_RELATIONS
         single_relations = {name for name, _ in ZOHO_RELATIONS.get(db_key, {}).values()} if mappings[1].zoho_id else set()
-        return {'dbKey': db_key, 'sourceId': source_id, 'targetId': target_id,
+        snapshot = {'dbKey': db_key, 'sourceId': source_id, 'targetId': target_id,
                 'singleRelations': sorted(single_relations),
                 'unionFields': [p.name for p in get_schema(db_key).properties if p.property_type in {PropertyType.RELATION, PropertyType.MULTI_SELECT} and p.name not in single_relations],
                 'source': self.values(db_key, source), 'target': self.values(db_key, target),
@@ -156,6 +156,10 @@ class NotionMergeGateway:
                 'children': self.children(db_key, source_id), 'reciprocals': self.reciprocals(db_key),
                 'mappings': [{key: value for key, value in asdict(mapping).items() if key != 'last_synced_at'} if mapping else None for mapping in mappings],
                 'aliases': {'notion': source_id, 'zoho': mappings[0].zoho_id if mappings[0] else None, 'kintone': mappings[0].kintone_id if mappings[0] else None}}
+        if db_key == 'contact':
+            from src.record_merge.email_history import snapshot as email_snapshot
+            snapshot['emailHistory'] = email_snapshot(source_id, target_id)
+        return snapshot
 
     def plan(self, snapshot, choices):
         db_key, target_id, source_id = snapshot['dbKey'], snapshot['targetId'], snapshot['sourceId']
@@ -167,7 +171,13 @@ class NotionMergeGateway:
                 if linked & {source_id, target_id}:
                     raise MergeHeld('同じDB内で統合元・先を相互参照しています。関連を個別に確認してください')
         unions = set(snapshot['unionFields'])
-        desired = choose_properties(snapshot['source'], snapshot['target'], choices, union_fields=unions)
+        source_values, target_values = dict(snapshot['source']), dict(snapshot['target'])
+        if 'emailHistory' in snapshot:
+            from src.record_merge.email_history import notion_date
+            latest = notion_date(source_values.get('最終メール日時'), target_values.get('最終メール日時'),
+                                 snapshot['emailHistory']['latest'])
+            source_values['最終メール日時'] = target_values['最終メール日時'] = latest
+        desired = choose_properties(source_values, target_values, choices, union_fields=unions)
         for name in snapshot.get('singleRelations', []):
             if len(desired.get(name) or []) > 1:
                 raise MergeHeld('外部の単一関連欄に残す1件を確認してください: ' + name)
@@ -176,6 +186,11 @@ class NotionMergeGateway:
                 desired[prop.name] = replace_relation(desired[prop.name] or [], source_id, target_id)
         steps = [{'kind': 'properties', 'dbKey': db_key, 'id': target_id,
                   'before': snapshot['target'], 'desired': desired}]
+        if 'emailHistory' in snapshot:
+            # Notionの日時表記（Z・小数秒・時差）の違いを値の変更と誤認しない。
+            steps[0]['emailLatestManaged'] = True
+            steps[0]['before'] = {**snapshot['target'],
+                                  '最終メール日時': notion_date(snapshot['target'].get('最終メール日時'))}
         if snapshot['sourceBlocks']:
             steps.append({'kind': 'append_body', 'dbKey': db_key, 'id': target_id,
                           'before': snapshot['targetBlocks'], 'desired': snapshot['sourceBlocks']})
@@ -189,12 +204,18 @@ class NotionMergeGateway:
                     intermediate = list(dict.fromkeys(intermediate + [target_id]))
             steps.append({'kind': 'relation', **child, 'intermediate': intermediate,
                           'desired': replace_relation(child['before'], source_id, target_id)})
+        if 'emailHistory' in snapshot:
+            from src.record_merge.email_history import make_step
+            steps.append(make_step(source_id, target_id, snapshot['emailHistory']))
         steps.append({'kind': 'archive', 'dbKey': db_key, 'id': source_id, 'before': False, 'desired': True})
         return steps
 
 
     def verify_identity(self, job):
         snapshot = job['snapshot']
+        if 'emailHistory' in snapshot:
+            from src.record_merge.email_history import make_step, read
+            read(make_step(job['sourceId'], job['targetId'], snapshot['emailHistory']))
         for identifier, expected in zip((job['sourceId'], job['targetId']), snapshot['mappings']):
             mapping = self.store.get(identifier)
             actual = {key: value for key, value in asdict(mapping).items() if key != 'last_synced_at'} if mapping else None
@@ -229,6 +250,9 @@ class NotionMergeGateway:
             raise MergeHeld('比較後に統合元の本文が変わりました')
 
     def read(self, step):
+        if step['kind'] == 'email_history':
+            from src.record_merge.email_history import read
+            return read(step)
         raw = self.page(step['dbKey'], step['id'])
         if step['kind'] == 'archive':
             return bool(raw.get('archived') or raw.get('in_trash'))
@@ -237,10 +261,18 @@ class NotionMergeGateway:
         if step['kind'] == 'relation':
             return parse_notion_property_value(raw['properties'][step['property']])
         if step['kind'] == 'properties':
-            return self.values(step['dbKey'], raw)
+            values = self.values(step['dbKey'], raw)
+            if step.get('emailLatestManaged'):
+                from src.record_merge.email_history import notion_date
+                values['最終メール日時'] = notion_date(values.get('最終メール日時'))
+            return values
         raise MergeHeld('手順の読取り形式が不正です')
 
     def write(self, step):
+        if step['kind'] == 'email_history':
+            from src.record_merge.email_history import write
+            write(step)
+            return
         client = self.clients[step['dbKey']]
         if step['kind'] == 'archive':
             client.archive_page(step['id'])
@@ -274,6 +306,10 @@ class NotionMergeGateway:
 
     def verify_archive_ready(self, job):
         self.verify_identity(job)
+        if job['dbKey'] == 'contact' and 'emailHistory' not in job['snapshot']:
+            from src.record_merge.email_history import snapshot as email_snapshot
+            if email_snapshot(job['sourceId'], job['targetId'])['rows']:
+                raise MergeHeld('旧計画にメール履歴の保持手順がありません。元を保持して比較し直してください')
         for step in job['steps']:
             if step['kind'] != 'archive':
                 self.verify_completed(step)

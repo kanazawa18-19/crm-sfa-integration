@@ -1,0 +1,147 @@
+742 container 8件中8件目のメッセージ
+									743 container
+										753 heading Claude の応答：結論として、根拠のあるBLOCKERは見つかりませんでした。, Value: 2
+											754 text Claude の応答：結論として、根拠のあるBLOCKERは見つかりませんでした。
+										755 container Cataloguing fairness, dedupe, and logging gaps across warnings.
+											756 text Cataloguing fairness, dedupe, and logging gaps across warnings.
+											757 button (collapsed) Cataloguing fairness, dedupe, and logging gaps across warnings., Secondary Actions: Expand
+										747 text Cataloguing fairness, dedupe, and logging gaps across warnings. 結論として、根拠のあるBLOCKERは見つかりませんでした。 前回のB1（統合待ちで担当者のGmail取込全体が止まる問題）は解消を確認しました。
+										758 text ・原文の保全に失敗した場合は historyId を進めない
+										759 text ・保全できた場合だけ次のメールへ進む
+										760 text この二つが実装とテスト（test_保全成功のみ履歴を進め次のメールへ進む）の両方で担保されています。 再開処理も問題ありません。保留キューは原子的保存と効果印の経路で処理され、完了直後に停止しても二重記録・二重通知になりません。親関連の読み戻しも、不一致や読取失敗はすべて partial に残す安全側の設計です。 以下はデータ喪失には至らないものの、修正の効果や運用に影響する点です。
+										761 table
+											762 row
+												763 cell
+													764 text ID
+												765 cell
+													766 text 区分
+												767 cell
+													768 text 箇所
+												769 cell
+													770 text 概要
+											771 row
+												772 cell
+													773 text W1
+												774 cell
+													775 text WARN
+												776 cell
+													777 text relation_readback.source_matches
+												778 cell
+													779 text 原本の一致を厳密等値で判定しており、永久 partial が解消されないおそれ
+											780 row
+												781 cell
+													782 text W2
+												783 cell
+													784 text WARN
+												785 cell
+													786 text contact_record_guard
+												787 cell
+													788 text 一時的な鍵の競合もすべて保留キュー行きになり、通常メールが5分以上遅れる
+											789 row
+												790 cell
+													791 text W3
+												792 cell
+													793 text WARN
+												794 cell
+													795 text deferred.drain / _due
+												796 cell
+													797 text 統合完了後の滞留解消が1連絡先あたり5分に1件で、インシデント通知が数時間遅れうる
+											798 row
+												799 cell
+													800 text W4
+												801 cell
+													802 text WARN
+												803 cell
+													804 text deferred.health
+												805 cell
+													806 text 正当な統合保留でも警告になり、本物の停滞が埋もれる。失敗に終端がない
+											807 row
+												808 cell
+													809 text W5
+												810 cell
+													811 text WARN
+												812 cell
+													813 text 通常経路と保留キューの併走
+												814 cell
+													815 text 保留中のメールを通常経路が先に保存すると、通知が二重になる可能性
+											816 row
+												817 cell
+													818 text I1〜I4
+												819 cell
+													820 text INFO
+												821 cell
+													822 text —
+												823 cell
+													824 text 下記参照
+										825 text W1 読み戻しの原本照合が厳密等値
+										826 text 根拠：source_matches は current.get(k) == v で比較しています。一方、同じ Gateway の find_action と update_action は same_value で比較しています。Notion の読み戻し値と送信値に表記差があることを前提にした使い分けと読めます。テストの live は送信値と同じ dict を返すため、表記差は検証されていません。
+										827 text 影響：履歴メモの改行や末尾空白、日付の表記、関連IDのハイフンなどで1項目でも差が出ると、常に False になります。安全側ではありますが、今回の目的（永久 partial の解消）が本番で達成されない可能性があります。
+										828 text もう1点、guard.rejects の実装が「同じ時刻」を拒否するかどうかも未検証です。dispatcher がすでに occurred_at でレコードの時刻を更新済みのため、等しい時刻を拒否する実装なら、同じく常に False になります。
+										829 text 修正案：
+										830 text ・比較を same_value に揃えます。
+										831 text ・Notion の実際の応答形式（ミリ秒・時差付き日付、複数セグメントの rich_text、ハイフン付きID）を使ったテストを追加します。
+										832 text ・実物の guard を使い、同じ時刻で完了できることを確認するテストを1件追加します。 W2 一時的な鍵の競合も保留扱いになる
+										833 text 根拠：contact_record_guard は RecordSyncBusy をすべて DeferredContactBusy に変換します。対象には次も含まれます。
+										834 text ・別の同期（Notion webhook の配送、同じ連絡先への並行Push）による数秒の鍵競合
+										835 text ・ガード内部で発生した RecordSyncBusy（atomic 経路の所属不一致など）
+										836 text 影響：通常のメールが、原文の再取得（最大15秒）を伴って保留され、最短でも5分遅れます。受信メールのインシデント通知も同様に遅れます。
+										837 text 修正案：統合保留（require_record_available による拒否）だけを保留キューへ回してください。鍵の一時的な競合は、短時間の再試行か、従来どおり例外として再送に任せます。 W3 統合完了後の滞留解消が遅い
+										838 text 根拠：
+										839 text ・_due は1回の実行で1連絡先につき1件だけ取り出します。
+										840 text ・統合待ちの間、各行の nextAttemptAt は最大30分まで後ろへずれていきます。
+										841 text 影響：統合が完了しても、その連絡先に100件溜まっていれば解消まで数時間かかります。その間、最終メール日時とインシデント通知が古いままです。
+										842 text 修正案：
+										843 text ・1件成功した連絡先は、同じ実行内で残り時間の許す限り続けて処理します。
+										844 text ・finish_with_aliases（または統合の取消）の時点で、該当連絡先の行の nextAttemptAt を now() に戻します。 W4 健全性指標が正常な待機と停滞を区別しない
+										845 text 根拠：overdue は createdAt から30分を超えた件数で、統合待ち（busy）と処理失敗（failed）を区別していません。また failed の行は最大30分間隔で無期限に再試行され、終端状態がありません。
+										846 text 影響：
+										847 text ・人の確認待ちで統合が数日保留されるのは正常ですが、その間ずっと warning になります。GAS 側は重複通知を抑止するため、その後に起きた本物の停滞（DB障害や恒久エラー）が新しい通知として上がりません。
+										848 text ・恒久エラーの行は、永久に warning の原因として残り続けます。
+										849 text 修正案：lastErrorType で busy と failed の件数を分けて返し、failed の試行回数が一定以上、または busy 以外の30分超過だけを warning にしてください。統合待ちは件数と最古時刻を情報として出すにとどめます。 W5 通常経路と保留キューが同じメールを処理する場合
+										850 text 根拠：保留中（pending）のメールでも、統合完了後に日次の sync_all や履歴失効時のフルスキャンが先に拾えば、非原子的経路で保存と通知が行われます。その後に保留キューが atomic 経路で同じメールを処理します。このとき insert_email_log_once が「EmailLog は既存だが効果印の行がない」状態で効果印を新規作成する実装だと、効果がすべて未完了に見え、インシデント通知と web-engagement 通知が再送されます。
+										851 text 影響：管理者への二重通知と、エンゲージメントの二重計上（insert_email_log_once の実装次第）。
+										852 text 修正案：次のいずれかで対処してください。
+										853 text ・非原子的経路で、保留中の行があるメッセージは記録せず保留キューに任せる。
+										854 text ・_process で「EmailLog が既存で効果印がない」場合は、通知せずに完了扱いにする。
+										855 text あわせて、この組合せのテストを1件追加してください。 INFO I1 本文抽出に失敗した原文MIMEを無期限に保管する設計です。顧客情報を含むため、保存期間と削除手順、閲覧権限の範囲を運用文書に明記してください。 I2 kintone の照合は顧客名の完全一致です。kintone 側に同名の顧客が複数あると判別できないため、顧客名が一意であることを前提条件として文書に記載してください。 I3 Slack 試験で project mirror の除外を解除しました。mirror は process_sync の中で test_record_scope の外側から呼ばれるため、通知抑止がかかりません。mirror が通知や外部ワークフローを起こさないことを確認してください。 I4 配備順について、マイグレーションを適用せずにコードを先に配備すると、enqueue が失敗して従来どおり履歴が止まり、drain も毎回失敗します。配備手順でマイグレーションを先行させることを明記してください。 確認できた点（問題なし）
+										856 table
+											857 row
+												858 cell
+													859 text 観点
+												860 cell
+													861 text 内容
+											862 row
+												863 cell
+													864 text 履歴の前進
+												865 cell
+													866 text 原文の取得またはDB保存が失敗した場合は例外になり、historyId を進めない。404 を削除済みとして握りつぶす経路にも入らない
+											867 row
+												868 cell
+													869 text 再投入
+												870 cell
+													871 text 同じキーへの再投入では、初回の本文・連絡先・作成時刻を保持する
+											872 row
+												873 cell
+													874 text 完了後の再配送
+												875 cell
+													876 text done になった後は _due の対象外。EmailLog 既存のメールは通常経路でも記録しない
+											877 row
+												878 cell
+													879 text 再開
+												880 cell
+													881 text atomic 保存と効果印により、完了記録の直前で停止しても二重作成・二重通知にならない
+											882 row
+												883 cell
+													884 text 公平性
+												885 cell
+													886 text 1連絡先1件のため、統合待ちが溜まった連絡先が他の連絡先を止めない
+											887 row
+												888 cell
+													889 text GAS
+												890 cell
+													891 text 保留を effect_failed として扱い、取込完了と誤認しない
+											892 row
+												893 cell
+													894 text 読み戻し
+												895 cell
+													896 text 鍵の順序固定、旧IDと統合保留の拒否、外部読取の前後で原本を再照合、外部への書込なし

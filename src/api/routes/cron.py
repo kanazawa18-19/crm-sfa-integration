@@ -405,4 +405,12 @@ def run_slack_crm_drain() -> dict[str, int]:
 def run_gmail_late_registration() -> dict[str, Any]:
     """遅延登録の過去メールを有界処理する。既定無効、通常Gmail同期とは独立。"""
     from src.gmail_sync.late_registration import run
-    return run()
+    from src.gmail_sync.deferred import drain
+    try:
+        deferred = drain()
+    except Exception:
+        # キュー障害で既存の過去メール回収まで止めない。個人情報は返さない。
+        deferred = {'status': 'failed'}
+    result = run()
+    result['deferred'] = deferred
+    return result

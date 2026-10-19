@@ -307,6 +307,8 @@ def test_gmail_sync_process_message_ref_uses_gmail_sync_actor(monkeypatch: pytes
         def update_page(self, page_id: str, properties: dict[str, Any]) -> None:
             self.captured_actors.append(get_actor())
 
+    from contextlib import nullcontext
+    monkeypatch.setattr(sync, "contact_record_guard", lambda page_id, *_: nullcontext(page_id))
     monkeypatch.setattr(sync.db, "email_log_exists", lambda message_id: False)
     monkeypatch.setattr(
         sync.gmail_client,

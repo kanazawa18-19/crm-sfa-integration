@@ -21,6 +21,7 @@ import os
 import time
 import psycopg
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Callable
@@ -179,15 +180,41 @@ def _process_message_ref(
 
 
 def record_message(message, rep_email, contact_client, *, internal_domains, atomic_insert=False,
-                   resolve_contact=None, capture_review=True):
+                   resolve_contact=None, capture_review=True, defer_busy=True):
     """照合保存失敗でも既存ログを処理し、呼出元には再取得が必要と知らせる。"""
     from src.email_review.service import safe_capture
     captured = safe_capture(message, rep_email) if capture_review else True
-    result = _record_message(message, rep_email, contact_client, internal_domains=internal_domains,
-                             atomic_insert=atomic_insert, resolve_contact=resolve_contact)
+    from src.gmail_sync.deferred import DeferredContactBusy, DEFERRED, enqueue
+    try:
+        result = _record_message(message, rep_email, contact_client, internal_domains=internal_domains,
+                                 atomic_insert=atomic_insert, resolve_contact=resolve_contact)
+    except DeferredContactBusy as exc:
+        if not defer_busy:
+            raise
+        # 保存失敗は例外のまま返す。本文を耐久保存する前にhistoryを進めない。
+        enqueue(message, rep_email, exc.page_id, exc.contact_email, internal_domains)
+        result = DEFERRED
     if not captured:
         raise RuntimeError("メール照合の保存を再試行してください")
     return result
+
+
+@contextmanager
+def contact_record_guard(page_id, contact_email=''):
+    """統合と同じ鍵を保持し、照合後に古くなった連絡先を正本へ誘導する。"""
+    from src.record_merge.aliases import resolve_alias, require_record_available
+    from src.sync_engine.record_sync_lock import acquire_record_sync_locks, RecordSyncBusy
+    from src.gmail_sync.deferred import DeferredContactBusy
+    try:
+        canonical = resolve_alias('contact', 'notion', page_id) or page_id
+        with acquire_record_sync_locks(None, {('contact', page_id), ('contact', canonical)}):
+            if (resolve_alias('contact', 'notion', page_id) or page_id) != canonical:
+                raise RecordSyncBusy('照合中に連絡先が統合されました。メール保存を再試行してください')
+            require_record_available('contact', page_id)
+            require_record_available('contact', canonical)
+            yield canonical
+    except RecordSyncBusy:
+        raise DeferredContactBusy(page_id, contact_email) from None
 
 
 def _record_message(
@@ -230,98 +257,105 @@ def _record_message(
         snippet = message.snippet
         thread_id = classified.thread_id
 
-    # インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。顧客からの
-    # 受信メールのみを対象とする(outboundは自社側の発信文面であり検知対象外)。
-    #
-    # score_email()自体もtry/exceptで隔離する(shirokuma-secレビューWARN対応、2026-08-16):
-    # keywords.pyは金沢さんが今後追記・修正しうる非エンジニア向けデータであり、正規表現の
-    # 記述ミス等で例外が飛ぶと、インシデント検知という副次機能のバグでGmail同期という
-    # 中核機能全体(EmailLog記録)が止まってしまう。失敗時は(None, None)にフォールバックして
-    # メイン処理を継続させる(notify_managers_immediate()と同じ「副次機能は失敗してもメインを
-    # 止めない」方針)。
-    incident_score = incident_score if existing_log else None
-    incident_priority = incident_priority if existing_log else None
-    if not existing_log and direction == "inbound":
-        try:
-            incident_score, incident_priority = score_email(subject, snippet)
-        except Exception:
-            logger.exception("gmail_sync: failed to score incident for %s", matched_email)
+    with contact_record_guard(matched_contact_id, matched_email) as guarded_contact_id:
+        matched_contact_id = guarded_contact_id
+        # インシデント・アクシデント検知(2026-08-16、src/incident_detection/)。顧客からの
+        # 受信メールのみを対象とする(outboundは自社側の発信文面であり検知対象外)。
+        #
+        # score_email()自体もtry/exceptで隔離する(shirokuma-secレビューWARN対応、2026-08-16):
+        # keywords.pyは金沢さんが今後追記・修正しうる非エンジニア向けデータであり、正規表現の
+        # 記述ミス等で例外が飛ぶと、インシデント検知という副次機能のバグでGmail同期という
+        # 中核機能全体(EmailLog記録)が止まってしまう。失敗時は(None, None)にフォールバックして
+        # メイン処理を継続させる(notify_managers_immediate()と同じ「副次機能は失敗してもメインを
+        # 止めない」方針)。
+        incident_score = incident_score if existing_log else None
+        incident_priority = incident_priority if existing_log else None
+        if not existing_log and direction == "inbound":
+            try:
+                incident_score, incident_priority = score_email(subject, snippet)
+            except Exception:
+                logger.exception("gmail_sync: failed to score incident for %s", matched_email)
 
-    insert_values = dict(
-        contact_page_id=matched_contact_id,
-        contact_email=matched_email,
-        rep_email=rep_email,
-        gmail_message_id=message.id,
-        direction=direction,
-        subject=subject,
-        snippet=snippet,
-        sent_at=sent_at,
-        incident_score=incident_score,
-        incident_priority=incident_priority,
-        gmail_thread_id=thread_id,
-    )
-    if atomic_insert:
-        inserted = db.insert_email_log_once(**insert_values)
-        effect = db.gmail_ingest_effect_status(message.id)
-        if effect is None:
-            return False
-        if not inserted and not existing_log:
-            saved = db.get_email_log(message.id)
-            if saved is None:
-                raise RuntimeError('保存済みメールを読めません')
-            matched_contact_id = saved['contactPageId']
-            matched_email = saved['contactEmail']
-            rep_email = saved['repEmail']
-            direction = saved['direction']
-            sent_at = ensure_utc(saved['sentAt'])
-            incident_score = saved['incidentScore']
-            incident_priority = saved['incidentPriority']
-            subject = saved['subject']
-            snippet = saved['snippet']
-    else:
-        try:
-            db.insert_email_log(**insert_values)
-        except psycopg.errors.UniqueViolation:
-            return False
-    # rep_email（同期対象の営業担当）をactorLabelとして記録する（obasan-qualityレビュー
-    # WARN対応、2026-08-17。db.insert_email_log()に既に渡している値と同じ）。
-    if incident_priority == "high" and (
-        not atomic_insert or db.claim_gmail_ingest_notification(message.id, 'incidentAttempted')
-    ):
-        # 副次通知は失敗してもメイン処理(EmailLog記録)に影響させない
-        # (notify_web_engagement_toolと同じ方針。notify_managers_immediate自体も内部で
-        # try/exceptしているが、ここでも隔離しておくことで呼び出し側の想定漏れに備える)。
-        try:
-            notify_managers_immediate(
-                subject=subject,
-                snippet=snippet,
-                contact_email=matched_email,
-                rep_email=rep_email,
-                score=incident_score or 0,
-            )
-        except Exception:
-            logger.exception("gmail_sync: failed to notify managers of incident for %s", matched_email)
-    elif atomic_insert and incident_priority != "high":
-        db.claim_gmail_ingest_notification(message.id, 'incidentAttempted')
-
-    if not atomic_insert or not effect['notionDone']:
-        with db.locked_latest_email_at(matched_contact_id) as latest:
-            with set_actor("gmail_sync", label=rep_email):
-                contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: ensure_utc(latest).isoformat()})
-        if atomic_insert:
-            db.mark_gmail_ingest_effect(message.id, 'notionDone')
-
-    if not atomic_insert or db.claim_gmail_ingest_notification(message.id, 'engagementAttempted'):
-        notify_web_engagement_tool(
+        insert_values = dict(
+            contact_page_id=matched_contact_id,
             contact_email=matched_email,
+            rep_email=rep_email,
+            gmail_message_id=message.id,
             direction=direction,
-            sent_at=sent_at,
             subject=subject,
             snippet=snippet,
-            rep_email=rep_email,
+            sent_at=sent_at,
+            incident_score=incident_score,
+            incident_priority=incident_priority,
+            gmail_thread_id=thread_id,
         )
+        if atomic_insert:
+            inserted = db.insert_email_log_once(**insert_values)
+            effect = db.gmail_ingest_effect_status(message.id)
+            if effect is None:
+                return False
+            if not inserted and not existing_log:
+                saved = db.get_email_log(message.id)
+                if saved is None:
+                    raise RuntimeError('保存済みメールを読めません')
+                from src.record_merge.aliases import resolve_alias
+                saved_contact = resolve_alias('contact', 'notion', saved['contactPageId']) or saved['contactPageId']
+                if saved_contact != guarded_contact_id:
+                    from src.sync_engine.record_sync_lock import RecordSyncBusy
+                    raise RecordSyncBusy('並行保存したメールの所属が異なります。正本で再試行してください')
+                matched_contact_id = saved_contact
+                matched_email = saved['contactEmail']
+                rep_email = saved['repEmail']
+                direction = saved['direction']
+                sent_at = ensure_utc(saved['sentAt'])
+                incident_score = saved['incidentScore']
+                incident_priority = saved['incidentPriority']
+                subject = saved['subject']
+                snippet = saved['snippet']
+        else:
+            try:
+                db.insert_email_log(**insert_values)
+            except psycopg.errors.UniqueViolation:
+                return False
+        # rep_email（同期対象の営業担当）をactorLabelとして記録する（obasan-qualityレビュー
+        # WARN対応、2026-08-17。db.insert_email_log()に既に渡している値と同じ）。
+        if incident_priority == "high" and (
+            not atomic_insert or db.claim_gmail_ingest_notification(message.id, 'incidentAttempted')
+        ):
+            # 副次通知は失敗してもメイン処理(EmailLog記録)に影響させない
+            # (notify_web_engagement_toolと同じ方針。notify_managers_immediate自体も内部で
+            # try/exceptしているが、ここでも隔離しておくことで呼び出し側の想定漏れに備える)。
+            try:
+                notify_managers_immediate(
+                    subject=subject,
+                    snippet=snippet,
+                    contact_email=matched_email,
+                    rep_email=rep_email,
+                    score=incident_score or 0,
+                )
+            except Exception:
+                logger.exception("gmail_sync: failed to notify managers of incident for %s", matched_email)
+        elif atomic_insert and incident_priority != "high":
+            db.claim_gmail_ingest_notification(message.id, 'incidentAttempted')
 
-    return inserted if atomic_insert else True
+        if not atomic_insert or not effect['notionDone']:
+            with db.locked_latest_email_at(matched_contact_id) as latest:
+                with set_actor("gmail_sync", label=rep_email):
+                    contact_client.update_page(matched_contact_id, {_LAST_EMAIL_AT_PROPERTY: ensure_utc(latest).isoformat()})
+            if atomic_insert:
+                db.mark_gmail_ingest_effect(message.id, 'notionDone')
+
+        if not atomic_insert or db.claim_gmail_ingest_notification(message.id, 'engagementAttempted'):
+            notify_web_engagement_tool(
+                contact_email=matched_email,
+                direction=direction,
+                sent_at=sent_at,
+                subject=subject,
+                snippet=snippet,
+                rep_email=rep_email,
+            )
+
+        return inserted if atomic_insert else True
 
 
 def _process_message_ref_or_skip(

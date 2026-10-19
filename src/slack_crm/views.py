@@ -102,6 +102,7 @@ def project_form(project: dict[str, Any]) -> dict[str, Any]:
     blocks: list[dict[str, Any]] = [_section(f"*{_display(project.get('案件名'))}* の変更")]
     if snapshot["営業ステータス"] in ACTIVE_STATUSES:
         blocks.append(_select("営業ステータス", "status", "status_value", status_values, snapshot["営業ステータス"]))
+        blocks.append(_section("営業ステータスはNotion・Zoho・シートへ保存します。kintoneへの反映は、この画面では「連絡済み」のみ対応しています。"))
     else:
         blocks.append(_section("契約・失注・解約後の状態変更はCRM画面で行ってください。"))
     date_element: dict[str, Any] = {"type": "datepicker", "action_id": "next_date"}
@@ -176,6 +177,8 @@ def preview_view(*, actor_id: str, kind: str, target_id: str, expected: dict[str
              for key, value in changes.items()]
     if kind == "action_create":
         lines.append(f"取引先: {_display(expected.get('取引先表示名') or expected.get('取引先マスター'))}")
+    if kind == "project_update" and "営業ステータス" in changes and changes["営業ステータス"] != "連絡済み":
+        lines.append("kintoneの営業ステータスは変更されません。Notion・Zoho・シートへ保存します。")
     return _modal("保存内容を確認", "crm_preview", [
         _section("\n".join(lines)),
     ], metadata={"actor_id": actor_id, "kind": kind, "target_id": target_id,

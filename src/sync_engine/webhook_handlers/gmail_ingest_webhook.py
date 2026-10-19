@@ -127,6 +127,10 @@ def _process_logged_message(message, rep_email, client, resolve, dry_run: bool) 
         message, rep_email, client, internal_domains=sync.internal_domains_from_env(),
         atomic_insert=True, resolve_contact=resolve, capture_review=False,
     )
+    from src.gmail_sync.deferred import DEFERRED
+    if inserted is DEFERRED:
+        # GAS側の失敗IDも保持する。耐久保留を本取込み成功と数えない。
+        return 'effect_failed'
     if inserted:
         return 'inserted'
     if effect_before:

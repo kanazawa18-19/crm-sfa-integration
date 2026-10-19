@@ -283,5 +283,17 @@ class Gateway:
         occurred = datetime.fromisoformat(raw["last_edited_time"].replace("Z", "+00:00"))
         event = SyncEvent(source_tool=Tool.NOTION, db_key=key, external_id=page_id, occurred_at=occurred,
                           properties=properties, expected_source_properties=properties)
-        result = get_production_wiring().dispatcher.dispatch(event)
-        return "partial" if result.skipped or result.has_partial_skips else "delivered"
+        wiring = get_production_wiring()
+        result = wiring.dispatcher.dispatch(event)
+        if not result.skipped and not result.has_partial_skips:
+            return 'delivered'
+        from src.email_review.relation_readback import confirm_parent_relation
+        from src.infrastructure.http_budget import http_budget
+        try:
+            with http_budget(30):
+                if confirm_parent_relation(self, wiring, event, result):
+                    return 'delivered'
+        except Exception:
+            # 読取・鍵・時刻の確認に失敗した場合も、未配送として次回へ残す。
+            pass
+        return 'partial'

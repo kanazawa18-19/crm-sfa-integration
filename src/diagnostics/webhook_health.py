@@ -173,7 +173,13 @@ def read_gmail_observation(now):
             JOIN "GmailIngestObservation" s ON s."eventId"=o."scanId" || ':started:0'
             WHERE o.phase='complete' AND s.evidence->>'observationKind'='natural'
             AND lower(s.evidence->>'repEmail')=%s ORDER BY o."receivedAt" DESC LIMIT 1''', (owner,)).fetchone()
-    return evaluate_gmail_observation(row['last'] if row else None, now=now)
+    result = evaluate_gmail_observation(row['last'] if row else None, now=now)
+    from src.gmail_sync.deferred import health
+    deferred = health()
+    result.update(deferred)
+    if deferred['deferred_overdue_count']:
+        result.update(status='warning', reason='統合待ちメールの保存保留が30分を超えています')
+    return result
 
 
 def collect_webhook_health() -> dict:

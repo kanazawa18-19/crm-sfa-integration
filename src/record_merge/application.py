@@ -88,10 +88,19 @@ def validate_plan(snapshot, steps):
     for index, step in enumerate(steps):
         if (step['dbKey'], step['id']) not in allowed:
             raise MergeHeld('比較していない対象へは書き込めません')
-        if step['kind'] not in {'properties', 'relation', 'append_body', 'archive'}:
+        if step['kind'] not in {'properties', 'relation', 'append_body', 'archive', 'email_history'}:
             raise MergeHeld('未対応の統合手順です')
+        if step['kind'] == 'email_history':
+            from src.record_merge.email_history import make_step
+            if (snapshot['dbKey'] != 'contact' or 'emailHistory' not in snapshot
+                    or index != len(steps)-2
+                    or step != make_step(source, target, snapshot['emailHistory'])):
+                raise MergeHeld('承認したメール履歴以外は移管できません')
         if step['kind'] == 'archive' and (index != len(steps)-1 or step['id'] != source):
             raise MergeHeld('統合元以外はアーカイブできません')
         if step['kind'] in {'properties', 'append_body'} and step['id'] != target:
             raise MergeHeld('統合先以外の内容は変更できません')
+    if 'emailHistory' in snapshot:
+        if snapshot['dbKey'] != 'contact' or sum(s['kind'] == 'email_history' for s in steps) != 1:
+            raise MergeHeld('メール履歴の保持手順がありません')
     return digest({'snapshot': snapshot, 'steps': steps})

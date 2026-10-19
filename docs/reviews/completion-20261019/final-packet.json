@@ -1,0 +1,16 @@
+{
+  "bytes": 80209,
+  "sha256": "bc16e7ee2c09d38105848de21667b5fee2f826dcff3d76e2910e516a5dbf21b3",
+  "secret_scan": "pass",
+  "customer_data": "none",
+  "files": [
+    "src/gmail_sync/deferred.py",
+    "src/gmail_sync/sync.py",
+    "src/email_review/relation_readback.py",
+    "src/email_review/gateway.py",
+    "tests/gmail_sync/test_deferred.py",
+    "tests/email_review/test_relation_readback.py",
+    "docs/reviews/completion-20261019/gmail-deferred-operations.md",
+    "docs/reviews/completion-20261019/email-relation-readback.md"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "bytes": 83356,
+  "sha256": "a3de8ab8a2e32cbd9f846e5163ac5369be2259bbe3ca14b6db669cb0982ce912",
+  "secret_scan": "pass",
+  "customer_data": "none",
+  "files": [
+    "src/record_merge/email_history.py",
+    "src/record_merge/notion_gateway.py",
+    "src/record_merge/application.py",
+    "src/gmail_sync/sync.py",
+    "tests/record_merge/test_email_history.py",
+    "tests/gmail_sync/test_contact_merge_guard.py",
+    "src/slack_crm/views.py"
+  ]
+}

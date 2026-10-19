@@ -1,0 +1,281 @@
+- heading "Gemini の回答" [level=6]
+  - heading "判定一覧" [level=3]
+  - list:
+    - paragraph:
+      - generic: "BLOCKER: 1件（メール未送受信の連絡先を統合する際にSQL型推論エラーで処理が停止する不具合）"
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "WARN: 2件（通常同期失敗時のNotion最終メール日時不整合、Slack CRM案内文の対象値乖離）"
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "INFO: 2件（ロック保持時間とNotion API遅延、Notion更新時の日時フォーマット整合性）"
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - heading "レビュー詳細" [level=3]
+  - heading "【BLOCKER】" [level=4]
+  - list:
+    - paragraph:
+      - text: メール履歴が0件の連絡先統合における
+      - code: id = ANY(%s)
+      - text: の型決定エラー
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "対象:"
+        - code: src/record_merge/email_history.py
+        - text: （
+        - code: make_step
+        - text: ","
+        - code: _read
+        - text: ","
+        - code: write
+        - text: ）
+        - superscript
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "事象: メール履歴が存在しない連絡先を統合対象とした場合、"
+        - code: snapshot['emailHistory']['rows']
+        - text: が空リスト
+        - code: "[]"
+        - text: となり、
+        - code: step['rows']
+        - text: および
+        - code: ids
+        - text: が
+        - code: "[]"
+        - text: となる
+        - superscript
+        - text: 。この状態で
+        - code: _read
+        - text: 内の以下のクエリを実行すると、PostgreSQL / psycopg で空配列の型が推論できず例外（
+        - code: cannot determine type of empty array
+        - text: 等）が発生して処理が中断する
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-email-preservation-review.txt、TXT: crm-email-preservation-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - generic: Python
+      - button "コードをダウンロードする":
+        - img: arrow_circle_down
+      - button "コードをコピー":
+        - img: copy
+      - code: rows = conn.execute( 'SELECT * FROM "EmailLog" WHERE "contactPageId"=%s OR id=ANY(%s) ORDER BY id' + (' FOR UPDATE' if lock else ''), (step['id'], ids), ).fetchall()
+      - paragraph: "影響: メール履歴が1件も存在しない連絡先の統合処理が必ず失敗・保留（MergeHeld）となり、業務が停止する。"
+      - paragraph:
+        - text: "対策:"
+        - code: ids
+        - text: が空の場合は
+        - code: id = ANY(...)
+        - text: 条件を付与しない分岐を設けるか、
+        - code: id = ANY(%s::text[])
+        - text: のようにSQL側で明示的な型キャストを行うこと。
+  - heading "【WARN】" [level=4]
+  - list:
+    - paragraph:
+      - text: 通常同期（
+      - code: atomic_insert=False
+      - text: ）時のNotion更新失敗による「最終メール日時」の更新漏れ
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "対象:"
+        - code: src/gmail_sync/sync.py
+        - text: （
+        - code: _process_message_ref
+        - text: ","
+        - code: _record_message
+        - text: ）
+        - superscript
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "事象: 通常同期（"
+        - code: sync_rep
+        - text: や
+        - code: sync_rep_incremental
+        - text: ）において、
+        - code: db.insert_email_log
+        - text: が成功した直後に
+        - code: contact_client.update_page
+        - text: （Notion API呼び出し）がネットワーク瞬断やレートリミット等で失敗した場合、エラーが上位に伝播する
+        - superscript
+        - text: 。しかし、
+        - code: EmailLog
+        - text: のレコードは既にDBへ保存されているため、次回同期実行時には
+        - code: _process_message_ref
+        - text: の先頭にある
+        - code: db.email_log_exists(message_id)
+        - text: で検知され、即座に
+        - code: return False
+        - text: でスキップされる
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-email-preservation-review.txt、TXT: crm-email-preservation-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - paragraph:
+        - generic: "影響: Notion上の「最終メール日時」が更新されないまま取り残され、以降の通常同期でも再試行されないため、永続的な表示日時の乖離（不整合）が発生する"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "対策:"
+        - code: atomic_insert=True
+        - text: で用いられている
+        - code: notionDone
+        - text: フラグのような反映状態管理を通常同期にも導入するか、未反映状態のログが存在する場合にNotion更新を再試行できる仕組みを設けること。
+    - paragraph:
+      - text: Slack CRM 画面における kintone 反映対象値のハードコードと不正確な案内
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "対象:"
+        - code: src/slack_crm/views.py
+        - text: （
+        - code: project_form
+        - text: ","
+        - code: preview_view
+        - text: ）
+        - superscript
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "事象: 指示では「kintone変換は連絡済み等4値のみのため保存前に反映範囲を案内」と指定されているが、実装では以下のように"
+        - code: "\"連絡済み\""
+        - text: のみがハードコードで判定されている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - generic: Python
+      - button "コードをダウンロードする":
+        - img: arrow_circle_down
+      - button "コードをコピー":
+        - img: copy
+      - code: "# project_form blocks.append(_section(\"営業ステータスはNotion・Zoho・シートへ保存します。kintoneへの反映は、この画面では「連絡済み」のみ対応しています。\")) # preview_view if kind == \"project_update\" and \"営業ステータス\" in changes and changes[\"営業ステータス\"] != \"連絡済み\": lines.append(\"kintoneの営業ステータスは変更されません。Notion・Zoho・シートへ保存します。\")"
+      - paragraph:
+        - generic: "影響: kintone側で変換可能な残り3値（計4値）を選択した場合でも、ユーザーには「kintoneの営業ステータスは変更されません」と誤った警告が表示され、混乱を招く"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph: "対策: kintone変換に対応している4値の定義（または定数セット）を参照し、その4値に含まれない場合にのみ非反映の案内を表示する構成に修正すること。"
+  - heading "【INFO】" [level=4]
+  - list:
+    - paragraph:
+      - code: contact_record_guard
+      - text: 内での外部API呼び出しによるロック競合時間
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "対象:"
+        - code: src/gmail_sync/sync.py
+        - text: （
+        - code: _record_message
+        - text: ）
+        - superscript
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "内容:"
+        - code: contact_record_guard
+        - text: のコンテキスト内で Notion API（
+        - code: update_page
+        - text: ）を同期実行している
+        - superscript
+        - text: 。連絡先統合とメール保存・Notion更新の競合やデータ喪失を防ぐ観点からは安全な設計だが、Notion API が遅延した場合、連絡先の同期ロックが保持され続けるため、並行する統合処理が
+        - code: RecordSyncBusy
+        - text: で保留される頻度が増える
+        - superscript
+        - text: 。HTTPクライアントのタイムアウト設定を適切に短尺で制御しておくことが望ましい。
+        - 'button "TXT: crm-email-preservation-review.txt、TXT: crm-email-preservation-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph:
+      - text: Notion更新フォーマットと分精度丸めの一貫性
+      - superscript
+      - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "対象:"
+        - code: src/record_merge/email_history.py
+        - text: /
+        - code: src/gmail_sync/sync.py
+      - paragraph:
+        - superscript
+        - 'button "TXT: crm-email-preservation-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "内容: Notionの実物保存精度（秒切り捨て）に合わせ、"
+        - code: email_history.py
+        - text: では
+        - code: notion_date
+        - text: によって分精度（秒00）に揃え、比較時の誤検知（
+        - code: MergeHeld
+        - text: ）を防ぐ措置が適切に実装されている
+        - superscript
+        - text: 。一方、
+        - code: sync.py
+        - text: から Notion へ更新する際は
+        - code: ensure_utc(latest).isoformat()
+        - text: （秒付き）を送信している
+        - superscript
+        - text: 。Notion API側で自動的に秒が切り捨てられるため実害はないが、システム全体での表記・精度の整合性を揃えるため、
+        - code: sync.py
+        - text: 側でも
+        - code: notion_date
+        - text: を経由した更新文字列の生成を検討するとより堅牢になる。
+        - 'button "TXT: crm-email-preservation-review.txt、TXT: crm-email-preservation-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー" [active]:
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力":
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"
+- generic: 回答をコピー

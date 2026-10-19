@@ -342,3 +342,46 @@ def test_利用権限がない本人へ理由を表示する(monkeypatch):
     payload['team'] = {'id': 'OTHER_TEAM'}
     handler.handler(_event(payload))
     assert sent == []
+
+
+@pytest.mark.parametrize('isolated,mirror_fails,expected_state,expected_calls', [
+    (True, False, 'done', ['mirror', 'dispatch']),
+    (False, False, 'done', ['mirror', 'calendar', 'dispatch']),
+    (True, True, 'queued', ['mirror']),
+])
+def test_試験原本も一覧を更新し予定作成だけ隔離する(
+    monkeypatch, isolated, mirror_fails, expected_state, expected_calls,
+):
+    from src.sync_engine import production_wiring, test_isolation
+    page_id = '01234567-89ab-cdef-0123-456789abcdef'
+    monkeypatch.setenv('CRM_TEST_NOTION_IDS', page_id if isolated else '')
+    changes = {'次回アクション日': '2026-10-20'}
+    operation = {'id': 'synthetic-operation', 'kind': 'project_update', 'targetId': page_id,
+                 'resultPageId': None, 'changes': changes, 'syncAttempts': 1, 'syncError': None}
+    monkeypatch.setattr(service.storage, 'claim_sync', lambda _id=None: operation)
+    finished = []
+    monkeypatch.setattr(service.storage, 'finish_sync', lambda *args, **kwargs: finished.append(kwargs))
+    monkeypatch.setattr(service, '_client', lambda _kind: SimpleNamespace(
+        get_page=lambda _id: dict(changes),
+        get_raw_page=lambda _id: {'last_edited_time': '2026-10-19T00:00:00Z'}))
+    calls = []
+    def mirror(properties, identifier):
+        assert properties == changes and identifier == page_id
+        calls.append('mirror')
+        if mirror_fails:
+            raise RuntimeError('合成ミラー障害')
+    def calendar(properties, identifier):
+        assert properties == changes and identifier == page_id
+        calls.append('calendar')
+    def dispatch(event):
+        assert event.properties == changes and event.external_id == page_id
+        assert test_isolation.notifications_suppressed() is isolated
+        calls.append('dispatch')
+        return DispatchResult(skipped=False)
+    wiring = SimpleNamespace(project_mirror_sync_callable=mirror, calendar_sync_callable=calendar,
+                             dispatcher=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(production_wiring, 'get_production_wiring', lambda: wiring)
+    assert service.process_sync(operation['id']) == {'id': operation['id'], 'state': expected_state}
+    assert calls == expected_calls
+    assert finished == ([{'state': 'queued', 'error': 'sync_failed'}] if mirror_fails else [{'state': 'done'}])
+    assert test_isolation.notifications_suppressed() is False
