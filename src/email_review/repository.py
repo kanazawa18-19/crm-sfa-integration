@@ -70,6 +70,15 @@ class Repository:
                     conn.execute('UPDATE "EmailReviewOwner" SET "reviewId"=%s WHERE "reviewId"=%s', (canonical["data"]["id"], old["id"]))
                     self.save(conn, old, {**old, "state": "excluded", "reason": "同じメールの受付に統合済み", "revision": old["revision"] + 1})
                     return
+                # 同じ所有者・Gmail IDの実読に限り状態の証拠を補完する。完了行を再配送しない。
+                from src.gmail_sync.mail_state import sent
+                if sent(row["message"]) and not sent(old["message"]):
+                    updated = {**old, "message": {**old["message"], "label_ids": row["message"]["label_ids"]},
+                               "revision": old["revision"] + 1}
+                    if old.get("reason", "").startswith("送信済みの証拠を確認できません") and not old.get("action_id") and not old.get("attempted_properties"):
+                        updated.update(state="new", reason="送信済みを実読したため再照合します")
+                    self.save(conn, old, updated)
+                    old = updated
                 if old["state"] in {"new", "pending", "held", "excluded"} and (
                     not old["message"].get("body_text") and row["message"].get("body_text")
                     or not old.get("canonical_key") and row.get("canonical_key")
@@ -223,4 +232,26 @@ def action_actor(page_id: str) -> str | None:
 
 
 def public(row: dict) -> dict:
-    return {key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties", "contact_completion"}}
+    from src.gmail_sync.mail_state import sent
+    return {**{key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties", "contact_completion"}},
+            "sent_evidence": sent(row.get("message") or {})}
+
+
+def action_registration_blocked(page_id: str) -> bool:
+    """メール活動は受付の送信証拠がある場合だけ通常配送を許す。"""
+    from src.gmail_sync.mail_state import sent
+    from uuid import UUID
+    variants = {page_id, page_id.replace("-", "")}
+    try:
+        identifier = UUID(page_id)
+        variants.update((str(identifier), identifier.hex))
+    except ValueError:
+        pass
+    with _connect() as conn:
+        if conn.execute('SELECT to_regclass(%s) AS name', ('"EmailReview"',)).fetchone()["name"] is None:
+            return False
+        rows = conn.execute('''SELECT data FROM "EmailReview" WHERE data->>'action_id'=ANY(%s)''',
+                            (list(variants),)).fetchall()
+    if not rows:
+        return False
+    return len(rows) != 1 or rows[0]['data'].get('direction') != 'outbound' or not sent(rows[0]['data'].get('message') or {})

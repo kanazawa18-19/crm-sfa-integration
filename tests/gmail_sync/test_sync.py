@@ -30,7 +30,7 @@ def test_extract_addresses_lowercases() -> None:
 
 
 def _msg_for_sent_at(*, date_header=None, internal_date_ms=None) -> GmailMessage:
-    return GmailMessage(
+    return GmailMessage(label_ids=['SENT'],
         id="m1",
         from_header="a@example.com",
         to_header="b@example.com",
@@ -98,7 +98,7 @@ def _message(
     date_header: str | None = "Mon, 16 Aug 2026 09:00:00 +0900",
     snippet: str | None = "本文の抜粋",
 ) -> GmailMessage:
-    return GmailMessage(
+    return GmailMessage(label_ids=['SENT'],
         id=id_,
         from_header=from_header,
         to_header=to_header,
@@ -639,7 +639,7 @@ def test_sync_rep_continues_with_none_classification_when_score_email_raises(mon
 
 
 def _classify_target_message(*, msg_id: str = "m1", from_header: str, to_header: str) -> GmailMessage:
-    return GmailMessage(
+    return GmailMessage(label_ids=['SENT'],
         id=msg_id,
         from_header=from_header,
         to_header=to_header,

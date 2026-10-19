@@ -12,7 +12,7 @@ from tests.record_merge.test_email_history import history
 
 
 def message(identifier='queued'):
-    return gmail_client.GmailMessage(id=identifier, from_header='buyer@customer.test',
+    return gmail_client.GmailMessage(label_ids=['SENT'], id=identifier, from_header='buyer@customer.test',
         to_header='rep@internal.test', subject='合成', date_header=None, snippet='要約',
         body_text='保存する本文', raw_message='c3ludGhldGlj', internal_date_ms='1780000000000')
 
@@ -167,3 +167,65 @@ def test_本文抽出不可は完了後も原文を監査用に残し再配送�
         saved = conn.execute('SELECT state,message FROM "GmailDeferredMessage"').fetchone()
     assert saved['state'] == 'done' and saved['message']['raw_message'] == message().raw_message
     assert deferred._due(1) == []
+
+
+def test_旧保留はmetadataで下書きを確定し原文を残して終了(queue, monkeypatch):
+    deferred.enqueue(replace(message(), label_ids=None),'rep@internal.test','source','buyer@customer.test',set())
+    monkeypatch.setattr(db,'find_connection_by_email',lambda _:SimpleNamespace(refresh_token_enc='fake'))
+    monkeypatch.setattr('src.gmail_sync.token_crypto.decrypt_token',lambda _:'fake')
+    monkeypatch.setattr(gmail_client,'refresh_access_token',lambda _:'fake')
+    monkeypatch.setattr(gmail_client,'get_message_labels',lambda *_:['DRAFT'])
+    monkeypatch.setattr(sync,'record_message',lambda *a,**k:pytest.fail('下書きを保存した'))
+    assert deferred.drain(client=object())['done']==1
+    with queue() as conn:
+        row=conn.execute('SELECT * FROM "GmailDeferredMessage"').fetchone()
+    assert row['state']=='done' and row['lastErrorType']=='ExcludedUnsent'
+    assert row['message']['raw_message']==message().raw_message
+    assert row['message']['body_text']==message().body_text
+    assert row['message']['label_ids']==['DRAFT']
+    assert deferred.drain(client=object())['done']==0
+
+
+def test_旧保留のmetadata不明は原文を保持して再試行(queue, monkeypatch):
+    deferred.enqueue(replace(message(), label_ids=None),'rep@internal.test','source','buyer@customer.test',set())
+    monkeypatch.setattr(db,'find_connection_by_email',lambda _:None)
+    assert deferred.drain(client=object())['failed']==1
+    with queue() as conn:
+        row=conn.execute('SELECT * FROM "GmailDeferredMessage"').fetchone()
+    assert row['state']=='pending' and row['message']['raw_message']==message().raw_message
+
+
+def test_Gmail実応答から共通保存と実DB受付まで送信証拠を保持(queue, monkeypatch, requests_mock):
+    import base64
+    from src.email_review import repository
+    monkeypatch.setattr(repository,'_connect',db._connect)
+    with queue() as conn:
+        conn.execute('CREATE TABLE "ClientNameIndex" ("notionPageId" text PRIMARY KEY,"rawName" text,"normalizedName" text)')
+        conn.execute(Path('dashboard/prisma/migrations/20261016090000_email_review/migration.sql').read_text())
+    monkeypatch.setenv('EMAIL_REVIEW_ENABLED','true')
+    monkeypatch.setenv('EMAIL_REVIEW_START_AT','2026-01-01T00:00:00+00:00')
+    payload={'id':'sent-e2e','threadId':'thread','internalDate':'1780000000000','labelIds':['SENT'],
+             'payload':{'mimeType':'text/plain','body':{'data':base64.urlsafe_b64encode('合成本文'.encode()).decode()},
+                        'headers':[{'name':'From','value':'rep@internal.test'},
+                                   {'name':'To','value':'buyer@customer.test'},
+                                   {'name':'Message-ID','value':'<sent-e2e@example.test>'},
+                                   {'name':'Subject','value':'合成送信'}]}}
+    requests_mock.get('https://gmail.googleapis.com/gmail/v1/users/me/messages/sent-e2e',json=payload)
+    mail=gmail_client.get_message('fake','sent-e2e')
+    assert requests_mock.last_request.qs['format']==['full']
+    assert mail.label_ids==['SENT']
+    monkeypatch.setattr(sync,'contact_record_guard',lambda *_:nullcontext('target'))
+    monkeypatch.setattr(sync,'score_email',lambda *_:(0,None))
+    monkeypatch.setattr(sync,'notify_web_engagement_tool',lambda **_:None)
+    assert sync.record_message(mail,'rep@internal.test',SimpleNamespace(update_page=lambda *_:None),
+        internal_domains=frozenset({'internal.test'}),atomic_insert=True,resolve_contact=lambda _:'target')
+    with queue() as conn:
+        review=conn.execute('SELECT data FROM "EmailReview"').fetchone()['data']
+        log=conn.execute('SELECT * FROM "EmailLog" WHERE "gmailMessageId"=%s',('sent-e2e',)).fetchone()
+    assert review['message']['label_ids']==['SENT'] and review['state']=='new'
+    assert review['message']['body_text']=='合成本文' and log['direction']=='outbound'
+    # metadata取得もヘッダー絞込だけでrootのlabelIdsを落とさない。
+    monkeypatch.setenv('EMAIL_REVIEW_ENABLED','false')
+    assert gmail_client.get_message('fake','sent-e2e').label_ids==['SENT']
+    assert requests_mock.last_request.qs['format']==['metadata']
+    assert 'fields' not in requests_mock.last_request.qs

@@ -59,7 +59,7 @@ def _due(limit):
             ) q WHERE position=1 ORDER BY "nextAttemptAt", "createdAt" LIMIT %s''', (limit,)).fetchall()
 
 
-def _finish(row, error=None):
+def _finish(row, error=None, *, excluded=False):
     with db._connect() as conn:
         conn.execute("SET LOCAL statement_timeout = '5000ms'")
         if error:
@@ -71,15 +71,30 @@ def _finish(row, error=None):
         else:
             # 本文抽出不可の原文は監査・将来回収用に残す。完了後の再配送はしない。
             conn.execute('''UPDATE "GmailDeferredMessage" SET state='done',
-                message=CASE WHEN btrim(coalesce(message->>'body_text',''))<>'' THEN '{}'::jsonb ELSE message END,
-                attempts=attempts+1,"lastErrorType"=NULL,"updatedAt"=now(),"completedAt"=now()
+                message=CASE WHEN NOT %s AND btrim(coalesce(message->>'body_text',''))<>'' THEN '{}'::jsonb ELSE message END,
+                attempts=attempts+1,"lastErrorType"=%s,"updatedAt"=now(),"completedAt"=now()
                 WHERE "repEmail"=%s AND "gmailMessageId"=%s AND state='pending' ''',
-                (row['repEmail'], row['gmailMessageId']))
+                (excluded, 'ExcludedUnsent' if excluded else None, row['repEmail'], row['gmailMessageId']))
 
 
 def _process(row, client):
     from src.gmail_sync import sync
     message = gmail_client.GmailMessage(**{**row['message'], 'raw_message': None})
+    from src.gmail_sync.mail_state import labels, eligible
+    if labels(message.label_ids) is None:
+        from src.gmail_sync.token_crypto import decrypt_token
+        connection = db.find_connection_by_email(row['repEmail'])
+        if connection is None:
+            raise RuntimeError('保留メールの状態を取得できません')
+        token = gmail_client.refresh_access_token(decrypt_token(connection.refresh_token_enc))
+        message = replace(message, label_ids=gmail_client.get_message_labels(token, message.id))
+        # 再開時に判定根拠を耐久保存する。原文・本文は変更しない。
+        with db._connect() as conn:
+            conn.execute('''UPDATE "GmailDeferredMessage" SET message=jsonb_set(message,'{label_ids}',%s),
+                "updatedAt"=now() WHERE "repEmail"=%s AND "gmailMessageId"=%s AND state='pending' ''',
+                (Jsonb(message.label_ids), row['repEmail'], row['gmailMessageId']))
+    if not eligible(message, row['repEmail']):
+        return 'excluded'
     sync.record_message(message, row['repEmail'], client,
         internal_domains=frozenset(row['internalDomains']), atomic_insert=True,
         resolve_contact=lambda address: row['contactPageId']
@@ -109,12 +124,12 @@ def drain(*, limit=10, seconds=45, client=None):
                 break
             try:
                 with http_budget(min(10, remaining - 1)), gmail_client.bounded_rate_limit_retries(0):
-                    _process(row, client)
+                    outcome = _process(row, client)
             except Exception as error:
                 _finish(row, error)
                 counts['waiting' if isinstance(error, RecordSyncBusy) else 'failed'] += 1
             else:
-                _finish(row)
+                _finish(row, excluded=outcome == "excluded")
                 counts['done'] += 1
         return counts
     finally:

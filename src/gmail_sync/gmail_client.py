@@ -186,6 +186,8 @@ class GmailMessage:
     message_id_header: str | None = None
     # 統合保留時だけ取得する原文。判定用の本文抽出とは分離する。
     raw_message: str | None = None
+    # 欠損は不明。送信済みと推定しない。
+    label_ids: list[str] | None = None
 
 
 def _header_value(headers: list[dict[str, Any]], name: str) -> str | None:
@@ -241,7 +243,7 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
     """`GET /users/me/history`で`start_history_id`以降に追加されたメッセージIDの一覧、および
     レスポンス自体に含まれる最新の`historyId`を返す(2026-08-16、Push通知経由の増分同期用)。
 
-    `historyTypes=messageAdded`のみ対象とする(削除・ラベル変更等は本同期の対象外)。
+    新着とSENTラベル付与を対象とする。送信済みの最終判定は取得実物で行う。
     ページネーション(`nextPageToken`)に対応し、全ページ分をまとめて返す。
     `start_history_id`が古すぎる場合、Gmail APIは404を返す(`HistoryIdExpiredError`を送出する
     ため、呼び出し元はフル同期にフォールバックすること)。
@@ -253,7 +255,7 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
     while True:
         params: dict[str, Any] = {
             "startHistoryId": start_history_id,
-            "historyTypes": "messageAdded",
+            "historyTypes": ["messageAdded", "labelAdded"],
         }
         if page_token:
             params["pageToken"] = page_token
@@ -270,7 +272,9 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
         data = response.json()
         for record in data.get("history", []):
             record_id = record.get("id")
-            for added in record.get("messagesAdded", []):
+            additions = list(record.get("messagesAdded", []))
+            additions.extend(item for item in record.get("labelsAdded", []) if "SENT" in item.get("labelIds", []))
+            for added in additions:
                 message = added.get("message") or {}
                 message_id = message.get("id")
                 if message_id:
@@ -284,7 +288,8 @@ def list_history(access_token: str, start_history_id: str) -> HistoryListResult:
         if not page_token:
             break
     return HistoryListResult(
-        message_ids=message_ids,
+        # 同じIDの最後のイベント順に処理し、途中終了で後続を飛ばさない。
+        message_ids=list(dict.fromkeys(reversed(message_ids)))[::-1],
         history_id=latest_history_id,
         message_history_ids=message_history_ids,
     )
@@ -319,6 +324,7 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
     headers = data.get("payload", {}).get("headers", [])
     return GmailMessage(
         id=data["id"],
+        label_ids=data.get("labelIds", []),
         from_header=_header_value(headers, "From") or "",
         to_header=_header_value(headers, "To") or "",
         subject=_header_value(headers, "Subject"),
@@ -330,3 +336,17 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
         cc_header=_header_value(headers, "Cc") if full else None,
         message_id_header=_header_value(headers, "Message-ID") if full else None,
     )
+
+
+def get_message_labels(access_token: str, message_id: str) -> list[str]:
+    """古い保留受付の状態だけを確認し、本文を再取得しない。"""
+    from src.gmail_sync.mail_state import labels, MailStateUnknown
+    response = request_with_retry("GET", f"{_GMAIL_API_BASE}/messages/{message_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"format": "minimal", "fields": "id,labelIds"},
+        max_rate_limit_retries=current_max_rate_limit_retries())
+    raise_for_error(response, GmailApiError)
+    data = response.json()
+    if data.get("id") != message_id or labels(data.get("labelIds", [])) is None:
+        raise MailStateUnknown("保留メールの送受信状態を確認できません")
+    return data.get("labelIds", [])

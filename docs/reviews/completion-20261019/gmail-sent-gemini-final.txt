@@ -1,0 +1,375 @@
+:
+    - generic: TXT
+    - generic: crm-gmail-sent-final-review
+  - heading "あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。" [level=5]
+  - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - heading "判定一覧" [level=3]
+  - list:
+    - paragraph:
+      - generic: "BLOCKER: 0件（前回Claude B1の修正はすべて適切に反映されており、下書き誤登録の防止、ラベル欠損の安全なハンドリング、既存完了データの保護、通常Notion通知の抜け道遮断が成立しています）"
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "WARN: 2件（配備シーケンスとメタデータ補完運用の手順厳守、API先行配備中における旧GASリクエストのエラー挙動）"
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - text: "INFO: 3件（"
+      - code: list_history
+      - text: における最新イベント優先の重複排除設計、UUID/hex正規化によるインデックス照会最適化、UI層での操作制御と証拠の分離）
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - heading "レビュー詳細" [level=3]
+  - heading "【BLOCKER検証結果】該当なし（B1解消と安全性確認）" [level=4]
+  - list:
+    - paragraph:
+      - text: 実API取得時の
+      - code: labelIds
+      - text: 省略と旧データ/旧GAS欠損の厳格な分離（前回B1対応）
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: gmail_client.get_message
+        - text: では Gmail API 仕様に合わせて省略時に空配列
+        - code: "[]"
+        - text: へフォールバックし、受信アーカイブ等での不当な例外を防止しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: 一方、旧保存データや旧GASリクエストなどの欠損（
+        - code: None
+        - text: ）は
+        - code: mail_state.labels
+        - text: で
+        - code: None
+        - text: を返し、
+        - code: mail_state.eligible
+        - text: で
+        - code: MailStateUnknown
+        - text: を送出します
+        - superscript
+        - text: 。送信済みと推定して処理を進める抜け道は完全に塞がれています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt、TXT: crm-gmail-sent-final-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph:
+      - code: SENT
+      - text: ラベル付与イベントの取得と履歴カーソル順序の維持（前回B1対応）
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: list_history
+        - text: において
+        - code: labelsAdded
+        - text: から
+        - code: SENT
+        - text: 付与を捕捉し、同一メッセージIDが複数回出現した場合に
+        - code: list(dict.fromkeys(reversed(message_ids)))[::-1]
+        - text: により最後のイベント順（最新の履歴位置）を保持して重複排除しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: これにより、下書き作成（
+        - code: messageAdded
+        - text: ）後に送信（
+        - code: labelAdded
+        - text: ）されたケースでも、途中で処理が打ち切られた際に後続の送信イベントをスキップすることなく、安全に
+        - code: historyId
+        - text: カーソルを前進させられます
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: 通常Notion通知におけるインデックス照会最適化（前回B1対応）
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: action_registration_blocked
+        - text: では、ハイフン付き正規UUIDとハイフンなし32桁hexの双方を
+        - code: variants
+        - text: に展開し、
+        - code: data->>'action_id' = ANY(%s)
+        - text: で完全一致照会しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: 全件文字列置換走査を回避して既存インデックスを有効活用しつつ、Notion側からの大文字小文字やフォーマット差異による誤判定・誤配送を確実に遮断できています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: 各同期経路・受付・再開の抜け道遮断と受信署名照合の保持
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "Push/日次同期:"
+        - code: classify_message
+        - text: および
+        - code: record_message
+        - text: で
+        - code: eligible
+        - text: を検証し、下書き（
+        - code: DRAFT
+        - text: あり、または送信かつ
+        - code: SENT
+        - text: なし）を記録対象から除外しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "GAS同期:"
+        - code: _process_one
+        - text: で
+        - code: eligible
+        - text: が
+        - code: "False"
+        - text: の場合は
+        - code: excluded
+        - text: を返し、後続メッセージの処理を阻害しません
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "メール照合受付/サービス処理:"
+        - code: capture
+        - text: ","
+        - code: evaluate
+        - text: ","
+        - code: process
+        - text: ","
+        - code: reconcile
+        - text: ","
+        - code: decide
+        - text: の全層で送信証拠（
+        - code: sent_evidence
+        - text: /
+        - code: sent()
+        - text: ）を検証し、下書き状態での登録や未確定再照合を防止しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "旧耐久キュー:"
+        - code: deferred._process
+        - text: でラベルが欠損している場合は
+        - code: get_message_labels
+        - text: で最小取得して耐久保存し、不適格なら
+        - code: excluded
+        - text: （本文・原文は監査用に残す）として完了させます
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "受信メールの維持:"
+        - code: eligible
+        - text: 内で
+        - code: outbound
+        - text: でない場合は
+        - code: SENT
+        - text: を要求しないため、顧客からの受信メールを用いた署名照合・連絡先特定機能は損なわれません
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【WARN】" [level=4]
+  - list:
+    - paragraph: 配備シーケンスと固定8件のメタデータ補完運用の厳守
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象: 今回の差分には過去の誤活動や"
+        - code: EmailLog
+        - text: の自動訂正ロジックは含まれておらず、運用スクリプトによる個別実物補完を前提としています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "リスク: アプリケーション配備前に送信済み8件の実メタデータ証拠の補完を怠ると、管理画面やSlack上で正常な送信メールが「送信状態未確認」となり、再照合・訂正操作がブロックされ業務遅延を招きます"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "対策: ドキュメント記載の通り、「API配備 → 固定8件のメタデータ補完スクリプト実行 → 読戻し確認 → GAS実体更新」の順序をリリース手順書で徹底してください"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: API先行配備期間中における旧GASリクエストのハンドリング
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象: API先行配備からGAS実体更新までの間、旧GASから送信されるペイロードには"
+        - code: label_ids
+        - text: が含まれません（
+        - code: None
+        - text: となる）
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "挙動:"
+        - code: _process_one
+        - text: で
+        - code: MailStateUnknown
+        - text: が送出され、該当メッセージは成功（200）扱いになりません
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "影響: 現行GASは dry-run 運用中であり実データへの副作用はありませんが、API先行配備中はエラーログや再試行が発生します"
+        - superscript
+        - text: 。GAS実体の更新を遅滞なく完了させ、観測ログで
+        - code: label_ids
+        - text: が正常に渡されていることを速やかに確認してください
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt、TXT: crm-gmail-sent-final-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+  - heading "【INFO】" [level=4]
+  - list:
+    - paragraph:
+      - code: list_history
+      - text: における重複排除の安定性
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: reversed
+        - text: と
+        - code: dict.fromkeys
+        - text: を組み合わせた重複排除処理は、Python 3.7+ の挿入順序保持仕様に依拠し、同一IDの最終出現位置を維持したまま直前の古いイベントを除去する簡潔で安全な実装となっています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - code: EmailReviewOwner
+      - text: による同一ID補完時の完了行保護
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: repository.capture
+        - text: 内で同一所有者・同一Gmail IDの実読があった際、
+        - code: sent(row["message"]) and not sent(old["message"])
+        - text: による証拠補完を行いますが、
+        - code: state
+        - text: の再照合戻し（
+        - code: state="new"
+        - text: ）は未作成・未試行の保留行に限定されています
+        - superscript
+        - text: 。作成完了済み（
+        - code: done
+        - text: や
+        - code: action_id
+        - text: 保持）の行については状態・配送ステータスを維持しつつ証拠フラグのみを安全に更新できる構造が確認できました
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt、TXT: crm-gmail-sent-final-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph: 公開データと生ラベルの分離設計
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-gmail-sent-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: repository.public
+        - text: で内部の生
+        - code: label_ids
+        - text: や本文を伏せ、サーバー側で計算したブール値
+        - code: sent_evidence
+        - text: のみを出力しています
+        - superscript
+        - text: 。フロントエンド（Next.js）およびSlack側でもこのフラグに基づき操作ブロックと案内表示を行っており、UIの改ざんがあってもバックエンドの
+        - code: decide
+        - text: /
+        - code: process
+        - text: で実ラベルによる二重検査が働く多層防御が成立しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-gmail-sent-final-review.txt、TXT: crm-gmail-sent-final-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"
+- generic: 音声入力 (⌘⇧D)

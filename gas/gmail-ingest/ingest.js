@@ -124,7 +124,7 @@ function gmailIngestMessage(id) {
     return found ? found.value : '';
   };
   return {
-    id: raw.id, thread_id: raw.threadId || null,
+    id: raw.id, thread_id: raw.threadId || null, label_ids: raw.labelIds || [],
     from: header('From'), to: header('To'), subject: header('Subject'),
     date_header: header('Date'), snippet: raw.snippet || '',
     internal_date_ms: raw.internalDate || null,

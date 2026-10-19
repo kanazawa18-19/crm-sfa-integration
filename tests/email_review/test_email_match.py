@@ -12,7 +12,7 @@ from src.email_review.service import Service
 def sample():
     row = {'id': 'mail', 'revision': 0, 'direction': 'outbound', 'canonical_key': 'mail',
            'participants': [{'email': 'person@example.test'}, {'email': 'cc@example.test'}],
-           'message': {'to_header': '表示名なし <person@example.test>', 'body_text': '本文だけ'}}
+           'message': {'label_ids': ['SENT'], 'to_header': '表示名なし <person@example.test>', 'body_text': '本文だけ'}}
     contacts = [{'id': 'person', 'email': 'PERSON@example.test', 'name': '同姓', 'affiliations': ['company']},
                 {'id': 'cc', 'email': 'cc@example.test', 'name': '同姓', 'affiliations': ['other']}]
     return row, contacts

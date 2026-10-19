@@ -23,6 +23,10 @@ OUTBOUND_ONLY_REASON = "受信メールは履歴登録の対象外です。ア�
 def require_outbound(row: dict) -> None:
     if row.get("direction") != "outbound":
         raise Conflict(OUTBOUND_ONLY_REASON)
+    from src.gmail_sync.mail_state import sent
+    # 公開行の証拠フラグはrepositoryが実データから計算する。保存時は本文内ラベルで再検査する。
+    if not (sent(row.get("message") or {}) if "message" in row else row.get("sent_evidence") is True):
+        raise Conflict("送信済みの証拠を確認できません。下書き・状態不明のメールは登録しません")
 
 
 def same_value(key: str, actual, expected) -> bool:
@@ -219,7 +223,7 @@ def decide(row: dict, *, revision: int, action: str, selection: dict, actor: str
     if row.get("action_id") and action in {"exclude", "hold"}:
         raise Conflict("記録作成後は関連先を訂正してください。履歴は削除しません")
     next_row = dict(row)
-    if action in {"confirm", "resume"}:
+    if action in {"confirm", "resume", "reconcile"}:
         require_outbound(row)
     if action == "confirm":
         if not selection.get("company_id") or not selection.get("contact_id"):

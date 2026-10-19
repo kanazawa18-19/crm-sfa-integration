@@ -54,7 +54,7 @@ def dependencies(source=None):
                 connection_reader=lambda _:SimpleNamespace(refresh_token_enc='fake'),decrypt=lambda v:v,
                 refresh=lambda _:'fake',exists=lambda _:False,insert=lambda rows:len(rows),
                 list_page=lambda *a,**k:SimpleNamespace(refs=[SimpleNamespace(id='m1')],next_page_token=None),
-                fetch=lambda _,id:SimpleNamespace(id=id,from_header='a@example.com',to_header='rep@example.com',
+                fetch=lambda _,id:SimpleNamespace(label_ids=['INBOX'],id=id,from_header='a@example.com',to_header='rep@example.com',
                     internal_date_ms=str(int((NOW-timedelta(days=10)).timestamp()*1000)),
                     thread_id='t',subject='sample',snippet='sample'))
 

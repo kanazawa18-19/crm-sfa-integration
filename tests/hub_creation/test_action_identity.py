@@ -410,3 +410,9 @@ def test_action_list_http_204_after_more_records_is_not_verified_empty():
 def test_action_matcher_missing_source_client_is_a_business_hold(client):
     with pytest.raises(CreationHeld, match='取引先のZoho ID'):
         zoho_matcher({**payload(), 'field6': client})
+
+
+@pytest.fixture(autouse=True)
+def non_email_action(monkeypatch):
+    # この既存試験の合成アクションにはメール受付がない。
+    monkeypatch.setattr('src.email_review.repository.action_registration_blocked', lambda _: False)

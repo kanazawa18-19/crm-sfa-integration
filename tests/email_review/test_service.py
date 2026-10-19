@@ -43,7 +43,7 @@ def test_create_timeout_reconcile_then_updates_existing_action_only():
     repo, gateway = Repo(), Gateway()
     service = Service(repo, gateway)
     gateway.fail_create = True
-    result = service.process({'id': 'r', 'direction': 'outbound', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
+    result = service.process({'message': {'label_ids': ['SENT']}, 'id': 'r', 'direction': 'outbound', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
     assert result['state'] == 'unknown'
     assert gateway.created == 1
     gateway.fail_create = False
@@ -58,7 +58,7 @@ def test_delivery_failure_preserves_action_and_retry_does_not_create():
     repo, gateway = Repo(), Gateway()
     service = Service(repo, gateway)
     gateway.fail_delivery = True
-    result = service.process({'id': 'r', 'direction': 'outbound', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
+    result = service.process({'message': {'label_ids': ['SENT']}, 'id': 'r', 'direction': 'outbound', 'revision': 0, 'owner': 'me@example.test', 'contact_id': 'c', 'company_id': 'company'})
     assert result['state'] == 'done' and result['delivery'] == 'partial'
     assert result['action_id'] == 'action-id'
     gateway.fail_delivery = False
@@ -69,7 +69,7 @@ def test_delivery_failure_preserves_action_and_retry_does_not_create():
 def test_conflicting_affiliation_stops_before_any_write():
     repo, gateway = Repo(), Gateway()
     gateway.validate = lambda *args: (_ for _ in ()).throw(Conflict('所属が変化'))
-    result = Service(repo, gateway).process({'id': 'r', 'direction': 'outbound', 'revision': 0})
+    result = Service(repo, gateway).process({'message': {'label_ids': ['SENT']}, 'id': 'r', 'direction': 'outbound', 'revision': 0})
     assert result['state'] == 'pending'
     assert gateway.created == gateway.updated == 0
 
@@ -83,7 +83,7 @@ def test_additional_internal_domain_skips_company_notice_before_storage(monkeypa
     monkeypatch.setenv("INTERNAL_EMAIL_DOMAINS", "example.test,existing.test")
     monkeypatch.setenv("EMAIL_REVIEW_INTERNAL_DOMAINS", " Company.test ")
     repo = Mock()
-    message = GmailMessage(id="notice", from_header="system@company.test", to_header="me@example.test",
+    message = GmailMessage(label_ids=['SENT'], id="notice", from_header="system@company.test", to_header="me@example.test",
                            internal_date_ms="1792130400000", body_text="認証用本文", subject="認証", date_header=None, snippet=None)
     capture(message, "me@example.test", repo=repo)
     repo.capture.assert_not_called()
@@ -108,7 +108,7 @@ def test_authentication_notice_is_not_stored_but_human_discussion_is(monkeypatch
     monkeypatch.setenv("EMAIL_REVIEW_START_AT", "2026-01-01T00:00:00+00:00")
     monkeypatch.setenv("INTERNAL_EMAIL_DOMAINS", "example.test")
     repo = Mock()
-    message = GmailMessage(id="notice", from_header=sender, to_header="me@example.test",
+    message = GmailMessage(label_ids=['SENT'], id="notice", from_header=sender, to_header="me@example.test",
                            internal_date_ms="1792130400000", body_text="認証用本文", subject=subject, date_header=None, snippet=None)
     capture(message, "me@example.test", repo=repo)
     repo.capture.assert_not_called()
@@ -141,7 +141,7 @@ def test_inbound_capture_is_evidence_only_and_outbound_remains_action_candidate(
     monkeypatch.setenv('EMAIL_REVIEW_START_AT', '2026-01-01T00:00:00+00:00')
     monkeypatch.setenv('INTERNAL_EMAIL_DOMAINS', 'example.test')
     repo = Mock()
-    message = GmailMessage(id='received', from_header='person@outside.test', to_header='me@example.test',
+    message = GmailMessage(label_ids=['SENT'], id='received', from_header='person@outside.test', to_header='me@example.test',
                            internal_date_ms='1792130400000', body_text='会社名と署名', subject='相談', date_header=None, snippet=None)
     capture(message, 'me@example.test', repo=repo)
     received = repo.capture.call_args.args[0]
@@ -156,9 +156,9 @@ def test_signature_does_not_fill_missing_affiliation_or_register_received_mail()
     company, person = 'company', 'person'
     sent = {'id': 's', 'revision': 0, 'direction': 'outbound', 'canonical_key': 's',
             'participants': [{'email': 'contact@outside.test'}],
-            'message': {'id': 's', 'body_text': '試験株式会社\n担当様\n本文'}}
+            'message': {'label_ids': ['SENT'], 'id': 's', 'body_text': '試験株式会社\n担当様\n本文'}}
     received = {**sent, 'id': 'r', 'direction': 'inbound', 'state': 'excluded',
-                'message': {'id': 'r', 'body_text': '返信本文\n---\n試験株式会社\ncontact@outside.test'}}
+                'message': {'label_ids': ['SENT'], 'id': 'r', 'body_text': '返信本文\n---\n試験株式会社\ncontact@outside.test'}}
     repo, gateway = Repo(), Mock()
     gateway.plan_completion.return_value = None
     repo.thread = lambda row: [sent, received]
@@ -180,10 +180,10 @@ def test_single_to_email_with_cc_ignores_signature_sender(missing, duplicate, wr
     cc = {'email': 'b@example.test', 'name': '佐藤花子'}
     sent = {'id': 's', 'revision': 0, 'direction': 'outbound', 'canonical_key': 's',
             'participants': [primary, cc],
-            'message': {'id': 's', 'to_header': '田中 太郎 <a@example.test>', 'body_text': '試験株式会社\n田中様\n本文'}}
+            'message': {'label_ids': ['SENT'], 'id': 's', 'to_header': '田中 太郎 <a@example.test>', 'body_text': '試験株式会社\n田中様\n本文'}}
     sender = cc if wrong_sender else primary
     received = {**sent, 'id': 'r', 'direction': 'inbound', 'participants': [sender],
-                'message': {'id': 'r', 'body_text': '返信\n---\n試験株式会社\n' + sender['email']}}
+                'message': {'label_ids': ['SENT'], 'id': 'r', 'body_text': '返信\n---\n試験株式会社\n' + sender['email']}}
     repo, gateway = Repo(), Mock()
     gateway.plan_completion.return_value = None
     repo.thread = lambda row: [sent, received]

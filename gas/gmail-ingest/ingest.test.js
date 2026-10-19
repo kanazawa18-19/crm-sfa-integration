@@ -249,3 +249,11 @@ test('照合ONは本文・CC・共通IDを取得し添付を除外する', () =>
   assert.equal(context.gmailReviewCurrentBody('> 質問\n回答\n> 別の質問\n別の回答'), '回答\n別の回答');
   assert.equal(context.gmailReviewCurrentBody('On Friday, A wrote:\n> 質問\n回答\n--\n署名'), '回答\n--\n署名');
 });
+
+test('取得実物のラベルを下書きも含めてAPIへ渡す', () => {
+  const {context} = runtime();
+  context.Gmail.Users.Messages.get = () => ({id:'draft', labelIds:['DRAFT'], payload:{headers:[]}});
+  assert.deepEqual(Array.from(context.gmailIngestMessage('draft').label_ids), ['DRAFT']);
+  context.Gmail.Users.Messages.get = () => ({id:'unknown', payload:{headers:[]}});
+  assert.deepEqual(Array.from(context.gmailIngestMessage('unknown').label_ids), []);
+});

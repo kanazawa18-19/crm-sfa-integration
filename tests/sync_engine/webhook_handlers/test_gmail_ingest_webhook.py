@@ -7,7 +7,7 @@ from src.sync_engine.webhook_handlers import gmail_ingest_webhook as ingest
 def _event(dry_run=True):
     return {'headers': {'X-Webhook-Secret': 'test-secret'}, 'body': json.dumps({
         'rep_email': 'rep@example.com', 'dry_run': dry_run,
-        'messages': [{'id': 'm1', 'from': 'buyer@customer.com', 'to': 'rep@example.com',
+        'messages': [{'label_ids': ['INBOX'], 'id': 'm1', 'from': 'buyer@customer.com', 'to': 'rep@example.com',
                       'subject': '相談', 'snippet': '本文', 'internal_date_ms': '1780000000000'}],
     })}
 

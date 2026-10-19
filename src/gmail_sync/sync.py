@@ -125,6 +125,9 @@ def classify_message(
     叩くとレート制限で現実的な時間に終わらない**ため、事前に作ったローカル辞書の
     `.get`を渡す。
     """
+    from src.gmail_sync.mail_state import eligible
+    if not eligible(message, rep_email):
+        return None
     from_addrs = _extract_addresses(message.from_header)
     to_addrs = _extract_addresses(message.to_header)
 
@@ -183,6 +186,9 @@ def record_message(message, rep_email, contact_client, *, internal_domains, atom
                    resolve_contact=None, capture_review=True, defer_busy=True):
     """照合保存失敗でも既存ログを処理し、呼出元には再取得が必要と知らせる。"""
     from src.email_review.service import safe_capture
+    from src.gmail_sync.mail_state import eligible
+    if not eligible(message, rep_email):
+        return False
     captured = safe_capture(message, rep_email) if capture_review else True
     from src.gmail_sync.deferred import DeferredContactBusy, DEFERRED, enqueue
     try:

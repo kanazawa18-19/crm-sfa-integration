@@ -19,7 +19,7 @@ def test_notion_date_normalization_does_not_prevent_recovery():
 def test_history_memo_preserves_full_body_and_notion_chunks_without_summary():
     from src.sync_engine.clients.notion_client import _rich_text_content
     body = '会社名\r\n本文と署名、引用もそのまま。\n' * 500
-    row = {'id': 'mail-id', 'message': {'body_text': body, 'snippet': '短い抜粋', 'subject': '件名', 'internal_date_ms': '1792130400000'},
+    row = {'id': 'mail-id', 'message': {'label_ids': ['SENT'], 'body_text': body, 'snippet': '短い抜粋', 'subject': '件名', 'internal_date_ms': '1792130400000'},
            'direction': 'outbound', 'contact_name': '相手', 'company_id': 'company'}
     properties = Gateway().action_properties(row)
     assert properties['履歴メモ'] == body.replace('\r\n', '\n')
@@ -32,7 +32,7 @@ def test_history_memo_preserves_full_body_and_notion_chunks_without_summary():
 @pytest.mark.parametrize('body', [None, '', '  \n'])
 def test_missing_full_body_never_falls_back_to_snippet(body):
     with pytest.raises(Conflict, match='全文'):
-        Gateway().action_properties({'direction': 'outbound', 'message': {'body_text': body, 'snippet': '抜粋だけ'}})
+        Gateway().action_properties({'direction': 'outbound', 'message': {'label_ids': ['SENT'], 'body_text': body, 'snippet': '抜粋だけ'}})
 
 
 def test_partial_multipart_body_is_not_recorded_as_full_text():
@@ -50,4 +50,4 @@ def test_partial_multipart_body_is_not_recorded_as_full_text():
 
 def test_received_mail_cannot_produce_action_properties():
     with pytest.raises(Conflict, match='送信メールだけ'):
-        Gateway().action_properties({'direction': 'inbound', 'message': {'body_text': '受信本文'}})
+        Gateway().action_properties({'direction': 'inbound', 'message': {'label_ids': ['SENT'], 'body_text': '受信本文'}})

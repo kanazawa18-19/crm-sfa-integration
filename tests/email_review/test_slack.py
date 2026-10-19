@@ -39,3 +39,16 @@ def test_search_routes_with_prefix_and_checks_owned_review(monkeypatch):
     result = json.loads(slack.handle(payload)['body'])
     assert result['options'][0]['value'] == 'company'
     repo.get.assert_called_once_with('review', 'member')
+
+
+@pytest.mark.parametrize('verified', [False, None, True])
+def test_送信証拠なしは理由と再取得案内だけを表示する(verified):
+    row={'id':'r','revision':0,'subject':'合成','participants':[],'reason':'確認中',
+         'state':'held','delivery':'not_started','direction':'outbound','sent_evidence':verified}
+    view=slack.detail(row)
+    if verified:
+        assert view['submit']['text']=='受け付ける'
+    else:
+        assert 'submit' not in view
+        assert not any(block['type']=='input' for block in view['blocks'])
+        assert '再取得' in json.dumps(view,ensure_ascii=False)

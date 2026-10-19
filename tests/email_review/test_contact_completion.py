@@ -48,7 +48,7 @@ def setup_gateway(monkeypatch, *, email_match=False):
     monkeypatch.setattr(g, 'live', lambda key, pid: deepcopy(person) if key == 'contact' else {'取引先名': '試験株式会社'})
     monkeypatch.setattr(g, 'company_contacts', lambda cid: people)
     monkeypatch.setattr(g, 'contacts', lambda addresses: [{'id': c['id']} for c in people if c['メールアドレス'] == addresses[0]])
-    source = {'message': {'internal_date_ms': '1791244800000'}}
+    source = {'message': {'label_ids': ['SENT'], 'internal_date_ms': '1791244800000'}}
     plan = g.plan_completion(source, [{'id': 'company', 'name': '試験株式会社'}], ['田中様'], 'new@example.test')
     assert plan and plan["state"] == "approved"
     plan.update(source)

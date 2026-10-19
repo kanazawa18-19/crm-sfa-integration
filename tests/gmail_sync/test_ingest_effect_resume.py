@@ -6,7 +6,7 @@ from src.gmail_sync import gmail_client, sync
 
 
 def test_保存後失敗を再送で再開する(monkeypatch):
-    message = gmail_client.GmailMessage(
+    message = gmail_client.GmailMessage(label_ids=['SENT'],
         id='mail-1', from_header='buyer@customer.com', to_header='rep@example.com',
         subject='相談', date_header=None, snippet='本文', internal_date_ms='1780000000000',
     )

@@ -314,6 +314,7 @@ def test_gmail_sync_process_message_ref_uses_gmail_sync_actor(monkeypatch: pytes
         sync.gmail_client,
         "get_message",
         lambda access_token, message_id: GmailMessage(
+            label_ids=["INBOX"],
             id=message_id,
             from_header="lead@client.example.com",
             to_header="rep@cnctor.jp",

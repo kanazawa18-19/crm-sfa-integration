@@ -59,7 +59,7 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 snippet=item.get('snippet'), thread_id=item.get('thread_id'),
                 internal_date_ms=item.get('internal_date_ms'),
                 body_text=item.get('body_text'), cc_header=item.get('cc_header'),
-                message_id_header=item.get('message_id_header'),
+                message_id_header=item.get('message_id_header'), label_ids=item.get('label_ids'),
             ))
         observation_meta = observation.validate(body.get('observation'), dry_run=dry_run, messages=parsed)
     except (ValueError, TypeError, AttributeError) as exc:
@@ -103,6 +103,9 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
 
 def _process_one(message, rep_email, client, resolve, dry_run: bool) -> str:
     from src.email_review.service import safe_capture
+    from src.gmail_sync.mail_state import eligible
+    if not eligible(message, rep_email):
+        return "excluded"
     captured = True if dry_run else safe_capture(message, rep_email)
     result = _process_logged_message(message, rep_email, client, resolve, dry_run)
     return result if captured else 'effect_failed'

@@ -54,7 +54,7 @@ def test_sent_recipients_exclude_only_self_and_sales(to, cc, expected):
 def test_gateway_removes_quotes_from_previously_captured_mail():
     from src.email_review.gateway import Gateway
     row = {'id': 'mail', 'direction': 'outbound', 'contact_name': '担当', 'company_id': 'company',
-           'message': {'body_text': '今回\nOn Friday, A wrote:\n' + '過去' * 15000, 'internal_date_ms': '1792130400000'}}
+           'message': {'label_ids': ['SENT'], 'body_text': '今回\nOn Friday, A wrote:\n' + '過去' * 15000, 'internal_date_ms': '1792130400000'}}
     assert Gateway().action_properties(row)['履歴メモ'] == '今回'
 
 

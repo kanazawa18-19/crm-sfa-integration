@@ -11,7 +11,7 @@ from src.sync_engine import record_sync_lock
 
 
 def message():
-    return GmailMessage(id='message', from_header='customer@example.test', to_header='rep@internal.test',
+    return GmailMessage(label_ids=['SENT'], id='message', from_header='customer@example.test', to_header='rep@internal.test',
                         subject='合成', snippet='本文', date_header=None, internal_date_ms='1780000000000')
 
 

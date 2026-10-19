@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 type Option = { id: string; name: string };
 type Row = {
   id: string; revision: number; subject: string; reason: string; state: string; delivery: string;
-  direction: string; owner: string; activity_owner?: string; gmail_id: string; channel?: string;
+  direction: string; sent_evidence?: boolean; owner: string; activity_owner?: string; gmail_id: string; channel?: string;
   participants: { name: string; email: string }[]; contacts: Option[]; candidates: Option[];
   evidence: { source: string; value: string; message_id: string }[];
   company_id?: string; company_name?: string; contact_id?: string; target_id?: string; target_name?: string; project_id?: string; project_name?: string; action_id?: string;
@@ -49,7 +49,7 @@ function SearchChoice({ label, rowId, kind, value, onChange, initial }: {
   </fieldset>;
 }
 
-function Card({ row, reload }: { row: Row; reload: () => void }) {
+export function Card({ row, reload }: { row: Row; reload: () => void }) {
   const [company, setCompany] = useState(row.company_id ?? "");
   const [contact, setContact] = useState(row.contact_id ?? (row.contacts.length === 1 ? row.contacts[0].id : ""));
   const [target, setTarget] = useState(row.target_id ?? "");
@@ -66,10 +66,11 @@ function Card({ row, reload }: { row: Row; reload: () => void }) {
     } catch (e) { setError(e instanceof Error ? e.message : "保存できませんでした"); }
     finally { setBusy(false); }
   }
+  const sent = row.direction === "outbound" && row.sent_evidence === true;
   const blocked = ["processing", "unknown", "evaluating", "recheck", "reconciling"].includes(row.state);
   return <article className="surface-card p-4 sm:p-6 space-y-4 min-w-0">
     <h2 className="font-semibold break-words">{row.subject}</h2>
-    <p className="break-all">{row.direction === "outbound" ? "送信" : "受信"}：{row.participants.map(p => `${p.name} ${p.email}`).join("、")}</p>
+    <p className="break-all">{row.direction === "outbound" ? (sent ? "送信" : "送信状態未確認") : "受信"}：{row.participants.map(p => `${p.name} ${p.email}`).join("、")}</p>
     <p>{labels[row.state] ?? row.state} ／ {labels[row.delivery] ?? row.delivery}</p>
     <p>{row.reason}{row.channel === "slack" ? "（Slackで受付）" : row.channel === "automatic" ? "（自動照合）" : ""}</p>
     <p className="break-all">記録担当者：{row.activity_owner ?? row.owner}{row.direction === "inbound" ? "（確定した本人を記録します）" : ""}</p>
@@ -77,7 +78,8 @@ function Card({ row, reload }: { row: Row; reload: () => void }) {
     <details><summary className="cursor-pointer underline">照合根拠を見る（{row.evidence.length}件）</summary>
       <dl className="mt-2 space-y-2">{row.evidence.map((item, index) => <div key={index}><dt className="font-semibold">{item.source === "salutation" ? "宛名" : "相手の署名"}</dt><dd className="break-words">{item.value}</dd></div>)}</dl>
     </details>
-    <fieldset disabled={busy || blocked} className="space-y-4 min-w-0">
+    {!sent && <p role="status">送信済みと確認できないため、登録・訂正・再照合はできません。下書きは対象外です。送信済みメールの場合は管理者に元メールの状態の再取得を依頼し、その後「更新」で確認してください。</p>}
+    {sent && <fieldset disabled={busy || blocked} className="space-y-4 min-w-0">
       <legend className="font-semibold">関連先を確認・訂正</legend>
       <label className="block">相手の連絡先<select className="input w-full mt-1" value={contact} onChange={e => setContact(e.target.value)}><option value="">選んでください</option>{row.contacts.map(c => <option key={c.id} value={c.id}>{c.name}（{c.id.slice(-8)}）</option>)}</select></label>
       {!row.contacts.length && <p>連絡先が未登録です。上記の相手メールアドレスでCRMに連絡先を登録してから「再照合」を押してください。</p>}
@@ -89,8 +91,8 @@ function Card({ row, reload }: { row: Row; reload: () => void }) {
         {!row.action_id && <><button className="btn-ghost" onClick={() => decide("hold")}>保留</button><button className="btn-ghost" onClick={() => decide("exclude")}>営業記録の対象外</button></>}
         <button className="btn-ghost" onClick={() => decide("resume")}>再照合</button>
       </div>
-    </fieldset>
-    {row.state === "unknown" && <button disabled={busy} className="btn-primary" onClick={() => decide("reconcile")}>登録済みの記録を探す（再登録しません）</button>}
+    </fieldset>}
+    {sent && row.state === "unknown" && <button disabled={busy} className="btn-primary" onClick={() => decide("reconcile")}>登録済みの記録を探す（再登録しません）</button>}
     {busy && <p aria-live="polite">受付中…</p>}
     {error && <div role="alert">{error}<button className="btn-ghost" onClick={reload}>最新の状態を読み直す</button></div>}
   </article>;

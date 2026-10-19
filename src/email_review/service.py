@@ -39,6 +39,9 @@ def safe_capture(message, owner: str) -> bool:
 def capture(message, owner: str, *, repo=None) -> None:
     if not enabled():
         return
+    from src.gmail_sync.mail_state import eligible
+    if not eligible(message, owner):
+        return
     # 開始時刻が無ければ既存メールの大量登録を防いで設定エラーとする。
     start = datetime.fromisoformat(os.environ["EMAIL_REVIEW_START_AT"].replace("Z", "+00:00"))
     if start.tzinfo is None:
@@ -72,7 +75,22 @@ class Service:
         self.repo = repo or Repository()
         self.gateway = gateway or Gateway()
 
+    def _unsent(self, row):
+        try:
+            domain.require_outbound(row)
+        except domain.Conflict as exc:
+            state = "unknown" if row.get("attempted_properties") and not row.get("action_id") else "held" if row.get("action_id") else "excluded"
+            from src.gmail_sync.mail_state import labels
+            values = labels((row.get("message") or {}).get("label_ids"))
+            if row.get("direction") == "outbound" and values is None and state == "excluded":
+                state = "held"
+            return self.repo.finish(row, state=state, reason=str(exc))
+        return None
+
     def evaluate(self, row: dict) -> dict:
+        blocked = self._unsent(row)
+        if blocked is not None:
+            return blocked
         if row.get("direction") != "outbound":
             return self.repo.finish(row, state="excluded", reason=domain.OUTBOUND_ONLY_REASON)
         if row.get("action_id"):
@@ -124,6 +142,9 @@ class Service:
         return self.repo.decision(review_id, actor_id, revision, action, selection, channel)
 
     def process(self, row: dict) -> dict:
+        blocked = self._unsent(row)
+        if blocked is not None:
+            return blocked
         if row.get("direction") != "outbound":
             # 旧版の予約も外部書込み前に止める。作成結果不明の追跡は残す。
             state = "unknown" if row.get("attempted_properties") and not row.get("action_id") else "held" if row.get("action_id") else "excluded"
@@ -165,6 +186,9 @@ class Service:
                                     reason="登録結果を確認してください。再登録は行いません" if unknown else "処理に失敗しました。関連先を確認して再受付してください")
 
     def reconcile(self, row: dict) -> dict:
+        blocked = self._unsent(row)
+        if blocked is not None:
+            return blocked
         try:
             page_id = row.get("action_id") or self.gateway.find_action(row)
             if page_id:

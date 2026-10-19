@@ -1091,6 +1091,11 @@ class SkipTrackingDispatcher:
         ]
 
     def dispatch(self, event: SyncEvent) -> DispatchResult:
+        if getattr(event, "source_tool", None) == Tool.NOTION and event.db_key == "action":
+            from src.email_review.repository import action_registration_blocked
+            if action_registration_blocked(event.external_id):
+                self.last_result = DispatchResult(skipped=True, reason="email_sent_evidence_required")
+                return self.last_result
         if getattr(event, "registration_key", None) and self._creation_service is None:
             self.last_result = DispatchResult(skipped=True, reason="hub_creation_disabled")
             return self.last_result

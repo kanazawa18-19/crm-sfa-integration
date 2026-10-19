@@ -128,7 +128,7 @@ def test_load_or_build_contact_index_without_cache_path_always_rebuilds(monkeypa
 # ここが本体。過去1年分・全担当を対象に一括で書き込むスクリプトなので、
 # 「--apply を付けない限り1通も書き込まない」をコードで担保しておく。
 
-from dataclasses import dataclass  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
 from datetime import date, datetime, timedelta, timezone  # noqa: E402
 
 import pytest  # noqa: E402
@@ -147,6 +147,7 @@ class _FakeMessage:
     id: str
     from_header: str
     to_header: str
+    label_ids: list[str] = field(default_factory=lambda: ["INBOX"])
     subject: str | None = "件名"
     date_header: str | None = "Tue, 01 Sep 2026 10:00:00 +0900"
     snippet: str | None = "本文の先頭"
@@ -236,6 +237,7 @@ def _inbound_message(msg_id: str = "m1") -> _FakeMessage:
 def _outbound_message(msg_id: str = "m2") -> _FakeMessage:
     return _FakeMessage(
         id=msg_id,
+        label_ids=["SENT"],
         from_header="Rep <rep@cnctor.jp>",
         to_header="Lead <lead@client.example.com>",
     )

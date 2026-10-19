@@ -430,3 +430,9 @@ def test_actor_name_rejects_unicode_line_separators(directory, monkeypatch, sepa
         action_actors({'担当営業': [PERSON]}, None)
     with pytest.raises(CreationHeld, match='表示名'):
         comment_with_actor('本文', [directory['users'][0]['display_name']])
+
+
+@pytest.fixture(autouse=True)
+def non_email_action(monkeypatch):
+    # この既存試験の合成アクションにはメール受付がない。
+    monkeypatch.setattr('src.email_review.repository.action_registration_blocked', lambda _: False)

@@ -39,12 +39,12 @@ def repo(monkeypatch):
 
 
 def row(id='a', canonical=None):
-    return {'id': id, 'canonical_key': canonical, 'message': {'body_text': '本文'}, 'state': 'new', 'revision': 0}
+    return {'id': id, 'canonical_key': canonical, 'message': {'label_ids': ['SENT'], 'body_text': '本文'}, 'state': 'new', 'revision': 0}
 
 
 def test_upgrade_and_cross_owner_share_one_claim(repo):
-    repo.capture({**row(), 'message': {'body_text': ''}}, 'one@example.test', 'gmail1', 'thread')
-    upgraded = {**row('rfc', 'rfc'), 'message': {'body_text': '本文'}}
+    repo.capture({**row(), 'message': {'label_ids': ['SENT'], 'body_text': ''}}, 'one@example.test', 'gmail1', 'thread')
+    upgraded = {**row('rfc', 'rfc'), 'message': {'label_ids': ['SENT'], 'body_text': '本文'}}
     repo.capture(upgraded, 'one@example.test', 'gmail1', 'thread')
     repo.capture(upgraded, 'two@example.test', 'gmail2', 'other-thread')
     assert repo.get('a', 'one')['canonical_key'] == 'rfc'
@@ -83,9 +83,9 @@ def test_parallel_capture_and_claim(repo):
 
 
 def test_same_rfc_with_different_content_does_not_grant_other_owner_access(repo):
-    original = {**row('same', 'same'), 'message': {'body_text': '本人だけの本文', 'subject': '件名'}}
+    original = {**row('same', 'same'), 'message': {'label_ids': ['SENT'], 'body_text': '本人だけの本文', 'subject': '件名'}}
     repo.capture(original, 'one@example.test', 'g1', 'thread')
-    forged = {**original, 'message': {'body_text': '別の本文', 'subject': '件名'}}
+    forged = {**original, 'message': {'label_ids': ['SENT'], 'body_text': '別の本文', 'subject': '件名'}}
     with pytest.raises(Conflict):
         repo.capture(forged, 'two@example.test', 'g2', 'thread2')
     with pytest.raises(Forbidden):
@@ -114,8 +114,8 @@ def test_real_journal_to_automatic_actions_without_duplicate_replay(repo, monkey
     with _connect() as conn:
         conn.execute('INSERT INTO "ClientNameIndex" VALUES (%s,%s,%s)', (company, '試験株式会社', '試験'))
     common = {'owner': 'one@example.test', 'thread_id': 'thread', 'participants': [{'email': 'contact@outside.test', 'name': '試験担当'}], 'subject': '試験', 'delivery': 'not_started'}
-    outgoing = {**row('sent', 'sent'), **common, 'direction': 'outbound', 'message': {'id': 's', 'body_text': '試験株式会社\n担当様\n本文'}}
-    incoming = {**row('received', 'received'), **common, 'direction': 'inbound', 'message': {'id': 'r', 'body_text': '返信本文\n---\n試験株式会社\ncontact@outside.test'}}
+    outgoing = {**row('sent', 'sent'), **common, 'direction': 'outbound', 'message': {'label_ids': ['SENT'], 'id': 's', 'body_text': '試験株式会社\n担当様\n本文'}}
+    incoming = {**row('received', 'received'), **common, 'direction': 'inbound', 'message': {'label_ids': ['SENT'], 'id': 'r', 'body_text': '返信本文\n---\n試験株式会社\ncontact@outside.test'}}
     repo.capture(outgoing, 'one@example.test', 's', 'thread')
     repo.capture(incoming, 'one@example.test', 'r', 'thread')
     gateway = Gateway()
@@ -135,9 +135,9 @@ def test_real_journal_to_automatic_actions_without_duplicate_replay(repo, monkey
 
 
 def test_missing_body_cannot_grant_shared_access_by_snippet(repo):
-    original = {**row('same', 'same'), 'message': {'body_text': '本人だけの本文', 'snippet': '同じ先頭'}}
+    original = {**row('same', 'same'), 'message': {'label_ids': ['SENT'], 'body_text': '本人だけの本文', 'snippet': '同じ先頭'}}
     repo.capture(original, 'one@example.test', 'g1', 'thread')
-    incomplete = {**original, 'message': {'body_text': '', 'snippet': '同じ先頭'}}
+    incomplete = {**original, 'message': {'label_ids': ['SENT'], 'body_text': '', 'snippet': '同じ先頭'}}
     with pytest.raises(Conflict):
         repo.capture(incomplete, 'two@example.test', 'g2', 'thread2')
     with pytest.raises(Forbidden):
@@ -150,7 +150,7 @@ def test_persisted_email_match_rechecks_affiliation_before_creation(repo, monkey
     from src.email_review.service import Service
     company = '11111111-1111-1111-1111-111111111111'
     person = '22222222-2222-2222-2222-222222222222'
-    saved = {**row('email-match', 'email-match'), 'direction': 'outbound',
+    saved = {'message': {'label_ids': ['SENT']}, **row('email-match', 'email-match'), 'direction': 'outbound',
              'participants': [{'email': 'person@example.test'}]}
     repo.capture(saved, 'one@example.test', 'gmail-match', 'thread')
     gateway = Gateway()
@@ -189,7 +189,7 @@ def test_contact_completion_through_persisted_service(repo, monkeypatch, mode):
     if mode == 'duplicate_company': masters.append({'id': 'other', 'name': '試験株式会社'})
     monkeypatch.setattr(repo, 'masters', lambda values: masters)
     source = {**row('completion', 'completion'), 'direction': 'outbound', 'owner': 'one@example.test',
-              'participants': [{'email': 'new@example.test'}], 'message': {'id': 'completion',
+              'participants': [{'email': 'new@example.test'}], 'message': {'label_ids': ['SENT'], 'id': 'completion',
               'body_text': '試験株式会社\n田中様、\n本文', 'internal_date_ms': '1791244800000'}}
     repo.capture(source, 'one@example.test', 'gmail-completion', 'thread')
     gateway = Gateway()

@@ -34,6 +34,10 @@ class HubCreationService:
 
     def _handle_with_budget(self, event, *, scan_journal=None, recovery=None):
         """通常更新はNone、新規を扱ったときは結果理由を返す。"""
+        if event.source_tool == Tool.NOTION and event.db_key == "action":
+            from src.email_review.repository import action_registration_blocked
+            if action_registration_blocked(event.external_id):
+                return "email_sent_evidence_required"
         if is_own_system_event(event.sync_system_id, expected=get_sync_system_id()):
             return None
         if event.source_tool not in (Tool.NOTION, Tool.SPREADSHEET):

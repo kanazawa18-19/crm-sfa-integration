@@ -73,7 +73,7 @@ def test_multiple_participants_including_cc_are_kept():
 
 
 def test_revision_and_processing_protect_old_slack_buttons():
-    row = {'id': 'a', 'direction': 'outbound', 'revision': 2, 'state': 'pending'}
+    row = {'message': {'label_ids': ['SENT']}, 'id': 'a', 'direction': 'outbound', 'revision': 2, 'state': 'pending'}
     args = dict(action='confirm', selection={'company_id': 'c', 'contact_id': 'p'}, actor='u', channel='slack')
     with pytest.raises(Conflict):
         decide(row, revision=1, **args)

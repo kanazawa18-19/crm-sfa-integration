@@ -57,7 +57,9 @@ def _result(property_name: str, tool: Tool) -> DispatchResult:
     )
 
 
-def test_known_gaps_do_not_notify() -> None:
+def test_known_gaps_do_not_notify(monkeypatch) -> None:
+    # 合成アクションにはメール受付がなく、実DBへ接続しない。
+    monkeypatch.setattr("src.email_review.repository.action_registration_blocked", lambda _: False)
     """既知の未対応項目は通知しない（89件が毎回鳴ると本物が埋もれる）。"""
     tool, db_key, property_name = next(iter(sorted(KNOWN_SYNC_GAPS, key=str)))
     notifier = _FakeNotifier()
