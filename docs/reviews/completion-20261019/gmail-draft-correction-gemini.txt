@@ -1,0 +1,152 @@
+判定一覧
+
+BLOCKER: 0件（致命的欠陥なし。要件で提示された全ガードレール、排他制御、累積保持、二重取消回避、受付移管が整合して実装されています）
+TXT
+
+WARN: 3件（Zoho DELETEの版保証の限界と運用監視、先行配備ガードの反映確認、直接接続DB環境変数の確実な設定）
+TXT
+
+INFO: 4件（二段階全施錠によるTOCTOU排除、外部CRM取消再開時の冪等性、同一トランザクション内の受付ソート移管、EmailLogの退避とリマインド参照保護）
+TXT
+
+重点確認項目の検証結果
+
+対象証拠のID結合
+
+validate_evidence において、5受付の owner, thread_id, message.id, action_id, contact_id, canonical_key が完全一致することを検証しています。
+TXT
+
+Gmail履歴証拠の messagesAdded / messagesDeleted の historyId 順序（4下書きの追加→削除の連鎖、および最終SENT追加が下書き全削除の後であること）が昇順かつ重複なく成立していることを厳格に検証しています。
+TXT
+
+同時更新 / 排他制御
+
+LiveIO.locks により、対象となる全活動5件、連絡先、および関連するすべての子レコード（逆関連含む）のキーを抽出し、acquire_record_sync_locks（PostgreSQLセッションレベル・アドバイザリロック）で1本の直接接続を用いて一括施錠しています。
+TXT
+
+本文と関連の累積保持
+
+Notion側は、正本活動に対して送信版（SENT）のプロパティを最優先で反映した後、各下書きの本文ブロックを順次末尾へ追記連結（cumulative_blocks）し、各版の追跡用calloutや親逆関連を落とさずに保持しています。
+TXT
+
+kintone側は comment 内の旧本文を1箇所のみ存在することを確認した上で置換（count(old_body) == 1）、Zoho/Sheets側も正本に対して送信内容・日時への訂正を行っています。
+TXT
+
+取消前の正本確認
+
+apply('retire') の実行直前に、必ず self.verify('canonical', plan) および self.verify('merge', plan) が呼ばれ、正本の外部訂正とNotion統合の双元実読確認が完了していない限り、誤登録の外部取消（kintone/Zoho/Sheets）に進めない安全順序が強制されています。
+TXT
+
+通信断 / 再開 / 二重取消回避
+
+各工程（freeze, merge, canonical, retire, handoff, email_logs）および外部ID単位（external:{tool}:{id}）で Journal による予約（reserved）と完了（done）を管理しています。
+TXT
+
+write_external では、実行前に現在の実態 actual と期待状態 desired を比較し、既に削除・取消済みであればAPIを再送せず即座に正常復帰します。タイムアウト後の再実行で 404 エラーや二重削除による停止が発生しません。
+TXT
+他 1 件
+
+SQL一意制約 / 受付移管
+
+review_change では、同一SQLトランザクション内で行を更新する際、key == plan['sentReviewId'] の真偽値でソートし、旧受付側の action_id を None に解放した後にSENT受付へ正本 canonicalPage を割り当てています。一意制約違反を回避しつつ、外部への空白期間も生じません。
+TXT
+他 1 件
+
+集計 / リマインド参照
+
+remove_draft_logs では、下書き4件の EmailLog に紐づく EmailReminderLog が存在しないことを確認してから削除しています。
+TXT
+
+削除対象の4行は freeze 段階で SyncOperationHistory.beforeState['plan'] に全件退避されており、監査性を保ったまま集計対象のみから除外されます。実在SENTの EmailLog は不変であることを検証しています。
+TXT
+他 1 件
+
+旧ID再通知と通常画面の抜け道
+
+統合完了時に RecordMergeAlias が作成され、旧Notion IDおよび外部旧IDからのWebhookが正本へ誘導されます。
+TXT
+
+MergeOperations.resume に workflow == 'gmail_draft_correction' を検出して MergeHeld を送出するガードが追加されており、通常管理画面からの誤ったジョブ再開は遮断されます。
+TXT
+
+外部エラーを成功扱いしないこと
+
+各クライアント呼び出しで raise_for_error を実施し、Zoho では code == 'SUCCESS' かつ返却IDの一致まで検査した上で、直後に self.native_equal による読戻し検証を必須としています。
+TXT
+
+Zoho DELETE の版条件と競合窓の制限
+
+Zoho DELETE は If-Unmodified-Since を付与しつつも、直前の COQL + GET での更新時刻確認、Notes/Attachments の空確認、wf_trigger=false の指定、全before退避、固定ID限定を明記して安全弁としています。
+TXT
+
+通知抑止と新規CRMレコード非作成
+
+Zoho 更新・削除では trigger: [] および wf_trigger=false を明示し、外部への新規 POST（レコード作成）は一切行わず、既存IDの修正と削除のみに限定されています。
+TXT
+
+【WARN】
+
+Zoho DELETE における版不一致検知の限界と事後ログ確認
+
+事象: Zoho CRM API の DELETE エンドポイントは、If-Unmodified-Since ヘッダーによる楽観的ロック（版の不一致検知）が公式仕様として完全保証されていません。
+TXT
+
+リスク: スクリプト側の直前確認から DELETE リクエスト到達までの極めて狭い隙間に第三者が Zoho レコードを更新した場合、版不一致エラーとならずに削除が成功する可能性があります。
+TXT
+
+対策: 本スクリプトでは直前の Notes/Attachments/全フィールド実読と beforeState への完全退避、および wf_trigger=false による通知抑止が行われておりデータ復旧は可能ですが、運用手順として適用直後の Zoho 側監査ログ（Audit Log）で削除時刻・ユーザーが本スクリプト実行と一致していることを必ず照合してください。
+TXT
+
+先行配備ガード（MergeOperations.resume）の本番反映確認
+
+事象: 本計画の安全性は、管理画面/APIサーバー側に「専用ワークフロージョブの通常再開を拒絶するガード（workflow == 'gmail_draft_correction'）」がデプロイされていることに依存します。
+TXT
+
+リスク: API先行配備が完了する前にスクリプトを実行して途中で中断した場合、管理画面のジョブ一覧からオペレーターが誤って「再開」を押し、通常統合ロジックで不完全な再開が走る恐れがあります。
+TXT
+
+対策: 指示通り、必ず API 側のデプロイおよびプロセス再起動の完了を確認した後に --apply を実行してください。
+TXT
+
+実行環境における DATABASE_URL_UNPOOLED の直接接続確認
+
+事象: 排他制御 acquire_record_sync_locks は PostgreSQL のセッションレベル・アドバイザリロック（pg_try_advisory_lock）を使用しています。
+TXT
+
+リスク: PgBouncer 等のコネクションプーラー経由（トランザクションモード）で接続された場合、コネクション返却に伴いロックが別セッションに解放され、排他が破綻します。
+TXT
+
+対策: スクリプト内で -pooler を弾くバリデーションが実装されていますが、CLI 実行環境の環境変数に直接接続用ホスト（セッション接続が維持されるエンドポイント）が正しく割り当てられていることを実行前に確認してください。
+TXT
+
+【INFO】
+
+二段階全施錠による TOCTOU（Time of Check to Time of Use）の完全排除
+
+build の初回スキャンで関連する親・子レコードを動的に特定した後、ロック範囲をそれら全対象へ拡張して再取得し、全スナップショット・受付・正本実態が変化していないことを再検証した上で planHash を確定させています。無保護期間の変更を確実に検知できる優れた設計です。
+TXT
+他 1 件
+
+外部CRM取消の再開における二重削除防止（冪等性）
+
+write_external において、native_equal(actual, desired) を先に評価し、削除対象（desired is None）が既に外部で存在しない（actual is None）場合は何もしない実装となっています。外部APIが 404 を返してスクリプトがクラッシュする事態を防ぎ、安全な再開性を確保しています。
+TXT
+他 1 件
+
+同一トランザクション内での受付IDソート移管
+
+EmailReview の action_id の付け替えにおいて、旧受付側を先に None へクリアしてから SENT受付へ canonicalPage を割り当てており、一意制約に抵触させずアトミックに移管を完結させています。
+TXT
+
+管理外リレーション（verify_empty）の厳格な不変性検証
+
+スキーマ定義外のリレーションプロパティが空（relation == [] かつ has_more is False）であることを全活動で検証し、計画時と適用時でプロパティ構造が変わっていないことを照合しているため、管理外リレーションの意図しない切断・データ消失が防がれています。
+TXT
+
+
+
+
+思考モード
+
+CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。プライバシーと Gemini
+新しいウィンドウで開く

@@ -69,6 +69,9 @@ class MergeOperations:
 
     def resume(self, actor_id, operation_id):
         self.authorize(actor_id, allow_disabled=True)
+        job = self.journal.get_authorized(operation_id, actor_id)
+        if job.get('snapshot', {}).get('workflow') == 'gmail_draft_correction':
+            raise MergeHeld('下書き訂正の固定計画は専用スクリプトから再開してください')
         return MergeService(self.journal, self.gateway, self.locks).execute(
             operation_id, actor_id, read_only=not enabled())
 
@@ -136,6 +139,8 @@ class MergeOperations:
             return self._abandon_snapshot(job)
 
     def _abandon_snapshot(self, job):
+        if job.get('snapshot', {}).get('workflow') == 'gmail_draft_correction':
+            raise MergeHeld('下書き訂正の固定計画は専用スクリプトで扱ってください')
         if job['state'] not in {'approved', 'running', 'held'}:
             raise MergeHeld('中止できる処理ではありません')
         source = self.gateway.page(job['dbKey'], job['sourceId'])

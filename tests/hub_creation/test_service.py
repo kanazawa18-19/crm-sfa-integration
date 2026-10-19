@@ -319,7 +319,8 @@ def test_retry_lookup_failure_is_contained(monkeypatch,caplog):
     assert 'private connection' not in caplog.text
 
 
-def test_sheet_action_reads_confirmed_rollups_after_notion_creation():
+def test_sheet_action_reads_confirmed_rollups_after_notion_creation(monkeypatch):
+    monkeypatch.setattr("src.email_review.repository.action_registration_blocked", lambda _: False)
     service, _, journal, notion, adapter, store = setup()
     service.notion_clients = {'action': notion}
     notion.get_raw_page = lambda page: {'properties': {

@@ -173,6 +173,10 @@ class HubCreationService:
                 self._check_creation_duplicates(event.db_key, client, name, title, properties, page_id)
 
             with acquire_record_sync_lock(self.store, event.db_key, page_id):
+                if event.db_key == "action":
+                    from src.email_review.repository import action_registration_blocked
+                    if action_registration_blocked(page_id):
+                        return "email_sent_evidence_required"
                 if recovery is not None:
                     from src.record_merge.aliases import resolve_alias, require_record_available
                     if resolve_alias(event.db_key, Tool.NOTION, page_id):

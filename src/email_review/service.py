@@ -76,6 +76,8 @@ class Service:
         self.gateway = gateway or Gateway()
 
     def _unsent(self, row):
+        if domain.correction_active(row):
+            return row
         try:
             domain.require_outbound(row)
         except domain.Conflict as exc:

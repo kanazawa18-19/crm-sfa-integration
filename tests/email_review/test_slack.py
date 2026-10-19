@@ -52,3 +52,18 @@ def test_送信証拠なしは理由と再取得案内だけを表示する(veri
         assert 'submit' not in view
         assert not any(block['type']=='input' for block in view['blocks'])
         assert '再取得' in json.dumps(view,ensure_ascii=False)
+
+
+@pytest.mark.parametrize('state', ['held', 'unknown', 'excluded'])
+def test_訂正予約は操作を隠し取消済みでは理由を優先する(state):
+    row={'id':'r','revision':0,'subject':'合成','participants':[],
+         'reason':'下書き誤登録を取消しました。配送状態は取消前の履歴です' if state=='excluded' else '固定訂正予約',
+         'state':state,'delivery':'partial','direction':'outbound','sent_evidence':True,'correction_active':True}
+    view=slack.detail(row)
+    text=json.dumps(view,ensure_ascii=False)
+    assert 'submit' not in view
+    assert not any(block['type']=='input' for block in view['blocks'])
+    if state=='excluded':
+        assert '取消しました' in text and '訂正処理中' not in text and '再開を依頼' not in text
+    else:
+        assert '訂正処理中' in text and '専用手順での再開' in text

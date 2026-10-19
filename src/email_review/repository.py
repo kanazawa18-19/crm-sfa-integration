@@ -233,8 +233,9 @@ def action_actor(page_id: str) -> str | None:
 
 def public(row: dict) -> dict:
     from src.gmail_sync.mail_state import sent
-    return {**{key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties", "contact_completion"}},
-            "sent_evidence": sent(row.get("message") or {})}
+    return {**{key: value for key, value in row.items() if key not in {"message", "body_text", "thread_id", "owner", "attempted_properties", "written_properties", "contact_completion", "correction_hold"}},
+            "sent_evidence": sent(row.get("message") or {}),
+            "correction_active": (row.get("correction_hold") or {}).get("active") is True}
 
 
 def action_registration_blocked(page_id: str) -> bool:
@@ -250,8 +251,13 @@ def action_registration_blocked(page_id: str) -> bool:
     with _connect() as conn:
         if conn.execute('SELECT to_regclass(%s) AS name', ('"EmailReview"',)).fetchone()["name"] is None:
             return False
-        rows = conn.execute('''SELECT data FROM "EmailReview" WHERE data->>'action_id'=ANY(%s)''',
-                            (list(variants),)).fetchall()
+        rows = conn.execute('''SELECT data FROM "EmailReview" WHERE data->>'action_id'=ANY(%s)
+            OR (data->'correction_hold'->'blocked_action_ids') ?| %s''',
+                            (list(variants), list(variants))).fetchall()
+    if any(set((r["data"].get("correction_hold") or {}).get("blocked_action_ids", [])) & variants
+           or (r["data"].get("correction_hold") or {}).get("active") is True for r in rows):
+        return True
+    rows = [r for r in rows if r["data"].get("action_id") in variants]
     if not rows:
         return False
     return len(rows) != 1 or rows[0]['data'].get('direction') != 'outbound' or not sent(rows[0]['data'].get('message') or {})

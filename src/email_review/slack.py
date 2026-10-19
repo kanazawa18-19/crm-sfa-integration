@@ -73,6 +73,11 @@ def detail(row: dict) -> dict:
     if evidence:
         blocks.append(section("照合根拠\n" + "\n".join(
             ("宛名" if e["source"] == "salutation" else "相手の署名") + ": " + e["value"] for source in ("salutation", "signature") for e in [item for item in evidence if item["source"] == source][:4])))
+    if row.get("correction_active") is True:
+        if row.get("state") != "excluded":
+            blocks.append(section("訂正処理中です。通常の操作は停止しています。管理者に専用手順での再開を依頼してください。"))
+        return _modal("メールの照合", "crm_email_decide", blocks,
+                      metadata={"id": row["id"], "revision": row["revision"]})
     if row.get("direction") != "outbound" or row.get("sent_evidence") is not True:
         blocks.append(section("送信済みと確認できないため、登録・訂正・再照合はできません。下書きは対象外です。送信済みメールの場合は管理者に元メールの状態の再取得を依頼し、その後この画面を開き直してください。"))
         return _modal("メールの照合", "crm_email_decide", blocks,

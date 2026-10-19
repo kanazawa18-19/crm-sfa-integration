@@ -20,7 +20,14 @@ class Forbidden(ValueError):
 OUTBOUND_ONLY_REASON = "受信メールは履歴登録の対象外です。アクション履歴は弊社メンバーの送信メールだけが対象です"
 
 
+def correction_active(row: dict) -> bool:
+    """固定訂正の予約中は送信証拠があっても通常操作しない。"""
+    return (row.get("correction_hold") or {}).get("active") is True or row.get("correction_active") is True
+
+
 def require_outbound(row: dict) -> None:
+    if correction_active(row):
+        raise Conflict("訂正処理中です。専用の再開処理が完了するまで操作できません")
     if row.get("direction") != "outbound":
         raise Conflict(OUTBOUND_ONLY_REASON)
     from src.gmail_sync.mail_state import sent
@@ -212,6 +219,8 @@ def identity(message: dict, owner: str) -> str:
 
 
 def decide(row: dict, *, revision: int, action: str, selection: dict, actor: str, channel: str) -> dict:
+    if correction_active(row):
+        raise Conflict("訂正処理中です。専用の再開処理が完了するまで操作できません")
     if revision != row["revision"]:
         raise Conflict("別の画面で更新されています。読み直してください")
     if row["state"] in {"processing", "evaluating", "reconciling", "recheck"} or row["state"] == "unknown" and action != "reconcile":
