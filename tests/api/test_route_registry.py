@@ -30,6 +30,11 @@ _VERCEL_JSON = _REPO_ROOT / "vercel.json"
 
 # 実装されている全ルート（メソッド, パス）。増減させる場合はここも更新する。
 _EXPECTED_ROUTES = {
+    ('GET', '/api/attachment-sync/status'),
+    ('GET', '/api/attachment-sync/problems'),
+    ('POST', '/api/attachment-sync/retry/{source_id}'),
+    ('POST', '/api/attachment-sync/run'),
+    ('POST', '/api/attachment-sync/preview'),
     ('GET', '/api/contact-affiliation-job/status'),
     ('POST', '/api/contact-affiliation-job/run'),
     ('POST', '/api/contact-affiliation-job/discover'),

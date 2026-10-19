@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "CRM添付ファイル": {
+      "type": "FILE",
+      "code": "CRM添付ファイル",
+      "label": "CRM添付ファイル",
+      "required": false,
+      "thumbnailSize": "150"
+    }
+  }
+}

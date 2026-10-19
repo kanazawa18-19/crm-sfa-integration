@@ -1232,3 +1232,25 @@ model ContactAffiliationEvidence {
   createdAt DateTime @default(now()) @db.Timestamptz
   @@index([email], map: "ContactAffiliationEvidence_email_idx")
 }
+
+// 添付原本、内容ごとの保存予約、巡回位置。削除は伝播しない。
+model AttachmentSyncState {
+  id String @id
+  data Json @default("{}")
+  updatedAt DateTime @default(now()) @db.Timestamptz
+}
+model AttachmentSyncSource {
+  id String @id
+  data Json
+  state String @default("pending")
+  assetId String?
+  reason String?
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @default(now()) @db.Timestamptz
+  @@index([nextAttemptAt, id], map: "AttachmentSyncSource_pending_idx")
+}
+model AttachmentSyncAsset {
+  id String @id
+  data Json
+  updatedAt DateTime @default(now()) @db.Timestamptz
+}

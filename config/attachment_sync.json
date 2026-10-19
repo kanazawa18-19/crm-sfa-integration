@@ -1,0 +1,4 @@
+{
+  "project": {"zoho_fields": {"見積書": "field64", "申込書・契約書": "field17", "提案資料": "field68"}, "kintone_field": "添付ファイル_0"},
+  "action": {"zoho_fields": {"手当情報アップロード": "field24"}, "kintone_field": "CRM添付ファイル"}
+}

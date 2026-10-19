@@ -1,0 +1,152 @@
+添付連携のコードレビュー結果です。
+
+No	重大度	箇所	概要
+1	BLOCKER	gateway.deliver	ID対応が未作成の時点で空の配送予約が残り、対応が作成された後も永久に保留になる
+2	BLOCKER	worker.process / archive / deliver_zoho / deliver_kintone	送信前の失敗まで「結果不明」として記録され、自動でも手動再試行でも復旧できない
+3	BLOCKER（前提次第）	Repository.locked	connect() が autocommit でない場合、先行予約が永続化されず、Drive と Notion に重複が生じる
+4	WARN	worker.run / discover_one / process	巡回の例外が局所化されておらず、片方のDBの巡回とメール走査が止まる。1行の不正データでキュー全体も詰まる
+5	WARN	worker.process（mark_mirror）	kintone の複製判定が fileKey に依存しており、循環取り込みで重複が生じうる
+[BLOCKER] ID対応待ちのまま配送予約が固定される（復旧）
+
+現象
+deliver() は mapping.zoho_id や kintone_id が未作成でも、先に checkpoint({'state':'planned','record':''}) を保存してから Held('ZohoのID対応待ちです') を返します。後で通常同期がZohoレコードを作成すると、receipt['record']（空文字）と新しいIDが一致しません。そのため Held('添付先のID対応が変更されています') が恒久的に返ります。
+
+この予約は retryAttachment() でも消えないため、自動では復旧しません。Notionで新規作成した直後の案件や活動に添付すると、Zohoへの同期より先に添付処理が走るので、通常運用で頻繁に起きる経路です。さらに、Zohoで保留になるとループが中断するため、kintoneへの配送も行われません。
+
+修正案
+未書込みの予約（planned）であれば、配送先の変更を許容します。
+
+
+python
+target_record = source.record if target == 'notion' else str(getattr(mapping, target + '_id') or '')
+if not target_record:
+    raise Held(target + 'のID対応待ちです')          # 予約は保存しない
+if receipt and receipt.get('record') != target_record:
+    if receipt.get('state') == 'planned':
+        receipt = {}                                   # まだ書いていないので再計画してよい
+    else:
+        raise Held('添付先のID対応が変更されています')
+if not receipt:
+    checkpoint({'state': 'planned', 'record': target_record})
+
+あわせて、worker側では配送先ごとの Held をまとめて最後に返し、他の配送先への処理は継続することを推奨します。
+
+[BLOCKER] 「writing」の記録が早すぎ、送信前の失敗が結果不明として固定される（復旧）
+
+現象
+以下の3箇所で、外部へ書き込む前の確定的な失敗が、次回実行時に「結果不明・自動復元しない」と判定されます。
+
+Drive：worker が phase='writing' を保存してから archive() の最初の GET を呼んでいます。この GET がタイムアウトや5xxで失敗すると、次回は 404 かつ allow_create=False となり、「保存済みのDrive添付が削除されています」で恒久的に保留されます。実際にはPOSTを一度も送っていません。
+Zoho：checkpoint writing → check() → http.request() の順で処理されますが、http.request() の冒頭にある check_budget() が TimeoutError を出すと、送信前でも次回は保留になります。
+kintone：writing を記録した後に、Driveからのダウンロード、file.json へのアップロード、PUT の順で処理します。PUT より前のどこで失敗しても保留になります。リビジョン競合（409）は「書き込まれなかった」ことが確実な失敗ですが、これも保留になります。設計書には「同時編集で次回保留」とありますが、通常同期がkintoneを更新するたびに人手での対応が必要になります。
+
+10MBの添付では、1件あたり原本取得4回、Drive取得1回、kintone再取得1〜2回で最大約70MBの転送が発生します。180秒の予算を使い切る事態は十分に起こりえます。
+
+修正案
+
+「writing」は送信直前にだけ記録します。その前に残り予算が十分か確認し、実際の送信では予算チェックを行いません。
+
+python
+# http.py
+def require_budget(seconds):
+    if _deadline.get() is not None and _deadline.get() - time.monotonic() < seconds:
+        raise TimeoutError('残り時間不足')
+
+# 例：deliver_zoho
+http.require_budget(45); check()
+checkpoint({'state': 'writing'})
+data = http.request('POST', ..., skip_budget=True)
+Drive の場合は、archive() に mark_writing コールバックを渡します。404 を確認し check() を通過した後、POST の直前に phase='writing' を保存します。
+kintone の場合は、writing に PUT 前のリビジョンを保存します。次回、名前が一致するファイルが無く、レコードのリビジョンも不変であれば PUT は未反映と判断できるため、予約を planned に戻して再実行します。409 を受けた場合も同様に planned へ戻します。そのために、RemoteError にステータスコードを持たせてください。
+人による照合の後に予約を解除する手段（配送先ごとに planned へ戻すAPI）が現在ありません。retryAttachment() と並べて用意することを推奨します。
+[BLOCKER（前提次第）] 台帳書込みのトランザクション境界
+
+現象
+Repository.locked() は with connect() as conn の中で run 全体を実行しています。psycopg3 の既定は autocommit=False で、with ブロックの終了時に一括コミットされ、例外時にはロールバックされます。
+
+contact_name_job.repository.connect() が autocommit でない場合、Drive ID の予約、phase='writing'、各 checkpoint は run の終了まで永続化されません。その状態で、外部書込み後にプロセスの強制終了、デプロイ、OOM、あるいは No.4 の未捕捉例外が起きると、次の経過をたどります。
+
+台帳がロールバックされる
+次回実行時に新しい Drive ID が予約され、Driveファイルが2つになる
+URL が変わるため、Notion の find() が既存リンクを見つけられず、本文にリンクが二重に追記される
+
+ローカルでの「中断」の検証は、HTTPモックで例外を投げて process 内で捕捉させる形のはずです。この方法ではこの問題を検出できません。
+
+修正案
+
+
+python
+@classmethod
+@contextmanager
+def locked(cls):
+    with connect() as conn:
+        if not conn.autocommit:
+            raise RuntimeError('添付台帳は autocommit 接続が必要です')
+        ...
+
+確認方法：ステージング環境で Drive への POST 直後にワーカーを SIGKILL し、AttachmentSyncAsset に phase='writing' が残っていることを確認してください。
+
+[WARN] 巡回とキュー処理の例外が局所化されていない（復旧）
+
+現象
+
+discover_one() は gateway.discover() を try で囲っていません。次の失敗が例外として run の外まで抜けます。
+Held('同時刻の添付巡回境界…') と Held('添付一覧が途中で切れています')（いずれも恒久的な失敗）
+Notion の5xx、TimeoutError
+このとき progress['next_db'] が切り替わる前に処理が中断されます。そのため毎分同じDBの巡回を繰り返し、もう一方のDBとメール走査（scan:mail）が一切進みません。メール添付が永久にキューに入らない状態になります。
+process() の Source(**row['data']) は try の外にあります。CATEGORIES の変更やフィールドの追加で旧データが不正になると、finish() が呼ばれずに同じ行が毎分選ばれ続け、後続の処理がすべて止まります。
+
+修正案
+
+
+python
+# discover_one：巡回部分を囲い、常にDB切替とメール走査へ進める
+try:
+    ...  # scan:db の取得と1件処理
+    repo.put_state('error:scan:' + db, {})
+except Exception as exc:
+    repo.put_state('error:scan:' + db,
+                   {'reason': str(exc) if isinstance(exc, Held) else type(exc).__name__})
+progress['next_db'] = ...   # finally 相当の位置で必ず切り替える
+
+# process：不正な行は保留にしてキューから外す
+try:
+    source = Source(**row['data'])
+except Exception as exc:
+    repo.finish(row['id'], 'held', reason='台帳データ不正: ' + type(exc).__name__)
+    return 'held'
+[WARN] kintone の複製判定が fileKey 依存で、循環取り込みが起きうる（重複）
+
+現象
+mark_mirror は、保存直後に GET で得た fileKey を複製として台帳に登録しています。しかし kintone では、FILE 欄を含むレコード更新（次の添付を追加するための PUT など）の後に既存ファイルの fileKey が変わる場合があります（実機での確認が必要です）。
+
+fileKey が変わると、巡回時に未登録の kintone 添付として新しい Source になります。kintone から取り込む際のカテゴリは常に「添付ファイル」です。そのため、元のカテゴリが見積書・申込書・契約書・提案資料・手当情報アップロードのいずれかだった場合は content_key が別の値になり、次の重複が発生します。
+
+Driveファイルの重複
+Notion本文へのリンクの二重追記
+Zohoへのリンクの二重追加
+
+案件の kintone 欄は4カテゴリを1つの欄で受けるため、案件では特に起きやすい構造です。設計書にある「台帳上の複製として登録し、循環取り込みを防ぐ」という意図が成立しません。
+
+修正案
+識別子ではなく内容で複製を判定します。process で原本を取得した直後に、次の判定を追加してください。
+
+
+python
+data = gateway.validate_source(source)
+digest = hashlib.sha256(data).hexdigest()
+if source.tool in ('kintone', 'zoho') and repo.delivered_to(source.db, source.record, source.tool, digest):
+    repo.finish(source.key, 'mirrored')
+    return 'mirrored'
+
+delivered_to は、同じレコードの asset のうち receipts[tool].state == 'verified' かつ sha256 が一致するものを、カテゴリを問わず検索します。補助的な条件として、ファイル名の [CRM-<16桁>] と asset ID の先頭16桁の一致を併用すると確実です。
+
+件数外の補足：受付済みメールの所有者に受信者側（SENT ラベルなし）が含まれる場合、mail_sources が毎巡回で Held を記録します。その結果 discovery_error_count が常に1件以上となり、4時間ごとの要確認通知が止まらなくなる可能性があります。ステージングでの往復確認の際に、あわせて確認することを推奨します。
+
+
+
+
+
+
+5 分前
+

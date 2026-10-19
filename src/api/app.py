@@ -580,3 +580,6 @@ app.include_router(sync_exclusions_router)
 
 from src.api.routes.contact_affiliations import router as contact_affiliations_router
 app.include_router(contact_affiliations_router)
+
+from src.api.routes.attachments import router as attachments_router
+app.include_router(attachments_router)

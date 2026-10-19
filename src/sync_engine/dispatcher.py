@@ -332,6 +332,8 @@ class Dispatcher:
             from src.record_merge.aliases import hold_alias_event
             hold_alias_event(event, mapping)
             return DispatchResult(skipped=True, reason="merged_old_id_review_required")
+        from src.attachment_sync.events import enqueue as enqueue_attachments
+        enqueue_attachments(mapping.db_key, mapping.notion_key)
         # 判定前から最終同期時刻の保存まで、同じレコードの同期を直列化する。
         locked_key = (mapping.db_key, mapping.notion_key)
         with acquire_record_sync_lock(self._store, *locked_key) as guard:

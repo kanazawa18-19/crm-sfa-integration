@@ -1,0 +1,81 @@
+# 添付連携（2026-10-19、稼働前）
+
+案件・活動の添付と、メール受付で活動への登録が完了した送信メールの添付を連携する。
+既定は停止。本番でのファイル作成・項目追加・マイグレーション・GAS登録は未実施。
+
+```text
+Notion添付欄・Zoho添付欄/関連添付・kintone添付欄
+                         ↓
+確定した送信メール ──→ Driveの指定フォルダ
+                         ├→ Notion：ページ本文へ添付リンク
+                         ├→ Zoho：関連リストへ添付リンク
+                         └→ kintone：添付欄へファイル本体
+```
+
+## 対象と表示場所
+
+|対象|取得する欄|反映先|
+|---|---|---|
+|案件|見積書、申込書・契約書、提案資料、添付ファイル|Notion本文、Zoho関連添付、kintone「申込書などの添付ファイル」|
+|活動|手当情報アップロード、添付ファイル|Notion本文、Zoho関連添付、kintone新規「CRM添付ファイル」|
+|メール|メール受付が done、活動ID確定、Gmailで送信済みの実添付|同じ活動の上記3か所|
+
+Notionの既存添付プロパティとZohoのファイルアップロード欄は置換しない。
+Notion本文へのリンク追記は、同時に手動添付されたファイルを消さないための選択。
+Driveリンクはログインと既存の閲覧権限が必要。公開共有には変更しない。Notion内プレビューは保証しない。
+kintoneでは本体が保存されるため、そのアプリの閲覧者が読める。稼働前に指定フォルダとCRMの共有対象を確認する。
+
+## 対象外
+
+- 受信メール、未確定・除外したメール、署名内のインライン画像、メール本体に埋め込まれた引用メール。
+- 10MB超、0バイト、Drive以外の外部リンク、許可したNotion配信先以外のURLは保留。
+- 取引先・連絡先の添付、削除・名称変更の他ツールへの伝播。同じ添付IDの内容差し替えも自動上書きしない。
+- Notion本文に手動追加したファイルブロック（取得元は添付プロパティ）。
+
+## 安全性・再開
+
+- 原本ID、案件/活動ID、カテゴリ、ファイル内容のSHA256を台帳で管理。異なるレコード間では共有しない。
+- DriveのファイルIDを作成前に予約・保存。結果不明で実体が見つからなければ新規作成せず保留。
+- 各CRMへの追記予約も先に永続化。結果不明・手動削除後に勝手に作り直さない。
+- kintoneは既存fileKeyとリビジョンを送る。同時編集があると保存が失敗し、次回保留になる。保存後に本体のハッシュを照合する。
+- 全ジョブと対象レコードを直接DB接続で排他。メール受付も行ロックし、各書込み前に接続生存確認。
+- 対応IDの逆引き、統合・削除・同期除外を再確認。トークン・署名付きURL・本文を台帳やエラーに入れない。
+- 配送済みのkintone/Zoho添付は台帳上の複製として登録し、循環取り込みを防ぐ。
+
+## 稼働前の準備（承認後に実施）
+
+1. ステージングの案件・活動・Gmailを用意し、本番と別の認証情報/DB/Driveフォルダで実ファイルの往復と担当者からの閲覧を確認する。
+2. `dashboard/prisma/migrations/20261019090000_attachment_sync/migration.sql` を適用する。
+3. kintone活動アプリへ `config/attachment_sync_kintone_field.json` のFILE欄をプレビュー環境で追加し、アプリ更新を反映する。既存の案件FILE欄はそのまま使う。
+4. `ATTACHMENT_DRIVE_FOLDER_ID` を設定。サービスアカウントで追加できる共有ドライブ内の専用フォルダを推奨。共有者はCRM利用者に限定し、本人がリンクを開けることを確認する。
+5. 専用GASに `gas/attachment-sync/` を配置し、`ATTACHMENT_BASE_URL` を対象環境の `/api/attachment-sync` URLに設定する。既存のGmail取り込み/姓名/所属補完GASへ混ぜない。
+6. `attachmentIdentity()` のaudience/subjectを `ATTACHMENT_SYNC_GAS_AUDIENCE` / `ATTACHMENT_SYNC_GAS_SUBJECT` に設定。秘密のトークンを転記する方式ではない。
+7. `previewAttachments()` は外部ファイルやキューを書き換えず、Drive/kintone欄と案件・活動の各先頭1件を確認する。全件試験ではない。
+8. 本番反映の指示後にmainをpush。環境変数 `ATTACHMENT_SYNC_ENABLED=true` を設定して `startAttachments()`。初期状態ではOFF。
+
+## 運用と保留の解消
+
+GASは5分ごとに1回、同時実行しない。1回最大1添付の配送＋変更通知1レコード＋全件巡回1レコード＋メール1件。
+処理時間によっては次回に繰り越すため、最大288添付/日より少なくなる。初回の既存分は順次処理で即時ではない。既存GASと共有する実行時間枠があるため、実測前の1分化はしない。稼働前に各GASの合計実行時間を見積もり、枠内であることを確認する。
+通常のCRM変更通知を優先して読み、通知から漏れた既存添付は全件巡回で回収。メールの既存分も順番に読む。
+
+- 状態：GAS `attachmentStatus()`。配送済み、保留、再試行、未処理、巡回エラーを区別する。
+- 個別の保留：`attachmentProblems()`。1ページ100件の添付名、原本ID、理由、配送先別の状態を確認する。続きは返されたnext_offsetをGASプロパティ `ATTACHMENT_PROBLEMS_OFFSET` に設定する。
+- 設定不足など原因を直した後：GASプロパティ `ATTACHMENT_RETRY_ID` に対象IDを入れ `retryAttachment()`。保存予約を消さず再読するため、結果不明の書込みは増やさない。
+- 結果不明で実物が存在しない場合は、意図的な解除か未送信かを人が照合する。台帳を消して自動再配送しない。
+- 停止：`stopAttachments()` と `ATTACHMENT_SYNC_ENABLED=false`。既存ファイルは残す。
+- 15分ごとの監視はトリガー数、最終正常終了から30分、所要時間240秒、保留/再試行/巡回失敗を確認。本人へ要確認通知（4時間間隔）と通常時の日次件数通知。
+
+## 公式仕様
+
+- [Zohoファイル欄の取得](https://www.zoho.com/crm/developer/docs/api/v8/download_field_attachments.html)、[関連リンク添付](https://www.zoho.com/crm/developer/docs/api/v8/upload-attachment.html)
+- [Drive事前ID発行](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/generateIds)、[multipartアップロード](https://developers.google.com/workspace/drive/api/guides/manage-uploads)
+- [kintoneファイルアップロード](https://cybozu.dev/ja/kintone/docs/rest-api/files/upload-file/)、[レコード更新](https://cybozu.dev/ja/kintone/docs/rest-api/records/update-record/)
+- [Notionファイル](https://developers.notion.com/reference/file-object)
+
+## 検証範囲
+
+ローカルの実Postgresで台帳・二重ロック・再試行を確認。HTTP境界はモックで内容保持・保存後再読・中断・手動解除・対応変更・容量制限を検証する。
+実サービスへのファイル保存とGAS自然実行は未検証。本番へテストファイルは送っていない。
+
+最終回帰：既存同期/API/添付を合わせてPython 1,783件、GAS新規7件・既存込み62件合格（2026-10-19）。
