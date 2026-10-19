@@ -189,3 +189,30 @@ def test_delivery_pending_removal_between_reads_never_repatches(fixture):
     gateway.live = changing
     assert worker.process(repo.item.copy(), repo, conn, gateway, False) == 'released'
     assert gateway.writes == 1
+
+
+def test_incomplete_annotation_keeps_live_cursor_at_same_timestamp(monkeypatch):
+    gateway = JobGateway()
+    stamp = '2026-08-10T20:16:00.000Z'
+    requests = []
+    class Client:
+        def query_raw(self, body):
+            requests.append(body)
+            return {'results': [{'id': str(i), 'created_time': stamp} for i in range(100)],
+                    'has_more': True, 'next_cursor': 'next-page',
+                    'request_status': {'type': 'incomplete', 'incomplete_reason': 'query_result_limit_reached'}}
+    monkeypatch.setattr(gateway, 'client', lambda kind: Client())
+    pages, cursor = gateway.discover({'watermark': stamp, 'count': 0})
+    assert cursor == {'watermark': stamp, 'count': 100, 'cursor': 'next-page', 'truncated': True}
+    gateway.discover(cursor)
+    assert requests[1]['start_cursor'] == 'next-page'
+
+
+def test_incomplete_flag_carried_until_cursor_exhausted(monkeypatch):
+    gateway = JobGateway()
+    class Client:
+        def query_raw(self, body):
+            return {'results': [{'id': 'last', 'created_time': '2026-09-01T00:00:00Z'}], 'has_more': False}
+    monkeypatch.setattr(gateway, 'client', lambda kind: Client())
+    pages, cursor = gateway.discover({'watermark': '2026-08-01T00:00:00Z', 'cursor': 'last-page', 'count': 100, 'truncated': True})
+    assert cursor == {'watermark': '2026-09-01T00:00:00Z', 'count': 0}

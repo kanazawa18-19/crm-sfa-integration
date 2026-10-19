@@ -34,3 +34,16 @@ Claude指摘を受け、Zoho/Eightの所属鮮度不明票を除外、手動解�
 - SEC最終：domain/worker44件成功、BLOCKERなし。品質再レビューもBLOCKER/WARNなし。
 - Geminiは2回とも回答を取得できず未完了。Claude原文と採否は同ディレクトリ参照。
 - 本番配備・権限承諾・新規GAS稼働・新規保存配送の実物確認は引き続き未完了。
+
+## 明示承認後の配備・試算（2026-10-19 17時台）
+
+本人「いいよ」により、新GASのCRM通信・本人識別・専用トリガー管理・本人宛メール、本番配備/起動を承認。
+
+- migration `20261019060000_contact_affiliation_job` のみを適用、停止/試算/0件を実DBで確認。
+- 新GASのmanifest保存・Google権限承諾・本人識別の実行成功。必要な既存Notion接続1件と専用aud/subを本番登録。
+- 本番環境変数の全件pullは自動審査で拒否されたため実施せず、ローカルにある承認対象のNotion接続1件のみを登録した。
+- `4a38aee` のAPI/管理画面はProduction Ready、healthz200。GASのpreviewから認証済みstatus200を実読。
+- 試算実行は一度、画面に古い停止ログが残っているとして自動審査で拒否。previewでenabled=true/dry_run=trueを再読し、その根拠で試算実行が許可された。
+- GASエディタの部分入力による旧コードの重複を起動前に検出。全選択・空欄化確認後に最終コードを保存し直した。先頭/末尾118行と公開関数一覧を実読。画面のtextareaは一部だけ返すため、全ファイルハッシュ一致を確認したとは扱わない。
+- 初回試算は既存所属100件確認・新規書込0。その後Notionのincomplete注記を上限終端と誤認して停止。実レスポンスはquery_result_limit_reached注記があってもhas_more=true/next_cursorあり。同一作成日時100件で再現し、有効cursor優先＋注記持越しへ修正。本人宛の失敗通知1通の到着をGmailで実読。
+- CIはテスト同名ファイルの収集衝突で失敗。新規testsのパッケージ化と追加API3本の期待値修正後、通常pytest -qは4,805成功/213skip。sandboxのプロセス制限3失敗は許可環境で再実行し成功。限定再レビューSEC/品質BLOCKERなし。

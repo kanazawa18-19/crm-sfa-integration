@@ -34,8 +34,9 @@ class JobGateway(Gateway):
         data = self.client('contact').query_raw(body)
         pages = data.get('results') or []
         count = cursor.get('count', 0) + len(pages)
-        truncated = (data.get('request_status') or {}).get('type') == 'incomplete'
-        if count >= 9000 or truncated:
+        truncated = cursor.get('truncated', False) or (data.get('request_status') or {}).get('type') == 'incomplete'
+        # incompleteはクエリ全体の上限注記。有効な次ページを捨てない。
+        if count >= 9000 or (truncated and not data.get('has_more')):
             watermark = pages[-1]['created_time'] if pages else cursor.get('watermark')
             if not watermark or watermark == cursor.get('watermark'):
                 raise ValueError('同時刻の境界が上限に達しました。巡回を確認してください')
@@ -43,7 +44,7 @@ class JobGateway(Gateway):
         elif data.get('has_more'):
             if not data.get('next_cursor'):
                 raise ValueError('巡回カーソルがありません')
-            after = {**cursor, 'cursor': data['next_cursor'], 'count': count}
+            after = {**cursor, 'cursor': data['next_cursor'], 'count': count, 'truncated': truncated}
         else:
             after = {}  # 次周で新規・未解決を再確認する。
         return pages, after
