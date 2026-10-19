@@ -127,6 +127,10 @@ class HubCreationService:
                     self.journal.finish(source_key, "notion", page_id)
             else:
                 existing = self.store.get(event.external_id)
+                if self.journal.is_relation_parent_import(event.db_key, 'notion', event.external_id,
+                                                         include_unidentified=existing is None):
+                    # 既存外部親の取込は新規CRM登録の依頼ではない。対応成立後は通常更新だけ通す。
+                    return None if existing is not None else 'relation_parent_import_pending'
                 if recovery is None and existing is not None and not self.journal.has_source(source_key):
                     return None
                 from src.sync_engine.zoho_text_limits import creation_notes_pending

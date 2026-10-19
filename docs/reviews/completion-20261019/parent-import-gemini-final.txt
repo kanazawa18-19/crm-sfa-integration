@@ -1,0 +1,242 @@
+:
+    - generic: TXT
+    - generic: crm-parent-import-final-review
+  - heading "あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。" [level=5]
+  - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - heading "判定一覧" [level=3]
+  - list:
+    - paragraph:
+      - generic: "BLOCKER: 0件（初回B1は完全に解消。未確定再POSTの抑止、既知ID限定の再開、通常Webhookとの相互排他制御はすべて堅牢に成立）"
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "WARN: 2件（共通通知ガードの先行配備確認、ID未確定時の他新規レコード一時保留範囲）"
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "INFO: 3件（初回B1修正の構造的安全性、W3対応済み更新のバイパス実証、マーカー検証の信頼性）"
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - heading "レビュー詳細" [level=3]
+  - heading "【BLOCKER検証結果】該当なし（初回B1解消の確認）" [level=4]
+  - list:
+    - paragraph: 初回B1（POST後中断時の再開ブロッキング）の解消確認
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "修正前の問題: POST成功後に対応表保存が失敗した場合の再開時にも"
+        - code: snapshot
+        - text: 全体（元actionの本文やZoho親の
+        - code: Modified_Time
+        - text: 等）のハッシュ一致を検証していたため、POST後に発生した親の通常同期や関連承認によって計画ハッシュが変わり、安全な再開がブロックされる欠陥があった
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph: "修正後の実装:"
+      - list:
+        - paragraph:
+          - text: 元データ全件のハッシュ一致検証は
+          - code: "if not imported:"
+          - text: （POST前）のスコープに限定された
+          - superscript
+          - text: 。
+          - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+            - generic: TXT
+        - paragraph:
+          - code: imported
+          - text: 確定後の再開時は
+          - code: verify_external_binding
+          - text: により、対象Zoho親IDの実在・統合履歴なし・他ページとの重複不在のみを再確認する形に分離された
+          - superscript
+          - text: 。
+          - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+            - generic: TXT
+        - paragraph:
+          - code: verify_imported
+          - text: では
+          - code: current is None
+          - text: （対応表未成立時）のみ計画項目の完全一致を要求し、対応表成立後の再実行では通常同期による項目変更を許容しつつ、確認番号（marker）と外部ID対応の一意性で完了を確認する設計へ改善された
+          - superscript
+          - text: 。
+          - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+            - generic: TXT
+      - paragraph:
+        - generic: "判定: 未確定状態での再POSTを厳格に禁止したまま、POST完了後の安全かつ確実な再開性が確保されており、BLOCKERは完全に解消された"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【WARN】" [level=4]
+  - list:
+    - paragraph: 共通通知ガード（API/ワーカー）の本番配備完了の確認徹底
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象: 本運用の安全性は、"
+        - code: PostgresCreationJournal
+        - text: 、
+        - code: HubCreationService
+        - text: 、および
+        - code: Dispatcher
+        - text: に追加された共通ガード（
+        - code: is_relation_parent_import
+        - text: ）が稼働していることを前提としている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "リスク: 共通ガードのデプロイが完了（プロセス再起動まで）する前に"
+        - code: import_missing_relation_parent.py --apply
+        - text: を実行した場合、Notionページ作成直後に飛来するNotion Webhookが既存の
+        - code: HubCreationService
+        - text: に捕捉され、欠損kintone等の不要な外部CRM登録がトリガーされる
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "対策: ドキュメントの規定通り、必ず本番環境で共通ガードの適用・反映を確認した後にのみ"
+        - code: "--apply"
+        - text: を実行する運用フローを厳守すること
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - text: Notion ID未確定時（
+      - code: reserved
+      - text: 中）における他新規レコードの一時保留
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象:"
+        - code: PostgresCreationJournal.is_relation_parent_import
+        - text: において、
+        - code: include_unidentified=True
+        - text: （Notion側で対応表未成立の新規レコードが届いた場合）の判定条件は以下の通りとなっている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - generic: SQL
+      - button "コードをダウンロードする":
+        - img: arrow_circle_down
+      - button "コードをコピー":
+        - img: copy
+      - code: (%s='notion' AND ("externalId"=%s OR (%s AND state='reserved')))
+      - paragraph:
+        - text: "影響: 取込スクリプトが"
+        - code: reserve
+        - text: してから Notion ページを作成し対応表を保存するまでのごくわずかな間、
+        - text: 無関係な別の取引先新規レコードがNotion側で作成されてWebhookが届いた場合も、一律で
+        - code: relation_parent_import_pending
+        - text: として処理が一時保留される
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "確認事項: 取込漏れ復旧は短時間の単発運用であり、スクリプトが完了すれば後続の同期で解消されるため恒久障害にはならないが、運用中は新規取引先登録が数秒〜十数秒程度保留され得る挙動を認識しておく必要がある"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【INFO】" [level=4]
+  - list:
+    - paragraph: 初回B1修正に伴う安全性と柔軟性の両立
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - generic: "評価: POST前には「元アクションの空関連・確定ID・Zoho親実物・同名候補不在」を全項目厳格に検証し、POST後には「確定IDの帰属とNotion確認番号の一致」に検証範囲を切り替えることで、外部CRMの二重作成や誤紐付けのリスクを一切高めることなく、中断再開時の堅牢性を向上させている"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: W3解消の確認（対応済みZoho更新のDispatcher実証）
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "評価: 追加された実機テスト（"
+        - code: test_mapped_zoho_update_bypasses_creation_guard_and_reaches_notion
+        - text: ）により、対応表が成立した後の通常Zoho更新イベントは新規作成ガード（
+        - code: new_record_guard
+        - text: ）を正しくバイパスし、通常のNotion同期ターゲットへ直接配送されることが実証されている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph: 確認番号（marker）による実読検証の信頼性
+    - paragraph:
+      - superscript
+      - 'button "TXT: crm-parent-import-final-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "評価: 本文ブロック内の確認番号テキストの一致に加え、"
+        - code: texts.count(marker) != 1
+        - text: によって重複や空ページを排除している
+        - superscript
+        - text: 。これにより、万一タイムアウト等で結果不明となった場合でも、手動実物確認時に該当ページを一意に特定できる追跡性が確保されている
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-final-review.txt、TXT: crm-parent-import-final-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"

@@ -11,6 +11,21 @@ def connect():
 
 
 class PostgresCreationJournal:
+    def is_relation_parent_import(self, db_key, tool, external_id, *, include_unidentified=False):
+        """取込専用予約を両側の通知で認識する。ID不明中は未登録Notionだけ保留する。"""
+        if db_key != 'client_master' or tool not in ('zoho', 'notion'):
+            return False
+        with connect() as conn:
+            row = conn.execute('''SELECT 1 FROM "HubCreationAttempt"
+                WHERE "dbKey"=%s AND target='notion'
+                AND "sourceKey" LIKE 'relation-parent-import:zoho:%%'
+                AND state IN ('reserved','created')
+                AND ((%s='zoho' AND "sourceKey"=%s)
+                  OR (%s='notion' AND ("externalId"=%s OR (%s AND state='reserved'))))
+                LIMIT 1''', (db_key, tool, 'relation-parent-import:zoho:' + str(external_id),
+                            tool, str(external_id), include_unidentified)).fetchone()
+        return row is not None
+
     def get(self, source_key, target):
         with connect() as conn, conn.cursor() as cur:
             cur.execute('SELECT * FROM "HubCreationAttempt" WHERE "sourceKey"=%s AND target=%s', (source_key, target))

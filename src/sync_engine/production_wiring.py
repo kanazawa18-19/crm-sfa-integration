@@ -967,12 +967,15 @@ def build_production_dispatcher(
         client.upsert_sync_notes(mapping.notion_key, event.sync_notes)
 
     def pending_hub_creation(event: SyncEvent, properties: dict[str, Any]) -> bool:
+        from src.hub_creation.journal import PostgresCreationJournal
+        journal = PostgresCreationJournal()
+        if journal.is_relation_parent_import(event.db_key, event.source_tool.value, event.external_id):
+            return True
         from src.hub_creation.service import enabled_since
         if enabled_since() is None:
             return False
-        from src.hub_creation.journal import PostgresCreationJournal
         # 返信時の活動タイトルは外部で組み立て直されるため、名前ではなく確定IDで照合する。
-        return PostgresCreationJournal().conflicts(event.db_key, event.source_tool.value, event.external_id)
+        return journal.conflicts(event.db_key, event.source_tool.value, event.external_id)
 
     dispatcher = Dispatcher(
         store,

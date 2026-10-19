@@ -1,0 +1,12 @@
+{
+  "bytes": 65854,
+  "sha256": "a5840ef0b07aa5b9ba12d32909d7803651d06ea7d0b22ace2a7efb94bb23bc48",
+  "secret_scan": "pass",
+  "customer_data": "none",
+  "files": [
+    "scripts/import_missing_relation_parent.py",
+    "tests/scripts/test_import_missing_relation_parent.py",
+    "tests/hub_creation/test_relation_parent_import.py",
+    "docs/reviews/completion-20261019/relation-parent-import.md"
+  ]
+}

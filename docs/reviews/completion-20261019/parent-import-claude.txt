@@ -1,0 +1,92 @@
+Claude の応答：結論として、BLOCKERが1件あります。POST後（created 状態）の再開時に、計画全体の指紋の一致を必須にしているため、正当な外部変化があるだけで「既知IDだけ再開」できなくなります。新しい計画も作れないため、取込ページが対応表のない状態で固まります。
+Cataloging warnings and informational findings beyond the blockers.
+
+Cataloging warnings and informational findings beyond the blockers.
+
+結論として、BLOCKERが1件あります。POST後（created 状態）の再開時に、計画全体の指紋の一致を必須にしているため、正当な外部変化があるだけで「既知IDだけ再開」できなくなります。新しい計画も作れないため、取込ページが対応表のない状態で固まります。
+
+予約前後・タイムアウト・ID保存前の再POST禁止と、通常Webhookからの再作成防止は、実装とテストの両方で確認できました。
+
+ID	区分	観点	箇所	概要
+B1	BLOCKER	既知IDだけ再開・対応表保存の前後	ParentImport.apply（再開時の snapshot 指紋照合）	created 後の再開に計画前の全指紋一致を要求するため、再開も再計画もできなくなる
+W1	WARN	予約中の副作用	HubCreationService の取込ガード（include_unidentified）	ID未確定の予約が残る間、Notionの未登録取引先の新規登録が全件、無通知で止まる
+W2	WARN	対応表保存後	apply 末尾の mappings 再照会	Notion検索の反映遅延で誤って保留になり、B1の経路に入る
+W3	WARN	通常Webhook	pending_hub_creation（Zoho側）	取込完了後も True を返し続ける。通常更新に影響しないことが未検証
+W4	WARN	重複作成	取込後の kintone 経路	kintone 側の同じ顧客が未対応のまま残ると、自動作成で親が二重になりうる
+I1〜I3	INFO	—	—	下記参照
+
+BLOCKER
+
+B1 created 後の再開が計画前の指紋に縛られている
+根拠：apply は予約の状態によらず snapshot を取り直し、digest(current) != plan[‘hash’] なら保留します。一方、preview は予約があると「元の計画で再開してください」と拒否します。snapshot には次が含まれます。
+・Zoho 親の実物全体（Modified_Time や Last_Activity_Time など、関連活動の追加だけで変わる項目を含む）
+・元アクションの値と本文
+・「元アクションの関連が空欄」という条件
+POST 前の照合としては正しい設計ですが、POST 後の再開にも同じ条件を課しています。
+影響：
+・Notion ページの作成・finish が済んだ後、対応表の保存か最終確認（W2）で止まると、再開時には Zoho 親の活動日時などが変わっていることが多く、「計画後に…変わりました」で保留になります。
+・新しい計画は preview が拒否するため作れず、正規の手順では完了できません。取込ページは対応表がないまま残り、通知ガードによって通常処理の対象にもなりません。アクションの関連承認にも進めません。
+・test_mapping_failure_resumes_known_id_only は snapshot を固定値の Mock にしているため、この経路を検出できていません。
+修正案：
+・POST 前の照合（計画の全指紋）と、POST 後の再開条件を分けてください。
+・attempt が created の場合は全指紋を比較せず、次の不変条件だけを確認します。
+・計画ファイルの改ざん有無（hash と snapshot の一致）
+・予約の identityHash と externalId
+・verify_imported（DB、アーカイブ、確認番号、計画項目、既存の対応）
+・Zoho 親が同じIDで実在し、統合履歴がないこと
+・同じ外部IDの対応が、取込ページ以外に存在しないこと
+・対応表を保存した後は、通常同期によって取込ページの項目が変わりえます。そのため対応表が保存済みで一意なら、項目の一致は求めずに完了扱いにします。
+・回帰テストとして「created 後に Zoho 親の Modified_Time が変わっても、対応表を保存して完了する」ケースを、snapshot を実物の経路にしたうえで追加してください。
+
+WARN
+
+W1 ID未確定の予約中は、Notion取引先の新規登録が全件止まる
+根拠：existing is None のときは include_unidentified=True で照会するため、reserved が1件でもあれば、無関係な未登録の client_master ページもすべて ‘relation_parent_import_pending’ になります。この結果は Notion のメモにも保留表にも記録されません。また reserved は設計上、人が調べるまで解除されません。
+影響：タイムアウトや、予約後のローカル例外（I2）で reserved が残ると、その間に営業が作成した新しい取引先は Zoho・kintone に登録されません。次の編集か週次点検まで誰も気づきません。
+修正案：
+・保留の対象を、計画の取引先名と一致するページ、または予約時刻以降に作成され確認番号を持つページに絞ってください。
+・reserved が一定時間を超えて残る場合は、健全性チェックか運用DMで通知します。
+・保留した理由をページのメモに残してください。
+
+W2 対応表保存直後の一意性確認が Notion 検索に依存している
+根拠：保存後の確認 self.mappings(external_id) は、Notion の対応表DBを検索（_query_all）しています。作成直後のページは、検索結果に反映されるまで時間がかかる場合があります。
+影響：実際には保存済みでも「保存後の外部ID対応が一意ではありません」で保留になり、B1の再開経路に入ります。
+修正案：保存直後は store.get(imported) による直接読取で確認してください。重複の検出は、短い再試行を挟んで行うか、次回の再開時に回します。
+
+W3 Zoho側ガードは取込完了後も True を返し続ける
+根拠：pending_hub_creation は、Zoho イベントに対して予約が reserved か created である限り True を返します。Notion 側のような「対応表が成立していれば通す」条件がありません。
+影響：pending_hub_creation が新規レコード判定（対応表なし）でしか使われないなら問題ありません。対応表がある通常更新でも参照される経路があれば、この親の Zoho 側の変更が恒久的に同期されなくなります。
+修正案：呼出し箇所を確認し、「取込後、対応表のある Zoho 更新が通常どおり配送される」テストを1件追加してください。
+
+W4 kintone 側の同じ顧客
+根拠：取込後の対応表には zoho_id しかありません。文書でも、欠損している kintone は自動作成しない方針です。
+影響：kintone に同じ顧客が既にあり、未対応のままだと、kintone の通知が未知レコードとして Notion の自動作成に進み、親ページが二重になりえます（自動作成側に同名照合がない場合）。
+修正案：適用前に kintone 側の該当顧客の有無を確認し、あれば対応表へ手動で紐付ける手順を運用文書に加えてください。
+
+INFO
+
+I1 pending_hub_creation は、HUB_CREATION_ENABLED_SINCE が未設定でも、client_master の全イベントで DB を照会するようになりました。DB 障害時に client_master の配送が例外になる点を認識しておいてください。
+
+I2 create_page_once に children を渡せることは、テストでは Mock で確認しているだけです。シグネチャ不一致などのローカル例外が予約後に起きると、POST していないのに reserved が残り、W1 の状態になります。実クライアントのシグネチャを確認するテストを追加するか、送信内容の組立てと検証を予約の前に済ませてください。
+
+I3 title_candidates は、英語だけの名称では全体一致の contains しか検索しません。部分一致の候補を見落としうる点を、運用時の目視確認項目に加えてください。
+
+確認できた点（問題なし）
+
+観点	内容
+予約前	鍵の取得後に全指紋を再照合し、一致しなければ予約しない
+予約とPOSTの順序	予約を別トランザクションで確定してから、非再試行の create_page_once を呼ぶ
+タイムアウト・ID保存前	reserved のままにし、再実行してもPOSTしない（テスト済み）
+finish 失敗	reserved が残り、再POSTしない（テスト済み）
+別計画・改ざん	identityHash の不一致と、計画ファイルの指紋不一致を拒否
+通常Webhookの再作成	外部IDの鍵を共有し、Zoho・Notion 双方の通知が予約中に作成を始めない
+既存の対応表	上書きせず、別の対応表があれば保留
+実物確認	確認番号の一意性、DB、アーカイブ、計画項目を実際に読み取って照合
+
+スプレッドシートを作成
+
+
+
+
+
+2 分前

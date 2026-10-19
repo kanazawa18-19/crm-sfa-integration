@@ -1,0 +1,273 @@
+:
+    - generic: TXT
+    - generic: crm-parent-import-review
+  - heading "あなたのプロンプト 添付資料の指示に沿って、日本語でレビューしてください。" [level=5]
+  - paragraph: 添付資料の指示に沿って、日本語でレビューしてください。
+  - button "プロンプトをコピー":
+    - img: copy
+  - button "編集":
+    - img: edit
+  - heading "Gemini の回答" [level=6]
+  - heading "判定一覧" [level=3]
+  - list:
+    - paragraph:
+      - generic: "BLOCKER: 0件（未確定再POSTの禁止、通常Webhookとの相互排他、予約トランザクション、実読検証のいずれも厳格に実装されており、リリースを阻害する欠陥はありません）"
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - generic: "WARN: 2件（共通通知ガードの先行配備確認の徹底、中断再開時におけるZoho外部照会の依存）"
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - paragraph:
+      - text: "INFO: 3件（"
+      - code: is_relation_parent_import
+      - text: の早期リターンによる負荷局所化、取引先名検索の絞り込み設計、確認番号による実物追跡性）
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+  - heading "レビュー詳細" [level=3]
+  - heading "【BLOCKER検証結果】該当なし（安全性の確認）" [level=4]
+  - list:
+    - paragraph:
+      - text: 未確定時の再POST完全抑止と予約先行コミット
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: self.journal.reserve
+        - text: は即時コミットされる別接続（トランザクション）で確定した後にのみ
+        - code: create_page_once
+        - text: が呼ばれます
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: タイムアウトや応答断、
+        - code: finish
+        - text: 失敗時には状態が
+        - code: "'reserved'"
+        - text: のまま残り、再実行時も
+        - code: attempt['state'] != 'created'
+        - text: により
+        - code: MergeHeld('取込結果が不明です。自動で再作成せず確認番号で実物を調査してください')
+        - text: で即時停止します
+        - superscript
+        - text: 。自動的な推測や再POSTは構造的に完全に遮断されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt、TXT: crm-parent-import-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph:
+      - text: 通常Webhookの再作成・不要登録の二重ガード
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "Zoho側通知の抑止:"
+        - code: pending_hub_creation
+        - text: 内で
+        - code: journal.is_relation_parent_import
+        - text: を確認し、取込予約が存在する外部親レコードに対する通常同期ディスパッチャの自動新規作成（
+        - code: _try_create_new_record
+        - text: ）を確実に抑止しています
+        - superscript
+        - text: 。また、
+        - code: apply
+        - text: 側でも同じ外部キー
+        - code: ('client_master', 'external:zoho:' + external_id)
+        - text: のアドバイザリロックを取得するため、並行処理も完全に排他されます
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt、TXT: crm-parent-import-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+      - paragraph:
+        - text: "Notion側通知の抑止:"
+        - code: HubCreationService._handle_locked
+        - text: にて、取込原本からのNotion通知を検知し、対応表成立前は
+        - code: relation_parent_import_pending
+        - text: で保留、対応表成立後は
+        - code: None
+        - text: で早期リターンさせて欠損kintone等の不要な外部登録を阻止しています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - text: 安全な再開と既知ID限定の対応表保存
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - code: created
+        - text: 成立後に対応表保存（
+        - code: store.upsert
+        - text: ）が失敗した場合の再開では、再POSTを行わず、ジャーナルに記録された
+        - code: imported
+        - text: （Notion ID）を基準にして
+        - code: verify_imported
+        - text: で確認番号・全プロパティ・既存対応表を実読検証してから安全に対応表を保存・確定する流れが担保されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【WARN】" [level=4]
+  - list:
+    - paragraph:
+      - text: 共通通知ガード（API/Dispatcher側）の先行配備確認の徹底
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "リスク: 本番スクリプト（"
+        - code: import_missing_relation_parent.py --apply
+        - text: ）を実行する前に、共通差分（
+        - code: journal.py
+        - text: ","
+        - code: service.py
+        - text: ","
+        - code: production_wiring.py
+        - text: ）が本番環境へデプロイ・反映されていない場合、Notionページ作成直後に飛来したNotion Webhookが既存の
+        - code: HubCreationService
+        - text: に捕捉され、不要な外部CRM登録（kintone作成等）がトリガーされる危険があります
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "対策: ドキュメントの指示通り、必ず本番環境で共通ガードの配備完了（プロセス再起動の完了）を確認してからスクリプトを適用する運用手順を厳守してください"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - text: 中断再開時（
+      - code: store.upsert
+      - text: 失敗後）におけるZoho外部照会の依存
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "事象: Notionページ作成完了後、対応表保存の直前・直後で処理が落ちて再実行する場合でも、"
+        - code: apply
+        - text: の冒頭で
+        - code: current = self.snapshot(..., imported=imported)
+        - text: を再実行するため、Zoho実物の再取得（
+        - code: get_record
+        - text: ）が走ります
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - text: "影響: もしZoho APIの一時的障害（429やネットワーク瞬断）が発生した場合や、中断〜再開の間にZoho側で該当レコードが編集された場合、計画ハッシュ不一致（"
+        - code: MergeHeld('計画後に元の関連・本文・親実物が変わりました')
+        - text: ）となり対応表の自動再開が進まなくなります
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+      - paragraph:
+        - generic: "確認事項: 原本改ざんを防止する安全側の設計としては正しい挙動ですが、再開時に停止した場合はZoho側の現在値・通信状態を確認した上で慎重に対処する必要があります"
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+  - heading "【INFO】" [level=4]
+  - list:
+    - paragraph:
+      - code: is_relation_parent_import
+      - text: の早期リターンによる負荷局所化
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "確認結果:"
+        - code: PostgresCreationJournal.is_relation_parent_import
+        - text: の冒頭で
+        - code: "if db_key != 'client_master' or tool not in ('zoho', 'notion'): return False"
+        - text: のガードが入っており、アクションやコンタクトなど他DBのWebhook処理において不要なDBクエリが走らないよう適切に最適化されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+    - paragraph:
+      - code: title_candidates
+      - text: における英単語除外と日本語AND検索の適切な設計
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "確認結果: 誤検知（別施設の一致）を防ぐため、英単語単体での部分一致検索を意図的に排除し、日本語の形態素連続部分の全AND照合およびNFKC正規化での全角・半角・"
+        - code: \u3000
+        - text: 表記揺れの網羅を行っています
+        - superscript
+        - text: 。これにより不要な保留を避けつつ安全な重複確認が実現できています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt、TXT: crm-parent-import-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+    - paragraph:
+      - text: 確認番号（marker）による実物追跡性の確保
+      - superscript
+      - 'button "TXT: crm-parent-import-review.txt からの引用のソースの詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+        - generic: TXT
+    - list:
+      - paragraph:
+        - text: "確認結果: 計画ハッシュを含んだ"
+        - code: "関連先取込の確認番号: <hash>"
+        - text: を1ブロックとして本文に挿入し、実読検証（
+        - code: verify_imported
+        - text: ）でその一意性を確認しています
+        - superscript
+        - text: 。万一タイムアウト等で結果不明となった場合でも、管理者がNotion画面上で該当ページを直接調査・特定できるトレーサビリティが確保されています
+        - superscript
+        - text: 。
+        - 'button "TXT: crm-parent-import-review.txt、TXT: crm-parent-import-review.txt からの複数の引用のソース詳細を表示します。Enter キーを押すとソース ダイアログが開きます。"':
+          - generic: TXT
+          - generic: 他 1 件
+  - button "良い回答":
+    - img: thumb_up
+  - button "悪い回答":
+    - img: thumb_down
+  - button "やり直す":
+    - img: refresh
+  - button "コピー":
+    - img: copy
+  - button "他のオプションを表示":
+    - img: more_horiz
+  - button:
+    - img: arrow_downward
+  - textbox "Gemini へのプロンプトを入力" [active]:
+    - text: Gemini に相談
+    - paragraph
+    - text: encrypted
+  - button "アップロードとツール":
+    - img: plus
+  - 'button "モード選択ツールを開く（現在のモデル: 思考モード）"':
+    - generic: 思考モード
+    - img: keyboard_arrow_down
+  - button "音声入力 (⌘⇧D)":
+    - img: mic
+  - paragraph:
+    - text: CNCTOR のチャットはモデルのトレーニングには使用されません。Gemini は AI であり、不正確な情報を表示することがあります。
+    - link "プライバシーと Gemini 新しいウィンドウで開く":
+      - /url: https://support.google.com/gemini/answer/14620100
+      - text: プライバシーと Gemini
+      - generic: 新しいウィンドウで開く
+  - generic: play_arrow
+  - button "会話アクションのメニューを開く":
+    - img: more_vert
+- region "Notifications"

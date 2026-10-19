@@ -14,6 +14,11 @@ NOW = datetime(2026, 9, 28, tzinfo=timezone.utc)
 
 class Journal:
     def __init__(self): self.rows = {}; self.claims = []
+    def is_relation_parent_import(self, db_key, tool, external_id, *, include_unidentified=False):
+        return any(key.startswith('relation-parent-import:zoho:') and target == 'notion'
+                   and row['state'] in ('reserved', 'created')
+                   and (row.get('externalId') == external_id or (include_unidentified and row['state'] == 'reserved'))
+                   for (key, target), row in self.rows.items())
     def get(self, key, target): return self.rows.get((key, target))
     def has_source(self, key): return any(k[0] == key for k in self.rows)
     def source_for_page(self, page):
