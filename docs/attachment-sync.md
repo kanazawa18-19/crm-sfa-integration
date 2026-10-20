@@ -93,3 +93,17 @@ GASは5分ごとに1回、同時実行しない。1回最大1添付の配送＋�
 - mainへのpushは自動承認審査で拒否。「完了させて」だけでは明示的な本番デプロイ禁止を上書きする承認にならない、という理由。push自体は未実行。別経路デプロイ・DB変更・起動で迂回していない。
 
 残る作業：明示的な本番反映承認、Google3権限、kintoneログイン、既存の未公開変更がないことの確認、FILE欄追加、隔離実通信検証、共有GAS実行時間枠の確認、DB適用、本番配備、専用audience/subject登録、読取りpreview、5分/15分トリガー起動と自然実行・実ファイル読戻し。
+
+## 2026-10-20 本人承認後の反映と新たな停止要因（10:20 JST）
+
+- 本人「承認します」により、本番反映・DB適用・kintone添付欄追加・Google3権限・検証後の定期起動を承認。前回のpush拒否はこの承認後に解消し、eda35cfまでmainへpush済み。
+- CI `39352157804` 成功。API `dpl_EHWWQKPRUZRHXsyQmcjvaJi4Bpz3` Ready。Google3権限も許可し、attachmentIdentityが10:13:21に実行完了。audience/subjectを本番に登録して再配備 `dpl_FSSpQD4bB8m77oSxhnRzuwMwGRKA` Ready。本番 `/healthz` 200、未認証添付statusは401。
+- GASのattachmentStatusは10:16:22に503。401ではなく認証通過後の処理エラー。トリガーは登録しておらず、`ATTACHMENT_SYNC_ENABLED=false`を維持。
+- 管理画面の新配備 `dpl_X6txfqHBf4YGvxzh8bLy8PQSCgeF` はPrisma migrate deployのDB接続P1001で失敗。旧Ready配備はそのまま。今回のmigrationは未適用。
+- 同じローカルCRM/管理画面接続先（ホスト一致）の通常/直接接続は、Neonから `Your account or project has exceeded the quota. Upgrade your plan to increase limits.` と拒否された。実使用量と超過した枠の内訳は未取得。新添付の処理を一度も起動していない時点で発生している。
+- 接続済みストア `neon-cyan-branch` / `store_RxYYHSHacIdiAJXo` / Neon `morning-voice-67655784` はFree。Vercel APIの契約情報は100 CU-hours/プロジェクト、1GB/プロジェクト。Launch候補は計算$0.106/CU-hour、保存$0.35/GB-month（ほかの従量料金あり）。https://neon.com/pricing と照合。購入・課金変更は未実施。
+- 注意：VercelストアのメタデータはusageQuotaExceeded=false/status=availableだったが、実DB接続は枠超過で拒否された。メタデータだけで復旧済みと判断しない。Neonの通常Googleログインで見えた組織には隔離試験1プロジェクトしかなく、本番使用量は未確認。
+- Vercel画面の「Skip securing my account」は自動審査で2段階認証の見送りに当たるとして拒否。案内の解除・別UIでの迂回なし。料金とストア情報は既存の認証済みCLIによる独立した読取で取得し、保護設定は変更していない。
+- kintoneは引き続き未ログイン。既存APIは設定権限なし。本人のログイン後にFILE欄の追加が必要。
+
+次：DB利用枠を復旧（課金変更が必要なら本人の予算判断）、kintoneログイン。その後、管理画面を再配備してmigrationの適用を確認し、添付欄追加・隔離検証・GAS時間枠の確認・preview・起動・自然実行まで進める。既に受けた本番反映とGoogle権限の承認を聞き直さない。
