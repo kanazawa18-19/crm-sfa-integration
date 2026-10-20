@@ -72,8 +72,9 @@ function nameJobNotify_(kind, status) {
 function nameJobTick() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
+  var started = Date.now();
+  var props = PropertiesService.getScriptProperties();
   try {
-    var props = PropertiesService.getScriptProperties();
     var before = nameJobStatus_();
     var shardErrors = 0;
     if (before.status === 'running') {
@@ -88,6 +89,10 @@ function nameJobTick() {
     var after = nameJobStatus_();
     props.setProperty('NAME_JOB_LAST_TICK', String(Date.now()));
     props.setProperty('NAME_JOB_LAST_STATUS', JSON.stringify(after));
+    // 時刻と取得結果を一緒に保存し、監視側で異なる実行の結果を混ぜない。
+    props.setProperty('NAME_JOB_MONITOR_SNAPSHOT', shardErrors ? '' : JSON.stringify({
+      checkedAt: Date.now(), durationMs: Date.now() - started, status: after
+    }));
     console.log(JSON.stringify(after));
     if (after.status === 'completed' || after.status === 'needs_attention') {
       nameJobNotify_(after.status === 'completed' ? '完了' : '要確認', after);
@@ -101,6 +106,7 @@ function nameJobTick() {
       nameJobNotify_('保留・再試行', after);
     }
   } catch (error) {
+    props.setProperty('NAME_JOB_MONITOR_SNAPSHOT', '');
     // HTTP本文や認証値を通知に含めない。
     nameJobNotify_('接続エラー', {message: '次の定期実行で再試行します'});
     throw new Error('姓名補完の実行に失敗しました。次回再試行します。');
@@ -111,11 +117,34 @@ function nameJobWatchdog() {
   var props = PropertiesService.getScriptProperties();
   var tick = Number(props.getProperty('NAME_JOB_LAST_TICK') || props.getProperty('NAME_JOB_STARTED_AT') || 0);
   var triggers = ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === 'nameJobTick'; });
-  if (triggers.length !== 1 || Date.now() - tick > 20 * 60000) {
+  var now = Date.now();
+  var stopped = triggers.length !== 1 || !isFinite(tick) || tick <= 0 || tick > now || now - tick > 20 * 60000;
+  if (stopped) {
     nameJobNotify_('定期処理停止', {lastTick: tick, triggerCount: triggers.length});
   }
-  var status = nameJobStatus_();
-  if (status.status === 'running' && (!status.last_success_at || Date.now() - Date.parse(status.last_success_at) > 30 * 60000)) {
-    nameJobNotify_('進捗停止', status);
+  var snapshot;
+  try { snapshot = JSON.parse(props.getProperty('NAME_JOB_MONITOR_SNAPSHOT') || 'null'); } catch (error) { snapshot = null; }
+  var fresh = snapshot && typeof snapshot.checkedAt === 'number' && isFinite(snapshot.checkedAt) &&
+    snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 20 * 60000;
+  var reusable = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0 &&
+    snapshot.durationMs <= 240000 && snapshot.status && snapshot.status.status === 'running' &&
+    !nameJobProgressStale_(snapshot.status, now);
+  if (fresh && typeof snapshot.durationMs === 'number' && snapshot.durationMs > 240000) {
+    nameJobNotify_('処理遅延', {durationMs: snapshot.durationMs});
   }
+  try {
+    // 実処理が取得した新しい結果だけを再利用する。監視の照会では鮮度を延長しない。
+    var status = !stopped && reusable ? snapshot.status : nameJobStatus_();
+    if (status.status === 'running' && nameJobProgressStale_(status, Date.now())) {
+      nameJobNotify_('進捗停止', status);
+    }
+  } catch (error) {
+    nameJobNotify_('接続エラー', {message: '監視から最新の状態を取得できませんでした'});
+    throw new Error('姓名補完の監視に失敗しました。');
+  }
+}
+
+function nameJobProgressStale_(status, now) {
+  var success = Date.parse(status.last_success_at);
+  return !isFinite(success) || success > now || now - success > 30 * 60000;
 }

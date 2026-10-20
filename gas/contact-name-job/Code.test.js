@@ -61,3 +61,130 @@ test('停止通知には自動再開するとの誤案内を含めない',()=>{
   assert.doesNotMatch(h.sent[0][2],/定期実行は継続/);
   assert.equal(h.deleted.length,1);
 });
+
+function healthyStatus() {
+  return {...running,last_success_at:new Date().toISOString()};
+}
+function monitorHarness(snapshot) {
+  const h=harness([healthyStatus()]);
+  h.props.NAME_JOB_LAST_TICK=String(Date.now());
+  h.props.NAME_JOB_MONITOR_SNAPSHOT=JSON.stringify(snapshot);
+  return h;
+}
+test('実処理直後の監視は追加通信せず、完了確認済みの進捗を使う',()=>{
+  const status=healthyStatus();
+  const h=harness([status,status]);h.c.nameJobTick();
+  const before=h.calls.length;
+  h.c.nameJobWatchdog();h.c.nameJobWatchdog();
+  assert.equal(h.calls.length,before);assert.equal(h.sent.length,0);
+});
+test('古い・欠損・壊れた監視記録は最新状態を再照会する',()=>{
+  const now=Date.now();
+  for(const snapshot of [
+    null,{},
+    {checkedAt:now-21*60000,durationMs:100,status:healthyStatus()},
+    {checkedAt:now+60000,durationMs:100,status:healthyStatus()},
+    {checkedAt:now,durationMs:-1,status:healthyStatus()},
+    {checkedAt:now,durationMs:100,status:{...healthyStatus(),status:'completed'}}
+  ]) {
+    const h=monitorHarness(snapshot);h.c.nameJobWatchdog();
+    assert.equal(h.calls.length,1);
+    assert.equal(h.props.NAME_JOB_MONITOR_SNAPSHOT,JSON.stringify(snapshot));
+  }
+  const h=monitorHarness(null);h.props.NAME_JOB_MONITOR_SNAPSHOT='{broken';
+  h.c.nameJobWatchdog();assert.equal(h.calls.length,1);
+});
+test('監視の再照会成功で古い実処理の鮮度を延長しない',()=>{
+  const h=harness([healthyStatus(),healthyStatus()]);
+  h.props.NAME_JOB_LAST_TICK=String(Date.now()-21*60000);
+  h.c.nameJobWatchdog();h.c.nameJobWatchdog();
+  assert.equal(h.calls.length,2);
+  assert.equal(h.props.NAME_JOB_MONITOR_SNAPSHOT,undefined);
+  assert.equal(h.sent.length,1);
+});
+test('トリガー欠落時は新しい結果があっても通知し再照会する',()=>{
+  const h=monitorHarness({checkedAt:Date.now(),durationMs:100,status:healthyStatus()});
+  h.c.ScriptApp.getProjectTriggers=()=>[];
+  h.c.nameJobWatchdog();
+  assert.equal(h.calls.length,1);assert.match(h.sent[0][1],/定期処理停止/);
+});
+test('成功時刻の欠損・不正・未来・遅延を正常と扱わない',()=>{
+  for(const value of [null,'invalid',new Date(Date.now()+60000).toISOString(),new Date(Date.now()-31*60000).toISOString()]) {
+    const bad={...running,last_success_at:value};
+    const h=harness([bad]);
+    h.props.NAME_JOB_LAST_TICK=String(Date.now());
+    h.props.NAME_JOB_MONITOR_SNAPSHOT=JSON.stringify({checkedAt:Date.now(),durationMs:100,status:bad});
+    h.c.nameJobWatchdog();
+    assert.equal(h.calls.length,1);assert.match(h.sent[0][1],/進捗停止/);
+  }
+});
+test('所要時間が4分を超えた実処理は通知し再照会する',()=>{
+  const h=monitorHarness({checkedAt:Date.now(),durationMs:240001,status:healthyStatus()});
+  h.c.nameJobWatchdog();
+  assert.equal(h.calls.length,1);assert.match(h.sent[0][1],/処理遅延/);
+});
+test('最新実行の接続失敗後は以前の成功結果を再利用しない',()=>{
+  const h=harness([running],503);
+  h.props.NAME_JOB_MONITOR_SNAPSHOT=JSON.stringify({checkedAt:Date.now(),durationMs:100,status:healthyStatus()});
+  assert.throws(()=>h.c.nameJobTick());
+  assert.equal(h.props.NAME_JOB_MONITOR_SNAPSHOT,'');
+  assert.throws(()=>h.c.nameJobWatchdog());
+  assert.equal(h.calls.length,2);
+});
+test('一系統の失敗後は成功した状態取得だけで監視を省略しない',()=>{
+  const status=healthyStatus();
+  const h=harness([status,status,status]);
+  h.c.UrlFetchApp.fetchAll=()=>[response({},503),response({},200),response({},200),response({},200)];
+  h.c.nameJobTick();
+  assert.equal(h.props.NAME_JOB_MONITOR_SNAPSHOT,'');
+  h.c.nameJobWatchdog();assert.equal(h.calls.length,3);
+});
+test('監視接続の失敗は秘密や応答本文を含めず通知する',()=>{
+  const h=harness([],503);h.props.NAME_JOB_LAST_TICK=String(Date.now());
+  assert.throws(()=>h.c.nameJobWatchdog(),/監視に失敗/);
+  assert.equal(h.sent.length,1);assert.match(h.sent[0][1],/接続エラー/);
+  assert.doesNotMatch(h.sent[0][2],/signed/);
+});
+test('再照会中に並行実行が成功しても未来時刻として誤通知しない',()=>{
+  const h=harness([]);
+  let now=Date.now();
+  h.c.Date={now:()=>now,parse:Date.parse};
+  h.props.NAME_JOB_LAST_TICK=String(now);
+  h.c.UrlFetchApp.fetch=()=>{
+    now+=1000;
+    return response({...running,last_success_at:new Date(now).toISOString()},200);
+  };
+  h.c.nameJobWatchdog();
+  assert.equal(h.sent.length,0);
+});
+test('鮮度20分・成功30分・所要時間4分の境界を超えたときだけ再照会する',()=>{
+  const now=Date.now();
+  for(const [age,successAge,duration,expected] of [
+    [20*60000,30*60000,240000,0],
+    [20*60000+1,0,100,1],
+    [0,30*60000+1,100,1],
+    [0,0,240001,1]
+  ]) {
+    const h=monitorHarness({checkedAt:now-age,durationMs:duration,
+      status:{...running,last_success_at:new Date(now-successAge).toISOString()}});
+    h.c.Date={now:()=>now,parse:Date.parse};
+    h.props.NAME_JOB_LAST_TICK=String(now);
+    h.c.nameJobWatchdog();assert.equal(h.calls.length,expected);
+  }
+});
+test('過去の遅延記録は現在の処理遅延として繰り返し通知しない',()=>{
+  const h=monitorHarness({checkedAt:Date.now()-21*60000,durationMs:240001,status:healthyStatus()});
+  h.c.nameJobWatchdog();
+  assert.equal(h.calls.length,1);assert.equal(h.sent.length,0);
+});
+test('不正な最終実行時刻や重複トリガーでは成功記録を再利用しない',()=>{
+  for(const tick of ['invalid','0',String(Date.now()+60000)]) {
+    const h=monitorHarness({checkedAt:Date.now(),durationMs:100,status:healthyStatus()});
+    h.props.NAME_JOB_LAST_TICK=tick;h.c.nameJobWatchdog();
+    assert.equal(h.calls.length,1);assert.match(h.sent[0][1],/定期処理停止/);
+  }
+  const h=monitorHarness({checkedAt:Date.now(),durationMs:100,status:healthyStatus()});
+  h.c.ScriptApp.getProjectTriggers=()=>[1,2].map(()=>({getHandlerFunction:()=> 'nameJobTick'}));
+  h.c.nameJobWatchdog();
+  assert.equal(h.calls.length,1);assert.match(h.sent[0][1],/定期処理停止/);
+});
