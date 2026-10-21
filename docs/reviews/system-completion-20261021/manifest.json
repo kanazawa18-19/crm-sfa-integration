@@ -3,7 +3,7 @@
   "sha256": "127bae7f15bbd828e0b04cd2b4c9d4019b864601f42ae7f5bcbce444cc82196c",
   "secret_pattern_matches": 0,
   "email_matches": 0,
-  "gemini": "回答未取得：ファイル選択失敗後Chrome接続ポリシー取得失敗",
-  "claude": "回答未取得：同Chrome接続障害",
+  "gemini": "思考モード：元資料は回答未取得。followup.txtで1回再依頼しレビュー不能の返答。gemini.json参照",
+  "claude": "Opus5.5中：回答取得、claude.jsonとREADME.mdへ原文・採否保存",
   "production_deployed": false
 }

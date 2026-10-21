@@ -43,13 +43,17 @@ function attachmentTick() {
   var start = Date.now();
   try {
     var props = PropertiesService.getScriptProperties();
+    props.setProperty('ATTACHMENT_RUN_STARTED', String(start));
     props.setProperty('ATTACHMENT_MONITOR_SNAPSHOT', '');
     var result = attachmentRequest_('/run', 'post');
     props.setProperty('ATTACHMENT_DURATION', String(Date.now() - start));
     if (['verified', 'mirrored', 'idle'].indexOf(result.status) >= 0) props.setProperty('ATTACHMENT_SUCCESS', String(Date.now()));
     var status = attachmentRequest_('/status');
     props.setProperty('ATTACHMENT_MONITOR_SNAPSHOT', JSON.stringify({
-      checkedAt: Date.now(), durationMs: Date.now() - start, resultStatus: result.status, status: status
+      checkedAt: Date.now(), durationMs: Date.now() - start, resultStatus: result.status,
+      status: {enabled: status.enabled === true, status: status.status === 'busy' ? 'busy' : 'ready',
+        counts: status.counts ? {held: !!status.counts.held, retry: !!status.counts.retry} : null,
+        discovery_error_count: !!status.discovery_error_count}
     }));
     if (status.status === 'busy') return;
     if (attachmentNeedsAttention_(status)) attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：要確認', '保留・再試行・巡回失敗があります。件数：' + JSON.stringify(status.counts || {}) + '、巡回失敗：' + (status.discovery_error_count || 0), 4);
@@ -72,11 +76,14 @@ function attachmentWatchdog() {
       snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 20 * 60000;
     var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
     var slow = durationValid && snapshot.durationMs > 240000;
+    var runStarted = Number(props.getProperty('ATTACHMENT_RUN_STARTED') || 0);
+    var runningGrace = isFinite(runStarted) && runStarted > 0 && runStarted <= now && now - runStarted <= 240000;
+    var missing = !durationValid && !runningGrace;
     var reusable = !stopped && durationValid && !slow && ['verified', 'mirrored', 'idle'].indexOf(snapshot.resultStatus) >= 0 && snapshot.status && snapshot.status.enabled === true &&
       snapshot.status.counts && snapshot.status.status !== 'busy' && !attachmentNeedsAttention_(snapshot.status);
     var status = reusable ? snapshot.status : attachmentRequest_('/status');
-    if (stopped || slow || (status.status !== 'busy' && attachmentNeedsAttention_(status)))
-      attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視異常', '定期処理の停止・遅延・配送保留があります。attachmentProblems と実行履歴を確認してください。', 4);
+    if (stopped || slow || missing || (status.status !== 'busy' && attachmentNeedsAttention_(status)))
+      attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視異常', '定期処理の停止・遅延・記録欠測・配送保留があります。attachmentProblems と実行履歴を確認してください。', 4);
   } catch (error) {
     attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視接続失敗', '監視から添付APIへ接続できませんでした。', 4);
     throw new Error('添付の監視に失敗しました');

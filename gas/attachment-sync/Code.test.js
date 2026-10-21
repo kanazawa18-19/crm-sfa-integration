@@ -77,3 +77,21 @@ test('添付監視は20分・4分の境界を含み、照会で成功時刻を�
   assert.equal(s.props.get('ATTACHMENT_MONITOR_SNAPSHOT'),snapshot);
   assert.equal(s.props.get('ATTACHMENT_SUCCESS'),String(now));
 });
+
+
+test('添付監視は実行直後の欠測を待ち、4分を超えた欠測は正常APIでも通知する',()=>{
+  const now=Date.now();
+  for(const elapsed of [1,240001]){
+    const s=setup({enabled:true,counts:{}});s.ctx.Date={now:()=>now};
+    s.triggers.push({getHandlerFunction:()=> 'attachmentTick'});
+    s.props.set('ATTACHMENT_SUCCESS',String(now));
+    s.props.set('ATTACHMENT_RUN_STARTED',String(now-elapsed));
+    s.ctx.attachmentWatchdog();assert.equal(s.mail.length,elapsed>240000?1:0);
+  }
+});
+
+test('添付監視記録は問題一覧や巨大な理由を含めず保存する',()=>{
+  const s=setup({enabled:true,counts:{held:1},problems:[{reason:'x'.repeat(20000)}]});
+  s.ctx.attachmentTick();assert.ok(s.props.get('ATTACHMENT_MONITOR_SNAPSHOT').length<1000);
+  assert.ok(JSON.parse(s.props.get('ATTACHMENT_MONITOR_SNAPSHOT')).status.counts.held);
+});

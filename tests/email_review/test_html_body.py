@@ -11,7 +11,7 @@ def part(text, kind='text/html', **extra):
 
 
 def test_html_only_preserves_lines_signature_and_entities_without_hidden_or_quote():
-    html = '<html><head><style>hidden</style></head><body><div>試験株式会社</div><p>田中様<br>ご提案 &amp; ご相談</p><div>署名<br>担当</div><script>秘密</script><div hidden>非表示</div><div style="display: none">隠す</div><blockquote>以前の別会社</blockquote><div class="gmail_quote">過去</div></body></html>'
+    html = '<html><head><style>hidden</style></head><body><div>試験株式会社</div><p>田中様<br>ご提案 &amp; ご相談</p><div>署名<br>担当</div><script>秘密</script><div hidden>非表示</div><div style="display: none">隠す</div><blockquote type="cite">以前の別会社</blockquote><div class="gmail_quote">過去</div></body></html>'
     body = plain_text(part(html))
     assert body == '試験株式会社\n\n田中様\nご提案 & ご相談\n\n署名\n担当'
     assert all(value not in body for value in ['秘密', '非表示', '隠す', '別会社', '過去', 'hidden'])
@@ -93,3 +93,8 @@ def test_hydration_limit_holds_but_transport_failure_retries():
     deep=payload
     for _ in range(22):deep={'mimeType':'multipart/mixed','parts':[deep]}
     assert plain_text(hydrate_body(deep,lambda _:pytest.fail('構造超過の本文を取得しない'))) == ''
+
+
+def test_blockquote_layout_preserves_body_but_explicit_citation_is_removed():
+    assert plain_text(part('<p>今回の提案</p><blockquote>重要な条件</blockquote><p>署名</p>')) == '今回の提案\n\n重要な条件\n\n署名'
+    assert plain_text(part('<p>今回</p><blockquote type="cite">過去の本文</blockquote>')) == '今回'

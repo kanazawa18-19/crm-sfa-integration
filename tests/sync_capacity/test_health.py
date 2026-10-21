@@ -44,3 +44,24 @@ def test_missing_observation_is_never_healthy(report):
 def test_absent_worker_success_requires_attention():
     assert 'worker_success_missing_or_stale' in assess(normal(), now=1000, last_worker_success=None,
         freshness_seconds=60, waiting_seconds=100, processing_seconds=50)['alerts']
+
+
+def test_claim_during_scan_is_valid_and_age_is_counted_only_once():
+    times = iter([960, 980, 990])
+    report = observe_queue(queue([{'state': 'processing', 'updated_at': 975}]), clock=lambda: next(times))
+    assert report['oldest_processing_age_seconds'] == 15
+    assert report['invalid_processing_timestamp_count'] == 0
+    assert check(report)['healthy'] is True
+    # 実経過25秒。走査開始からの40秒を二重加算すると誤通知になる。
+    assert assess(report, now=1000, last_worker_success=990,
+        freshness_seconds=60, waiting_seconds=100, processing_seconds=30)['healthy'] is True
+
+
+def test_arrival_during_scan_and_clock_reversal_are_distinguished():
+    times = iter([960, 980, 990])
+    report = observe_queue(queue([{'state': 'pending', 'created_at': 975}]), clock=lambda: next(times))
+    assert report['invalid_waiting_timestamp_count'] == 0
+    assert check(report)['healthy'] is True
+    times = iter([960, 990, 980])
+    report = observe_queue(queue([{'state': 'processing', 'updated_at': 970}]), clock=lambda: next(times))
+    assert 'age_reference_invalid' in check(report)['alerts']

@@ -54,6 +54,7 @@ function affiliationJobTick() {
   if (!lock.tryLock(1000)) return;
   try {
     var props = PropertiesService.getScriptProperties();
+    props.setProperty('AFFILIATION_RUN_STARTED', String(Date.now()));
     props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', '');
     var started = Date.now();
     var result = {status: 'ok', counts: {}, discovered: 0, duration_ms: 0};
@@ -71,9 +72,13 @@ function affiliationJobTick() {
     if (result.status === 'paused') affiliationJobNotify_('CRM側で一時停止しています。');
     var status = affiliationJobRequest_('/status');
     props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', JSON.stringify({
-      checkedAt: Date.now(), durationMs: Date.now() - started, resultStatus: result.status, status: status
+      checkedAt: Date.now(), durationMs: Date.now() - started, resultStatus: result.status,
+      status: {enabled: status.enabled === true, counts: status.counts ? {
+        writing: !!status.counts.writing, delivery_pending: !!status.counts.delivery_pending, released: !!status.counts.released
+      } : null, last_error: !!status.last_error, retry_count: !!status.retry_count,
+      last_success_at: typeof status.last_success_at === 'string' && status.last_success_at.length <= 64 ? status.last_success_at : null}
     }));
-    if (status.last_error || status.retry_count || (status.counts || {}).delivery_pending || (status.counts || {}).writing) {
+    if (status.last_error || status.retry_count || (status.counts || {}).delivery_pending || (status.counts || {}).writing || (status.counts || {}).released) {
       affiliationJobNotify_('保存・配送の確認待ちがあります。' + JSON.stringify(status));
     }
     if (result.status === 'ok') { affiliationJobSummary_(status, result); }
@@ -86,7 +91,7 @@ function affiliationJobTick() {
 function affiliationJobUnhealthy_(status, now) {
   var success = Date.parse(status.last_success_at);
   return status.enabled !== true || !status.counts || status.last_error || status.retry_count ||
-    status.counts.delivery_pending || status.counts.writing ||
+    status.counts.delivery_pending || status.counts.writing || status.counts.released ||
     !isFinite(success) || success > now || now - success > 90 * 60000;
 }
 
@@ -102,12 +107,15 @@ function affiliationJobWatchdog() {
     snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 90 * 60000;
   var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
   var slow = durationValid && snapshot.durationMs > 240000;
+  var runStarted = Number(props.getProperty('AFFILIATION_RUN_STARTED') || 0);
+  var runningGrace = isFinite(runStarted) && runStarted > 0 && runStarted <= now && now - runStarted <= 240000;
+  var missing = !durationValid && !runningGrace;
   var reusable = !stopped && durationValid && !slow && snapshot.resultStatus === 'ok' && snapshot.status && !affiliationJobUnhealthy_(snapshot.status, now);
   try {
     // 毎時処理の実取得結果だけを使い、監視自身の照会では鮮度を延長しない。
     var status = reusable ? snapshot.status : affiliationJobRequest_('/status');
-    if (stopped || slow || affiliationJobUnhealthy_(status, Date.now())) {
-      affiliationJobNotify_('定期処理の停止・遅延または照合失敗を検出しました。GAS実行履歴とCRM状態を確認してください。');
+    if (stopped || slow || missing || affiliationJobUnhealthy_(status, Date.now())) {
+      affiliationJobNotify_('定期処理の停止・遅延・記録欠測または確認待ちを検出しました。GAS実行履歴とCRM状態を確認してください。');
     }
   } catch (error) {
     affiliationJobNotify_('監視からCRMに接続できませんでした。');
@@ -131,6 +139,6 @@ function affiliationJobSummary_(status, result) {
 
 function affiliationJobCounts_(counts) {
   var labels = {pending: '未評価', candidate: '試算で一致', held: '根拠不足・判断保留',
-    existing: '既存の所属あり', released: '所属解除後の保留', writing: '保存結果確認待ち', delivery_pending: '配送確認待ち', verified: '保存・配送確認済み'};
+    existing: '既存の所属あり', released: '保存結果不明・所属解除の確認待ち', writing: '保存結果確認待ち', delivery_pending: '配送確認待ち', verified: '保存・配送確認済み'};
   return Object.keys(labels).map(function(key) { return labels[key] + '：' + ((counts || {})[key] || 0) + '件'; }).join('\n');
 }

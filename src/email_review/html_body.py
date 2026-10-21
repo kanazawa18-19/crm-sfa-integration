@@ -11,12 +11,13 @@ class _Body(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        hidden = (tag in {'head', 'script', 'style', 'template', 'noscript', 'blockquote'}
+        hidden = (tag in {'head', 'script', 'style', 'template', 'noscript'}
+                  or (tag == 'blockquote' and (attrs.get('type') or '').lower() == 'cite')
                   or 'hidden' in attrs or attrs.get('aria-hidden') == 'true'
                   or re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden)', attrs.get('style') or '', re.I)
                   or set((attrs.get('class') or '').split()) & {'gmail_quote', 'yahoo_quoted'})
         blocked = bool(hidden or (self.stack and self.stack[-1][1]))
-        if not blocked and tag in {'br', 'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre', 'hr'}:
+        if not blocked and tag in {'br', 'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre', 'hr', 'blockquote'}:
             self.parts.append('\n')
         if not blocked and tag in {'td', 'th'}:
             self.parts.append('\t')
@@ -39,7 +40,7 @@ class _Body(HTMLParser):
             if not blocked and link and ''.join(self.parts[start:]).strip() != link:
                 self.parts.append('（' + link + '）')
             del self.stack[found:]
-            if not blocked and tag in {'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre'}:
+            if not blocked and tag in {'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre', 'blockquote'}:
                 self.parts.append('\n')
 
     def handle_data(self, data):

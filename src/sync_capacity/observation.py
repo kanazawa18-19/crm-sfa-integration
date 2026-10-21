@@ -14,6 +14,7 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
     invalid_waiting_timestamps = 0
     invalid_processing_timestamps = 0
     oldest_processing = None
+    latest_read_at = started_at
     oldest = None
     # order_by(created_at)は時刻欠落文書を除外するので使わない。
     deadline = current_deadline.get()
@@ -22,6 +23,8 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
         if deadline:
             deadline.require()
         data = snapshot.to_dict()
+        read_at = clock()
+        latest_read_at = max(latest_read_at, read_at)
         state = data.get("state")
         if state not in counts:
             invalid_states += 1
@@ -30,29 +33,30 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
         if state == "processing":
             updated = data.get("updated_at")
             if (isinstance(updated, bool) or not isinstance(updated, (float, int))
-                    or not math.isfinite(updated) or updated > started_at):
+                    or not math.isfinite(updated) or updated > read_at):
                 invalid_processing_timestamps += 1
             else:
                 oldest_processing = updated if oldest_processing is None else min(oldest_processing, updated)
         if state in {"pending", "retry"}:
             created = data.get("created_at")
             if (isinstance(created, bool) or not isinstance(created, (float, int))
-                    or not math.isfinite(created) or created > started_at):
+                    or not math.isfinite(created) or created > read_at):
                 invalid_waiting_timestamps += 1
             else:
                 oldest = created if oldest is None else min(oldest, created)
     ended_at = clock()
     return {"scan_started_at": started_at, "scan_finished_at": ended_at,
+            "age_observed_at": ended_at, "clock_consistent": ended_at >= latest_read_at,
             "scan_seconds": monotonic() - started, "complete": True,
             "consistency": "full_scan_not_atomic_snapshot", "counts": counts,
             "total": sum(counts.values()) + invalid_states,
             "unknown_state_count": invalid_states,
             "invalid_waiting_timestamp_count": invalid_waiting_timestamps,
             "invalid_processing_timestamp_count": invalid_processing_timestamps,
-            "oldest_processing_age_seconds": (started_at - oldest_processing if oldest_processing is not None
+            "oldest_processing_age_seconds": (ended_at - oldest_processing if oldest_processing is not None
                                                 and not invalid_processing_timestamps else None),
             "processing_age_basis": "since_last_claim_updated_at",
             "oldest_waiting_created_at": oldest if not invalid_waiting_timestamps else None,
-            "oldest_waiting_age_seconds": (started_at - oldest if oldest is not None
+            "oldest_waiting_age_seconds": (ended_at - oldest if oldest is not None
                                             and not invalid_waiting_timestamps else None),
             "waiting_age_basis": "since_original_acceptance_including_retry_delay"}

@@ -1,0 +1,384 @@
+CRM/SFAの追加レビューです。以下は完全なソースとGASの差分です。安全性・本文欠落・時刻判定・誤った復旧分類を確認し、BLOCKER/WARN/INFOと根拠を日本語で回答してください。コード変更や外部操作は不要です。GAS監視は通知のみで自動回復せず、不足ID分類も読取専用で自動再POSTしません。元の大きい資料で回答を取得できなかったため対象を絞っています。未掲載部分の仕様を推測せず、判断不能は未検証としてください。
+
+--- src/email_review/html_body.py 全文 ---
+"""HTMLを実行せず本文へ変換する。引用・不可視要素・外部資源は使わない。"""
+import re
+from html.parser import HTMLParser
+
+
+class _Body(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        hidden = (tag in {'head', 'script', 'style', 'template', 'noscript'}
+                  or (tag == 'blockquote' and (attrs.get('type') or '').lower() == 'cite')
+                  or 'hidden' in attrs or attrs.get('aria-hidden') == 'true'
+                  or re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden)', attrs.get('style') or '', re.I)
+                  or set((attrs.get('class') or '').split()) & {'gmail_quote', 'yahoo_quoted'})
+        blocked = bool(hidden or (self.stack and self.stack[-1][1]))
+        if not blocked and tag in {'br', 'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre', 'hr', 'blockquote'}:
+            self.parts.append('\n')
+        if not blocked and tag in {'td', 'th'}:
+            self.parts.append('\t')
+        if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            href = attrs.get('href') or ''
+            link = href if tag == 'a' and re.match(r'^https?://', href, re.I) and not re.search(r'[\s<>]', href) and len(href) <= 2000 else ''
+            self.stack.append((tag, blocked, link, len(self.parts)))
+            if len(self.stack) > 100:
+                raise ValueError('HTMLの入れ子が深すぎます')
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        found = next((i for i in range(len(self.stack)-1, -1, -1) if self.stack[i][0] == tag), None)
+        if found is not None:
+            blocked = self.stack[found][1]
+            link, start = self.stack[found][2:]
+            if not blocked and link and ''.join(self.parts[start:]).strip() != link:
+                self.parts.append('（' + link + '）')
+            del self.stack[found:]
+            if not blocked and tag in {'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre', 'blockquote'}:
+                self.parts.append('\n')
+
+    def handle_data(self, data):
+        if not self.stack or not self.stack[-1][1]:
+            self.parts.append(data)
+
+
+def html_text(value: str) -> str:
+    parser = _Body()
+    parser.feed(value)
+    parser.close()
+    # メールHTMLのレイアウト用改行・空白だけを整理し、署名の行構造を維持する。
+    text = ''.join(parser.parts).replace('\xa0', ' ')
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(line.strip() for line in text.splitlines())).strip()
+
+--- src/sync_capacity/observation.py 全文 ---
+"""本文を取得せず全件を走査する。失敗時に部分件数を成功として返さない。"""
+
+import math
+import time
+from src.sync_capacity.deadline import current_deadline
+
+STATES = ("pending", "retry", "processing", "completed", "needs_attention")
+
+
+def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
+    started_at, started = clock(), monotonic()
+    counts = dict.fromkeys(STATES, 0)
+    invalid_states = 0
+    invalid_waiting_timestamps = 0
+    invalid_processing_timestamps = 0
+    oldest_processing = None
+    latest_read_at = started_at
+    oldest = None
+    # order_by(created_at)は時刻欠落文書を除外するので使わない。
+    deadline = current_deadline.get()
+    options = {"retry": None, "timeout": deadline.timeout(10)} if deadline else {}
+    for snapshot in jobs.select(["state", "created_at", "updated_at"]).stream(**options):
+        if deadline:
+            deadline.require()
+        data = snapshot.to_dict()
+        read_at = clock()
+        latest_read_at = max(latest_read_at, read_at)
+        state = data.get("state")
+        if state not in counts:
+            invalid_states += 1
+            continue
+        counts[state] += 1
+        if state == "processing":
+            updated = data.get("updated_at")
+            if (isinstance(updated, bool) or not isinstance(updated, (float, int))
+                    or not math.isfinite(updated) or updated > read_at):
+                invalid_processing_timestamps += 1
+            else:
+                oldest_processing = updated if oldest_processing is None else min(oldest_processing, updated)
+        if state in {"pending", "retry"}:
+            created = data.get("created_at")
+            if (isinstance(created, bool) or not isinstance(created, (float, int))
+                    or not math.isfinite(created) or created > read_at):
+                invalid_waiting_timestamps += 1
+            else:
+                oldest = created if oldest is None else min(oldest, created)
+    ended_at = clock()
+    return {"scan_started_at": started_at, "scan_finished_at": ended_at,
+            "age_observed_at": ended_at, "clock_consistent": ended_at >= latest_read_at,
+            "scan_seconds": monotonic() - started, "complete": True,
+            "consistency": "full_scan_not_atomic_snapshot", "counts": counts,
+            "total": sum(counts.values()) + invalid_states,
+            "unknown_state_count": invalid_states,
+            "invalid_waiting_timestamp_count": invalid_waiting_timestamps,
+            "invalid_processing_timestamp_count": invalid_processing_timestamps,
+            "oldest_processing_age_seconds": (ended_at - oldest_processing if oldest_processing is not None
+                                                and not invalid_processing_timestamps else None),
+            "processing_age_basis": "since_last_claim_updated_at",
+            "oldest_waiting_created_at": oldest if not invalid_waiting_timestamps else None,
+            "oldest_waiting_age_seconds": (ended_at - oldest if oldest is not None
+                                            and not invalid_waiting_timestamps else None),
+            "waiting_age_basis": "since_original_acceptance_including_retry_delay"}
+
+--- src/sync_capacity/health.py 全文 ---
+"""観測の欠測・途絶・滞留を判定する。再送や予約解除は行わない。"""
+import math
+
+
+def _number(value):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def assess(observation, *, now, last_worker_success, freshness_seconds, waiting_seconds, processing_seconds):
+    limits = (freshness_seconds, waiting_seconds, processing_seconds)
+    if not _number(now) or any(not _number(n) or n <= 0 for n in limits):
+        raise ValueError('現在時刻と正の監視上限を指定してください')
+    alerts = []
+    def fresh(value):
+        return _number(value) and 0 <= now - value <= freshness_seconds
+    if not isinstance(observation, dict) or observation.get('complete') is not True:
+        alerts.append('observation_missing_or_incomplete')
+        observation = {}
+    if not fresh(observation.get('scan_finished_at')):
+        alerts.append('observation_stale_or_invalid')
+    started, finished = observation.get('scan_started_at'), observation.get('scan_finished_at')
+    age_at = observation.get('age_observed_at', started)
+    if not fresh(started) or not _number(finished) or (_number(started) and finished < started):
+        alerts.append('scan_time_invalid')
+    if (not _number(age_at) or not _number(started) or not _number(finished)
+            or not started <= age_at <= finished or observation.get('clock_consistent') is False):
+        alerts.append('age_reference_invalid')
+    if not fresh(last_worker_success):
+        alerts.append('worker_success_missing_or_stale')
+    counts = observation.get('counts') or {}
+    if not isinstance(counts, dict):
+        counts = {}
+    for state, limit, age_key, invalid_key in (
+        ('waiting', waiting_seconds, 'oldest_waiting_age_seconds', 'invalid_waiting_timestamp_count'),
+        ('processing', processing_seconds, 'oldest_processing_age_seconds', 'invalid_processing_timestamp_count'),
+    ):
+        parts = [counts.get('pending'), counts.get('retry')] if state == 'waiting' else [counts.get('processing')]
+        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in parts):
+            alerts.append(state + '_count_missing')
+            continue
+        count = sum(parts)
+        invalid, age = observation.get(invalid_key), observation.get(age_key)
+        if type(invalid) is not int or invalid != 0 or (count and (not _number(age) or age < 0)):
+            alerts.append(state + '_age_unknown')
+        elif count and _number(age_at) and age + now - age_at > limit:
+            alerts.append(state + '_overdue')
+    for key in ('unknown_state_count',):
+        if type(observation.get(key)) is not int or observation.get(key) != 0:
+            alerts.append(key)
+    attention = counts.get('needs_attention')
+    if not isinstance(attention, int) or isinstance(attention, bool) or attention < 0:
+        alerts.append('attention_count_missing')
+    elif attention:
+        alerts.append('needs_attention')
+    return {'healthy': not alerts, 'alerts': alerts, 'automatic_recovery': False}
+
+--- scripts/triage_missing_targets.py 全文 ---
+"""不足ID一覧を作成台帳と照合する。再POST・対応表更新・予約解除は行わない。"""
+from __future__ import annotations
+import argparse
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+def page_key(value):
+    return str(value or '').strip().replace('-', '').lower()
+
+
+def source_key(value):
+    return 'notion:' + page_key(value[7:]) if value.startswith('notion:') else value
+
+
+def classify_gaps(inventory, attempts, *, now):
+    observed = datetime.fromisoformat(inventory['observed_at'])
+    started = datetime.fromisoformat(inventory['scan_started_at'])
+    if (inventory.get('resumed') is not False or observed.tzinfo is None or started.tzinfo is None
+            or not 0 <= (now - started).total_seconds() <= 21600 or not started <= observed <= now):
+        raise ValueError('6時間以内に完走した一覧が必要です')
+    sources_by_page, attempts_by_target = defaultdict(set), defaultdict(list)
+    uncertain_pages = set()
+    for row in attempts:
+        if row['dbKey'] != inventory['db']:
+            continue
+        source = source_key(row['sourceKey'])
+        if source.startswith('notion:'):
+            sources_by_page[source[7:]].add(source)
+        if row['target'] == 'notion' and row.get('externalId'):
+            key = page_key(row['externalId'])
+            sources_by_page[key].add(source)
+            if row['state'] != 'created':
+                uncertain_pages.add(key)
+        attempts_by_target[(source, row['target'])].append(row)
+    results = []
+    for gap in inventory['missing_targets']:
+        page_id, target = gap['id'], gap['target']
+        reason = gap['classification']
+        if reason == 'live_verification_required':
+            sources = sources_by_page[page_key(page_id)]
+            if page_key(page_id) in uncertain_pages:
+                reason = 'creation_source_unconfirmed'
+            elif len(sources) > 1:
+                reason = 'ambiguous_creation_source'
+            elif not sources:
+                reason = 'source_unresolved'
+            else:
+                source = next(iter(sources))
+                rows = attempts_by_target[(source, target)]
+                if len(rows) > 1:
+                    reason = 'ambiguous_creation_attempt'
+                elif not rows:
+                    reason = 'target_attempt_unrecorded'
+                else:
+                    reason = {'reserved': 'creation_result_unknown',
+                              'created': 'mapping_restore_requires_readback',
+                              'blocked': 'input_or_identity_review_required'}.get(rows[0]['state'], 'unknown_attempt_state')
+        results.append({**gap, 'classification': reason, 'automatic_recovery': False})
+    return {'db': inventory['db'], 'observed_at': now.isoformat(), 'inventory_observed_at': inventory['observed_at'],
+            'inventory_scan_started_at': inventory['scan_started_at'],
+            'counts': dict(Counter(row['classification'] for row in results)), 'missing_targets': results}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('inventory', type=Path)
+    parser.add_argument('output', type=Path)
+    parser.add_argument('--database-env', default='DATABASE_URL_UNPOOLED')
+    args = parser.parse_args()
+    try:
+        inventory = json.loads(args.inventory.read_text())
+        now = datetime.now(timezone.utc)
+        classify_gaps(inventory, [], now=now)  # 古い一覧ならDBへ接続しない。
+        with psycopg.connect(os.environ[args.database_env], row_factory=dict_row, connect_timeout=10,
+                             options='-c default_transaction_read_only=on -c statement_timeout=30000') as conn:
+            attempts = conn.execute('''SELECT "sourceKey", target, "dbKey", state, "externalId"
+                FROM "HubCreationAttempt" WHERE "dbKey"=%s''', (inventory['db'],)).fetchall()
+        result = classify_gaps(inventory, attempts, now=datetime.now(timezone.utc))
+        # 既存計画は上書きせず、作成時から本人だけに読めるようにする。
+        fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(result, handle, ensure_ascii=False, indent=2)
+        print(json.dumps(result['counts'], ensure_ascii=False))
+    except Exception as exc:
+        raise SystemExit('不足先の分類を中断しました: ' + type(exc).__name__) from None
+
+
+if __name__ == '__main__':
+    main()
+
+--- GAS監視の追加差分 ---
+diff --git a/gas/attachment-sync/Code.js b/gas/attachment-sync/Code.js
+index f7a01a6..9c45ebf 100644
+--- a/gas/attachment-sync/Code.js
++++ b/gas/attachment-sync/Code.js
+@@ -43,13 +43,17 @@ function attachmentTick() {
+   var start = Date.now();
+   try {
+     var props = PropertiesService.getScriptProperties();
++    props.setProperty('ATTACHMENT_RUN_STARTED', String(start));
+     props.setProperty('ATTACHMENT_MONITOR_SNAPSHOT', '');
+     var result = attachmentRequest_('/run', 'post');
+     props.setProperty('ATTACHMENT_DURATION', String(Date.now() - start));
+     if (['verified', 'mirrored', 'idle'].indexOf(result.status) >= 0) props.setProperty('ATTACHMENT_SUCCESS', String(Date.now()));
+     var status = attachmentRequest_('/status');
+     props.setProperty('ATTACHMENT_MONITOR_SNAPSHOT', JSON.stringify({
+-      checkedAt: Date.now(), durationMs: Date.now() - start, resultStatus: result.status, status: status
++      checkedAt: Date.now(), durationMs: Date.now() - start, resultStatus: result.status,
++      status: {enabled: status.enabled === true, status: status.status === 'busy' ? 'busy' : 'ready',
++        counts: status.counts ? {held: !!status.counts.held, retry: !!status.counts.retry} : null,
++        discovery_error_count: !!status.discovery_error_count}
+     }));
+     if (status.status === 'busy') return;
+     if (attachmentNeedsAttention_(status)) attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：要確認', '保留・再試行・巡回失敗があります。件数：' + JSON.stringify(status.counts || {}) + '、巡回失敗：' + (status.discovery_error_count || 0), 4);
+@@ -72,11 +76,14 @@ function attachmentWatchdog() {
+       snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 20 * 60000;
+     var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
+     var slow = durationValid && snapshot.durationMs > 240000;
++    var runStarted = Number(props.getProperty('ATTACHMENT_RUN_STARTED') || 0);
++    var runningGrace = isFinite(runStarted) && runStarted > 0 && runStarted <= now && now - runStarted <= 240000;
++    var missing = !durationValid && !runningGrace;
+     var reusable = !stopped && durationValid && !slow && ['verified', 'mirrored', 'idle'].indexOf(snapshot.resultStatus) >= 0 && snapshot.status && snapshot.status.enabled === true &&
+       snapshot.status.counts && snapshot.status.status !== 'busy' && !attachmentNeedsAttention_(snapshot.status);
+     var status = reusable ? snapshot.status : attachmentRequest_('/status');
+-    if (stopped || slow || (status.status !== 'busy' && attachmentNeedsAttention_(status)))
+-      attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視異常', '定期処理の停止・遅延・配送保留があります。attachmentProblems と実行履歴を確認してください。', 4);
++    if (stopped || slow || missing || (status.status !== 'busy' && attachmentNeedsAttention_(status)))
++      attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視異常', '定期処理の停止・遅延・記録欠測・配送保留があります。attachmentProblems と実行履歴を確認してください。', 4);
+   } catch (error) {
+     attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視接続失敗', '監視から添付APIへ接続できませんでした。', 4);
+     throw new Error('添付の監視に失敗しました');
+diff --git a/gas/contact-affiliation-job/Code.js b/gas/contact-affiliation-job/Code.js
+index 15c43e1..587a8bc 100644
+--- a/gas/contact-affiliation-job/Code.js
++++ b/gas/contact-affiliation-job/Code.js
+@@ -54,6 +54,7 @@ function affiliationJobTick() {
+   if (!lock.tryLock(1000)) return;
+   try {
+     var props = PropertiesService.getScriptProperties();
++    props.setProperty('AFFILIATION_RUN_STARTED', String(Date.now()));
+     props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', '');
+     var started = Date.now();
+     var result = {status: 'ok', counts: {}, discovered: 0, duration_ms: 0};
+@@ -71,9 +72,13 @@ function affiliationJobTick() {
+     if (result.status === 'paused') affiliationJobNotify_('CRM側で一時停止しています。');
+     var status = affiliationJobRequest_('/status');
+     props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', JSON.stringify({
+-      checkedAt: Date.now(), durationMs: Date.now() - started, resultStatus: result.status, status: status
++      checkedAt: Date.now(), durationMs: Date.now() - started, resultStatus: result.status,
++      status: {enabled: status.enabled === true, counts: status.counts ? {
++        writing: !!status.counts.writing, delivery_pending: !!status.counts.delivery_pending, released: !!status.counts.released
++      } : null, last_error: !!status.last_error, retry_count: !!status.retry_count,
++      last_success_at: typeof status.last_success_at === 'string' && status.last_success_at.length <= 64 ? status.last_success_at : null}
+     }));
+-    if (status.last_error || status.retry_count || (status.counts || {}).delivery_pending || (status.counts || {}).writing) {
++    if (status.last_error || status.retry_count || (status.counts || {}).delivery_pending || (status.counts || {}).writing || (status.counts || {}).released) {
+       affiliationJobNotify_('保存・配送の確認待ちがあります。' + JSON.stringify(status));
+     }
+     if (result.status === 'ok') { affiliationJobSummary_(status, result); }
+@@ -86,7 +91,7 @@ function affiliationJobTick() {
+ function affiliationJobUnhealthy_(status, now) {
+   var success = Date.parse(status.last_success_at);
+   return status.enabled !== true || !status.counts || status.last_error || status.retry_count ||
+-    status.counts.delivery_pending || status.counts.writing ||
++    status.counts.delivery_pending || status.counts.writing || status.counts.released ||
+     !isFinite(success) || success > now || now - success > 90 * 60000;
+ }
+ 
+@@ -102,12 +107,15 @@ function affiliationJobWatchdog() {
+     snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 90 * 60000;
+   var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
+   var slow = durationValid && snapshot.durationMs > 240000;
++  var runStarted = Number(props.getProperty('AFFILIATION_RUN_STARTED') || 0);
++  var runningGrace = isFinite(runStarted) && runStarted > 0 && runStarted <= now && now - runStarted <= 240000;
++  var missing = !durationValid && !runningGrace;
+   var reusable = !stopped && durationValid && !slow && snapshot.resultStatus === 'ok' && snapshot.status && !affiliationJobUnhealthy_(snapshot.status, now);
+   try {
+     // 毎時処理の実取得結果だけを使い、監視自身の照会では鮮度を延長しない。
+     var status = reusable ? snapshot.status : affiliationJobRequest_('/status');
+-    if (stopped || slow || affiliationJobUnhealthy_(status, Date.now())) {
+-      affiliationJobNotify_('定期処理の停止・遅延または照合失敗を検出しました。GAS実行履歴とCRM状態を確認してください。');
++    if (stopped || slow || missing || affiliationJobUnhealthy_(status, Date.now())) {
++      affiliationJobNotify_('定期処理の停止・遅延・記録欠測または確認待ちを検出しました。GAS実行履歴とCRM状態を確認してください。');
+     }
+   } catch (error) {
+     affiliationJobNotify_('監視からCRMに接続できませんでした。');
+@@ -131,6 +139,6 @@ function affiliationJobSummary_(status, result) {
+ 
+ function affiliationJobCounts_(counts) {
+   var labels = {pending: '未評価', candidate: '試算で一致', held: '根拠不足・判断保留',
+-    existing: '既存の所属あり', released: '所属解除後の保留', writing: '保存結果確認待ち', delivery_pending: '配送確認待ち', verified: '保存・配送確認済み'};
++    existing: '既存の所属あり', released: '保存結果不明・所属解除の確認待ち', writing: '保存結果確認待ち', delivery_pending: '配送確認待ち', verified: '保存・配送確認済み'};
+   return Object.keys(labels).map(function(key) { return labels[key] + '：' + ((counts || {})[key] || 0) + '件'; }).join('\n');
+ }

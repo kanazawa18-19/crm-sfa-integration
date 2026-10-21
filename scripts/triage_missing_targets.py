@@ -11,6 +11,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 
+def page_key(value):
+    return str(value or '').strip().replace('-', '').lower()
+
+
+def source_key(value):
+    return 'notion:' + page_key(value[7:]) if value.startswith('notion:') else value
+
+
 def classify_gaps(inventory, attempts, *, now):
     observed = datetime.fromisoformat(inventory['observed_at'])
     started = datetime.fromisoformat(inventory['scan_started_at'])
@@ -18,27 +26,38 @@ def classify_gaps(inventory, attempts, *, now):
             or not 0 <= (now - started).total_seconds() <= 21600 or not started <= observed <= now):
         raise ValueError('6時間以内に完走した一覧が必要です')
     sources_by_page, attempts_by_target = defaultdict(set), defaultdict(list)
+    uncertain_pages = set()
     for row in attempts:
         if row['dbKey'] != inventory['db']:
             continue
-        if row['target'] == 'notion' and row['state'] == 'created':
-            sources_by_page[row.get('externalId')].add(row['sourceKey'])
-        attempts_by_target[(row['sourceKey'], row['target'])].append(row)
+        source = source_key(row['sourceKey'])
+        if source.startswith('notion:'):
+            sources_by_page[source[7:]].add(source)
+        if row['target'] == 'notion' and row.get('externalId'):
+            key = page_key(row['externalId'])
+            sources_by_page[key].add(source)
+            if row['state'] != 'created':
+                uncertain_pages.add(key)
+        attempts_by_target[(source, row['target'])].append(row)
     results = []
     for gap in inventory['missing_targets']:
         page_id, target = gap['id'], gap['target']
         reason = gap['classification']
         if reason == 'live_verification_required':
-            sources = sources_by_page[page_id]
-            if len(sources) > 1:
+            sources = sources_by_page[page_key(page_id)]
+            if page_key(page_id) in uncertain_pages:
+                reason = 'creation_source_unconfirmed'
+            elif len(sources) > 1:
                 reason = 'ambiguous_creation_source'
+            elif not sources:
+                reason = 'source_unresolved'
             else:
-                source = next(iter(sources), 'notion:' + page_id)
+                source = next(iter(sources))
                 rows = attempts_by_target[(source, target)]
                 if len(rows) > 1:
                     reason = 'ambiguous_creation_attempt'
                 elif not rows:
-                    reason = 'registration_intent_unconfirmed'
+                    reason = 'target_attempt_unrecorded'
                 else:
                     reason = {'reserved': 'creation_result_unknown',
                               'created': 'mapping_restore_requires_readback',

@@ -101,3 +101,31 @@ test('所属監視は90分と4分の境界を含めて再利用し照会で鮮�
   f.context.affiliationJobWatchdog();assert.equal(f.calls.length,1);
   assert.equal(f.props.get('AFFILIATION_MONITOR_SNAPSHOT'),snapshot);
 });
+
+
+test('所属の保存結果不明・解除保留を即時通知と監視に含める', () => {
+  const f=fixture({counts:{released:1}});f.context.affiliationJobTick();
+  assert.equal(f.sent.length,2);
+  assert.match(f.sent.find(x=>x[1].includes('定期処理の結果'))[2],/保存結果不明・所属解除の確認待ち：1件/);
+  assert.ok(f.context.affiliationJobUnhealthy_({enabled:true,counts:{released:1},last_success_at:new Date().toISOString()},Date.now()));
+});
+
+test('所属監視は開始直後の記録作成中を待ち、4分を超えた欠測を通知する', () => {
+  const now=Date.now();
+  for(const elapsed of [1,240001]){
+    const f=fixture({last_success_at:new Date(now).toISOString()}); f.context.Date={now:()=>now,parse:Date.parse};
+    f.context.ScriptApp.getProjectTriggers=()=>[{getHandlerFunction:()=> 'affiliationJobTick'}];
+    f.props.set('AFFILIATION_LAST_TICK',String(now));
+    f.props.set('AFFILIATION_RUN_STARTED',String(now-elapsed));
+    f.context.affiliationJobWatchdog();
+    assert.equal(f.sent.length,elapsed>240000?1:0);
+  }
+});
+
+test('所属監視記録は巨大なエラーや巡回データを保存しない', () => {
+  const f=fixture({last_error:'x'.repeat(20000),discovery:{data:'x'.repeat(20000)}});
+  f.context.affiliationJobTick();
+  assert.ok(f.props.get('AFFILIATION_MONITOR_SNAPSHOT').length<1000);
+  assert.ok(JSON.parse(f.props.get('AFFILIATION_MONITOR_SNAPSHOT')).status.last_error);
+  assert.equal(f.sent.length,2);
+});

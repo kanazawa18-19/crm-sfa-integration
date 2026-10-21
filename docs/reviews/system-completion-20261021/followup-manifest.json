@@ -1,0 +1,13 @@
+{
+  "bytes": 22797,
+  "sha256": "502ffa19ebf8a8fb8a5967a48758abb789f795661c7d04f392c86add530ec13b",
+  "secret_pattern_matches": 0,
+  "email_matches": 0,
+  "scope": [
+    "src/email_review/html_body.py",
+    "src/sync_capacity/observation.py",
+    "src/sync_capacity/health.py",
+    "scripts/triage_missing_targets.py",
+    "GAS追加差分"
+  ]
+}

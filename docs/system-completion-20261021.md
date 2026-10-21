@@ -20,7 +20,7 @@
 
 1. `scripts/inventory_unmapped_hub_records.py` を読取実行。6DBの完走結果を使用する。非対応の保存先（連絡先のkintone等）は不足としない。重複対応・原本不在は回復候補にしない。
 2. `python scripts/triage_missing_targets.py <DBの一覧.json> <新しい分類.json>`。取得開始から6時間以内の新規走査だけを読み、DBも読取専用。--resumeの一覧、取得開始時刻のない旧形式、時刻の逆転は拒否する。出力は本人だけが読める新規ファイル。本文・名前・理由自由文は含まない。
-3. `creation_result_unknown` は成否調査まで再POST禁止。`mapping_restore_requires_readback` は作成済みIDの実物と同一性照合が先。`registration_intent_unconfirmed` は既存外部原本の取込み等を新規作成と取り違えない。
+3. `creation_result_unknown` は成否調査まで再POST禁止。`mapping_restore_requires_readback` は作成済みIDの実物と同一性照合が先。`source_unresolved` / `creation_source_unconfirmed` / `target_attempt_unrecorded` は登録元不明・作成成否不明・対象先台帳なしを区別する。Notion IDのハイフン/大文字小文字を正規化し、外部原本のsource_keyは保持する。候補が複数なら推測で選ばない。
 4. `input_or_identity_review_required` は原本の必須項目・親関連・重複候補を実読して判断。自由文のキーワードだけで自動解除しない。シート行移動は元一覧の `sheet_review_rows` も照合する。
 5. 根拠が揃った特定IDだけ `scripts/recover_missing_target.py <新計画.json> --db-key ... --id ... --target ...` で計画を作る。適用は既存CLIの `--apply` に分離し、原本ハッシュと既存予約の確認を維持する。
 
@@ -47,7 +47,7 @@ python scripts/check_capacity_observation.py <観測.json>
 ```
 
 実行時は1行にする。異常時は終了コード2。worker成功時刻が未取得なら省略し、欠測として通知候補にする。
-開始/終了時刻の矛盾・未来・欠測は正常とせず、観測後の経過も滞留時間に加える。処理中の時刻はclaim時のupdated_atを使う。
+開始/終了時刻の矛盾・未来・欠測は正常としない。各行の読取時刻で未来を判定し、走査中の正常な新規受付/claimを許容する。age_observed_at（走査終了時刻）を基準に観測後の経過だけを加算する。処理中の時刻はclaim時のupdated_atを使う。全件走査は同一瞬間のスナップショットではない。
 このCLIはファイル入力だけで、Slack送信・原本更新・再送・ロック解放はしない。処理中の長時間経過だけで重複実行を開始しない。
 観測の走査費用は文書数に比例するため、毎分全走査は設定しない。定期収集停止を検知する外側の監視も必要。
 
@@ -88,7 +88,7 @@ DB復旧後にキュー別到着件数・滞留・1件/1回の時間・DB接続�
 - Gmailの観測起点は10/14 02:36 JSTを維持。最低14日は10/28、合格後72時間以上の並走まで旧Push維持。
 - 太田店の作成成否、Glamping用途、電話「確認中」、福住庵、山本氏同一性、原本未入力は根拠待ち。テスト6件は本人指定で保持。
 - Slack認証交換、容量試験の増枠/期限延長/資源変更は明示延期を維持。
-- Gemini/Claudeレビューは専用タブ・資料まで準備したが、ファイル選択失敗後にChrome連携が接続ポリシーを取得できず停止。回答未取得。Chrome本体・Profile18拡張・native hostの診断は正常。再起動/設定改変はしていない。
+- 本人承認でChrome Profile18の新規ウィンドウを開き接続復旧。Claude Opus5.5中の回答を取得し修正。Gemini思考モードは元資料で回答なしに初期画面へ戻り、対象を絞った1回の再依頼もレビュー不能の返答。有効なGeminiレビューは未取得。
 
 ## 検証・レビュー記録
 
@@ -97,4 +97,4 @@ DB復旧後にキュー別到着件数・滞留・1件/1回の時間・DB接続�
 - 保存期間SQLを使い捨てPostgresの一時表6行で実行し、90日境界±1μs、日本語UTF-8バイト数、null、状態別5集計を確認。実行前後の行一致、読取専用実行成功。
 - スキップ12件はFirestore emulator未準備11件と適用外1件。エミュレータ実行環境のない本端末で成功と数えない。
 - 独立SEC/品質/QAで本文のmixed欠落、HTMLリンク先消失、容量超過時の宛先消失、古い再開一覧の鮮度問題を検出・修正。製品・テストの書き手は主機CXのみ。
-- 外部レビュー再開用資料と機密検査結果は `docs/reviews/system-completion-20261021/`。Gemini/Claudeの回答は未取得で、外部レビュー完了とはしない。
+- 外部レビュー資料・機密検査・回答原文・採否は `docs/reviews/system-completion-20261021/`。Claude指摘により監視記録欠測、released通知、キャッシュ容量、ID正規化、通常blockquote本文保持、走査中更新の誤警報を修正。独立3役の追加確認でBLOCKER/WARN 0。追加変更の関連Python98件、時刻修正後30件、全GAS102件成功（重複するため合算しない）。Geminiの有効レビューは未取得。

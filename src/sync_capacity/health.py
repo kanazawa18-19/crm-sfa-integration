@@ -19,8 +19,12 @@ def assess(observation, *, now, last_worker_success, freshness_seconds, waiting_
     if not fresh(observation.get('scan_finished_at')):
         alerts.append('observation_stale_or_invalid')
     started, finished = observation.get('scan_started_at'), observation.get('scan_finished_at')
+    age_at = observation.get('age_observed_at', started)
     if not fresh(started) or not _number(finished) or (_number(started) and finished < started):
         alerts.append('scan_time_invalid')
+    if (not _number(age_at) or not _number(started) or not _number(finished)
+            or not started <= age_at <= finished or observation.get('clock_consistent') is False):
+        alerts.append('age_reference_invalid')
     if not fresh(last_worker_success):
         alerts.append('worker_success_missing_or_stale')
     counts = observation.get('counts') or {}
@@ -38,7 +42,7 @@ def assess(observation, *, now, last_worker_success, freshness_seconds, waiting_
         invalid, age = observation.get(invalid_key), observation.get(age_key)
         if type(invalid) is not int or invalid != 0 or (count and (not _number(age) or age < 0)):
             alerts.append(state + '_age_unknown')
-        elif count and _number(started) and age + now - started > limit:
+        elif count and _number(age_at) and age + now - age_at > limit:
             alerts.append(state + '_overdue')
     for key in ('unknown_state_count',):
         if type(observation.get(key)) is not int or observation.get(key) != 0:

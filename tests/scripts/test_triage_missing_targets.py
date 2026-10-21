@@ -41,7 +41,29 @@ def test_resumed_or_old_scan_cannot_refresh_its_freshness(change):
 
 
 def test_unrecorded_intent_and_duplicate_mapping_stay_unresolved():
-    assert classify_gaps(inventory(), [], now=NOW)['counts'] == {'registration_intent_unconfirmed': 1}
+    assert classify_gaps(inventory(), [], now=NOW)['counts'] == {'source_unresolved': 1}
     value = inventory()
     value['missing_targets'][0]['classification'] = 'duplicate_mapping'
     assert classify_gaps(value, [], now=NOW)['counts'] == {'duplicate_mapping': 1}
+
+
+def test_notion_id_spelling_and_external_origin_never_hide_existing_attempt():
+    value = inventory()
+    value['missing_targets'][0]['id'] = 'AA-BB'
+    for origin in ('notion:aabb', 'kintone:original'):
+        attempts = [{'dbKey': 'project', 'sourceKey': origin, 'target': 'zoho', 'state': 'reserved'}]
+        if not origin.startswith('notion:'):
+            attempts.append({'dbKey': 'project', 'sourceKey': origin, 'target': 'notion', 'state': 'created', 'externalId': 'aabb'})
+        assert classify_gaps(value, attempts, now=NOW)['counts'] == {'creation_result_unknown': 1}
+
+
+def test_uncertain_notion_creation_remains_unknown():
+    attempts = [{'dbKey': 'project', 'sourceKey': 'kintone:k', 'target': 'notion', 'state': 'reserved', 'externalId': 'p'}]
+    assert classify_gaps(inventory(), attempts, now=NOW)['counts'] == {'creation_source_unconfirmed': 1}
+
+
+def test_two_sources_or_normalized_duplicate_attempts_do_not_choose_one():
+    attempts = [{'dbKey': 'project', 'sourceKey': key, 'target': 'zoho', 'state': 'reserved'} for key in ('notion:P', 'notion:p')]
+    assert classify_gaps(inventory(), attempts, now=NOW)['counts'] == {'ambiguous_creation_attempt': 1}
+    attempts.append({'dbKey': 'project', 'sourceKey': 'sheet:s', 'target': 'notion', 'state': 'created', 'externalId': 'p'})
+    assert classify_gaps(inventory(), attempts, now=NOW)['counts'] == {'ambiguous_creation_source': 1}
