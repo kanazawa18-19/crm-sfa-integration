@@ -1,0 +1,33 @@
+{
+  "code_commit": "91ce34a",
+  "tests": 11,
+  "passed": 11,
+  "failed": 0,
+  "skipped": 0,
+  "seconds": 6.327,
+  "test_cases": [
+    "test_shared_slots_saturation_and_later_drain",
+    "test_two_workers_do_not_claim_same_job",
+    "test_owner_mismatch_and_no_ttl_reassignment",
+    "test_recovery_requires_owner_and_explicit_stop",
+    "test_scope_mismatch_never_changes_shared_capacity",
+    "test_duplicate_preserves_first_receipt_and_conflict_is_rejected",
+    "test_stale_scope_precondition_prevents_job_creation",
+    "test_stale_job_precondition_prevents_slot_assignment",
+    "test_committed_claim_response_loss_retains_job_and_slot",
+    "test_notion_retry_attempt_is_deduplicated_but_changed_data_conflicts",
+    "test_twelve_real_children_four_jobs_three_slots"
+  ],
+  "emulator": "1.22.0",
+  "emulator_sha256": "9b6498b7f62714d67f48f59b3818883cd682dbcd46b9f59511de81c97bb5166c",
+  "java_archive_sha256": "dec50fc6f9fcd4fe3ae8cabf5a5fa68f6afc48841f7698e468e9aa5d54beed84",
+  "environment": "env -i, PYTHON_DOTENV_DISABLED=1, FIRESTORE_EMULATOR_HOST=127.0.0.1:8787",
+  "cleanup": {
+    "8787": "停止済み",
+    "57771": "停止済み",
+    "retry_children": "残存なし"
+  },
+  "production_used": false,
+  "cloud_resources_created": false,
+  "initial_failure": "sandboxでlisten/connectがOperation not permitted。通常承認で同じlocalhost試験を再実行し成功"
+}
