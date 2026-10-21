@@ -86,7 +86,7 @@ def test_full_scan_counts_beyond_inspect_limit_and_finds_oldest():
     assert result["counts"]["pending"] == 600
     assert result["oldest_waiting_age_seconds"] == 99
     assert result["consistency"] == "full_scan_not_atomic_snapshot"
-    jobs.select.assert_called_once_with(["state", "created_at"])
+    jobs.select.assert_called_once_with(["state", "created_at", "updated_at"])
 
 
 @pytest.mark.parametrize("bad", [None, True, float("nan"), float("inf"), 101, "1"])

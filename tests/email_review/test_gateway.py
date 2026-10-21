@@ -40,7 +40,7 @@ def test_partial_multipart_body_is_not_recorded_as_full_text():
     from src.email_review.mime import plain_text
     def part(text):
         return {'mimeType': 'text/plain', 'body': {'data': base64.urlsafe_b64encode(text.encode()).decode()}}
-    payload = {'mimeType': 'multipart/mixed', 'parts': [part('先頭だけ'), part('長' * 20001)]}
+    payload = {'mimeType': 'multipart/mixed', 'parts': [part('先頭だけ'), part('長' * 40001)]}
     assert plain_text(payload) == ''
     payload['parts'] = [part('先頭だけ'), {**part('本文'), 'headers': [{'name': 'Content-Type', 'value': 'text/plain; charset=unknown'}]}]
     assert plain_text(payload) == ''

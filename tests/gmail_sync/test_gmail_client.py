@@ -14,6 +14,24 @@ _ACCESS_TOKEN = "access-token"
 _BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
+def test_oversized_body_keeps_envelope_for_review(requests_mock, monkeypatch):
+    from src.gmail_sync import gmail_client
+    from src.email_review import service
+    monkeypatch.setattr(service, "enabled", lambda: True)
+    requests_mock.get(f"{_BASE_URL}/messages/msg1", json={
+        "id": "msg1", "payload": {"mimeType": "text/plain",
+            "headers": [{"name": name, "value": value} for name, value in (
+                ("From", "sender@example.test"), ("To", "recipient@example.test"),
+                ("Subject", "容量超過の確認"), ("Message-ID", "<sample@example.test>"))],
+            "body": {"data": "A" * 250001}}})
+    result = gmail_client.get_message(_ACCESS_TOKEN, "msg1")
+    assert result.body_text == ""
+    assert result.from_header == "sender@example.test"
+    assert result.to_header == "recipient@example.test"
+    assert result.subject == "容量超過の確認"
+    assert result.message_id_header == "<sample@example.test>"
+
+
 def test_watch_mailbox_returns_history_id_and_expiration(requests_mock) -> None:
     requests_mock.post(
         f"{_BASE_URL}/watch",

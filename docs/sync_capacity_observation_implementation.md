@@ -179,3 +179,11 @@ HTTP試験証跡は同ディレクトリの `observation_http_reviewed.log`。
 
 外部レビュー反映後の最終SEC/品質/QAはBLOCKER 0・WARN 0。
 今回の計測実装・ローカル隔離試験のイシューは完了。本番容量保証は未達で配備保留。
+
+## 2026-10-21のローカル拡張（本番未反映）
+
+`observe_queue` はupdated_atも読み、processingの最古経過時間と不正時刻数を返す。
+欠測・長期滞留・観測途絶・worker成功途絶は `src/sync_capacity/health.py` で判定し、
+`python scripts/check_capacity_observation.py` が保存済み観測から通知候補JSONを返す。
+閾値は運用者の明示指定。自動再送・共有枠解放・Slack送信・定期登録は行わない。
+運用接続条件と検証範囲は `docs/system-completion-20261021.md` を参照。

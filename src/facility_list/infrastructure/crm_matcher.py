@@ -402,11 +402,11 @@ class CrmMatcher:
             elif not narrowed and needs_address_proof:
                 # 弱い候補を住所で裏付けられない。新規には戻さず人の確認へ回す。
                 return CrmMatch(state=CrmMatchState.AMBIGUOUS,
-                                candidate_names=tuple(h["raw_name"] for h in candidates))
+                                candidate_names=tuple(h["raw_name"] for h in sorted(candidates, key=lambda row: (row["raw_name"], row["notion_page_id"]))))
             else:
                 return CrmMatch(
                     state=CrmMatchState.AMBIGUOUS,
-                    candidate_names=tuple(h["raw_name"] for h in (narrowed or candidates)),
+                    candidate_names=tuple(h["raw_name"] for h in sorted(narrowed or candidates, key=lambda row: (row["raw_name"], row["notion_page_id"]))),
                 )
 
         hit = candidates[0]

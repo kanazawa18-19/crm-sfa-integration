@@ -53,6 +53,8 @@ function affiliationJobTick() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   try {
+    var props = PropertiesService.getScriptProperties();
+    props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', '');
     var started = Date.now();
     var result = {status: 'ok', counts: {}, discovered: 0, duration_ms: 0};
     for (var batch = 0; batch < 4 && Date.now() - started < 180000; batch++) {
@@ -68,6 +70,9 @@ function affiliationJobTick() {
     console.log(JSON.stringify(result));
     if (result.status === 'paused') affiliationJobNotify_('CRM側で一時停止しています。');
     var status = affiliationJobRequest_('/status');
+    props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', JSON.stringify({
+      checkedAt: Date.now(), durationMs: Date.now() - started, resultStatus: result.status, status: status
+    }));
     if (status.last_error || status.retry_count || (status.counts || {}).delivery_pending || (status.counts || {}).writing) {
       affiliationJobNotify_('保存・配送の確認待ちがあります。' + JSON.stringify(status));
     }
@@ -78,16 +83,30 @@ function affiliationJobTick() {
   } finally { lock.releaseLock(); }
 }
 
+function affiliationJobUnhealthy_(status, now) {
+  var success = Date.parse(status.last_success_at);
+  return status.enabled !== true || !status.counts || status.last_error || status.retry_count ||
+    status.counts.delivery_pending || status.counts.writing ||
+    !isFinite(success) || success > now || now - success > 90 * 60000;
+}
+
 function affiliationJobWatchdog() {
   var props = PropertiesService.getScriptProperties();
   var tick = Number(props.getProperty('AFFILIATION_LAST_TICK') || props.getProperty('AFFILIATION_STARTED_AT') || 0);
   var triggers = ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === 'affiliationJobTick'; });
+  var now = Date.now();
+  var stopped = triggers.length !== 1 || !isFinite(tick) || tick <= 0 || tick > now || now - tick > 90 * 60000;
+  var snapshot;
+  try { snapshot = JSON.parse(props.getProperty('AFFILIATION_MONITOR_SNAPSHOT') || 'null'); } catch (_) { snapshot = null; }
+  var fresh = snapshot && typeof snapshot.checkedAt === 'number' && isFinite(snapshot.checkedAt) &&
+    snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 90 * 60000;
+  var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
+  var slow = durationValid && snapshot.durationMs > 240000;
+  var reusable = !stopped && durationValid && !slow && snapshot.resultStatus === 'ok' && snapshot.status && !affiliationJobUnhealthy_(snapshot.status, now);
   try {
-    var status = affiliationJobRequest_('/status');
-    if (triggers.length !== 1 || Date.now() - tick > 90 * 60000 || status.last_error || status.retry_count ||
-        Number(props.getProperty('AFFILIATION_LAST_DURATION') || 0) > 240000 ||
-        (status.counts || {}).delivery_pending || (status.counts || {}).writing ||
-        (status.enabled && (!status.last_success_at || Date.now() - Date.parse(status.last_success_at) > 90 * 60000))) {
+    // 毎時処理の実取得結果だけを使い、監視自身の照会では鮮度を延長しない。
+    var status = reusable ? snapshot.status : affiliationJobRequest_('/status');
+    if (stopped || slow || affiliationJobUnhealthy_(status, Date.now())) {
       affiliationJobNotify_('定期処理の停止・遅延または照合失敗を検出しました。GAS実行履歴とCRM状態を確認してください。');
     }
   } catch (error) {

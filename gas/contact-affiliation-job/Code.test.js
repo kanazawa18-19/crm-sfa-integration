@@ -55,3 +55,49 @@ test('配送待ちの日も未完件数を含む結果通知を続ける', () =>
   assert.match(summary[2], /配送確認待ち：1件/);
   assert.match(summary[2], /保存・配送確認済み：2件/);
 });
+
+test('新しい毎時処理の結果は監視で再照会しない', () => {
+  const f = fixture();
+  f.context.ScriptApp.getProjectTriggers=()=>[{getHandlerFunction:()=> 'affiliationJobTick'}];
+  f.context.affiliationJobTick();
+  const count=f.calls.length;
+  f.context.affiliationJobWatchdog();
+  assert.equal(f.calls.length,count);
+});
+
+test('所属監視は古い結果や不正時刻・遅延・配送待ちを再照会する', () => {
+  const now=Date.now();
+  for (const extra of [
+    {checkedAt:now-90*60000-1}, {checkedAt:now+1}, {durationMs:240001},
+    {status:{enabled:true,counts:{writing:1},last_success_at:new Date(now).toISOString()}},
+    {status:{enabled:true,counts:{},last_success_at:'invalid'}}
+  ]) {
+    const f=fixture();
+    f.context.ScriptApp.getProjectTriggers=()=>[{getHandlerFunction:()=> 'affiliationJobTick'}];
+    f.context.Date={now:()=>now,parse:Date.parse};
+    f.props.set('AFFILIATION_LAST_TICK',String(now));
+    f.props.set('AFFILIATION_MONITOR_SNAPSHOT',JSON.stringify({checkedAt:now,durationMs:1,resultStatus:'ok',status:{enabled:true,counts:{},last_success_at:new Date(now).toISOString()},...extra}));
+    f.context.affiliationJobWatchdog();assert.equal(f.calls.length,1);
+  }
+});
+
+test('所属実行が失敗したら前回の成功記録を使わない', () => {
+  const f=fixture();f.props.set('AFFILIATION_MONITOR_SNAPSHOT','previous');
+  f.context.UrlFetchApp.fetch=()=>{throw new Error('通信断');};
+  assert.throws(()=>f.context.affiliationJobTick());
+  assert.equal(f.props.get('AFFILIATION_MONITOR_SNAPSHOT'),'');
+  assert.equal(f.sent.length,1);
+});
+
+test('所属監視は90分と4分の境界を含めて再利用し照会で鮮度を延ばさない', () => {
+  const now=Date.now(),f=fixture();
+  f.context.ScriptApp.getProjectTriggers=()=>[{getHandlerFunction:()=> 'affiliationJobTick'}];
+  f.context.Date={now:()=>now,parse:Date.parse};
+  f.props.set('AFFILIATION_LAST_TICK',String(now));
+  const snapshot=JSON.stringify({checkedAt:now-90*60000,durationMs:240000,resultStatus:'ok',status:{enabled:true,counts:{},last_success_at:new Date(now-90*60000).toISOString()}});
+  f.props.set('AFFILIATION_MONITOR_SNAPSHOT',snapshot);
+  f.context.affiliationJobWatchdog();assert.equal(f.calls.length,0);
+  f.context.Date={now:()=>now+1,parse:Date.parse};
+  f.context.affiliationJobWatchdog();assert.equal(f.calls.length,1);
+  assert.equal(f.props.get('AFFILIATION_MONITOR_SNAPSHOT'),snapshot);
+});

@@ -19,9 +19,9 @@ def process(item, repository, conn, gateway, dry_run):
     plan = item['decision']
     resuming = item['state'] in ('writing', 'delivery_pending')
     contact = gateway.live('contact', key)
-    # 配送待ちは一度保存実読を終えた状態。空への変更は人の解除として尊重する。
-    if item['state'] == 'delivery_pending' and not contact.get('取引先マスター'):
-        repository.save(conn, key, 'released', {**plan, 'reason': '保存確認後に所属が解除されました。自動では戻しません'})
+    # 結果不明の書込みも、人の解除と未保存を区別できないため再送しない。
+    if resuming and not contact.get('取引先マスター'):
+        repository.save(conn, key, 'released', {**plan, 'reason': '保存結果不明または所属解除のため確認が必要です。自動では戻しません'})
         return 'released'
     if not resuming:
         if contact.get('取引先マスター'):
@@ -73,8 +73,8 @@ def process(item, repository, conn, gateway, dry_run):
             if affiliation and (not resuming or set(affiliation) != {company_id}):
                 repository.save(conn, key, 'held', {**plan, 'reason': '既存所属が変わりました'})
                 return 'held'
-            if not affiliation and item['state'] == 'delivery_pending':
-                repository.save(conn, key, 'released', {**plan, 'reason': '配送再開前に所属が解除されました。自動では戻しません'})
+            if not affiliation and resuming:
+                repository.save(conn, key, 'released', {**plan, 'reason': '再開時の所属が空です。保存結果不明または解除を確認するまで自動では戻しません'})
                 return 'released'
             if not affiliation:
                 # 遅延・再開中に追加された矛盾も書込み直前に確認する。

@@ -45,11 +45,16 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
             # 一斉送信の宛先を切り捨てず受理しつつ、入力サイズは制限する。
             limits = {'from': 1000, 'to': 65536, 'subject': 1000, 'snippet': 500,
                       'date_header': 200, 'thread_id': 100, 'internal_date_ms': 20,
-                      'body_text': 20000, 'cc_header': 65536, 'message_id_header': 1000}
+                      'body_text': 40000, 'cc_header': 65536, 'message_id_header': 1000}
             if any(item.get(key) is not None and (
                 not isinstance(item[key], str) or len(item[key]) > limit
             ) for key, limit in limits.items()):
                 raise ValueError('メール項目の型または長さが不正です')
+            from src.email_review.mime import plain_text, validate_payload
+            text = item.get('body_text')
+            if 'body_mime' in item:
+                validate_payload(item['body_mime'])
+                text = plain_text(item['body_mime'])
             stamp = item.get('internal_date_ms')
             if stamp is not None and (not stamp.isdecimal() or int(stamp) <= 0):
                 raise ValueError('メール時刻が不正です')
@@ -58,7 +63,7 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
                 subject=item.get('subject'), date_header=item.get('date_header'),
                 snippet=item.get('snippet'), thread_id=item.get('thread_id'),
                 internal_date_ms=item.get('internal_date_ms'),
-                body_text=item.get('body_text'), cc_header=item.get('cc_header'),
+                body_text=text, cc_header=item.get('cc_header'),
                 message_id_header=item.get('message_id_header'), label_ids=item.get('label_ids'),
             ))
         observation_meta = observation.validate(body.get('observation'), dry_run=dry_run, messages=parsed)

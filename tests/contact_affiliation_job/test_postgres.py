@@ -112,7 +112,7 @@ def test_known_hold_continues_to_other_candidate(repo, monkeypatch):
     assert repo.status()['metrics']['last_evaluated'] == 2
 
 
-@pytest.mark.parametrize('previous', ['existing', 'verified'])
+@pytest.mark.parametrize('previous', ['existing', 'verified', 'released'])
 def test_removed_affiliation_is_held_even_with_new_mail(repo, previous):
     from psycopg.types.json import Jsonb
     key = str(uuid4())
@@ -124,6 +124,7 @@ def test_removed_affiliation_is_held_even_with_new_mail(repo, previous):
         conn.execute('CREATE TABLE "GmailContactEmail" ("pageId" TEXT, email TEXT)')
         conn.execute('INSERT INTO "GmailContactEmail" VALUES (%s,%s)', (key, 'person@example.invalid'))
         conn.execute('INSERT INTO "EmailReview" VALUES (%s,%s,now())', ('mail', Jsonb({'participants': [{'email': 'person@example.invalid'}]})))
+        conn.execute('UPDATE \"ContactAffiliationItem\" SET \"nextAttemptAt\"=now()-interval \'8 days\'')
         repo.prioritize_mail(conn)
         assert repo.next(conn) is None
     assert repo.status()['counts'] == {'released': 1}

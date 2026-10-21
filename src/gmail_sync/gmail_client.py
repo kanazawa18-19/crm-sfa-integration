@@ -310,7 +310,7 @@ def get_raw_message(access_token: str, message_id: str) -> str:
 
 def get_message(access_token: str, message_id: str) -> GmailMessage:
     from src.email_review.service import enabled
-    from src.email_review.mime import plain_text
+    from src.email_review.mime import plain_text, hydrate_body
     full = enabled()
     response = request_with_retry(
         "GET",
@@ -321,7 +321,23 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
     )
     raise_for_error(response, GmailApiError)
     data = response.json()
-    headers = data.get("payload", {}).get("headers", [])
+    payload = data.get("payload") or {}
+    # 本文が容量超過で保留になっても、受付に必要な宛先・件名は原本から保持する。
+    headers = payload.get("headers", [])
+    if full:
+        def fetch_body(identifier):
+            from urllib.parse import quote
+            response = request_with_retry(
+                "GET", f"{_GMAIL_API_BASE}/messages/{quote(message_id, safe='')}/attachments/{quote(identifier, safe='')}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                max_rate_limit_retries=current_max_rate_limit_retries(),
+            )
+            try:
+                raise_for_error(response, GmailApiError)
+            except GmailApiError as exc:
+                raise RuntimeError("本文の追加取得に失敗しました") from exc
+            return response.json()
+        payload = hydrate_body(payload, fetch_body)
     return GmailMessage(
         id=data["id"],
         label_ids=data.get("labelIds", []),
@@ -332,7 +348,7 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
         snippet=data.get("snippet"),
         thread_id=data.get("threadId"),
         internal_date_ms=data.get("internalDate"),
-        body_text=plain_text(data.get("payload") or {}) if full else None,
+        body_text=plain_text(payload) if full else None,
         cc_header=_header_value(headers, "Cc") if full else None,
         message_id_header=_header_value(headers, "Message-ID") if full else None,
     )

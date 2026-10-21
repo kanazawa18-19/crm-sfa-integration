@@ -128,7 +128,7 @@ function gmailIngestMessage(id) {
     from: header('From'), to: header('To'), subject: header('Subject'),
     date_header: header('Date'), snippet: raw.snippet || '',
     internal_date_ms: raw.internalDate || null,
-    ...(full ? {body_text: gmailReviewPlainText(raw.payload || {}), cc_header: header('Cc'), message_id_header: header('Message-ID')} : {})
+    ...(full ? {body_text: gmailReviewPlainText(raw.payload || {}), body_mime: gmailReviewBodyMime(raw.payload || {}, id), cc_header: header('Cc'), message_id_header: header('Message-ID')} : {})
   };
 }
 
@@ -174,7 +174,7 @@ function gmailReviewPlainTextPart(part) {
       const decoded = Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded)).getDataAsString(charset);
       if (decoded.includes('\uFFFD')) return null;
       const value = gmailReviewCurrentBody(decoded);
-      return value.length <= 20000 && !value.includes('\uFFFD') ? value : null;
+      return value.length <= 40000 && !value.includes('\uFFFD') ? value : null;
     } catch (_) { return null; }
   }
   if ((part.mimeType || '').startsWith('multipart/')) {
@@ -183,7 +183,7 @@ function gmailReviewPlainTextPart(part) {
     const parts = children.map(gmailReviewPlainTextPart);
     if (parts.some(value => value === null)) return null;
     const value = parts.filter(Boolean).join('\n');
-    return value.length <= 20000 ? value : null;
+    return value.length <= 40000 ? value : null;
   }
   return '';
 }
@@ -227,4 +227,28 @@ function prepareGmailIngestLive() {
 function installGmailIngestTrigger() {
   if (ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'gmailIngest')) return;
   ScriptApp.newTrigger('gmailIngest').timeBased().everyMinutes(5).create();
+}
+
+// HTMLの変換はPython側へ集約する。添付本体や無関係のヘッダーは送らない。
+function gmailReviewBodyMime(payload, messageId) {
+  let nodes = 0, size = 0, requests = 0;
+  function visit(part, depth) {
+    if (++nodes > 100 || depth > 20) throw new RangeError('本文の構造上限');
+    if (part.filename || part.mimeType === 'message/rfc822') return {filename:'excluded'};
+    if (!(part.mimeType || '').startsWith('multipart/') && !['text/plain','text/html'].includes(part.mimeType)) return {};
+    const headers = (part.headers || []).filter(h=>h.name.toLowerCase()==='content-type').map(h=>({name:h.name,value:h.value}));
+    const body = part.body || {};
+    let data = body.data || '';
+    if (!data && body.attachmentId && ['text/plain','text/html'].includes(part.mimeType) && messageId &&
+        Number.isInteger(body.size) && body.size > 0 && body.size <= 150000 && requests < 4) {
+      requests++;
+      try { data = Gmail.Users.Messages.Attachments.get('me', messageId, body.attachmentId).data || ''; }
+      catch (_) { throw new Error('本文の追加取得に失敗しました。次回再試行します'); }
+    }
+    size += data.length + headers.reduce((n,h)=>n+h.name.length+h.value.length,0);
+    if (size > 250000 || (part.parts || []).length > 30) throw new RangeError('本文の容量上限');
+    return {mimeType:part.mimeType,headers,body:{data},parts:(part.parts || []).map(p=>visit(p,depth+1))};
+  }
+  try { return visit(payload,0); }
+  catch (error) { if (!(error instanceof RangeError)) throw error; return {mimeType:'text/plain',body:{data:''}}; }
 }

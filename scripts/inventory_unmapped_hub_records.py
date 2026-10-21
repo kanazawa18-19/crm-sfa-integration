@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import requests
 from dotenv import load_dotenv
 from src.db_schema.registry import ALL_SCHEMAS
+from src.db_schema.base import Tool, supports_database
 from src.sync_engine.clients._notion_paging import query_all_with_keyset
 from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
 from src.sync_engine.notion_id_mapping import NotionIdMappingStore
@@ -34,7 +35,7 @@ def norm(value):
     return str(value or '').strip().replace('-', '').lower()
 
 
-def classify(pages, mappings, rows):
+def classify(pages, mappings, rows, *, db_key=None):
     """移動・重複したシート行を新規と取り違えないため同期キーも照合する。"""
     if any(not norm(m['notion_key']) for m in mappings):
         raise InventoryError('対応表に空のNotionキーがあります')
@@ -59,6 +60,17 @@ def classify(pages, mappings, rows):
         else: kind = 'unmapped'
         entries.append({**row, 'classification': kind})
     missing = [p for p in pages if norm(p['id']) not in mapped]
+    target_gaps = []
+    for mapping in mappings:
+        key = norm(mapping['notion_key'])
+        for target, field in (('kintone', 'kintone_id'), ('zoho', 'zoho_id'), ('spreadsheet', 'spreadsheet_row')):
+            if db_key is not None and not supports_database(Tool(target), db_key):
+                continue
+            if mapping.get(field):
+                continue
+            kind = ('duplicate_mapping' if mapping_keys[key] > 1 else
+                    'source_page_missing' if key not in page_keys else 'live_verification_required')
+            target_gaps.append({'id': mapping['notion_key'], 'target': target, 'classification': kind})
     return {'notion_total':len(pages), 'mapping_total':len(mappings), 'notion_unmapped':len(missing),
             'sheet_nonempty_rows':len(rows), 'sheet_classes':dict(Counter(r['classification'] for r in entries)),
             'notion_unmapped_pages':missing, 'sheet_review_rows':[r for r in entries if r['classification']!='mapped'],
@@ -66,7 +78,8 @@ def classify(pages, mappings, rows):
             'duplicate_mapping_rows':sum(n>1 for n in mapping_rows.values()),
             'mapped_without_sheet_row':sum(m['spreadsheet_row'] is None for m in mappings),
             'mapped_without_kintone':sum(not m.get('kintone_id') for m in mappings),
-            'mapped_without_zoho':sum(not m.get('zoho_id') for m in mappings)}
+            'mapped_without_zoho':sum(not m.get('zoho_id') for m in mappings),
+            'missing_targets':target_gaps}
 
 
 def fetch_pages(schema, checkpoint=None, api_key=None, quiet=False):
@@ -150,6 +163,7 @@ def main():
     output=Path(args.output_dir);output.mkdir(parents=True,exist_ok=True)
     for schema in ALL_SCHEMAS:
         if args.db and schema.key not in args.db: continue
+        scan_started_at = datetime.now(timezone.utc).isoformat()
         if not args.quiet:print(f'{schema.key}: 読取開始',flush=True)
         mapping_path=output/f'.{schema.key}.mappings.json'
         checkpoint=output/f'.{schema.key}.pages.jsonl'
@@ -162,10 +176,11 @@ def main():
         if not args.quiet:print(f'{schema.key}: 対応表 {len(mappings)}',flush=True)
         pages=fetch_pages(schema,checkpoint,os.environ[args.notion_token_env],quiet=args.quiet)
         rows=fetch_rows(client,schema.spreadsheet_sheet_name)
-        result={'observed_at':datetime.now(timezone.utc).isoformat(),'db':schema.key,**classify(pages,mappings,rows)}
+        result={'observed_at':datetime.now(timezone.utc).isoformat(), 'scan_started_at':scan_started_at,
+                'resumed':args.resume, 'db':schema.key, **classify(pages,mappings,rows,db_key=schema.key)}
         (output/f'{schema.key}.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
         if not args.quiet:
-            print(json.dumps({k:v for k,v in result.items() if k not in ('notion_unmapped_pages','sheet_review_rows')},ensure_ascii=False),flush=True)
+            print(json.dumps({k:v for k,v in result.items() if k not in ('notion_unmapped_pages','sheet_review_rows','missing_targets')},ensure_ascii=False),flush=True)
 
 if __name__=='__main__':
     try:main()

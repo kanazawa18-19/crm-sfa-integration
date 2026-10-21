@@ -163,20 +163,26 @@ def test_post_write_email_normalizes_spaces_and_case(fixture):
     assert worker.process(repo.item.copy(), repo, conn, gateway, False) == 'verified'
 
 
-def test_delivery_pending_manual_removal_never_repatches(fixture):
+@pytest.mark.parametrize("previous", ["writing", "delivery_pending"])
+def test_delivery_pending_manual_removal_never_repatches(fixture, previous):
     repo, gateway, conn = fixture
     gateway.delivery = 'partial'
     assert worker.process(repo.item.copy(), repo, conn, gateway, False) == 'delivery_pending'
+    repo.item['state'] = previous
+    gateway.dispatch = lambda *args, **kwargs: pytest.fail('解除後に配送してはいけない')
     gateway.current['取引先マスター'] = []
     assert worker.process(repo.item.copy(), repo, conn, gateway, False) == 'released'
     assert gateway.writes == 1
     assert repo.item['state'] == 'released'
 
 
-def test_delivery_pending_removal_between_reads_never_repatches(fixture):
+@pytest.mark.parametrize("previous", ["writing", "delivery_pending"])
+def test_delivery_pending_removal_between_reads_never_repatches(fixture, previous):
     repo, gateway, conn = fixture
     gateway.delivery = 'partial'
     assert worker.process(repo.item.copy(), repo, conn, gateway, False) == 'delivery_pending'
+    repo.item['state'] = previous
+    gateway.dispatch = lambda *args, **kwargs: pytest.fail('解除後に配送してはいけない')
     live = gateway.live
     reads = 0
     def changing(kind, key):
@@ -216,3 +222,12 @@ def test_incomplete_flag_carried_until_cursor_exhausted(monkeypatch):
     monkeypatch.setattr(gateway, 'client', lambda kind: Client())
     pages, cursor = gateway.discover({'watermark': '2026-08-01T00:00:00Z', 'cursor': 'last-page', 'count': 100, 'truncated': True})
     assert cursor == {'watermark': '2026-09-01T00:00:00Z', 'count': 0}
+
+
+def test_unknown_write_before_patch_stops_for_manual_verification(fixture):
+    repo, gateway, conn = fixture
+    repo.item.update(state='writing', decision={'company_id': 'company'})
+    gateway.dispatch = lambda *args, **kwargs: pytest.fail('結果不明のまま配送してはいけない')
+    assert worker.process(repo.item.copy(), repo, conn, gateway, False) == 'released'
+    assert gateway.writes == 0
+    assert '確認' in repo.item['decision']['reason']

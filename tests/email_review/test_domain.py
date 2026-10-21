@@ -92,8 +92,8 @@ def test_identity_across_mailboxes_and_fallback():
 def test_mime_ignores_attachment_html_and_large_body():
     def part(text, **extra):
         return {'mimeType': 'text/plain', 'body': {'data': base64.urlsafe_b64encode(text.encode()).decode()}, **extra}
-    assert plain_text({'mimeType': 'multipart/mixed', 'parts': [part('本文'), part('添付', filename='a.txt'), part('HTML', mimeType='text/html')]}) == '本文'
-    assert plain_text(part('x' * 20001)) == ''
+    assert plain_text({'mimeType': 'multipart/mixed', 'parts': [part('本文'), part('添付', filename='a.txt'), part('HTML', mimeType='text/html')]}) == '本文\nHTML'
+    assert plain_text(part('x' * 40001)) == ''
     assert plain_text(part('添付', mimeType='message/rfc822')) == ''
 
 

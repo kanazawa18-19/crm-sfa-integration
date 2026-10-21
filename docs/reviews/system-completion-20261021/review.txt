@@ -1,0 +1,919 @@
+CRM/SFA追加修正を日本語でレビューしてください。BLOCKER/WARN/INFOを分け、本文欠落・二重作成・手動解除の上書き・欠測の正常誤認・容量境界を確認してください。本番未反映。監視JSONは送信せず、削除/回復の自動実行なし。CIのDBパスワードは使い捨て合成値です。
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2e69f6b..08e6255 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -12,6 +12,22 @@ jobs:
+   python-tests:
+     name: Python tests
+     runs-on: ubuntu-latest
++    services:
++      postgres:
++        image: postgres:17
++        env:
++          POSTGRES_USER: postgres
++          POSTGRES_PASSWORD: local-test-only
++        ports:
++          - 55443:5432
++        options: >-
++          --health-cmd pg_isready
++          --health-interval 5s
++          --health-timeout 5s
++          --health-retries 10
++    env:
++      SYNC_REVIEW_TEST_DATABASE_URL: postgresql://postgres:local-test-only@127.0.0.1:55443/crm_field_review_test
++      EMAIL_REVIEW_TEST_DATABASE_URL: postgresql://postgres:local-test-only@127.0.0.1:55443/crm_email_review_test
+     steps:
+       - uses: actions/checkout@v4
+       - uses: actions/setup-python@v5
+@@ -19,6 +35,15 @@ jobs:
+           python-version: "3.11"
+           cache: pip
+       - run: pip install -r requirements-dev.txt
++      - name: 使い捨て検証DBを作成
++        run: |
++          python - <<'PY'
++          import psycopg
++          from psycopg import sql
++          with psycopg.connect('postgresql://postgres:local-test-only@127.0.0.1:55443/postgres', autocommit=True) as conn:
++              for name in ('crm_field_review_test', 'crm_email_review_test'):
++                  conn.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
++          PY
+       - run: pytest -q
+ 
+   docker-build:
+@@ -53,4 +78,23 @@ jobs:
+       - uses: actions/setup-node@v4
+         with:
+           node-version: lts/*
+-      - run: node --test gas/payloadUtils.test.js gas/registerNewRow.test.js gas/onEdit.test.js gas/webhook-health/domain.test.js gas/gmail-ingest/ingest.test.js gas/attachment-sync/Code.test.js
++      - run: git ls-files -z 'gas/*.test.js' 'gas/**/*.test.js' | xargs -0 node --test
++
++  dashboard-tests:
++    name: 管理画面のテストと型検査
++    runs-on: ubuntu-latest
++    defaults:
++      run:
++        working-directory: dashboard
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-node@v4
++        with:
++          node-version: '22'
++          cache: npm
++          cache-dependency-path: dashboard/package-lock.json
++      - run: npm ci
++      # buildには本番用のDB移行が含まれるため、検査だけを個別に実行する。
++      - run: npx prisma generate
++      - run: npm test
++      - run: npx tsc --noEmit
+diff --git a/gas/attachment-sync/Code.js b/gas/attachment-sync/Code.js
+index 49c1c7f..f7a01a6 100644
+--- a/gas/attachment-sync/Code.js
++++ b/gas/attachment-sync/Code.js
+@@ -42,11 +42,15 @@ function attachmentTick() {
+   if (!lock.tryLock(1000)) return;
+   var start = Date.now();
+   try {
+-    var result = attachmentRequest_('/run', 'post');
+     var props = PropertiesService.getScriptProperties();
++    props.setProperty('ATTACHMENT_MONITOR_SNAPSHOT', '');
++    var result = attachmentRequest_('/run', 'post');
+     props.setProperty('ATTACHMENT_DURATION', String(Date.now() - start));
+     if (['verified', 'mirrored', 'idle'].indexOf(result.status) >= 0) props.setProperty('ATTACHMENT_SUCCESS', String(Date.now()));
+     var status = attachmentRequest_('/status');
++    props.setProperty('ATTACHMENT_MONITOR_SNAPSHOT', JSON.stringify({
++      checkedAt: Date.now(), durationMs: Date.now() - start, resultStatus: result.status, status: status
++    }));
+     if (status.status === 'busy') return;
+     if (attachmentNeedsAttention_(status)) attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：要確認', '保留・再試行・巡回失敗があります。件数：' + JSON.stringify(status.counts || {}) + '、巡回失敗：' + (status.discovery_error_count || 0), 4);
+     else attachmentNotice_('ATTACHMENT_SUMMARY', 'CRM添付：定期確認', '配送確認済み・保留・未処理の件数：' + JSON.stringify(status.counts || {}) + '。未処理はまだ配送されていません。', 24);
+@@ -60,8 +64,18 @@ function attachmentWatchdog() {
+   var last = Number(props.getProperty('ATTACHMENT_SUCCESS') || props.getProperty('ATTACHMENT_STARTED') || 0);
+   var ticks = ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === 'attachmentTick'; });
+   try {
+-    var status = attachmentRequest_('/status');
+-    if (ticks.length !== 1 || Date.now() - last > 30 * 60000 || Number(props.getProperty('ATTACHMENT_DURATION') || 0) > 240000 || (status.status !== 'busy' && attachmentNeedsAttention_(status)))
++    var now = Date.now();
++    var stopped = ticks.length !== 1 || !isFinite(last) || last <= 0 || last > now || now - last > 30 * 60000;
++    var snapshot;
++    try { snapshot = JSON.parse(props.getProperty('ATTACHMENT_MONITOR_SNAPSHOT') || 'null'); } catch (_) { snapshot = null; }
++    var fresh = snapshot && typeof snapshot.checkedAt === 'number' && isFinite(snapshot.checkedAt) &&
++      snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 20 * 60000;
++    var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
++    var slow = durationValid && snapshot.durationMs > 240000;
++    var reusable = !stopped && durationValid && !slow && ['verified', 'mirrored', 'idle'].indexOf(snapshot.resultStatus) >= 0 && snapshot.status && snapshot.status.enabled === true &&
++      snapshot.status.counts && snapshot.status.status !== 'busy' && !attachmentNeedsAttention_(snapshot.status);
++    var status = reusable ? snapshot.status : attachmentRequest_('/status');
++    if (stopped || slow || (status.status !== 'busy' && attachmentNeedsAttention_(status)))
+       attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視異常', '定期処理の停止・遅延・配送保留があります。attachmentProblems と実行履歴を確認してください。', 4);
+   } catch (error) {
+     attachmentNotice_('ATTACHMENT_ALERT', 'CRM添付：監視接続失敗', '監視から添付APIへ接続できませんでした。', 4);
+diff --git a/gas/contact-affiliation-job/Code.js b/gas/contact-affiliation-job/Code.js
+index 1bd16fe..15c43e1 100644
+--- a/gas/contact-affiliation-job/Code.js
++++ b/gas/contact-affiliation-job/Code.js
+@@ -53,6 +53,8 @@ function affiliationJobTick() {
+   var lock = LockService.getScriptLock();
+   if (!lock.tryLock(1000)) return;
+   try {
++    var props = PropertiesService.getScriptProperties();
++    props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', '');
+     var started = Date.now();
+     var result = {status: 'ok', counts: {}, discovered: 0, duration_ms: 0};
+     for (var batch = 0; batch < 4 && Date.now() - started < 180000; batch++) {
+@@ -68,6 +70,9 @@ function affiliationJobTick() {
+     console.log(JSON.stringify(result));
+     if (result.status === 'paused') affiliationJobNotify_('CRM側で一時停止しています。');
+     var status = affiliationJobRequest_('/status');
++    props.setProperty('AFFILIATION_MONITOR_SNAPSHOT', JSON.stringify({
++      checkedAt: Date.now(), durationMs: Date.now() - started, resultStatus: result.status, status: status
++    }));
+     if (status.last_error || status.retry_count || (status.counts || {}).delivery_pending || (status.counts || {}).writing) {
+       affiliationJobNotify_('保存・配送の確認待ちがあります。' + JSON.stringify(status));
+     }
+@@ -78,16 +83,30 @@ function affiliationJobTick() {
+   } finally { lock.releaseLock(); }
+ }
+ 
++function affiliationJobUnhealthy_(status, now) {
++  var success = Date.parse(status.last_success_at);
++  return status.enabled !== true || !status.counts || status.last_error || status.retry_count ||
++    status.counts.delivery_pending || status.counts.writing ||
++    !isFinite(success) || success > now || now - success > 90 * 60000;
++}
++
+ function affiliationJobWatchdog() {
+   var props = PropertiesService.getScriptProperties();
+   var tick = Number(props.getProperty('AFFILIATION_LAST_TICK') || props.getProperty('AFFILIATION_STARTED_AT') || 0);
+   var triggers = ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === 'affiliationJobTick'; });
++  var now = Date.now();
++  var stopped = triggers.length !== 1 || !isFinite(tick) || tick <= 0 || tick > now || now - tick > 90 * 60000;
++  var snapshot;
++  try { snapshot = JSON.parse(props.getProperty('AFFILIATION_MONITOR_SNAPSHOT') || 'null'); } catch (_) { snapshot = null; }
++  var fresh = snapshot && typeof snapshot.checkedAt === 'number' && isFinite(snapshot.checkedAt) &&
++    snapshot.checkedAt > 0 && snapshot.checkedAt <= now && now - snapshot.checkedAt <= 90 * 60000;
++  var durationValid = fresh && typeof snapshot.durationMs === 'number' && isFinite(snapshot.durationMs) && snapshot.durationMs >= 0;
++  var slow = durationValid && snapshot.durationMs > 240000;
++  var reusable = !stopped && durationValid && !slow && snapshot.resultStatus === 'ok' && snapshot.status && !affiliationJobUnhealthy_(snapshot.status, now);
+   try {
+-    var status = affiliationJobRequest_('/status');
+-    if (triggers.length !== 1 || Date.now() - tick > 90 * 60000 || status.last_error || status.retry_count ||
+-        Number(props.getProperty('AFFILIATION_LAST_DURATION') || 0) > 240000 ||
+-        (status.counts || {}).delivery_pending || (status.counts || {}).writing ||
+-        (status.enabled && (!status.last_success_at || Date.now() - Date.parse(status.last_success_at) > 90 * 60000))) {
++    // 毎時処理の実取得結果だけを使い、監視自身の照会では鮮度を延長しない。
++    var status = reusable ? snapshot.status : affiliationJobRequest_('/status');
++    if (stopped || slow || affiliationJobUnhealthy_(status, Date.now())) {
+       affiliationJobNotify_('定期処理の停止・遅延または照合失敗を検出しました。GAS実行履歴とCRM状態を確認してください。');
+     }
+   } catch (error) {
+diff --git a/gas/gmail-ingest/ingest.js b/gas/gmail-ingest/ingest.js
+index 0c5c406..bc616ec 100644
+--- a/gas/gmail-ingest/ingest.js
++++ b/gas/gmail-ingest/ingest.js
+@@ -128,7 +128,7 @@ function gmailIngestMessage(id) {
+     from: header('From'), to: header('To'), subject: header('Subject'),
+     date_header: header('Date'), snippet: raw.snippet || '',
+     internal_date_ms: raw.internalDate || null,
+-    ...(full ? {body_text: gmailReviewPlainText(raw.payload || {}), cc_header: header('Cc'), message_id_header: header('Message-ID')} : {})
++    ...(full ? {body_text: gmailReviewPlainText(raw.payload || {}), body_mime: gmailReviewBodyMime(raw.payload || {}, id), cc_header: header('Cc'), message_id_header: header('Message-ID')} : {})
+   };
+ }
+ 
+@@ -174,7 +174,7 @@ function gmailReviewPlainTextPart(part) {
+       const decoded = Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded)).getDataAsString(charset);
+       if (decoded.includes('\uFFFD')) return null;
+       const value = gmailReviewCurrentBody(decoded);
+-      return value.length <= 20000 && !value.includes('\uFFFD') ? value : null;
++      return value.length <= 40000 && !value.includes('\uFFFD') ? value : null;
+     } catch (_) { return null; }
+   }
+   if ((part.mimeType || '').startsWith('multipart/')) {
+@@ -183,7 +183,7 @@ function gmailReviewPlainTextPart(part) {
+     const parts = children.map(gmailReviewPlainTextPart);
+     if (parts.some(value => value === null)) return null;
+     const value = parts.filter(Boolean).join('\n');
+-    return value.length <= 20000 ? value : null;
++    return value.length <= 40000 ? value : null;
+   }
+   return '';
+ }
+@@ -228,3 +228,27 @@ function installGmailIngestTrigger() {
+   if (ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'gmailIngest')) return;
+   ScriptApp.newTrigger('gmailIngest').timeBased().everyMinutes(5).create();
+ }
++
++// HTMLの変換はPython側へ集約する。添付本体や無関係のヘッダーは送らない。
++function gmailReviewBodyMime(payload, messageId) {
++  let nodes = 0, size = 0, requests = 0;
++  function visit(part, depth) {
++    if (++nodes > 100 || depth > 20) throw new RangeError('本文の構造上限');
++    if (part.filename || part.mimeType === 'message/rfc822') return {filename:'excluded'};
++    if (!(part.mimeType || '').startsWith('multipart/') && !['text/plain','text/html'].includes(part.mimeType)) return {};
++    const headers = (part.headers || []).filter(h=>h.name.toLowerCase()==='content-type').map(h=>({name:h.name,value:h.value}));
++    const body = part.body || {};
++    let data = body.data || '';
++    if (!data && body.attachmentId && ['text/plain','text/html'].includes(part.mimeType) && messageId &&
++        Number.isInteger(body.size) && body.size > 0 && body.size <= 150000 && requests < 4) {
++      requests++;
++      try { data = Gmail.Users.Messages.Attachments.get('me', messageId, body.attachmentId).data || ''; }
++      catch (_) { throw new Error('本文の追加取得に失敗しました。次回再試行します'); }
++    }
++    size += data.length + headers.reduce((n,h)=>n+h.name.length+h.value.length,0);
++    if (size > 250000 || (part.parts || []).length > 30) throw new RangeError('本文の容量上限');
++    return {mimeType:part.mimeType,headers,body:{data},parts:(part.parts || []).map(p=>visit(p,depth+1))};
++  }
++  try { return visit(payload,0); }
++  catch (error) { if (!(error instanceof RangeError)) throw error; return {mimeType:'text/plain',body:{data:''}}; }
++}
+diff --git a/scripts/inventory_unmapped_hub_records.py b/scripts/inventory_unmapped_hub_records.py
+index d80f652..bcf6f91 100644
+--- a/scripts/inventory_unmapped_hub_records.py
++++ b/scripts/inventory_unmapped_hub_records.py
+@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ import requests
+ from dotenv import load_dotenv
+ from src.db_schema.registry import ALL_SCHEMAS
++from src.db_schema.base import Tool, supports_database
+ from src.sync_engine.clients._notion_paging import query_all_with_keyset
+ from src.sync_engine.clients.spreadsheet_client import HttpSpreadsheetClient
+ from src.sync_engine.notion_id_mapping import NotionIdMappingStore
+@@ -34,7 +35,7 @@ def norm(value):
+     return str(value or '').strip().replace('-', '').lower()
+ 
+ 
+-def classify(pages, mappings, rows):
++def classify(pages, mappings, rows, *, db_key=None):
+     """移動・重複したシート行を新規と取り違えないため同期キーも照合する。"""
+     if any(not norm(m['notion_key']) for m in mappings):
+         raise InventoryError('対応表に空のNotionキーがあります')
+@@ -59,6 +60,17 @@ def classify(pages, mappings, rows):
+         else: kind = 'unmapped'
+         entries.append({**row, 'classification': kind})
+     missing = [p for p in pages if norm(p['id']) not in mapped]
++    target_gaps = []
++    for mapping in mappings:
++        key = norm(mapping['notion_key'])
++        for target, field in (('kintone', 'kintone_id'), ('zoho', 'zoho_id'), ('spreadsheet', 'spreadsheet_row')):
++            if db_key is not None and not supports_database(Tool(target), db_key):
++                continue
++            if mapping.get(field):
++                continue
++            kind = ('duplicate_mapping' if mapping_keys[key] > 1 else
++                    'source_page_missing' if key not in page_keys else 'live_verification_required')
++            target_gaps.append({'id': mapping['notion_key'], 'target': target, 'classification': kind})
+     return {'notion_total':len(pages), 'mapping_total':len(mappings), 'notion_unmapped':len(missing),
+             'sheet_nonempty_rows':len(rows), 'sheet_classes':dict(Counter(r['classification'] for r in entries)),
+             'notion_unmapped_pages':missing, 'sheet_review_rows':[r for r in entries if r['classification']!='mapped'],
+@@ -66,7 +78,8 @@ def classify(pages, mappings, rows):
+             'duplicate_mapping_rows':sum(n>1 for n in mapping_rows.values()),
+             'mapped_without_sheet_row':sum(m['spreadsheet_row'] is None for m in mappings),
+             'mapped_without_kintone':sum(not m.get('kintone_id') for m in mappings),
+-            'mapped_without_zoho':sum(not m.get('zoho_id') for m in mappings)}
++            'mapped_without_zoho':sum(not m.get('zoho_id') for m in mappings),
++            'missing_targets':target_gaps}
+ 
+ 
+ def fetch_pages(schema, checkpoint=None, api_key=None, quiet=False):
+@@ -150,6 +163,7 @@ def main():
+     output=Path(args.output_dir);output.mkdir(parents=True,exist_ok=True)
+     for schema in ALL_SCHEMAS:
+         if args.db and schema.key not in args.db: continue
++        scan_started_at = datetime.now(timezone.utc).isoformat()
+         if not args.quiet:print(f'{schema.key}: 読取開始',flush=True)
+         mapping_path=output/f'.{schema.key}.mappings.json'
+         checkpoint=output/f'.{schema.key}.pages.jsonl'
+@@ -162,10 +176,11 @@ def main():
+         if not args.quiet:print(f'{schema.key}: 対応表 {len(mappings)}',flush=True)
+         pages=fetch_pages(schema,checkpoint,os.environ[args.notion_token_env],quiet=args.quiet)
+         rows=fetch_rows(client,schema.spreadsheet_sheet_name)
+-        result={'observed_at':datetime.now(timezone.utc).isoformat(),'db':schema.key,**classify(pages,mappings,rows)}
++        result={'observed_at':datetime.now(timezone.utc).isoformat(), 'scan_started_at':scan_started_at,
++                'resumed':args.resume, 'db':schema.key, **classify(pages,mappings,rows,db_key=schema.key)}
+         (output/f'{schema.key}.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
+         if not args.quiet:
+-            print(json.dumps({k:v for k,v in result.items() if k not in ('notion_unmapped_pages','sheet_review_rows')},ensure_ascii=False),flush=True)
++            print(json.dumps({k:v for k,v in result.items() if k not in ('notion_unmapped_pages','sheet_review_rows','missing_targets')},ensure_ascii=False),flush=True)
+ 
+ if __name__=='__main__':
+     try:main()
+diff --git a/src/contact_affiliation_job/worker.py b/src/contact_affiliation_job/worker.py
+index 923387c..44e91b5 100644
+--- a/src/contact_affiliation_job/worker.py
++++ b/src/contact_affiliation_job/worker.py
+@@ -19,9 +19,9 @@ def process(item, repository, conn, gateway, dry_run):
+     plan = item['decision']
+     resuming = item['state'] in ('writing', 'delivery_pending')
+     contact = gateway.live('contact', key)
+-    # 配送待ちは一度保存実読を終えた状態。空への変更は人の解除として尊重する。
+-    if item['state'] == 'delivery_pending' and not contact.get('取引先マスター'):
+-        repository.save(conn, key, 'released', {**plan, 'reason': '保存確認後に所属が解除されました。自動では戻しません'})
++    # 結果不明の書込みも、人の解除と未保存を区別できないため再送しない。
++    if resuming and not contact.get('取引先マスター'):
++        repository.save(conn, key, 'released', {**plan, 'reason': '保存結果不明または所属解除のため確認が必要です。自動では戻しません'})
+         return 'released'
+     if not resuming:
+         if contact.get('取引先マスター'):
+@@ -73,8 +73,8 @@ def process(item, repository, conn, gateway, dry_run):
+             if affiliation and (not resuming or set(affiliation) != {company_id}):
+                 repository.save(conn, key, 'held', {**plan, 'reason': '既存所属が変わりました'})
+                 return 'held'
+-            if not affiliation and item['state'] == 'delivery_pending':
+-                repository.save(conn, key, 'released', {**plan, 'reason': '配送再開前に所属が解除されました。自動では戻しません'})
++            if not affiliation and resuming:
++                repository.save(conn, key, 'released', {**plan, 'reason': '再開時の所属が空です。保存結果不明または解除を確認するまで自動では戻しません'})
+                 return 'released'
+             if not affiliation:
+                 # 遅延・再開中に追加された矛盾も書込み直前に確認する。
+diff --git a/src/email_review/gateway.py b/src/email_review/gateway.py
+index 9567c2a..adb522c 100644
+--- a/src/email_review/gateway.py
++++ b/src/email_review/gateway.py
+@@ -1,5 +1,6 @@
+ """既存のNotion正本・共通配送処理への接続。"""
+ from __future__ import annotations
++from src.email_review.mime import within_limit
+ 
+ from contextlib import contextmanager, ExitStack
+ from datetime import datetime, timezone, timedelta
+@@ -240,8 +241,8 @@ class Gateway:
+         body = current_body(message.get("body_text") or "").replace("\r\n", "\n")
+         if not isinstance(body, str) or not body.strip():
+             raise Conflict("メール本文の全文を取得できないため、記録を保留します。元メールを確認してください")
+-        if len(body) > 20000:
+-            raise Conflict("引用を除いた本文が2万文字を超えるため、記録を保留します")
++        if not within_limit(body):
++            raise Conflict("引用を除いた本文が4万文字（UTF-16換算）を超えるため、記録を保留します")
+         # Notionの保存精度（分単位・ミリ秒表記）に揃える。元の送信時刻は受付に保持する。
+         day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).replace(second=0, microsecond=0).isoformat(timespec="milliseconds")
+         title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"
+diff --git a/src/email_review/mime.py b/src/email_review/mime.py
+index 35a109c..b7c5c7f 100644
+--- a/src/email_review/mime.py
++++ b/src/email_review/mime.py
+@@ -1,19 +1,23 @@
+-"""本文だけを有界に取り出す。添付・転送メール・HTMLは自動判定に使わない。"""
++"""本文だけを有界に取り出す。添付・転送メールは除外し、HTMLは実行せず文字へ変換する。"""
+ import base64
+ import re
+ from src.email_review.body import current_body
+ 
+-LIMIT = 20000
++LIMIT = 40000
+ 
+ 
+ def plain_text(payload: dict) -> str:
+-    return _plain_text(payload) or ""
++    try:
++        validate_payload(payload)
++        return _plain_text(payload) or ""
++    except (ValueError, TypeError, UnicodeError):
++        return ""
+ 
+ 
+ def _plain_text(payload: dict) -> str | None:
+     if payload.get("filename") or payload.get("mimeType") == "message/rfc822":
+         return ""
+-    if payload.get("mimeType") == "text/plain":
++    if payload.get("mimeType") in {"text/plain", "text/html"}:
+         encoded = (payload.get("body") or {}).get("data") or ""
+         if not encoded or len(encoded) > 200000:
+             return None
+@@ -27,15 +31,100 @@ def _plain_text(payload: dict) -> str | None:
+             text = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode(charset)
+         except (ValueError, UnicodeError):
+             return None
++        if payload.get("mimeType") == "text/html":
++            from src.email_review.html_body import html_text
++            text = html_text(text)
+         text = current_body(text)
+-        return text if len(text) <= LIMIT else None
++        return text if within_limit(text) else None
+     if str(payload.get("mimeType", "")).startswith("multipart/"):
+         children = payload.get("parts") or []
+         if len(children) > 30:
+             return None
++        # 代替表現だけを1つ選ぶ。mixed/relatedの独立した本文は省略しない。
++        if payload.get('mimeType') == 'multipart/alternative':
++            preferred = next((part for part in children if _has_plain(part)), None)
++            if preferred is not None:
++                return _plain_text(preferred)
++            for part in children:
++                text = _plain_text(part)
++                if text is None or text:
++                    return text
++            return ''
+         parts = [_plain_text(part) for part in children]
+         if any(part is None for part in parts):
+             return None
+         text = "\n".join(part for part in parts if part)
+-        return text if len(text) <= LIMIT else None
++        return text if within_limit(text) else None
+     return ""
++
++
++def within_limit(text: str) -> bool:
++    """JavaScriptと同じUTF-16単位で、配送先に余裕のある4万文字を上限にする。"""
++    return len(text.encode('utf-16-le')) // 2 <= LIMIT
++
++
++def _has_plain(part):
++    if part.get('filename') or part.get('mimeType') == 'message/rfc822':
++        return False
++    return part.get('mimeType') == 'text/plain' or any(_has_plain(p) for p in part.get('parts', []))
++
++
++def validate_payload(payload):
++    """GASから受け取る本文MIMEも同じ深さ・部品数・サイズ制限で検証する。"""
++    remaining = [100, 250000]
++    def visit(part, depth):
++        if not isinstance(part, dict) or depth > 20:
++            raise ValueError('本文の構造が不正です')
++        remaining[0] -= 1
++        if remaining[0] < 0:
++            raise ValueError('本文の部品数が多すぎます')
++        if part.get('filename') or part.get('mimeType') == 'message/rfc822':
++            return
++        body = part.get('body') or {}
++        if not isinstance(body, dict) or not isinstance(part.get('mimeType', ''), str):
++            raise ValueError('本文の型が不正です')
++        data = body.get('data') or ''
++        headers = part.get('headers') or []
++        children = part.get('parts') or []
++        if not isinstance(data, str) or not isinstance(headers, list) or not isinstance(children, list) or len(children) > 30 or len(headers) > 100:
++            raise ValueError('本文の項目が不正です')
++        if any(not isinstance(h, dict) or not isinstance(h.get('name'), str) or not isinstance(h.get('value'), str) for h in headers):
++            raise ValueError('本文のヘッダーが不正です')
++        remaining[1] -= len(data) + sum(len(h['name']) + len(h['value']) for h in headers)
++        if remaining[1] < 0:
++            raise ValueError('本文の取得容量を超えました')
++        for child in children:
++            visit(child, depth+1)
++    visit(payload, 0)
++
++
++def hydrate_body(payload, fetch):
++    """本文の外部参照だけを取得する。添付ファイルや転送メールは辿らない。"""
++    from copy import deepcopy
++    try:
++        validate_payload(payload)
++    except (ValueError, TypeError):
++        return {'mimeType': 'text/plain', 'body': {'data': ''}}
++    result = deepcopy(payload)
++    remaining = [4, 250000]
++    def visit(part):
++        if part.get('filename') or part.get('mimeType') == 'message/rfc822':
++            return
++        body = part.get('body') or {}
++        if part.get('mimeType') in {'text/plain', 'text/html'} and not body.get('data') and body.get('attachmentId'):
++            if remaining[0] <= 0 or not isinstance(body.get('size'), int) or not 0 < body['size'] <= 150000:
++                return  # 欠落部分は本文抽出時に全文不明として保留する。
++            remaining[0] -= 1
++            data = fetch(body['attachmentId'])
++            encoded = data.get('data')
++            if not isinstance(encoded, str) or len(encoded) > remaining[1]:
++                raise ValueError('本文取得の容量を超えました')
++            remaining[1] -= len(encoded)
++            part['body'] = {**body, 'data': encoded}
++        for child in part.get('parts') or []:
++            visit(child)
++    try:
++        visit(result)
++    except ValueError:
++        return {'mimeType': 'text/plain', 'body': {'data': ''}}
++    return result
+diff --git a/src/email_review/service.py b/src/email_review/service.py
+index 2b6c2b3..f507b18 100644
+--- a/src/email_review/service.py
++++ b/src/email_review/service.py
+@@ -1,6 +1,7 @@
+ """メール取得と照合・登録・配送を分け、同じ受付を再開する。"""
+ from __future__ import annotations
+ 
++from src.email_review.mime import within_limit
+ import os
+ import re
+ import logging
+@@ -57,7 +58,7 @@ def capture(message, owner: str, *, repo=None) -> None:
+     if not people:
+         return
+     body = current_body(data.get("body_text") or "")
+-    data["body_text"] = body if len(body) <= 20000 else ""
++    data["body_text"] = body if within_limit(body) else ""
+     review_id = domain.identity(data, owner)
+     row = {"id": review_id, "owner": owner, "thread_id": data.get("thread_id"), "message": data,
+            "activity_owner": owner,
+diff --git a/src/facility_list/infrastructure/crm_matcher.py b/src/facility_list/infrastructure/crm_matcher.py
+index 9217fa7..2628085 100644
+--- a/src/facility_list/infrastructure/crm_matcher.py
++++ b/src/facility_list/infrastructure/crm_matcher.py
+@@ -402,11 +402,11 @@ class CrmMatcher:
+             elif not narrowed and needs_address_proof:
+                 # 弱い候補を住所で裏付けられない。新規には戻さず人の確認へ回す。
+                 return CrmMatch(state=CrmMatchState.AMBIGUOUS,
+-                                candidate_names=tuple(h["raw_name"] for h in candidates))
++                                candidate_names=tuple(h["raw_name"] for h in sorted(candidates, key=lambda row: (row["raw_name"], row["notion_page_id"]))))
+             else:
+                 return CrmMatch(
+                     state=CrmMatchState.AMBIGUOUS,
+-                    candidate_names=tuple(h["raw_name"] for h in (narrowed or candidates)),
++                    candidate_names=tuple(h["raw_name"] for h in sorted(narrowed or candidates, key=lambda row: (row["raw_name"], row["notion_page_id"]))),
+                 )
+ 
+         hit = candidates[0]
+diff --git a/src/gmail_sync/gmail_client.py b/src/gmail_sync/gmail_client.py
+index cd9f8ec..b384a14 100644
+--- a/src/gmail_sync/gmail_client.py
++++ b/src/gmail_sync/gmail_client.py
+@@ -310,7 +310,7 @@ def get_raw_message(access_token: str, message_id: str) -> str:
+ 
+ def get_message(access_token: str, message_id: str) -> GmailMessage:
+     from src.email_review.service import enabled
+-    from src.email_review.mime import plain_text
++    from src.email_review.mime import plain_text, hydrate_body
+     full = enabled()
+     response = request_with_retry(
+         "GET",
+@@ -321,7 +321,23 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
+     )
+     raise_for_error(response, GmailApiError)
+     data = response.json()
+-    headers = data.get("payload", {}).get("headers", [])
++    payload = data.get("payload") or {}
++    # 本文が容量超過で保留になっても、受付に必要な宛先・件名は原本から保持する。
++    headers = payload.get("headers", [])
++    if full:
++        def fetch_body(identifier):
++            from urllib.parse import quote
++            response = request_with_retry(
++                "GET", f"{_GMAIL_API_BASE}/messages/{quote(message_id, safe='')}/attachments/{quote(identifier, safe='')}",
++                headers={"Authorization": f"Bearer {access_token}"},
++                max_rate_limit_retries=current_max_rate_limit_retries(),
++            )
++            try:
++                raise_for_error(response, GmailApiError)
++            except GmailApiError as exc:
++                raise RuntimeError("本文の追加取得に失敗しました") from exc
++            return response.json()
++        payload = hydrate_body(payload, fetch_body)
+     return GmailMessage(
+         id=data["id"],
+         label_ids=data.get("labelIds", []),
+@@ -332,7 +348,7 @@ def get_message(access_token: str, message_id: str) -> GmailMessage:
+         snippet=data.get("snippet"),
+         thread_id=data.get("threadId"),
+         internal_date_ms=data.get("internalDate"),
+-        body_text=plain_text(data.get("payload") or {}) if full else None,
++        body_text=plain_text(payload) if full else None,
+         cc_header=_header_value(headers, "Cc") if full else None,
+         message_id_header=_header_value(headers, "Message-ID") if full else None,
+     )
+diff --git a/src/sync_capacity/observation.py b/src/sync_capacity/observation.py
+index 718a5e9..61093ac 100644
+--- a/src/sync_capacity/observation.py
++++ b/src/sync_capacity/observation.py
+@@ -12,11 +12,13 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
+     counts = dict.fromkeys(STATES, 0)
+     invalid_states = 0
+     invalid_waiting_timestamps = 0
++    invalid_processing_timestamps = 0
++    oldest_processing = None
+     oldest = None
+     # order_by(created_at)は時刻欠落文書を除外するので使わない。
+     deadline = current_deadline.get()
+     options = {"retry": None, "timeout": deadline.timeout(10)} if deadline else {}
+-    for snapshot in jobs.select(["state", "created_at"]).stream(**options):
++    for snapshot in jobs.select(["state", "created_at", "updated_at"]).stream(**options):
+         if deadline:
+             deadline.require()
+         data = snapshot.to_dict()
+@@ -25,6 +27,13 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
+             invalid_states += 1
+             continue
+         counts[state] += 1
++        if state == "processing":
++            updated = data.get("updated_at")
++            if (isinstance(updated, bool) or not isinstance(updated, (float, int))
++                    or not math.isfinite(updated) or updated > started_at):
++                invalid_processing_timestamps += 1
++            else:
++                oldest_processing = updated if oldest_processing is None else min(oldest_processing, updated)
+         if state in {"pending", "retry"}:
+             created = data.get("created_at")
+             if (isinstance(created, bool) or not isinstance(created, (float, int))
+@@ -39,6 +48,10 @@ def observe_queue(jobs, *, clock=time.time, monotonic=time.monotonic):
+             "total": sum(counts.values()) + invalid_states,
+             "unknown_state_count": invalid_states,
+             "invalid_waiting_timestamp_count": invalid_waiting_timestamps,
++            "invalid_processing_timestamp_count": invalid_processing_timestamps,
++            "oldest_processing_age_seconds": (started_at - oldest_processing if oldest_processing is not None
++                                                and not invalid_processing_timestamps else None),
++            "processing_age_basis": "since_last_claim_updated_at",
+             "oldest_waiting_created_at": oldest if not invalid_waiting_timestamps else None,
+             "oldest_waiting_age_seconds": (started_at - oldest if oldest is not None
+                                             and not invalid_waiting_timestamps else None),
+diff --git a/src/sync_engine/webhook_handlers/gmail_ingest_webhook.py b/src/sync_engine/webhook_handlers/gmail_ingest_webhook.py
+index 1160f13..d652f99 100644
+--- a/src/sync_engine/webhook_handlers/gmail_ingest_webhook.py
++++ b/src/sync_engine/webhook_handlers/gmail_ingest_webhook.py
+@@ -45,11 +45,16 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
+             # 一斉送信の宛先を切り捨てず受理しつつ、入力サイズは制限する。
+             limits = {'from': 1000, 'to': 65536, 'subject': 1000, 'snippet': 500,
+                       'date_header': 200, 'thread_id': 100, 'internal_date_ms': 20,
+-                      'body_text': 20000, 'cc_header': 65536, 'message_id_header': 1000}
++                      'body_text': 40000, 'cc_header': 65536, 'message_id_header': 1000}
+             if any(item.get(key) is not None and (
+                 not isinstance(item[key], str) or len(item[key]) > limit
+             ) for key, limit in limits.items()):
+                 raise ValueError('メール項目の型または長さが不正です')
++            from src.email_review.mime import plain_text, validate_payload
++            text = item.get('body_text')
++            if 'body_mime' in item:
++                validate_payload(item['body_mime'])
++                text = plain_text(item['body_mime'])
+             stamp = item.get('internal_date_ms')
+             if stamp is not None and (not stamp.isdecimal() or int(stamp) <= 0):
+                 raise ValueError('メール時刻が不正です')
+@@ -58,7 +63,7 @@ def handler(event: Mapping[str, Any], context: object, *, contact_client=None) -
+                 subject=item.get('subject'), date_header=item.get('date_header'),
+                 snippet=item.get('snippet'), thread_id=item.get('thread_id'),
+                 internal_date_ms=item.get('internal_date_ms'),
+-                body_text=item.get('body_text'), cc_header=item.get('cc_header'),
++                body_text=text, cc_header=item.get('cc_header'),
+                 message_id_header=item.get('message_id_header'), label_ids=item.get('label_ids'),
+             ))
+         observation_meta = observation.validate(body.get('observation'), dry_run=dry_run, messages=parsed)
+
+===== src/email_review/html_body.py =====
+"""HTMLを実行せず本文へ変換する。引用・不可視要素・外部資源は使わない。"""
+import re
+from html.parser import HTMLParser
+
+
+class _Body(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        hidden = (tag in {'head', 'script', 'style', 'template', 'noscript', 'blockquote'}
+                  or 'hidden' in attrs or attrs.get('aria-hidden') == 'true'
+                  or re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden)', attrs.get('style') or '', re.I)
+                  or set((attrs.get('class') or '').split()) & {'gmail_quote', 'yahoo_quoted'})
+        blocked = bool(hidden or (self.stack and self.stack[-1][1]))
+        if not blocked and tag in {'br', 'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre', 'hr'}:
+            self.parts.append('\n')
+        if not blocked and tag in {'td', 'th'}:
+            self.parts.append('\t')
+        if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            href = attrs.get('href') or ''
+            link = href if tag == 'a' and re.match(r'^https?://', href, re.I) and not re.search(r'[\s<>]', href) and len(href) <= 2000 else ''
+            self.stack.append((tag, blocked, link, len(self.parts)))
+            if len(self.stack) > 100:
+                raise ValueError('HTMLの入れ子が深すぎます')
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        found = next((i for i in range(len(self.stack)-1, -1, -1) if self.stack[i][0] == tag), None)
+        if found is not None:
+            blocked = self.stack[found][1]
+            link, start = self.stack[found][2:]
+            if not blocked and link and ''.join(self.parts[start:]).strip() != link:
+                self.parts.append('（' + link + '）')
+            del self.stack[found:]
+            if not blocked and tag in {'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'pre'}:
+                self.parts.append('\n')
+
+    def handle_data(self, data):
+        if not self.stack or not self.stack[-1][1]:
+            self.parts.append(data)
+
+
+def html_text(value: str) -> str:
+    parser = _Body()
+    parser.feed(value)
+    parser.close()
+    # メールHTMLのレイアウト用改行・空白だけを整理し、署名の行構造を維持する。
+    text = ''.join(parser.parts).replace('\xa0', ' ')
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(line.strip() for line in text.splitlines())).strip()
+
+===== src/sync_capacity/health.py =====
+"""観測の欠測・途絶・滞留を判定する。再送や予約解除は行わない。"""
+import math
+
+
+def _number(value):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def assess(observation, *, now, last_worker_success, freshness_seconds, waiting_seconds, processing_seconds):
+    limits = (freshness_seconds, waiting_seconds, processing_seconds)
+    if not _number(now) or any(not _number(n) or n <= 0 for n in limits):
+        raise ValueError('現在時刻と正の監視上限を指定してください')
+    alerts = []
+    def fresh(value):
+        return _number(value) and 0 <= now - value <= freshness_seconds
+    if not isinstance(observation, dict) or observation.get('complete') is not True:
+        alerts.append('observation_missing_or_incomplete')
+        observation = {}
+    if not fresh(observation.get('scan_finished_at')):
+        alerts.append('observation_stale_or_invalid')
+    started, finished = observation.get('scan_started_at'), observation.get('scan_finished_at')
+    if not fresh(started) or not _number(finished) or (_number(started) and finished < started):
+        alerts.append('scan_time_invalid')
+    if not fresh(last_worker_success):
+        alerts.append('worker_success_missing_or_stale')
+    counts = observation.get('counts') or {}
+    if not isinstance(counts, dict):
+        counts = {}
+    for state, limit, age_key, invalid_key in (
+        ('waiting', waiting_seconds, 'oldest_waiting_age_seconds', 'invalid_waiting_timestamp_count'),
+        ('processing', processing_seconds, 'oldest_processing_age_seconds', 'invalid_processing_timestamp_count'),
+    ):
+        parts = [counts.get('pending'), counts.get('retry')] if state == 'waiting' else [counts.get('processing')]
+        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in parts):
+            alerts.append(state + '_count_missing')
+            continue
+        count = sum(parts)
+        invalid, age = observation.get(invalid_key), observation.get(age_key)
+        if type(invalid) is not int or invalid != 0 or (count and (not _number(age) or age < 0)):
+            alerts.append(state + '_age_unknown')
+        elif count and _number(started) and age + now - started > limit:
+            alerts.append(state + '_overdue')
+    for key in ('unknown_state_count',):
+        if type(observation.get(key)) is not int or observation.get(key) != 0:
+            alerts.append(key)
+    attention = counts.get('needs_attention')
+    if not isinstance(attention, int) or isinstance(attention, bool) or attention < 0:
+        alerts.append('attention_count_missing')
+    elif attention:
+        alerts.append('needs_attention')
+    return {'healthy': not alerts, 'alerts': alerts, 'automatic_recovery': False}
+
+===== scripts/check_capacity_observation.py =====
+"""保存済み観測とworker成功時刻から通知用JSONを作る。通信・自動回復なし。"""
+import argparse
+import json
+from pathlib import Path
+import sys
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.sync_capacity.health import assess
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('observation', type=Path)
+    parser.add_argument('--last-worker-success', type=float, help='成功または正常idleの実測epoch秒。未取得なら省略')
+    parser.add_argument('--freshness-seconds', type=float, required=True)
+    parser.add_argument('--waiting-seconds', type=float, required=True)
+    parser.add_argument('--processing-seconds', type=float, required=True)
+    args = parser.parse_args()
+    try:
+        result = assess(json.loads(args.observation.read_text()), now=time.time(),
+                        last_worker_success=args.last_worker_success,
+                        freshness_seconds=args.freshness_seconds,
+                        waiting_seconds=args.waiting_seconds, processing_seconds=args.processing_seconds)
+    except (OSError, ValueError):
+        result = {'healthy': False, 'alerts': ['observation_unreadable'], 'automatic_recovery': False}
+    print(json.dumps(result))
+    return 0 if result['healthy'] else 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+
+===== scripts/report_email_body_retention.py =====
+"""本文保存期間の比較用集計。削除・更新・本文出力は一切行わない。"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import json
+import os
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+def report(conn, *, days: int, now: datetime) -> dict:
+    if not 1 <= days <= 36500 or now.tzinfo is None:
+        raise ValueError('日数は1〜36500、基準時刻はタイムゾーン付きで指定してください')
+    cutoff = now - timedelta(days=days)
+    # 更新時刻で試算する。受信日時や本文の保存開始日時とは同じではない。
+    rows = conn.execute('''SELECT COALESCE(data->>'state','unknown') AS state,
+        ("updatedAt" < %s) AS older_than_cutoff, count(*) AS records,
+        sum(octet_length(COALESCE(data#>>'{message,body_text}',''))) AS body_bytes
+        FROM "EmailReview" GROUP BY 1,2 ORDER BY 1,2''', (cutoff,)).fetchall()
+    return {'mode': 'report_only', 'retention_days_candidate': days,
+            'observed_at': now.isoformat(), 'cutoff': cutoff.isoformat(),
+            'age_basis': 'review_updated_at', 'deletion_enabled': False,
+            'groups': [dict(row) for row in rows]}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--days', type=int, required=True, help='試算する日数。運用設定は変更しない')
+    parser.add_argument('--database-env', default='DATABASE_URL_UNPOOLED')
+    args = parser.parse_args()
+    if not 1 <= args.days <= 36500:
+        parser.error('--days は1〜36500')
+    try:
+        with psycopg.connect(os.environ[args.database_env], row_factory=dict_row,
+                             connect_timeout=10, options='-c default_transaction_read_only=on -c statement_timeout=30000') as conn:
+            result = report(conn, days=args.days, now=datetime.now(timezone.utc))
+        print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
+    except Exception as exc:
+        # 接続文字列やメール本文を例外メッセージ経由で表示しない。
+        raise SystemExit('保存期間の試算を中断しました: ' + type(exc).__name__) from None
+
+
+if __name__ == '__main__':
+    main()
+
+===== scripts/triage_missing_targets.py =====
+"""不足ID一覧を作成台帳と照合する。再POST・対応表更新・予約解除は行わない。"""
+from __future__ import annotations
+import argparse
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+def classify_gaps(inventory, attempts, *, now):
+    observed = datetime.fromisoformat(inventory['observed_at'])
+    started = datetime.fromisoformat(inventory['scan_started_at'])
+    if (inventory.get('resumed') is not False or observed.tzinfo is None or started.tzinfo is None
+            or not 0 <= (now - started).total_seconds() <= 21600 or not started <= observed <= now):
+        raise ValueError('6時間以内に完走した一覧が必要です')
+    sources_by_page, attempts_by_target = defaultdict(set), defaultdict(list)
+    for row in attempts:
+        if row['dbKey'] != inventory['db']:
+            continue
+        if row['target'] == 'notion' and row['state'] == 'created':
+            sources_by_page[row.get('externalId')].add(row['sourceKey'])
+        attempts_by_target[(row['sourceKey'], row['target'])].append(row)
+    results = []
+    for gap in inventory['missing_targets']:
+        page_id, target = gap['id'], gap['target']
+        reason = gap['classification']
+        if reason == 'live_verification_required':
+            sources = sources_by_page[page_id]
+            if len(sources) > 1:
+                reason = 'ambiguous_creation_source'
+            else:
+                source = next(iter(sources), 'notion:' + page_id)
+                rows = attempts_by_target[(source, target)]
+                if len(rows) > 1:
+                    reason = 'ambiguous_creation_attempt'
+                elif not rows:
+                    reason = 'registration_intent_unconfirmed'
+                else:
+                    reason = {'reserved': 'creation_result_unknown',
+                              'created': 'mapping_restore_requires_readback',
+                              'blocked': 'input_or_identity_review_required'}.get(rows[0]['state'], 'unknown_attempt_state')
+        results.append({**gap, 'classification': reason, 'automatic_recovery': False})
+    return {'db': inventory['db'], 'observed_at': now.isoformat(), 'inventory_observed_at': inventory['observed_at'],
+            'inventory_scan_started_at': inventory['scan_started_at'],
+            'counts': dict(Counter(row['classification'] for row in results)), 'missing_targets': results}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('inventory', type=Path)
+    parser.add_argument('output', type=Path)
+    parser.add_argument('--database-env', default='DATABASE_URL_UNPOOLED')
+    args = parser.parse_args()
+    try:
+        inventory = json.loads(args.inventory.read_text())
+        now = datetime.now(timezone.utc)
+        classify_gaps(inventory, [], now=now)  # 古い一覧ならDBへ接続しない。
+        with psycopg.connect(os.environ[args.database_env], row_factory=dict_row, connect_timeout=10,
+                             options='-c default_transaction_read_only=on -c statement_timeout=30000') as conn:
+            attempts = conn.execute('''SELECT "sourceKey", target, "dbKey", state, "externalId"
+                FROM "HubCreationAttempt" WHERE "dbKey"=%s''', (inventory['db'],)).fetchall()
+        result = classify_gaps(inventory, attempts, now=datetime.now(timezone.utc))
+        # 既存計画は上書きせず、作成時から本人だけに読めるようにする。
+        fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(result, handle, ensure_ascii=False, indent=2)
+        print(json.dumps(result['counts'], ensure_ascii=False))
+    except Exception as exc:
+        raise SystemExit('不足先の分類を中断しました: ' + type(exc).__name__) from None
+
+
+if __name__ == '__main__':
+    main()

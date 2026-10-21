@@ -41,3 +41,26 @@ def test_duplicate_mapping_is_not_hidden():
     result=classify([{'id':'a'},{'id':'b'}],mappings,[{'row':2,'key':'b'}])
     assert result['sheet_classes']=={'duplicate_mapping':1}
     assert result['duplicate_mapping_rows']==1
+
+
+def test_missing_target_rows_require_identity_verification():
+    mappings = [
+        {'notion_key': 'a', 'spreadsheet_row': 2, 'zoho_id': 'z', 'kintone_id': None},
+        {'notion_key': 'b', 'spreadsheet_row': 3, 'zoho_id': None, 'kintone_id': 'k'},
+    ]
+    result = classify([{'id': 'a'}], mappings, [])
+    assert result['missing_targets'] == [
+        {'id': 'a', 'target': 'kintone', 'classification': 'live_verification_required'},
+        {'id': 'b', 'target': 'zoho', 'classification': 'source_page_missing'},
+    ]
+
+
+def test_duplicate_source_does_not_become_recovery_candidate():
+    mappings = [{'notion_key': 'a', 'spreadsheet_row': 2}, {'notion_key': 'a', 'spreadsheet_row': 3}]
+    result = classify([{'id': 'a'}], mappings, [])
+    assert all(row['classification'] == 'duplicate_mapping' for row in result['missing_targets'])
+
+
+def test_unsupported_kintone_contact_is_not_missing_destination():
+    result = classify([{'id': 'a'}], [{'notion_key': 'a', 'spreadsheet_row': 2, 'zoho_id': 'z'}], [], db_key='contact')
+    assert result['missing_targets'] == []

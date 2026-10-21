@@ -12,6 +12,22 @@ jobs:
   python-tests:
     name: Python tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+        ports:
+          - 55443:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SYNC_REVIEW_TEST_DATABASE_URL: postgresql://postgres:local-test-only@127.0.0.1:55443/crm_field_review_test
+      EMAIL_REVIEW_TEST_DATABASE_URL: postgresql://postgres:local-test-only@127.0.0.1:55443/crm_email_review_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,6 +35,15 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements-dev.txt
+      - name: 使い捨て検証DBを作成
+        run: |
+          python - <<'PY'
+          import psycopg
+          from psycopg import sql
+          with psycopg.connect('postgresql://postgres:local-test-only@127.0.0.1:55443/postgres', autocommit=True) as conn:
+              for name in ('crm_field_review_test', 'crm_email_review_test'):
+                  conn.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
+          PY
       - run: pytest -q
 
   docker-build:
@@ -53,4 +78,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
-      - run: node --test gas/payloadUtils.test.js gas/registerNewRow.test.js gas/onEdit.test.js gas/webhook-health/domain.test.js gas/gmail-ingest/ingest.test.js gas/attachment-sync/Code.test.js
+      - run: git ls-files -z 'gas/*.test.js' 'gas/**/*.test.js' | xargs -0 node --test
+
+  dashboard-tests:
+    name: 管理画面のテストと型検査
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      # buildには本番用のDB移行が含まれるため、検査だけを個別に実行する。
+      - run: npx prisma generate
+      - run: npm test
+      - run: npx tsc --noEmit

@@ -231,9 +231,9 @@ test('照合ONは本文・CC・共通IDを取得し添付を除外する', () =>
   assert.equal(result.body_text, '本文');
   assert.equal(result.cc_header, 'cc@example.test');
   assert.equal(result.message_id_header, '<mail@example.test>');
-  assert.equal(context.gmailReviewPlainText(plain('x'.repeat(20000))).length, 20000);
-  assert.equal(context.gmailReviewPlainText(plain('x'.repeat(20001))), '');
-  assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: [plain('本文'), plain('x'.repeat(20001))]}), '');
+  assert.equal(context.gmailReviewPlainText(plain('x'.repeat(40000))).length, 40000);
+  assert.equal(context.gmailReviewPlainText(plain('x'.repeat(40001))), '');
+  assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: [plain('本文'), plain('x'.repeat(40001))]}), '');
   assert.equal(context.gmailReviewPlainText({mimeType: 'multipart/mixed', parts: Array(31).fill(plain('本文'))}), '');
   assert.equal(context.gmailReviewPlainText(plain('<b>html</b>', {mimeType: 'text/html'})), '');
   for (const marker of ['2026年10月16日(金) 14:50 担当 <person@example.test>:',
@@ -256,4 +256,24 @@ test('取得実物のラベルを下書きも含めてAPIへ渡す', () => {
   assert.deepEqual(Array.from(context.gmailIngestMessage('draft').label_ids), ['DRAFT']);
   context.Gmail.Users.Messages.get = () => ({id:'unknown', payload:{headers:[]}});
   assert.deepEqual(Array.from(context.gmailIngestMessage('unknown').label_ids), []);
+});
+
+test('限定MIMEは添付と他のヘッダーを送らずHTMLをPythonへ渡す',()=>{
+  const {context}=runtime();
+  const raw={mimeType:'multipart/mixed',headers:[{name:'Subject',value:'送らない'}],parts:[
+    {mimeType:'text/html',headers:[{name:'Content-Type',value:'text/html; charset=utf-8'}],body:{data:'PGI+aHRtbDwvYj4='}},
+    {filename:'a.pdf',mimeType:'application/pdf',body:{data:'private-attachment'}}]};
+  const projected=context.gmailReviewBodyMime(raw,'m');
+  assert.equal(projected.parts[0].body.data,'PGI+aHRtbDwvYj4=');
+  assert.equal(projected.headers.length,0);
+  assert.doesNotMatch(JSON.stringify(projected),/private-attachment|送らない/);
+});
+test('本文の外部参照だけ取得し404をメール消失と誤認しない',()=>{
+  const {context}=runtime();const calls=[];
+  context.Gmail.Users.Messages.Attachments={get:(...args)=>{calls.push(args);return {data:'Ym9keQ'};}};
+  const raw={mimeType:'text/plain',body:{attachmentId:'body-id',size:4}};
+  assert.equal(context.gmailReviewBodyMime(raw,'mail').body.data,'Ym9keQ');
+  assert.deepEqual(calls,[['me','mail','body-id']]);
+  context.Gmail.Users.Messages.Attachments.get=()=>{throw new Error('404 not found');};
+  assert.throws(()=>context.gmailReviewBodyMime(raw,'mail'),/本文の追加取得/);
 });

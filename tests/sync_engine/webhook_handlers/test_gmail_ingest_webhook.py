@@ -100,3 +100,20 @@ def test_観測保存失敗をHTTP成功にしない(monkeypatch):
         raise RuntimeError('DB保存不可')
     monkeypatch.setattr(ingest.observation, 'record', unavailable)
     assert ingest.handler(event, None, contact_client=object())['statusCode'] == 500
+
+
+def test_HTML本文を共通変換して受け取り添付を使わない(monkeypatch):
+    import base64
+    monkeypatch.setenv('GMAIL_INGEST_WEBHOOK_SECRET', 'test-secret')
+    monkeypatch.setenv('GMAIL_INGEST_REP_EMAIL', 'rep@example.com')
+    captured=[]
+    monkeypatch.setattr(ingest,'_process_one',lambda message,*args: captured.append(message.body_text) or 'unmatched')
+    event=_event();body=json.loads(event['body'])
+    body['messages'][0].update(body_text='別の旧本文',body_mime={'mimeType':'text/html','body':{'data':base64.urlsafe_b64encode('<p>本文<br>署名</p>'.encode()).decode()}})
+    event['body']=json.dumps(body)
+    assert ingest.handler(event,None,contact_client=object())['statusCode']==200
+    assert captured==['本文\n署名']
+    body['messages'][0]['body_mime']={'body':{'data':12}}
+    event['body']=json.dumps(body)
+    assert ingest.handler(event,None,contact_client=object())['statusCode']==400
+    assert len(captured)==1

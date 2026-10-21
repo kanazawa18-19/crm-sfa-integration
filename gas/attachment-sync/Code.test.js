@@ -37,3 +37,43 @@ test('トリガー消失を監視で通知',()=>{
 test('既存の複製と確認できた処理も正常終了として監視に反映',()=>{
   const s=setup({enabled:true,counts:{mirrored:1}},{status:'mirrored'});s.ctx.attachmentTick();assert.ok(s.props.get('ATTACHMENT_SUCCESS'));assert.match(s.mail[0][1],/定期確認/);
 });
+
+test('新しい添付実行の結果は監視で再照会しない',()=>{
+  const s=setup({enabled:true,counts:{verified:1}});
+  s.triggers.push({getHandlerFunction:()=> 'attachmentTick'});
+  s.ctx.attachmentTick();const count=s.calls.length;
+  s.ctx.attachmentWatchdog();assert.equal(s.calls.length,count);
+});
+test('添付監視は古い・破損・保留・長時間の結果を再照会する',()=>{
+  const now=Date.now();
+  for(const extra of [{checkedAt:now-20*60000-1},{checkedAt:now+1},{durationMs:240001},
+    {status:{enabled:true,counts:{held:1}}},{status:{status:'busy'}},{status:{enabled:false,counts:{}}}]){
+    const s=setup({enabled:true,counts:{}});s.ctx.Date={now:()=>now};
+    s.triggers.push({getHandlerFunction:()=> 'attachmentTick'});
+    s.props.set('ATTACHMENT_SUCCESS',String(now));
+    s.props.set('ATTACHMENT_MONITOR_SNAPSHOT',JSON.stringify({checkedAt:now,durationMs:1,resultStatus:'idle',status:{enabled:true,counts:{}},...extra}));
+    s.ctx.attachmentWatchdog();assert.equal(s.calls.length,1);
+  }
+  const s=setup({enabled:true,counts:{}});s.props.set('ATTACHMENT_MONITOR_SNAPSHOT','broken');
+  s.ctx.attachmentWatchdog();assert.equal(s.calls.length,1);
+});
+test('添付の通信失敗とbusyは以前の成功記録を無効化する',()=>{
+  for(const fail of [false,true]){
+    const s=setup({status:'busy'},{status:'busy'});s.props.set('ATTACHMENT_MONITOR_SNAPSHOT','previous');
+    if(fail){s.ctx.UrlFetchApp.fetch=()=>{throw new Error('通信断');};assert.throws(()=>s.ctx.attachmentTick());}
+    else s.ctx.attachmentTick();
+    if(fail) assert.equal(s.props.get('ATTACHMENT_MONITOR_SNAPSHOT'),'');
+    else assert.equal(JSON.parse(s.props.get('ATTACHMENT_MONITOR_SNAPSHOT')).resultStatus,'busy');
+  }
+});
+test('添付監視は20分・4分の境界を含み、照会で成功時刻を延長しない',()=>{
+  const now=Date.now(),s=setup({enabled:true,counts:{}});
+  s.ctx.Date={now:()=>now};s.triggers.push({getHandlerFunction:()=> 'attachmentTick'});
+  s.props.set('ATTACHMENT_SUCCESS',String(now));
+  const snapshot=JSON.stringify({checkedAt:now-20*60000,durationMs:240000,resultStatus:'idle',status:{enabled:true,counts:{}}});
+  s.props.set('ATTACHMENT_MONITOR_SNAPSHOT',snapshot);
+  s.ctx.attachmentWatchdog();assert.equal(s.calls.length,0);
+  s.ctx.Date={now:()=>now+1};s.ctx.attachmentWatchdog();assert.equal(s.calls.length,1);
+  assert.equal(s.props.get('ATTACHMENT_MONITOR_SNAPSHOT'),snapshot);
+  assert.equal(s.props.get('ATTACHMENT_SUCCESS'),String(now));
+});

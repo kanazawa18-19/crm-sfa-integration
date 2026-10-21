@@ -1,6 +1,7 @@
 """メール取得と照合・登録・配送を分け、同じ受付を再開する。"""
 from __future__ import annotations
 
+from src.email_review.mime import within_limit
 import os
 import re
 import logging
@@ -57,7 +58,7 @@ def capture(message, owner: str, *, repo=None) -> None:
     if not people:
         return
     body = current_body(data.get("body_text") or "")
-    data["body_text"] = body if len(body) <= 20000 else ""
+    data["body_text"] = body if within_limit(body) else ""
     review_id = domain.identity(data, owner)
     row = {"id": review_id, "owner": owner, "thread_id": data.get("thread_id"), "message": data,
            "activity_owner": owner,

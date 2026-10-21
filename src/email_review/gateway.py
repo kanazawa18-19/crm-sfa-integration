@@ -1,5 +1,6 @@
 """既存のNotion正本・共通配送処理への接続。"""
 from __future__ import annotations
+from src.email_review.mime import within_limit
 
 from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone, timedelta
@@ -240,8 +241,8 @@ class Gateway:
         body = current_body(message.get("body_text") or "").replace("\r\n", "\n")
         if not isinstance(body, str) or not body.strip():
             raise Conflict("メール本文の全文を取得できないため、記録を保留します。元メールを確認してください")
-        if len(body) > 20000:
-            raise Conflict("引用を除いた本文が2万文字を超えるため、記録を保留します")
+        if not within_limit(body):
+            raise Conflict("引用を除いた本文が4万文字（UTF-16換算）を超えるため、記録を保留します")
         # Notionの保存精度（分単位・ミリ秒表記）に揃える。元の送信時刻は受付に保持する。
         day = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=ZoneInfo("Asia/Tokyo")).replace(second=0, microsecond=0).isoformat(timespec="milliseconds")
         title = f"【メール】{message.get('subject') or '件名なし'} #mail-{row['id'][:12]}"

@@ -55,11 +55,12 @@ def test_保存後の古いストア読み取りでも巻き戻さない(store, 
     assert dispatcher.dispatch(event()).reason == 'stale_event'
 
 
-def test_別項目は古いページ時刻でも届き同じ項目は巻き戻さない(store, mapping):
+@pytest.mark.parametrize('second_offset', [1, 2])
+def test_別項目は古いページ時刻でも届き同じ項目は巻き戻さない(store, mapping, second_offset):
     targets = _all_targets()
     dispatcher = Dispatcher(store, targets)
     first = event(NOW + timedelta(seconds=2))
-    second = replace(event(NOW + timedelta(seconds=1)), properties={'住所': '東京都'})
+    second = replace(event(NOW + timedelta(seconds=second_offset)), properties={'住所': '東京都'})
     assert not dispatcher.dispatch(first).skipped
     assert not dispatcher.dispatch(second).skipped
     assert targets[Tool.ZOHO].upsert_calls[-1][1] == {'住所': '東京都'}
