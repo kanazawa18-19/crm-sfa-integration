@@ -53,7 +53,7 @@
       "inboxId": "1a1611c0dcd074df",
       "time": "2026-10-22 09:56 JST",
       "readback": true,
-      "webDeployment": "v3維持。公開doPost→httpNotice_の送信元は旧版。既存URLでの新版配備の個別承認待ち"
+      "webDeployment": "v4へ更新済み。既存URL・実行者・公開範囲維持。公開Http.gs一致確認"
     }
   ],
   "triggerCounts": {
@@ -66,7 +66,17 @@
     "rakuten": 1
   },
   "limitations": [
-    "Sales公開版v3のhttpNotice_は未移行。既存URLでの新版配備の個別承認待ち。",
     "各業務処理の失敗経路を故意に発火する試験は未実施。既存業務エラーは別件。"
-  ]
+  ],
+  "publicDeployment": {
+    "project": "sales",
+    "version": 4,
+    "time": "2026-10-22 10:18 JST",
+    "sameUrl": true,
+    "sameExecuteAs": true,
+    "sameAccess": true,
+    "httpSourceVerified": true,
+    "postDeploymentSelfTestInboxId": "1a161317050b62b8",
+    "publicErrorInductionTest": false
+  }
 }
