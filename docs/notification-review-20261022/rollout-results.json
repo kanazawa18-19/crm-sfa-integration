@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-22",
+  "from": "daizuhakkou0619@gmail.com",
+  "to": "kanazawa@cnctor.jp",
+  "gmailInboxVerified": true,
+  "projects": [
+    {
+      "project": "crm-attachment",
+      "sent": true,
+      "inboxId": "1a16111950825fb0",
+      "time": "2026-10-22 09:45 JST",
+      "readback": true
+    },
+    {
+      "project": "crm-name",
+      "sent": true,
+      "inboxId": "1a16113a303d5552",
+      "time": "2026-10-22 09:47 JST",
+      "readback": true
+    },
+    {
+      "project": "crm-affiliation",
+      "sent": true,
+      "inboxId": "1a16114ef816c945",
+      "time": "2026-10-22 09:48 JST",
+      "readback": true
+    },
+    {
+      "project": "kstep",
+      "sent": true,
+      "inboxId": "1a16116162a89f30",
+      "time": "2026-10-22 09:50 JST",
+      "readback": true
+    },
+    {
+      "project": "rakuten",
+      "sent": true,
+      "inboxId": "1a161175b95e3b1e",
+      "time": "2026-10-22 09:51 JST",
+      "readback": true
+    },
+    {
+      "project": "hiramoto",
+      "sent": true,
+      "inboxId": "1a1611881953c390",
+      "time": "2026-10-22 09:52 JST",
+      "webDeployment": "v11維持。通知はHEAD定期処理のため更新不要（経路調査・独立レビュー済み）",
+      "readback": true
+    },
+    {
+      "project": "sales",
+      "sent": true,
+      "inboxId": "1a1611c0dcd074df",
+      "time": "2026-10-22 09:56 JST",
+      "readback": true,
+      "webDeployment": "v3維持。公開doPost→httpNotice_の送信元は旧版。既存URLでの新版配備の個別承認待ち"
+    }
+  ],
+  "triggerCounts": {
+    "sales": 3,
+    "hiramoto": 5,
+    "crm-name": 2,
+    "crm-affiliation": 2,
+    "crm-attachment": 0,
+    "kstep": 3,
+    "rakuten": 1
+  },
+  "limitations": [
+    "Sales公開版v3のhttpNotice_は未移行。既存URLでの新版配備の個別承認待ち。",
+    "各業務処理の失敗経路を故意に発火する試験は未実施。既存業務エラーは別件。"
+  ]
+}
