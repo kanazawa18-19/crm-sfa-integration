@@ -10,7 +10,7 @@ function setup(status, result = {status:'idle'}) {
     ScriptApp:{getIdentityToken:()=> 'synthetic',getProjectTriggers:()=>triggers.slice(),deleteTrigger:t=>triggers.splice(triggers.indexOf(t),1),newTrigger:name=>({timeBased:()=>({everyMinutes:n=>({create:()=>triggers.push({getHandlerFunction:()=>name,minutes:n})})})})},
     LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>calls.push('released')})},
     Session:{getEffectiveUser:()=>({getEmail:()=> 'synthetic@example.invalid'})},
-    MailApp:{sendEmail:(...args)=>mail.push(args)},
+    GmailApp:{sendEmail:(...args)=>mail.push(args)},
     UrlFetchApp:{fetch:(url,opts)=>{calls.push(url);assert.equal(opts.followRedirects,false);return {getResponseCode:()=>200,getContentText:()=>JSON.stringify(url.endsWith('/run')?result:status)}}}
   };
   vm.createContext(ctx);vm.runInContext(fs.readFileSync(__dirname+'/Code.js','utf8'),ctx);

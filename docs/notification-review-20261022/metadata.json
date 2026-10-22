@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-22",
+  "attachment": "notification-review.txt",
+  "bytes": 41825,
+  "sha256": "1b74f404a4a75fa147a7d11371b7c86c3d0c09990c2037efa86851a1af12f7d7",
+  "gemini": {
+    "model": "Thinking",
+    "url": "https://gemini.google.com/app/ccbd382e122d1c56?hl=ja"
+  },
+  "claude": {
+    "model": "Opus 5.5 中",
+    "url": "https://claude.ai/chat/6817bbae-2925-4005-9af6-345e99b21a11"
+  }
+}

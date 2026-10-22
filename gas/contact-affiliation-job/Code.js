@@ -45,7 +45,7 @@ function affiliationJobNotify_(message) {
   if (Date.now() - Number(props.getProperty('AFFILIATION_LAST_NOTICE') || 0) < 4 * 3600000) return;
   var recipient = Session.getEffectiveUser().getEmail();
   if (!recipient) throw new Error('本人への通知先を取得できません');
-  MailApp.sendEmail(recipient, 'CRM所属照合：要確認', message);
+  GmailApp.sendEmail(recipient, 'CRM所属照合：要確認', message, {from: 'daizuhakkou0619@gmail.com'});
   props.setProperty('AFFILIATION_LAST_NOTICE', String(Date.now()));
 }
 
@@ -129,10 +129,9 @@ function affiliationJobSummary_(status, result) {
   if (Date.now() - Number(props.getProperty('AFFILIATION_LAST_SUMMARY') || 0) < 24 * 3600000) return;
   var recipient = Session.getEffectiveUser().getEmail();
   if (!recipient) throw new Error('本人への通知先を取得できません');
-  MailApp.sendEmail(recipient, 'CRM所属照合：定期処理の結果',
-    '試算モード：' + (status.dry_run ? '試算のみ' : '保存あり') + '\n' + affiliationJobCounts_(status.counts) +
+  GmailApp.sendEmail(recipient, 'CRM所属照合：定期処理の結果', '試算モード：' + (status.dry_run ? '試算のみ' : '保存あり') + '\n' + affiliationJobCounts_(status.counts) +
     '\n今回の処理：\n' + affiliationJobCounts_(result.counts) + '\n今回の巡回件数：' + result.discovered +
-    '\n所要時間：' + result.duration_ms + 'ms\n保留は未確定です。成功件数には含めません。');
+    '\n所要時間：' + result.duration_ms + 'ms\n保留は未確定です。成功件数には含めません。', {from: 'daizuhakkou0619@gmail.com'});
   props.setProperty('AFFILIATION_LAST_SUMMARY', String(Date.now()));
 }
 

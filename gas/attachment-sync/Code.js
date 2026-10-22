@@ -30,7 +30,7 @@ function attachmentNotice_(key, subject, body, hours) {
   if (Date.now() - Number(props.getProperty(key) || 0) < hours * 3600000) return;
   var recipient = Session.getEffectiveUser().getEmail();
   if (!recipient) throw new Error('通知先がありません');
-  MailApp.sendEmail(recipient, subject, body);
+  GmailApp.sendEmail(recipient, subject, body, {from: 'daizuhakkou0619@gmail.com'});
   props.setProperty(key, String(Date.now()));
 }
 function attachmentNeedsAttention_(status) {

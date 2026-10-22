@@ -10,7 +10,7 @@ function harness(states, http=200) {
     ScriptApp:{getIdentityToken:()=> 'signed',getProjectTriggers:()=>[trigger],deleteTrigger:t=>deleted.push(t)},
     PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k],setProperty:(k,v)=>{props[k]=v;}})},
     Session:{getEffectiveUser:()=>({getEmail:()=> 'owner@example.invalid'})},
-    MailApp:{sendEmail:(...a)=>sent.push(a)},
+    GmailApp:{sendEmail:(...a)=>sent.push(a)},
     LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})},
     UrlFetchApp:{fetch:(url,req)=>{calls.push(req);return response(states.shift(),http);},fetchAll:reqs=>{calls.push(...reqs);return reqs.map(()=>response({status:'ok'},http));}}};
   vm.createContext(c);vm.runInContext(fs.readFileSync(__dirname+'/Code.js','utf8'),c);
@@ -38,7 +38,7 @@ test('保留中は実行しない',()=>{
 });
 test('通知失敗なら完了扱いでトリガーを削除しない',()=>{
   const done={status:'completed',counts:{verified:10}};const h=harness([done,done]);
-  h.c.MailApp.sendEmail=()=>{throw new Error('メール利用枠不足');};
+  h.c.GmailApp.sendEmail=()=>{throw new Error('メール利用枠不足');};
   assert.throws(()=>h.c.nameJobTick());assert.equal(h.deleted.length,0);
 });
 test('一系統の失敗でも処理後の件数を取得して通知する',()=>{
@@ -187,4 +187,9 @@ test('不正な最終実行時刻や重複トリガーでは成功記録を再�
   h.c.ScriptApp.getProjectTriggers=()=>[1,2].map(()=>({getHandlerFunction:()=> 'nameJobTick'}));
   h.c.nameJobWatchdog();
   assert.equal(h.calls.length,1);assert.match(h.sent[0][1],/定期処理停止/);
+});
+
+test('通知元だけを個人Gmailに変更し既存宛先と送信失敗の再試行を維持',()=>{
+ const h=harness([]);h.c.nameJobNotify_('接続エラー',{});assert.equal(h.sent[0][0],'owner@example.invalid');assert.equal(h.sent[0][3].from,'daizuhakkou0619@gmail.com');
+ const rejected=harness([]);let fallback=0;rejected.c.MailApp={sendEmail:()=>fallback++};rejected.c.GmailApp.sendEmail=()=>{throw Error('送信元拒否')};assert.throws(()=>rejected.c.nameJobNotify_('接続エラー',{}));assert.equal(fallback,0);assert.equal(rejected.props.NAME_JOB_NOTICE_接続エラー,undefined);
 });

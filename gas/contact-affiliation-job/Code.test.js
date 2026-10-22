@@ -15,7 +15,7 @@ function fixture(statusOverrides = {}) {
     PropertiesService: {getScriptProperties: () => ({getProperty: k => props.get(k), setProperty: (k,v) => props.set(k,v)})},
     LockService: {getScriptLock: () => ({tryLock: () => !locked, releaseLock() {}})},
     Session: {getEffectiveUser: () => ({getEmail: () => 'self@example.invalid'})},
-    MailApp: {sendEmail: (...args) => sent.push(args)},
+    GmailApp: {sendEmail: (...args) => sent.push(args)},
     UrlFetchApp: {fetch(url) { calls.push(url); return {getResponseCode: () => 200, getContentText: () => JSON.stringify(
       url.endsWith('/run') ? {status: 'ok', counts: {held: 1}, discovered: 100, duration_ms: 1} :
         {enabled: true, dry_run: true, counts: {held: 4}, retry_count: 0, last_success_at: new Date().toISOString(), ...statusOverrides})};}}

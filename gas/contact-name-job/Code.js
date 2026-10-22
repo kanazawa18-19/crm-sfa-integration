@@ -64,8 +64,7 @@ function nameJobNotify_(kind, status) {
     (kind === '要確認' ? '自動処理を停止しました。保留・失敗の対象を確認してから再開してください。' :
     (kind === '一時停止' ? '定期実行を停止しました。CRM側の計画を有効化してから再開してください。' :
     '定期実行は継続します。進捗停止が続く場合は接続とGASの実行履歴を確認してください。'));
-  MailApp.sendEmail(recipient, 'CRM姓名補完：' + kind,
-    'GASからの実行結果です。\n' + summary + '\n' + next + '\n\n詳細：\n' + JSON.stringify(status, null, 2));
+  GmailApp.sendEmail(recipient, 'CRM姓名補完：' + kind, 'GASからの実行結果です。\n' + summary + '\n' + next + '\n\n詳細：\n' + JSON.stringify(status, null, 2), {from: 'daizuhakkou0619@gmail.com'});
   props.setProperty(key, String(Date.now()));
 }
 
