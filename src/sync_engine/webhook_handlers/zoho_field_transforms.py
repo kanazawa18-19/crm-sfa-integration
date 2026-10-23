@@ -387,7 +387,7 @@ _CHAIN_ZOHO_LABEL_TO_NOTION_FIELD: dict[str, tuple[str, Callable[[Any], Any]]] =
 #   別物のため、その値をそのまま書き込むのは検証されていない判断になってしまう）。
 # - ROLLUP/CREATED_TIME/CREATED_BY型のプロパティ（決済者/担当営業/案件 担当者名/提案サービス/
 #   営業ステータス/作成日時/作成者）: 読み取り専用のため対象外。
-# - "連絡先"/"👯‍♀️ チェーンリスト": リレーションだがtransform_zoho_action()に対応する
+# - "担当者"/"👯‍♀️ チェーンリスト": リレーションだがtransform_zoho_action()に対応する
 #   書き込みが無い。
 def _zoho_action_type(value: Any) -> str | None:
     """Zohoの「アクション種別」(picklist)を、アクション履歴DBの選択肢へ正規化する。

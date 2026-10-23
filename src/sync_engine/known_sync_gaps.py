@@ -28,7 +28,7 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
     ),
-    (Tool.KINTONE, 'action', '連絡先'): (
+    (Tool.KINTONE, 'action', '担当者'): (
         "kintoneからは原理的に取れない。関連レコード一覧（REFERENCE_TABLE）は"
         "**APIの応答に含まれない**（2026-08-31、records.jsonで実測）。"
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
@@ -61,7 +61,7 @@ KNOWN_UNMAPPED_RELATIONS: dict[tuple[Tool, str, str], str] = {
         "やるなら名前の書かれたテキスト項目からの名寄せしかない"
     ),
     (Tool.ZOHO, 'action', '案件名'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
-    (Tool.ZOHO, 'action', '連絡先'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
+    (Tool.ZOHO, 'action', '担当者'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'chain', 'アクション履歴'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'chain', 'サービス・商品'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",
     (Tool.ZOHO, 'chain', '案件管理'): "リレーション。Zohoのルックアップと違い相手のIDが無いので名寄せが要る",

@@ -161,9 +161,9 @@ ACTION_SCHEMA = DatabaseSchema(
             relation_target="client_master",
         ),
         # 2026-08-10、連絡先DB側にdual_propertyリレーションを追加した際に自動生成された
-        # 逆参照プロパティ。
+        # 逆参照プロパティ。2026-10-23、本人が表示名を「連絡先」から「担当者」へ変更。
         PropertyDefinition(
-            name="連絡先",
+            name="担当者",
             property_type=PropertyType.RELATION,
             requirement=RequirementLevel.OPTIONAL,
             sync_scope=SyncScope.ALL_TOOLS,
