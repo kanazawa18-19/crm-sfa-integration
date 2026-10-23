@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version-file: .node-version
       - run: git ls-files -z 'gas/*.test.js' 'gas/**/*.test.js' | xargs -0 node --test
 
   dashboard-tests:
@@ -90,11 +90,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
+      - name: 本番用依存の重大な脆弱性を検査
+        run: npm audit --omit=dev --audit-level=high
       # buildには本番用のDB移行が含まれるため、検査だけを個別に実行する。
       - run: npx prisma generate
       - run: npm test
+      - run: npx next typegen
       - run: npx tsc --noEmit
