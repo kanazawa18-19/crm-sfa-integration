@@ -1,8 +1,11 @@
 """実サービスと定期再開をつなぎ、確認待ちの無限再処理を防ぐ。"""
+import math
 from src.hub_creation.worker import drain_creation_scans
 from src.hub_creation.domain import CreationHeld
 from src.hub_creation.duplicate_scan import PENDING
 from tests.hub_creation.test_service import setup
+import pytest
+from src.infrastructure.http_budget import http_budget, remaining
 
 
 class Journal:
@@ -57,3 +60,52 @@ def test_other_holds_stop_repeated_notion_writes():
 
 def test_disabled_service_does_not_access_journal():
     assert drain_creation_scans(None, journal=object()) == {'disabled': True}
+
+
+@pytest.mark.parametrize('seconds', [0, 29, -1, float('inf'), float('nan')])
+def test_insufficient_or_invalid_budget_never_reads_journal(seconds):
+    if seconds < 0 or not math.isfinite(seconds):
+        with pytest.raises(ValueError):
+            drain_creation_scans(object(), journal=object(), budget_seconds=seconds)
+    else:
+        assert drain_creation_scans(object(), journal=object(), budget_seconds=seconds) == {
+            'processed': 0, 'completed': 0, 'held': 0}
+
+
+@pytest.mark.parametrize('parent_seconds', [0, 20])
+def test_short_parent_budget_prevents_queue_read(parent_seconds):
+    with http_budget(parent_seconds):
+        assert drain_creation_scans(object(), journal=object())['processed'] == 0
+    assert remaining() is None
+
+
+@pytest.mark.parametrize('seconds, expected', [(60, 60), (600, 240)])
+def test_worker_passes_shorter_http_budget_and_restores_context(monkeypatch, seconds, expected):
+    monkeypatch.setattr('src.infrastructure.http_budget.time.monotonic', lambda: 0)
+    service, _, _, _, adapter, _ = setup()
+    original = service.handle
+    seen = []
+    def handle(*args, **kwargs):
+        seen.append(remaining())
+        return original(*args, **kwargs)
+    service.handle = handle
+    assert drain_creation_scans(service, journal=Journal(), budget_seconds=seconds)['completed'] == 1
+    assert seen == [expected] and adapter.creates == 1
+    assert remaining() is None
+
+
+def test_queue_read_uses_remaining_time_and_next_run_can_resume(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr('src.infrastructure.http_budget.time.monotonic', lambda: clock[0])
+    service, _, _, _, adapter, _ = setup()
+    journal = Journal()
+    original = journal.due
+    def due(limit):
+        clock[0] += 31
+        return original(limit)
+    journal.due = due
+    assert drain_creation_scans(service, journal=journal, budget_seconds=60)['processed'] == 0
+    assert journal.deferred == [] and adapter.creates == 0
+    journal.due = original
+    assert drain_creation_scans(service, journal=journal, budget_seconds=60)['completed'] == 1
+    assert adapter.creates == 1
