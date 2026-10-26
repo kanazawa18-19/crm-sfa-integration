@@ -41,9 +41,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import sys
 import time
 from typing import Any
+
+from src.infrastructure.http_budget import HttpBudgetExceeded, remaining
 
 from src.db_schema.base import Tool
 from src.db_schema.registry import ALL_SCHEMAS, get_schema
@@ -78,6 +81,17 @@ _LOCK_BUSY_RETRY_MINUTES = 10
 _FAILED_SWEEP_LIMIT = 50
 
 
+def _has_budget(started: float, budget_seconds: float) -> bool:
+    """次の処理を始められるか確認する。実行中のDB・通信待機は止めない。"""
+    if time.monotonic() - started >= budget_seconds:
+        return False
+    try:
+        remaining()
+    except HttpBudgetExceeded:
+        return False
+    return True
+
+
 def drain_spreadsheet_outbox(
     *,
     limit: int = DEFAULT_LIMIT,
@@ -89,10 +103,16 @@ def drain_spreadsheet_outbox(
 ) -> dict[str, Any]:
     """積まれた行を作り直す。戻り値はcronのレスポンスにそのまま出す集計。
 
-    引数は全てテストのための差し替え口で、本番では何も渡さない
-    （`production_wiring`の組み立て済みのものを使う）。
+    集約処理は残時間を渡せる。240秒上限と親HTTP期限も守る。
+    その他の引数はテストの差し替え口。
     """
     started = time.monotonic()
+    if not math.isfinite(budget_seconds) or budget_seconds < 0:
+        raise ValueError("再配送の時間予算は有限の0以上の秒数にしてください")
+    budget_seconds = min(budget_seconds, DEFAULT_BUDGET_SECONDS)
+    budget_skipped = {"status": "skipped", "reason": "time_budget_exhausted", "claimed": 0}
+    if not _has_budget(started, budget_seconds):
+        return budget_skipped
 
     enabled_db_keys = [
         schema.key for schema in ALL_SCHEMAS if spreadsheet_row_creation_enabled(schema.key)
@@ -109,9 +129,13 @@ def drain_spreadsheet_outbox(
             "claimed": 0,
         }
 
+    if not _has_budget(started, budget_seconds):
+        return budget_skipped
     store = store if store is not None else build_id_mapping_store()
     # 共通設定の不備で全件の再試行回数を使い切らない。失敗時はキューに触れず終了する。
     validate_record_sync_storage(store)
+    if not _has_budget(started, budget_seconds):
+        return budget_skipped
     entries = spreadsheet_outbox.claim_due(db_keys=enabled_db_keys, limit=limit)
     # Vercel cron（300秒上限）から呼ばれるので、Notion の429リトライは INTERACTIVE（3回）に
     # 絞る（2026-09-24）。1件が長く握るより、残りを次回の drain へ回す方が安全。
@@ -140,7 +164,7 @@ def drain_spreadsheet_outbox(
     out_of_budget = 0
 
     for index, entry in enumerate(entries):
-        if time.monotonic() - started > budget_seconds:
+        if not _has_budget(started, budget_seconds):
             # 予算切れ。**取り出し済みの残りは差し戻す**（試したうちに入れない）。
             out_of_budget = len(entries) - index
             for remaining in entries[index:]:
@@ -177,7 +201,7 @@ def drain_spreadsheet_outbox(
         started=started,
     )
 
-    purged = spreadsheet_outbox.purge_resolved()
+    purged = spreadsheet_outbox.purge_resolved() if _has_budget(started, budget_seconds) else 0
     result = {
         "status": "success",
         # **諦めたものが出た回は、レスポンスだけ見ても分かるようにする**
@@ -211,8 +235,10 @@ def _sweep_failed(
     赤信号を消す**のが目的。書き込みは一切しない。
     """
     closed = 0
+    if not _has_budget(started, budget_seconds):
+        return closed
     for entry in spreadsheet_outbox.list_failed(db_keys=db_keys, limit=_FAILED_SWEEP_LIMIT):
-        if time.monotonic() - started > budget_seconds:
+        if not _has_budget(started, budget_seconds):
             break
         target = spreadsheet_targets.get(entry.db_key)
         if target is None:

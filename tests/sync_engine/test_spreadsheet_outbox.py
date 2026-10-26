@@ -385,8 +385,16 @@ def test_時間予算を超えたら残りは差し戻して次の回へ(monkeyp
         )
     _キューを差し替える(monkeypatch, queue)
 
+    clock = [0.0]
+    monkeypatch.setattr(drain_module.time, "monotonic", lambda: clock[0])
+    def claim_and_expire(**kwargs):
+        entries = queue.claim_due(**kwargs)
+        clock[0] = 10.0
+        return entries
+    monkeypatch.setattr(spreadsheet_outbox, "claim_due", claim_and_expire)
+
     result = drain_spreadsheet_outbox(
-        budget_seconds=-1.0,  # 最初の1件を処理する前に予算切れ
+        budget_seconds=10.0,  # 取り出し直後に期限へ到達する
         store=_ストア(),
         notion_clients={"client_master": _偽Notion({})},
         spreadsheet_targets={"client_master": _偽シート()},
@@ -394,6 +402,7 @@ def test_時間予算を超えたら残りは差し戻して次の回へ(monkeyp
     )
 
     assert result["out_of_budget"] == 3
+    assert queue.purged == 0
     for i in range(3):
         row = queue.entries[("client_master", f"page-{i}")]
         assert row["status"] == spreadsheet_outbox.STATUS_PENDING
@@ -828,3 +837,63 @@ def test_解決の内訳を残す(monkeypatch: pytest.MonkeyPatch) -> None:
         queue.entries[("client_master", "page-1")]["resolution"]
         == spreadsheet_outbox.RESOLUTION_CREATED
     )
+
+
+@pytest.mark.parametrize('seconds', [0, -1, float('nan'), float('inf')])
+def test_開始できない予算ではDBを触らない(monkeypatch, seconds):
+    def forbidden(*args, **kwargs):
+        pytest.fail('期限不足または不正値でDB処理を開始した')
+    monkeypatch.setattr(drain_module, 'build_id_mapping_store', forbidden)
+    monkeypatch.setattr(spreadsheet_outbox, 'claim_due', forbidden)
+    if seconds == 0:
+        assert drain_spreadsheet_outbox(budget_seconds=seconds)['claimed'] == 0
+    else:
+        with pytest.raises(ValueError):
+            drain_spreadsheet_outbox(budget_seconds=seconds)
+
+
+def test_親期限切れではDBを触らず親の期限を維持する(monkeypatch):
+    from src.infrastructure.http_budget import http_budget, remaining, HttpBudgetExceeded
+    clock = [0.0]
+    monkeypatch.setattr(drain_module.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(drain_module, 'build_id_mapping_store', lambda: pytest.fail('DBを開始した'))
+    with http_budget(5):
+        clock[0] = 5.0
+        assert drain_spreadsheet_outbox()['reason'] == 'time_budget_exhausted'
+        with pytest.raises(HttpBudgetExceeded):
+            remaining()
+    assert remaining() is None
+
+
+@pytest.mark.parametrize('parent_seconds,elapsed', [(5, 5), (1000, 240)])
+def test_親期限と240秒上限の短い方で未処理を戻す(monkeypatch, parent_seconds, elapsed):
+    from src.infrastructure.http_budget import http_budget
+    queue = _偽キュー()
+    queue.enqueue_row_creation(db_key='client_master', notion_key='page-1', reason='test')
+    _キューを差し替える(monkeypatch, queue)
+    clock = [0.0]
+    monkeypatch.setattr(drain_module.time, 'monotonic', lambda: clock[0])
+    def claim_and_expire(**kwargs):
+        entries = queue.claim_due(**kwargs)
+        clock[0] = elapsed
+        return entries
+    monkeypatch.setattr(spreadsheet_outbox, 'claim_due', claim_and_expire)
+    monkeypatch.setattr(spreadsheet_outbox, 'list_failed', lambda **kwargs: pytest.fail('期限後の一覧取得'))
+    with http_budget(parent_seconds):
+        result = drain_spreadsheet_outbox(
+            budget_seconds=1000, store=_ストア(), notion_clients={},
+            spreadsheet_targets={},
+        )
+    assert result['out_of_budget'] == 1
+    assert queue.entries[('client_master', 'page-1')]['attempts'] == 0
+    assert queue.purged == 0
+
+
+def test_DB構成確認中に期限が切れたら取り出さない(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(drain_module.time, 'monotonic', lambda: clock[0])
+    def validate(store):
+        clock[0] = 10.0
+    monkeypatch.setattr(drain_module, 'validate_record_sync_storage', validate)
+    monkeypatch.setattr(spreadsheet_outbox, 'claim_due', lambda **kwargs: pytest.fail('期限後の取り出し'))
+    assert drain_spreadsheet_outbox(budget_seconds=10, store=_ストア())['claimed'] == 0
