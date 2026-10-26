@@ -3,6 +3,7 @@ import hashlib
 import time
 import requests
 from src.reports.durable.domain import ReportHeld, accept_page, query_body, delivery_action
+from src.infrastructure.http_budget import HttpBudgetExceeded
 
 
 class ReportRunner:
@@ -52,6 +53,9 @@ class ReportRunner:
             stage = '完了状態の保存'
             self.journal.finish(report_date)
             return {'date': report_date.isoformat(), 'state': 'done', 'daily_report_sent': True, 'weekly_report_sent': 'weekly' in kinds}
+        except HttpBudgetExceeded:
+            # 予定された期限到達を障害回数へ加算しない。保存済みの収集位置・送信予約は維持する。
+            return {'date': report_date.isoformat(), 'state': 'budget_exhausted', 'daily_report_sent': False}
         except ReportHeld as exc:
             self.journal.error(report_date, str(exc), held=True)
             return {'date': report_date.isoformat(), 'state': 'held', 'reason': str(exc), 'daily_report_sent': False}

@@ -123,3 +123,34 @@ def test_oversized_weekly_report_preserves_delivered_daily_status():
     assert 'weekly' not in journal.deliveries
     assert journal.errors[-1] == '週報本文がSlackの文字数上限を超えています（週報は未送信）'
     assert send.call_count == 1
+
+
+def test_shared_budget_expiry_does_not_consume_retries_and_resumes():
+    from src.infrastructure.http_budget import HttpBudgetExceeded
+    journal = Journal()
+    project = Mock(side_effect=[HttpBudgetExceeded(), HttpBudgetExceeded(), HttpBudgetExceeded(),
+        {'results': [page()], 'has_more': False}])
+    clients = {
+        'project': SimpleNamespace(query_raw=project),
+        'action': SimpleNamespace(query_raw=lambda body: {'results': [page('a')], 'has_more': False})}
+    send = Mock()
+    runner = ReportRunner(journal, clients, Mock(return_value='合成日報'), send)
+    for _ in range(3):
+        assert runner.run(journal.job, 'destination')['state'] == 'budget_exhausted'
+    assert journal.errors == []
+    assert journal.job['phase'] == 'project'
+    send.assert_not_called()
+    assert runner.run(journal.job, 'destination')['state'] == 'done'
+    assert send.call_count == 2
+
+
+def test_shared_budget_expiry_after_reservation_does_not_resend():
+    from src.infrastructure.http_budget import HttpBudgetExceeded
+    journal = Journal('ready')
+    send = Mock(side_effect=HttpBudgetExceeded())
+    runner = ReportRunner(journal, {}, Mock(return_value='合成日報'), send)
+    assert runner.run(journal.job, 'destination')['state'] == 'budget_exhausted'
+    assert journal.errors == []
+    assert journal.deliveries['daily']['state'] == 'reserved'
+    assert runner.run(journal.job, 'destination')['state'] == 'held'
+    assert send.call_count == 1

@@ -1,6 +1,7 @@
 """既存の日報集計へ、収集完了した同一日付の保存データだけを渡す。"""
 import os
 import re
+import math
 from datetime import datetime, timedelta, timezone
 import requests
 from src.api.dashboard_service import NotionDataSource, PROP_担当営業
@@ -12,6 +13,7 @@ from src.reports.durable.application import ReportRunner
 from src.reports.durable.journal import ReportJournal
 from src.sync_engine.clients.notion_client import HttpNotionClient
 from src.sync_engine.record_sync_lock import acquire_record_sync_lock, RecordSyncBusy
+from src.infrastructure.http_budget import http_budget, remaining, HttpBudgetExceeded
 
 
 class CollectedSource(NotionDataSource):
@@ -76,19 +78,49 @@ def send(destination, text):
         raise RuntimeError('日報の送達受付を確認できません')
 
 
-def run_durable_report_batch(*, start_today=True):
+def run_durable_report_batch(*, start_today=True, budget_seconds=230):
+    """入口のDB処理にも残時間を適用する。実行中のDB待機は別途制限が必要。"""
+    if not math.isfinite(budget_seconds) or budget_seconds < 0:
+        raise ValueError('日報の時間予算は有限の非負数で指定してください')
+    with http_budget(min(230, budget_seconds)):
+        return _run_durable_report_batch(start_today=start_today)
+
+
+def _run_durable_report_batch(*, start_today):
+    def available():
+        try:
+            return remaining()
+        except HttpBudgetExceeded:
+            return 0
+
+    deferred = {'state': 'budget_exhausted', 'daily_report_sent': False}
+    if available() <= 0:
+        return deferred
     journal = ReportJournal()
     now = datetime.now(timezone.utc)
     local = now.astimezone(timezone(timedelta(hours=9)))
     try:
         with acquire_record_sync_lock(None, 'report', 'daily-weekly-batch'):
+            if available() <= 0:
+                return deferred
             journal.detect_missing_dates(local.date())
+            if available() <= 0:
+                return deferred
             if start_today and local.hour >= 19:
                 journal.ensure(local.date(), now)
+            if available() <= 0:
+                return deferred
             job = journal.next_job()
+            if available() <= 0:
+                return deferred
             if job is None: return {'state': 'idle', 'daily_report_sent': False}
             clients = {key: HttpNotionClient(key, get_schema(key).notion_database_id,
                 timeout=10, max_retries=0, max_rate_limit_retries=0) for key in ('project', 'action')}
-            return ReportRunner(journal, clients, render, send).run(job, report_destination())
+            destination = report_destination()
+            seconds = available()
+            if seconds <= 0:
+                return deferred
+            return ReportRunner(journal, clients, render, send).run(
+                job, destination, collection_budget=min(120, seconds), total_budget=seconds)
     except RecordSyncBusy:
         return {'state': 'busy', 'daily_report_sent': False}
