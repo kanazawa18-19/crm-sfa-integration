@@ -39,3 +39,10 @@
 <!-- END:obsidian-hub -->
 
 - **本番反映は GitHub `main` への push で自動**（2026-09-21 に Vercel チーム `cnctor1` へ移行し Git 連携を有効化。本人指示）。push ＝ 本番デプロイなので、push 前にテストを通す。コミットの作者メールは GitHub 登録済みのアドレス（noreply）にする（未登録のメールだと Vercel が `COMMIT_AUTHOR_REQUIRED` でブロック）。手動なら `vercel --prod --scope cnctor1`。
+
+## WBSと共有仕様書の継続更新
+
+- 共有先は https://docs.google.com/spreadsheets/d/1FWClDqz5GWqB1EjDwuY14ucuNo_WzQtGLXireuo5dbc/edit 。着手時は `wbs` の対象IDと関連仕様タブを読み、Vaultの最新記録と照合する。
+- 作業の区切りでは `wbs` の状態・確認済み事実・次の一手・完了条件・整理日を更新する。仕様や決定が変わったら同じファイルの該当仕様タブも更新し、根拠と確認日を残す。リポジトリ `docs/` の技術詳細と矛盾させない。
+- 実装済み・本番反映済み・実物検証済みを区別し、保留を勝手に完了化しない。書込後に読み戻し、Vaultへ対象IDと更新範囲を追記してから完了報告する。接続できない場合は未反映の内容をVaultに残し、未更新と報告する。
+- 既存の共有範囲は変更せず、認証情報・顧客個人情報・原本データを転記しない。自動定期更新ではなく、各作業を担当したエージェントが更新する運用とする。
