@@ -11,9 +11,10 @@ from src.contact_affiliation_job.evidence import mail_evidence, company_lines, z
 
 class AffiliationClient(NameOnlyClient):
     def get_raw_page_with_relations(self, page_id, property_names):
-        # 姓名用とは異なり、所属を完全に読む。大きい活動関連は判断に不要。
+        # 連絡先の所属だけ完全に読む。取引先マスター自身にはこの関連欄がない。
         from src.sync_engine.clients.notion_client import HttpNotionClient
-        return HttpNotionClient.get_raw_page_with_relations(self, page_id, {'取引先マスター'})
+        required = {'取引先マスター'} if self._db_key == 'contact' else set()
+        return HttpNotionClient.get_raw_page_with_relations(self, page_id, required)
 
 
 class JobGateway(Gateway):
