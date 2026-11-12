@@ -169,10 +169,13 @@ def read_gmail_observation(now):
     with psycopg.connect(os.environ['DATABASE_URL'], connect_timeout=TIMEOUT, row_factory=dict_row) as conn:
         conn.read_only = True
         conn.execute("SET LOCAL statement_timeout = '5000ms'")
-        row = conn.execute('''SELECT o."receivedAt" AS last FROM "GmailIngestObservation" o
-            JOIN "GmailIngestObservation" s ON s."eventId"=o."scanId" || ':started:0'
-            WHERE o.phase='complete' AND s.evidence->>'observationKind'='natural'
-            AND lower(s.evidence->>'repEmail')=%s ORDER BY o."receivedAt" DESC LIMIT 1''', (owner,)).fetchone()
+        # scanId索引で同じ走査を結び、並べ替えず最終完了時刻を集計する。
+        # 文字列連結だけの結合は観測蓄積後に監視の5秒上限を超える。
+        row = conn.execute('''SELECT max(o."receivedAt") AS last FROM "GmailIngestObservation" s
+            JOIN "GmailIngestObservation" o ON o."scanId"=s."scanId" AND o.phase='complete'
+            WHERE s.phase='started' AND s."eventId"=s."scanId" || ':started:0'
+            AND s.evidence->>'observationKind'='natural'
+            AND lower(s.evidence->>'repEmail')=%s''', (owner,)).fetchone()
     result = evaluate_gmail_observation(row['last'] if row else None, now=now)
     from src.gmail_sync.deferred import health
     deferred = health()
