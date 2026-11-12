@@ -38,7 +38,7 @@
 - **追記するまでが作業。** 完了報告の前にハブノートへ追記し、報告文にその旨を含める
 <!-- END:obsidian-hub -->
 
-- **本番反映は GitHub `main` への push で自動**（2026-09-21 に Vercel チーム `cnctor1` へ移行し Git 連携を有効化。本人指示）。push ＝ 本番デプロイなので、push 前にテストを通す。コミットの作者メールは GitHub 登録済みのアドレス（noreply）にする（未登録のメールだと Vercel が `COMMIT_AUTHOR_REQUIRED` でブロック）。手動なら `vercel --prod --scope cnctor1`。
+- **本番反映は GitHub `main` への push で自動**（2026-09-21 に Vercel チーム `cnctor1` へ移行し Git 連携を有効化。本人指示）。push ＝ 本番デプロイなので、push 前にテストを通す。コミットの作者メールは GitHub 登録済みのアドレス（noreply）にする（未登録のメールだと Vercel が `COMMIT_AUTHOR_REQUIRED` でブロック）。2026-11-12の現行チームは `cnctor-c2cc0c84`（API・管理画面ともCLIで確認）。手動なら対象プロジェクトを照合して `vercel --prod --scope cnctor-c2cc0c84`。旧ローカルリンクは移管前を指す場合があるため、そのまま配備しない。
 
 ## WBSと共有仕様書の継続更新
 

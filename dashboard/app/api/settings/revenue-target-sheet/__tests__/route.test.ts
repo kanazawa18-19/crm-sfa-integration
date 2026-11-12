@@ -4,10 +4,6 @@ import { GET, POST } from "@/app/api/settings/revenue-target-sheet/route";
 
 const ORIGINAL_ENV = { ...process.env };
 
-function makeGetRequest(): NextRequest {
-  return new NextRequest("http://localhost/api/settings/revenue-target-sheet");
-}
-
 function makePostRequest(body: unknown): NextRequest {
   return new NextRequest("http://localhost/api/settings/revenue-target-sheet", {
     method: "POST",

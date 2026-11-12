@@ -94,8 +94,9 @@ jobs:
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
-      - name: 本番用依存の重大な脆弱性を検査
-        run: npm audit --omit=dev --audit-level=high
+      - name: 開発用を含む依存の脆弱性を検査
+        run: npm audit --audit-level=moderate
+      - run: npm run lint -- --max-warnings=0
       # buildには本番用のDB移行が含まれるため、検査だけを個別に実行する。
       - run: npx prisma generate
       - run: npm test

@@ -3,14 +3,10 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { randomBytes } from "crypto";
 import prisma from "@/lib/prisma";
 import {
-  createSessionToken,
   COOKIE_NAME,
-  hashPassword,
   verifyPassword,
-  createPending2FAToken,
   verifyPending2FAToken,
   PENDING_2FA_COOKIE_NAME,
 } from "@/lib/adminSession";
@@ -29,8 +25,6 @@ import {
   verifyTotpCode,
   generateBackupCodes,
   consumeBackupCode,
-  generateEmailOtpPlaintext,
-  EMAIL_OTP_TTL_MS,
   EMAIL_OTP_RESEND_COOLDOWN_MS,
 } from "@/lib/twoFactor";
 
@@ -181,8 +175,6 @@ export async function confirmTotpEnrollment(
 
   return { backupCodes: plaintext };
 }
-
-const RESET_TOKEN_TTL_MS = 1000 * 60 * 60; // 1 hour
 
 /**
  * パスワード再設定は廃止した（2026-09-16、パスワードログイン廃止に伴う）。
@@ -359,8 +351,6 @@ export async function updateOwnProfile(
   revalidatePath("/settings/profile");
   return { success: "プロフィールを更新しました" };
 }
-
-const EMAIL_CHANGE_TOKEN_TTL_MS = 1000 * 60 * 60; // 1 hour、パスワード再設定と同じ有効期限
 
 /**
  * メールアドレス変更・パスワード変更は廃止した（2026-09-16、ログインを cnctor.jp の Google
