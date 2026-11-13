@@ -2495,3 +2495,40 @@ def test_unmapped_field_does_not_hide_unconfirmed_delivery_failures(store, monke
         properties={'議事録・録画リンク': 'https://example.com/recording'}))
     assert result.properties[0].skipped_tools == {Tool.KINTONE}
     assert not result.properties[0].configuration_pending_tools
+
+
+def test_known_inverse_relation_stays_pending_without_notification_retry(store, mapping, monkeypatch):
+    """通常通知で再送を繰り返していた案件一覧だけ、未配送のまま設定待ちへ分ける。"""
+    from src.sync_engine.record_sync_lock import acquire_record_sync_lock
+    from src.sync_engine.sync_targets.kintone_sync import KintoneSyncTarget
+    from src.sync_engine.sync_targets.zoho_sync import ZohoSyncTarget
+    targets = _all_targets()
+    monkeypatch.setattr(targets[Tool.KINTONE], 'unsupported_properties',
+                        KintoneSyncTarget(None, 'test').unsupported_properties)
+    monkeypatch.setattr(targets[Tool.ZOHO], 'unsupported_properties',
+                        ZohoSyncTarget(None, 'Accounts').unsupported_properties)
+    name = '【営業部】案件管理DB'
+    result = Dispatcher(store, targets).dispatch(SyncEvent(
+        Tool.NOTION, 'client_master', mapping.notion_key, NOW,
+        properties={name: ['project-page']}))
+    item = result.properties[0]
+    assert item.skipped_tools == {Tool.KINTONE, Tool.ZOHO}
+    assert item.configuration_pending_tools == item.skipped_tools
+    assert not targets[Tool.KINTONE].upsert_calls
+    assert not targets[Tool.ZOHO].upsert_calls
+    with acquire_record_sync_lock(store, 'client_master', mapping.notion_key) as guard:
+        assert guard.eligible_fields([name], NOW) == [name]
+
+
+def test_other_unresolved_relation_still_retries(store, monkeypatch):
+    """配送実装のある親関連のID解決失敗を設定待ちで隠さない。"""
+    from src.sync_engine.sync_targets.zoho_sync import ZohoSyncTarget
+    store.upsert(IdMapping('contact-page', 'contact', zoho_id='z', spreadsheet_row=2))
+    targets = _all_targets()
+    monkeypatch.setattr(targets[Tool.ZOHO], 'unsupported_properties',
+                        ZohoSyncTarget(None, 'Contacts').unsupported_properties)
+    result = Dispatcher(store, targets).dispatch(SyncEvent(
+        Tool.NOTION, 'contact', 'contact-page', NOW,
+        properties={'取引先マスター': ['company-page']}))
+    assert result.properties[0].skipped_tools == {Tool.ZOHO}
+    assert not result.properties[0].configuration_pending_tools

@@ -151,7 +151,7 @@ class PropertyDispatchResult:
     review_pending: bool = False
     # skipped_toolsの部分集合。未完了のまま、登録で解消するまでNotion再送だけを抑える。
     registration_pending_tools: frozenset[Tool] = field(default_factory=frozenset)
-    # 単純項目の送り先項目名が未設定。配送義務は残し、通知再送だけを抑える。
+    # 単純項目・確認済み逆向き関連の送り先が未設定。配送義務は残す。
     configuration_pending_tools: frozenset[Tool] = field(default_factory=frozenset)
 
 
@@ -538,12 +538,18 @@ class Dispatcher:
             }
             # 値・担当者・関連の解決失敗は一時障害の可能性があるため含めない。
             simple_types = {"title", "text", "url", "phone", "email", "number", "currency"}
+            # 取引先の案件一覧は逆向き関連で、両CRMへ更新する実装がない。
+            # 一般の関連ID解決失敗まで抑止せず、実ログで確認した項目に限定する。
+            unmapped_inverse_relations = {("client_master", "【営業部】案件管理DB")}
             results = [dataclasses.replace(
                 item, configuration_pending_tools=frozenset(
                     tool for tool in item.skipped_tools
                     if tool in field_tables
-                    and get_schema(mapping.db_key).get_property(item.property_name).property_type.value
-                    in simple_types
+                    and (
+                        get_schema(mapping.db_key).get_property(item.property_name).property_type.value
+                        in simple_types
+                        or (mapping.db_key, item.property_name) in unmapped_inverse_relations
+                    )
                     and item.property_name not in field_tables[tool].get(mapping.db_key, {})
                     and item.property_name in unsupported_by_tool.get(tool, frozenset())
                 ),
