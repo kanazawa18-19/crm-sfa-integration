@@ -2448,3 +2448,50 @@ def test_missing_external_id_stays_incomplete_and_can_sync_after_registration(st
     assert targets[Tool.ZOHO].upsert_calls[-1][0] == 'registered-zoho'
     with acquire_record_sync_lock(store, 'client_master', mapping.notion_key) as guard:
         assert guard.eligible_fields(['TEL'], NOW) == []
+
+
+def test_unmapped_simple_field_stays_pending_and_can_sync_after_configuration(store, monkeypatch):
+    """実際に未対応だった単純項目だけ保留し、設定修正後は同じ通知で配送できる。"""
+    from src.sync_engine.record_sync_lock import acquire_record_sync_lock
+    from src.sync_engine.sync_targets.kintone_sync import KintoneSyncTarget
+    store.upsert(IdMapping('action-page', 'action', kintone_id='1', zoho_id='z', spreadsheet_row=2))
+    targets = _all_targets()
+    kintone = targets[Tool.KINTONE]
+    real_target = KintoneSyncTarget(None, 'test')
+    monkeypatch.setattr(kintone, 'unsupported_properties', real_target.unsupported_properties)
+    dispatcher = Dispatcher(store, targets)
+    event = SyncEvent(Tool.NOTION, 'action', 'action-page', NOW,
+                      properties={'議事録・録画リンク': 'https://example.com/recording'})
+    result = dispatcher.dispatch(event)
+    item = result.properties[0]
+    assert item.configuration_pending_tools == {Tool.KINTONE}
+    assert item.skipped_tools == {Tool.KINTONE}
+    assert kintone.upsert_calls == []
+    with acquire_record_sync_lock(store, 'action', 'action-page') as guard:
+        assert guard.eligible_fields(['議事録・録画リンク'], NOW) == ['議事録・録画リンク']
+    monkeypatch.setattr(kintone, 'unsupported_properties', lambda *a, **kw: frozenset())
+    result = dispatcher.dispatch(event)
+    assert not result.has_partial_skips
+    assert not result.properties[0].configuration_pending_tools
+    with acquire_record_sync_lock(store, 'action', 'action-page') as guard:
+        assert guard.eligible_fields(['議事録・録画リンク'], NOW) == []
+
+
+@pytest.mark.parametrize('mode', ['missing_target', 'write_failure', 'inspection_failure'])
+def test_unmapped_field_does_not_hide_unconfirmed_delivery_failures(store, monkeypatch, mode):
+    """設定表だけで再送を止めず、接続欠落・実書込失敗・判定例外は再送対象に残す。"""
+    store.upsert(IdMapping('action-page', 'action', kintone_id='1', zoho_id='z', spreadsheet_row=2))
+    targets = _all_targets()
+    if mode == 'missing_target':
+        targets.pop(Tool.KINTONE)
+    else:
+        targets[Tool.KINTONE]._always_skip = True
+        if mode == 'inspection_failure':
+            def fail(*a, **kw):
+                raise RuntimeError('判定用APIの一時障害')
+            monkeypatch.setattr(targets[Tool.KINTONE], 'unsupported_properties', fail)
+    result = Dispatcher(store, targets).dispatch(SyncEvent(
+        Tool.NOTION, 'action', 'action-page', NOW,
+        properties={'議事録・録画リンク': 'https://example.com/recording'}))
+    assert result.properties[0].skipped_tools == {Tool.KINTONE}
+    assert not result.properties[0].configuration_pending_tools

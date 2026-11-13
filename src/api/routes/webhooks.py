@@ -92,6 +92,8 @@ def _partial_skip_summary(dispatcher: Any) -> list[dict[str, Any]] | None:
             "skipped_tools": sorted(t.value for t in p.skipped_tools),
             **({"registration_pending_tools": sorted(t.value for t in p.registration_pending_tools)}
                if p.registration_pending_tools else {}),
+            **({"configuration_pending_tools": sorted(t.value for t in p.configuration_pending_tools)}
+               if p.configuration_pending_tools else {}),
         }
         for p in last_result.properties
         if p.skipped_tools

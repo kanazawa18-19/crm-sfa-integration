@@ -1604,3 +1604,18 @@ def test_cron_spreadsheet_outbox_drain_runs_when_secret_matches(
     assert response.status_code == 200
     assert response.json() == {"status": "success", "claimed": 2, "created": 2}
     assert len(calls) == 1
+
+
+def test_configuration_pending_is_visible_without_hiding_skipped_tools():
+    """設定待ちの応答でも未配送先を隠さない。"""
+    from types import SimpleNamespace
+    from src.api.routes.webhooks import _partial_skip_summary
+    from src.sync_engine.dispatcher import DispatchResult, PropertyDispatchResult
+    from src.db_schema.base import Tool
+    result = DispatchResult(False, properties=(PropertyDispatchResult(
+        '議事録・録画リンク', None, skipped_tools=frozenset({Tool.KINTONE}),
+        configuration_pending_tools=frozenset({Tool.KINTONE})),))
+    assert _partial_skip_summary(SimpleNamespace(last_result=result)) == [{
+        'property': '議事録・録画リンク', 'written_tools': [],
+        'skipped_tools': ['kintone'], 'configuration_pending_tools': ['kintone'],
+    }]

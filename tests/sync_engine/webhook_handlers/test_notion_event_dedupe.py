@@ -151,3 +151,22 @@ def test_registration_wait_does_not_retry_but_delivery_failure_does(claims, othe
     assert response['statusCode'] == (500 if other_failure else 200)
     assert ('registration_wait' in claims) is (not other_failure)
     assert dispatcher.dispatch.return_value.has_partial_skips
+
+
+@pytest.mark.parametrize('other_failure', [False, True])
+def test_configuration_wait_keeps_pending_but_does_not_retry_notification(claims, other_failure):
+    """設定保留は未配送のまま200、別の保存先の一時障害があれば500を返す。"""
+    from unittest.mock import Mock
+    from src.db_schema.base import Tool
+    from src.sync_engine.dispatcher import DispatchResult, PropertyDispatchResult
+    skipped = {Tool.KINTONE} | ({Tool.SPREADSHEET} if other_failure else set())
+    dispatcher = Mock()
+    dispatcher.dispatch.return_value = DispatchResult(False, properties=(
+        PropertyDispatchResult('議事録・録画リンク', None, skipped_tools=frozenset(skipped),
+                               configuration_pending_tools=frozenset({Tool.KINTONE})),
+    ))
+    response = handler_with_proxy(_event('configuration_wait'), None,
+                                 notion_client=_FakeClient(), dispatcher=dispatcher)
+    assert response['statusCode'] == (500 if other_failure else 200)
+    assert ('configuration_wait' in claims) is (not other_failure)
+    assert dispatcher.dispatch.return_value.has_partial_skips

@@ -151,6 +151,8 @@ class PropertyDispatchResult:
     review_pending: bool = False
     # skipped_toolsの部分集合。未完了のまま、登録で解消するまでNotion再送だけを抑える。
     registration_pending_tools: frozenset[Tool] = field(default_factory=frozenset)
+    # 単純項目の送り先項目名が未設定。配送義務は残し、通知再送だけを抑える。
+    configuration_pending_tools: frozenset[Tool] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -507,8 +509,10 @@ class Dispatcher:
             field_names = [name for name, _, _ in prepared]
             guard.save_fields(field_names, event.occurred_at, completed=False)
             guard.accept(event.occurred_at)
+            unsupported_by_tool: dict[Tool, frozenset[str]] = {}
             written_by_tool, mapping = self._write_values(
-                payload_by_tool, mapping, versions, new_row_properties=new_row_properties
+                payload_by_tool, mapping, versions, new_row_properties=new_row_properties,
+                unsupported_by_tool=unsupported_by_tool,
             )
             results = [
                 _property_result(property_name, None, intended_by_property, written_by_tool)
@@ -524,6 +528,25 @@ class Dispatcher:
             )
             results = [dataclasses.replace(
                 item, registration_pending_tools=item.skipped_tools & missing_ids,
+            ) for item in results]
+            from src.sync_engine.outbound_field_mapping import (
+                zoho_outbound_field_names, kintone_outbound_field_names,
+            )
+            field_tables = {
+                Tool.ZOHO: zoho_outbound_field_names(),
+                Tool.KINTONE: kintone_outbound_field_names(),
+            }
+            # 値・担当者・関連の解決失敗は一時障害の可能性があるため含めない。
+            simple_types = {"title", "text", "url", "phone", "email", "number", "currency"}
+            results = [dataclasses.replace(
+                item, configuration_pending_tools=frozenset(
+                    tool for tool in item.skipped_tools
+                    if tool in field_tables
+                    and get_schema(mapping.db_key).get_property(item.property_name).property_type.value
+                    in simple_types
+                    and item.property_name not in field_tables[tool].get(mapping.db_key, {})
+                    and item.property_name in unsupported_by_tool.get(tool, frozenset())
+                ),
             ) for item in results]
             self._write_notes(event, mapping)
             completed_field_names = [item.property_name for item in results if not item.skipped_tools]
@@ -1940,6 +1963,7 @@ class Dispatcher:
         versions: "_VersionTracker | None" = None,
         *,
         new_row_properties: dict[str, Any] | None = None,
+        unsupported_by_tool: dict[Tool, frozenset[str]] | None = None,
     ) -> tuple[dict[Tool, frozenset[str]], IdMapping]:
         """**1イベント・1ツールにつき1回だけ書き込む**（2026-09-01）。
 
@@ -1999,6 +2023,8 @@ class Dispatcher:
                     exc_info=True,
                 )
                 unsupported = frozenset()
+            if unsupported_by_tool is not None:
+                unsupported_by_tool[tool] = unsupported
             sendable = {
                 name: value for name, value in properties.items() if name not in unsupported
             }
