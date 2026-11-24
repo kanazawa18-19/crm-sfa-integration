@@ -97,3 +97,15 @@ def test_invalid_candidate_is_not_partially_accepted(value):
     from src.calendar_sync.plan import select_action_date
     with pytest.raises(ValueError):
         select_action_date(value)
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2026-11-24T17:00:00Z", "2026-11-25"),
+    ("2026-11-25T00:30:00+14:00", "2026-11-24"),
+    ("2026-11-25T00:30:00", "2026-11-25"),
+    (["2026-11-24T17:00:00Z", "2026-11-24T23:00:00+09:00"], "2026-11-24"),
+])
+def test_timestamp_candidates_are_compared_as_japan_dates(value, expected):
+    from datetime import date
+    from src.calendar_sync.plan import select_action_date
+    assert select_action_date(value, today=date(2026, 11, 24)).isoformat() == expected

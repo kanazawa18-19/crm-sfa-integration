@@ -54,7 +54,11 @@ def select_action_date(value: Any, *, today: date | None = None) -> date | None:
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
                 days.append(date.fromisoformat(token))
             elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T.+", token):
-                days.append(datetime.fromisoformat(token.replace("Z", "+00:00")).date())
+                timestamp = datetime.fromisoformat(token.replace("Z", "+00:00"))
+                # オフセットなしは業務の日本時間として扱い、実行端末の時差に依存させない。
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+                days.append(timestamp.astimezone(ZoneInfo("Asia/Tokyo")).date())
             else:
                 match = re.fullmatch(r"(\d{4})/(\d{1,2})/(\d{1,2})", token)
                 if match is None:
