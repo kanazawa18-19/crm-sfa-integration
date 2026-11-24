@@ -34,7 +34,8 @@ NOTION_PAGE_ID = "26d6f1e2-0000-0000-0000-000000000000"
 def _properties(**overrides: Any) -> dict[str, Any]:
     base = {
         "案件名": "サンプルホテル",
-        "次回アクション日": "2026-08-10",
+        "AI推奨アクション日": "2026-08-10",
+        "次回アクション": "提案資料を送る",
         "担当メンバー": ["user-1"],
     }
     base.update(overrides)
@@ -46,7 +47,7 @@ def _properties(**overrides: Any) -> dict[str, Any]:
 
 def test_returns_none_when_next_action_date_key_missing() -> None:
     properties = _properties()
-    del properties["次回アクション日"]
+    del properties["AI推奨アクション日"]
     calendar_client = _FakeCalendarClient()
 
     result = sync_next_action_date_to_calendar(
@@ -58,7 +59,7 @@ def test_returns_none_when_next_action_date_key_missing() -> None:
 
 
 def test_returns_none_when_next_action_date_is_none() -> None:
-    properties = _properties(**{"次回アクション日": None})
+    properties = _properties(**{"AI推奨アクション日": None})
     calendar_client = _FakeCalendarClient()
 
     result = sync_next_action_date_to_calendar(
@@ -126,7 +127,8 @@ def test_calls_upsert_event_with_expected_arguments(monkeypatch: pytest.MonkeyPa
         {
             "rep_email": "kunikata@cnctor.jp",
             "notion_project_id": NOTION_PAGE_ID,
-            "summary": "サンプルホテル - 次回アクション",
+            "summary": "サンプルホテル - 提案資料を送る",
+            "description": "次回アクション\n提案資料を送る\n\nNotion案件: https://www.notion.so/26d6f1e2000000000000000000000000",
             "date": "2026-08-10",
         }
     ]
@@ -153,7 +155,7 @@ def test_strips_time_component_from_next_action_date(monkeypatch: pytest.MonkeyP
     """
     monkeypatch.setattr(service_module, "get_notion_user_email", lambda user_id: "kunikata@cnctor.jp")
     calendar_client = _FakeCalendarClient()
-    properties = _properties(**{"次回アクション日": "2026-08-10T09:00:00+09:00"})
+    properties = _properties(**{"AI推奨アクション日": "2026-08-10T09:00:00+09:00"})
 
     sync_next_action_date_to_calendar(properties, NOTION_PAGE_ID, calendar_client=calendar_client)
 
@@ -170,4 +172,4 @@ def test_uses_fallback_summary_when_project_name_missing(
 
     sync_next_action_date_to_calendar(properties, NOTION_PAGE_ID, calendar_client=calendar_client)
 
-    assert calendar_client.calls[0]["summary"] == "（案件名未設定） - 次回アクション"
+    assert calendar_client.calls[0]["summary"] == "（案件名未設定） - 提案資料を送る"

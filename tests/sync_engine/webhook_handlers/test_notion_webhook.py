@@ -813,7 +813,9 @@ def test_handler_with_proxy_calls_calendar_sync_when_injected(
         "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
         lambda: DB_ID_MAP,
     )
-    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    page = _raw_notion_page()
+    page["properties"]["案件名"]["id"] = "title"
+    client: NotionPageClient = _FakeNotionPageClient(page)
     calls: list[tuple[dict, str]] = []
 
     def _calendar_sync(properties: dict, page_id: str) -> None:
@@ -829,11 +831,7 @@ def test_handler_with_proxy_calls_calendar_sync_when_injected(
     assert len(calls) == 1
     called_properties, called_page_id = calls[0]
     assert called_page_id == "26d6f1e2-0000-0000-0000-000000000000"
-    assert called_properties == {
-        "案件名": "MSA-PJ-001",
-        "営業ステータス": "提案中",
-        "初期費用": 500000,
-    }
+    assert called_properties == {"案件名": "MSA-PJ-001"}
 
 
 def test_handler_with_proxy_returns_200_even_when_calendar_sync_raises(
@@ -844,7 +842,9 @@ def test_handler_with_proxy_returns_200_even_when_calendar_sync_raises(
         "src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key",
         lambda: DB_ID_MAP,
     )
-    client: NotionPageClient = _FakeNotionPageClient(_raw_notion_page())
+    page = _raw_notion_page()
+    page["properties"]["案件名"]["id"] = "title"
+    client: NotionPageClient = _FakeNotionPageClient(page)
 
     def _failing_calendar_sync(properties: dict, page_id: str) -> None:
         raise RuntimeError("calendar sync boom")
@@ -907,9 +907,7 @@ def test_handler_with_proxy_calls_project_mirror_sync_when_injected(
     called_properties, called_page_id = calls[0]
     assert called_page_id == "26d6f1e2-0000-0000-0000-000000000000"
     assert called_properties == {
-        "案件名": "MSA-PJ-001",
-        "営業ステータス": "提案中",
-        "初期費用": 500000,
+        "案件名": "MSA-PJ-001", "営業ステータス": "提案中", "初期費用": 500000,
     }
 
 
@@ -1271,3 +1269,42 @@ def test_handler_with_proxy_with_real_http_notion_client_returns_200_on_404(
 
     assert response["statusCode"] == 200
     assert json.loads(response["body"]) == {"skipped": "page_not_found"}
+
+@pytest.mark.parametrize("changed", ["action", "ai", "day"])
+def test_calendar_uses_full_context_without_expanding_dispatch(monkeypatch, changed):
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr("src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key", lambda: DB_ID_MAP)
+    page = _raw_notion_page()
+    page["properties"].update({
+        "次回アクション": {"id": "action", "type": "rich_text", "rich_text": [{"plain_text": "資料送付"}]},
+        "AI推奨アクション": {"id": "ai", "type": "rich_text", "rich_text": [{"plain_text": "電話"}]},
+        "AI推奨アクション日": {"id": "day", "type": "date", "date": {"start": "2026-11-25"}},
+        "担当メンバー": {"id": "rep", "type": "people", "people": [{"id": "user-1"}]},
+    })
+    payload = _lightweight_payload()
+    payload["data"]["updated_properties"] = [changed]
+    calls = []
+    dispatcher = _SpyDispatcher()
+    result = handler_with_proxy({"body": json.dumps(payload), "headers": {}}, None,
+        notion_client=_FakeNotionPageClient(page), dispatcher=dispatcher,
+        calendar_sync=lambda properties, page_id: calls.append(properties))
+    assert result["statusCode"] == 200
+    assert calls[0]["担当メンバー"] == ["user-1"]
+    assert calls[0]["AI推奨アクション日"] == ["2026-11-25"]
+    assert calls[0]["AI推奨アクション"] == "電話"
+    expected = {"action": {"次回アクション"}, "day": set(), "ai": set()}[changed]
+    assert set(dispatcher.dispatched_events[0].properties) == expected
+
+@pytest.mark.parametrize("archived, changed", [(True, "title"), (False, "unrelated")])
+def test_calendar_ignores_archived_or_unrelated_changes(monkeypatch, archived, changed):
+    monkeypatch.setenv("ALLOW_UNSIGNED_WEBHOOKS", "true")
+    monkeypatch.setattr("src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key", lambda: DB_ID_MAP)
+    page = _raw_notion_page()
+    page["archived"] = archived
+    page["properties"]["案件名"]["id"] = "title"
+    payload = _lightweight_payload()
+    payload["data"]["updated_properties"] = [changed]
+    calls = []
+    handler_with_proxy({"body": json.dumps(payload), "headers": {}}, None,
+        notion_client=_FakeNotionPageClient(page), calendar_sync=lambda *args: calls.append(args))
+    assert calls == []

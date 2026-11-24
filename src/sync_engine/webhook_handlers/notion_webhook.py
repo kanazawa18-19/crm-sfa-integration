@@ -484,8 +484,8 @@ def handler_with_proxy(
     変換後のSyncEventをそのままディスパッチする（未注入時は変換結果の検証のみ行う）。
 
     `calendar_sync`（省略可、既定`None`）を注入すると、db_key="project"（案件管理DB）の
-    SyncEventについて`calendar_sync(sync_event.properties, sync_event.external_id)`を呼び、
-    「次回アクション日」変更をGoogle Calendarへ同期する
+    取得済みページのカレンダー専用項目を渡してGoogle Calendarへ同期する。
+    通知の変更IDは起動判定に使い、通常の他ツール配送範囲は広げない
     （`src.calendar_sync.service.sync_next_action_date_to_calendar`を想定）。
 
     `lead_sync`（省略可、既定`None`）を注入すると、db_key="contact"（連絡先DB）の
@@ -692,7 +692,16 @@ def handler_with_proxy(
     side_hook_failed = False
     if calendar_sync is not None and sync_event.db_key == "project":
         try:
-            calendar_sync(sync_event.properties, sync_event.external_id)
+            from src.calendar_sync.plan import CALENDAR_FIELDS, calendar_properties
+
+            raw_properties = raw_page.get("properties") or {}
+            changed_ids = set(updated_property_ids or [])
+            relevant_change = not changed_ids or any(
+                isinstance(prop, Mapping) and prop.get("id") in changed_ids
+                for name, prop in raw_properties.items() if name in CALENDAR_FIELDS
+            )
+            if relevant_change and not raw_page.get("archived") and not raw_page.get("in_trash"):
+                calendar_sync(calendar_properties(raw_properties), sync_event.external_id)
         except Exception:
             side_hook_failed = True
             logger.exception(
