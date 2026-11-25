@@ -1,0 +1,18 @@
+{
+  "material_sha256": "9c14993b5e83bcdb470341a13ce123260830bfb82a4d52ece40a0da91b2ea5d8",
+  "claude": {
+    "url": "https://claude.ai/chat/18575609-5cbd-4f5b-ace5-77161df0e448",
+    "model": "Opus 5.5 中",
+    "response": "claude-initial.txt",
+    "followup": "claude-followup.txt"
+  },
+  "gemini": {
+    "url": "https://gemini.google.com/app/d7883d5ba8fc1860?hl=ja",
+    "model": "Carbon 高（画面上の名称。Pro/Thinkingの表示なし）",
+    "response": "gemini-initial.txt",
+    "note": "長時間の思考後に今すぐ回答を使用。model-responseから回答全文を取得。",
+    "followup": "gemini-followup.txt"
+  },
+  "method": "Browser Useで専用チャットへtxt添付。短文27文字/hash31 839204582を読戻し照合。ローカル資料の秘密パターン0。API不使用。",
+  "followup_material_sha256": "0dff1e5eacd9741a0d2deac486ca18a0caf411de52dd8400ad905abb605ec4ab"
+}

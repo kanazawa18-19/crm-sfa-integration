@@ -7,23 +7,28 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.calendar_sync.plan import build_event_plan, calendar_properties
+from src.calendar_sync.plan import calendar_properties
+from src.calendar_sync.tasks import build_task_plan
+from src.calendar_sync.todo import payload
 
 
 def preview_page(page: Mapping[str, Any]) -> dict[str, Any]:
     if page.get("archived") or page.get("in_trash"):
         return {"status": "保留", "reason": "アーカイブ・ゴミ箱の案件"}
     properties = calendar_properties(page.get("properties") or {})
-    plan = build_event_plan(properties, str(page["id"]))
-    if plan is None:
-        return {"status": "保留", "reason": "アクション内容・AI推奨アクション日の未入力、またはアクションなしの指定"}
-    reps = properties.get("担当メンバー") or []
-    if not reps:
-        return {"status": "保留", "reason": "担当メンバーが未入力"}
-    return {
-        "status": "登録候補", "event": plan, "notion_user_id": reps[0],
-        "note": "終日予定。担当者のメール解決・カレンダー接続は別途確認が必要",
-    }
+    plan = build_task_plan(properties, str(page["id"]))
+    tasks = []
+    for task in plan.tasks:
+        reason = ('タスクの期限が未入力' if task.due is None else
+                  '担当メンバーが未入力' if not task.assignees else None)
+        tasks.append({'task_id': task.key, 'todo': payload(task, creating=True),
+                      'event': task.event() if reason is None else None,
+                      'calendar_hold': reason})
+    return {'mode': 'multi_task_preview', 'required_flag': 'PROJECT_ACTION_TODO_ENABLED=true',
+            'activation_note': 'このプレビューは有効化後の候補です。環境設定は変更していません。',
+            'status': '登録候補' if tasks else '保留', 'tasks': tasks,
+            'holds': list(plan.holds) or ([] if tasks else ['アクションが未入力または対応不要のため登録候補はありません']),
+            'note': '書込みなし。既存TODOの人編集・完了・作成結果不明、Calendarの接続・旧予定は実行時に別途照合します'}
 
 
 def main() -> None:

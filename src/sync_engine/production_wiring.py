@@ -791,33 +791,28 @@ def build_spreadsheet_targets_by_db() -> dict[str, SpreadsheetSyncTarget]:
 
 
 def build_calendar_sync_callable() -> Callable[[Mapping[str, Any], str], Any] | None:
-    """`notion_webhook.handler_with_proxy`の`calendar_sync`引数へそのまま渡せる
-    `Callable[[Mapping[str, Any], str], Any]`を組み立てる（案件管理DBの「次回アクション日」
-    変更をweb-engagement-tool側のGoogle Calendar連携APIへ同期する
-    `src.calendar_sync.service.sync_next_action_date_to_calendar`をベースにする）。
-
-    `WebEngagementToolCalendarClient()`は`WEB_ENGAGEMENT_TOOL_URL`/`CALENDAR_SYNC_API_TOKEN`が
-    未設定の場合に構築時`ValueError`を送出するため、ここでcatchして`None`を返し、Calendar同期
-    を無効化する（`build_spreadsheet_targets_by_db`等、他の任意連携と同じ「未設定なら無効化」
-    パターン）。
-
-    `timeout`/`max_retries`はクライアントの既定値（`DEFAULT_TIMEOUT_SECONDS`/
-    `DEFAULT_MAX_RETRIES`）ではなく、明示的に`HOOK_TIMEOUT_SECONDS`/`HOOK_MAX_RETRIES`を渡す
-    （shirokuma-secレビューWARN対応。このフックは`handler_with_proxy()`の中で
-    `dispatcher.dispatch()`の後に同期的に呼ばれるため、既定値のままだと最悪ケースでwebhook
-    レスポンスを数十秒遅延させうる。詳細は`_http.py`の該当定数のコメント参照）。
-    """
+    """明示有効化時はTODOを独立起動し、未有効化時は従来Calendar経路を維持する。"""
+    todo_enabled = os.environ.get("PROJECT_ACTION_TODO_ENABLED", "").lower() == "true"
     try:
         calendar_client = WebEngagementToolCalendarClient(
-            timeout=HOOK_TIMEOUT_SECONDS, max_retries=HOOK_MAX_RETRIES
-        )
+            timeout=10 if todo_enabled else HOOK_TIMEOUT_SECONDS, max_retries=HOOK_MAX_RETRIES)
     except ValueError:
-        logger.info(
-            "WEB_ENGAGEMENT_TOOL_URL/CALENDAR_SYNC_API_TOKENが未設定のため、Notion次回アクション日"
-            "のGoogle Calendar同期は無効化されます"
-        )
+        calendar_client = None
+    if not todo_enabled:
+        return (functools.partial(sync_next_action_date_to_calendar, calendar_client=calendar_client)
+                if calendar_client is not None else None)
+    from src.calendar_sync.todo import TodoSynchronizer
+    from src.calendar_sync.service import sync_project_actions
+    try:
+        todo_sync = TodoSynchronizer()
+    except ValueError:
+        logger.warning("案件TODO同期は有効ですがNotion認証が未設定です")
         return None
-    return functools.partial(sync_next_action_date_to_calendar, calendar_client=calendar_client)
+    if calendar_client is None:
+        logger.info("Calendar設定未入力。案件TODOは処理し、予定は保留します")
+    sync = functools.partial(sync_project_actions, todo_sync=todo_sync, calendar_client=calendar_client)
+    sync.requires_source_version = True
+    return sync
 
 
 def build_lead_sync_callable(

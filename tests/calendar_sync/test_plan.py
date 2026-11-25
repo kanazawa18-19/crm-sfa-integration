@@ -56,15 +56,15 @@ def test_preview_is_offline_and_explains_missing_date(monkeypatch):
     page = {"id": PAGE, "properties": {
         "次回アクション": {"type": "rich_text", "rich_text": [{"plain_text": "電話する"}]},
     }}
-    assert preview_page(page) == {"status": "保留", "reason": "アクション内容・AI推奨アクション日の未入力、またはアクションなしの指定"}
+    assert preview_page(page)["tasks"][0]["calendar_hold"] == "タスクの期限が未入力"
     page["properties"].update({
         "AI推奨アクション日": {"type": "date", "date": {"start": "2026-11-25"}},
         "担当メンバー": {"type": "people", "people": [{"id": "user-1"}]},
     })
     preview = preview_page(page)
     assert preview["status"] == "登録候補"
-    assert preview["notion_user_id"] == "user-1"
-    assert preview["event"]["date"] == "2026-11-25"
+    assert preview["tasks"][0]["todo"]["担当者"]["people"] == [{"id": "user-1"}]
+    assert preview["tasks"][0]["event"]["date"] == "2026-11-25"
     page["in_trash"] = True
     assert preview_page(page)["status"] == "保留"
 

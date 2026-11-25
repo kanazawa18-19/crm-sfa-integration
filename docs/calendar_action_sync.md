@@ -1,6 +1,6 @@
 # Notionの次回アクションをGoogleカレンダーへ登録する
 
-2026-11-24。ローカル実装・内部レビュー済み。本番未反映、実カレンダー書込み未実施。
+2026-11-24の単一予定仕様。2026-11-25の複数TODO・予定への拡張は [複数アクション仕様](calendar_multi_action_sync.md) を参照。新機能は既定OFF。本番未反映、実カレンダー書込み未実施。
 
 ## 登録内容
 
@@ -39,7 +39,7 @@ Notion案件DBの5項目の型をAPIで確認（AI推奨／次回アクション
 - CRM: `src/calendar_sync/plan.py`、`preview.py`、`service.py`、Notion webhook。関連516試験成功（通信・DBは模擬、日付/内容/担当が欠けるケース、優先順、部分通知、他配送への影響抑止を含む）。
 - 受信側: 専用worktree `~/web-engagement-calendar`、基点118d112。本番記録のソースに固定IDと409時の同一性確認を追加。他作業中の `~/web-engagement-tool` の変更・未push11件は取り込まない。
 - 独立SEC/品質/QAで重複作成BLOCKERを検出・修正し、再レビューBLOCKER 0。
-- 他社レビュー未実施。公式Chrome host unavailable。公式4診断でChrome稼働・拡張導入・ネイティブホスト正常。Browser Use経由のGemini接続は自動承認審査に拒否され停止。Chrome/ChatGPTの再起動は未実施。
+- 初回の他社レビューは接続・自動承認審査で停止したが、その後Gemini/Claudeで実施済み。記録は `docs/reviews/calendar-action-20261124/`。2026-11-25の複数タスク拡張レビューとは別。
 - Google予定の新規→更新→再実行件数不変の実接続確認は未実施。本番配備前に受信側→CRM側の順で確認する。候補0件なので既存案件の日付を勝手に変更して試さない。
 
 Google固定IDの仕様: https://developers.google.com/workspace/calendar/api/v3/reference/events/insert

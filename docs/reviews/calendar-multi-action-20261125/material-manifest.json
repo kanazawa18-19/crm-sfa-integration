@@ -1,0 +1,11 @@
+{
+  "bytes": 38840,
+  "sha256": "9c14993b5e83bcdb470341a13ce123260830bfb82a4d52ece40a0da91b2ea5d8",
+  "sensitivePatternHits": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "note": "限定ソースと説明のみ。顧客原本・環境変数値・鍵を含めない。"
+}

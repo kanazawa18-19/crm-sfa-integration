@@ -15,6 +15,7 @@ from src.sync_engine.clients._http import (
     ApiError,
     DEFAULT_BACKOFF_BASE_SECONDS,
     DEFAULT_MAX_RETRIES,
+    DEFAULT_MAX_RATE_LIMIT_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
     raise_for_error,
     request_with_retry,
@@ -79,6 +80,7 @@ class WebEngagementToolCalendarClient:
         summary: str,
         date: str,
         description: str | None = None,
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         """`POST /api/calendar/events`を呼び、予定を作成/更新（upsert）する。
 
@@ -94,6 +96,8 @@ class WebEngagementToolCalendarClient:
             "summary": summary,
             "date": date,
         }
+        if task_id is not None:
+            body["task_id"] = task_id
         if description is not None:
             body["description"] = description
 
@@ -103,13 +107,18 @@ class WebEngagementToolCalendarClient:
             headers=self._headers(),
             json_body=body,
             timeout=self._timeout,
-            max_retries=self._max_retries,
+            max_retries=0 if task_id is not None else self._max_retries,
+            max_rate_limit_retries=0 if task_id is not None else DEFAULT_MAX_RATE_LIMIT_RETRIES,
             backoff_base=self._backoff_base,
             # upsert前提のAPI契約（同じnotion_project_idで複数回呼んでも重複作成されない）
             # のため、タイムアウト/5xx時の再送で問題ない。
-            idempotent=True,
+            idempotent=task_id is None,
         )
 
+        if response.status_code == 409:
+            error_body = response.json() if response.content else {}
+            if error_body.get("error") == "legacy_event_migration_required":
+                return {"skipped": "legacy_event_migration_required"}
         if response.status_code == 422:
             error_body = response.json() if response.content else {}
             if error_body.get("error") == "rep_not_connected":

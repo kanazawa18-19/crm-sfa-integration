@@ -9,6 +9,8 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 
+SOURCE_VERSION_KEY = "__source_last_edited_time"
+
 CALENDAR_FIELDS = frozenset({
     "案件名", "次回アクション", "AI推奨アクション", "AI推奨アクション日", "担当メンバー",
 })

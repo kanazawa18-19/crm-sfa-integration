@@ -692,7 +692,7 @@ def handler_with_proxy(
     side_hook_failed = False
     if calendar_sync is not None and sync_event.db_key == "project":
         try:
-            from src.calendar_sync.plan import CALENDAR_FIELDS, calendar_properties
+            from src.calendar_sync.plan import CALENDAR_FIELDS, SOURCE_VERSION_KEY, calendar_properties
 
             raw_properties = raw_page.get("properties") or {}
             changed_ids = set(updated_property_ids or [])
@@ -701,7 +701,10 @@ def handler_with_proxy(
                 for name, prop in raw_properties.items() if name in CALENDAR_FIELDS
             )
             if relevant_change and not raw_page.get("archived") and not raw_page.get("in_trash"):
-                calendar_sync(calendar_properties(raw_properties), sync_event.external_id)
+                action_properties = calendar_properties(raw_properties)
+                if getattr(calendar_sync, "requires_source_version", False):
+                    action_properties[SOURCE_VERSION_KEY] = raw_page.get("last_edited_time")
+                calendar_sync(action_properties, sync_event.external_id)
         except Exception:
             side_hook_failed = True
             logger.exception(

@@ -1,0 +1,255 @@
+Claude の応答：添付の範囲でレビューしました。select_action_date、PostgresCreationJournal（get と dismiss_hold）、acquire_record_sync_lock、handler_with_proxy の呼び出し条件、build_event_plan が使う案件IDの形式は資…
+Notion同期の保留解除と移行手順を検討中。
+Notion同期の保留解除と移行手順を検討中
+
+Notion同期の保留解除と移行手順を検討中
+
+添付の範囲でレビューしました。select_action_date、PostgresCreationJournal（get と dismiss_hold）、acquire_record_sync_lock、handler_with_proxy の呼び出し条件、build_event_plan が使う案件IDの形式は資料に含まれていません。これらに依存する指摘は「要確認」と書いています。
+
+指摘一覧
+ID	区分	対象	要旨
+B1	BLOCKER	service.py / todo.py / wiring	Webhook内で同期的に全タスクを処理している。TODO作成が案件Webhookを再び起こす可能性があり、案件単位のロックもないため、タイムアウト・429の連鎖・POST途中の強制終了につながる
+B2	BLOCKER	todo.py / todo_journal.py	「POST結果不明」の扱いが広すぎ、復旧手段もない。作成済みIDの記録も上書きで消える
+B3	BLOCKER（有効化の前提）	MA側 upsert / wiring	旧単一予定を持つ既存案件はすべて予定同期が止まる。移行手段がなく、ID形式が違うと逆に予定が重複する
+W1	WARN	todo.py	作成時の基準値が「送った値」なので、Notion側の正規化差があると新規TODOが全件「人が編集」と誤判定される
+W2	WARN	todo.py	PATCHの結果が不明な状態からは、未反映と確定していても自動で抜けられない
+W3	WARN（条件次第でBLOCKER）	todo_journal.py _hold	ON CONFLICT で state を戻していない。解除後の再保留が見えなくなる恐れがある
+W4	WARN	todo_journal.py	既存表（HubCreationAttempt）の再利用に伴う制約と、既存処理への影響。本番DBが利用上限にある点
+W5	WARN	tasks.py	項目数が1件か複数件かで期限の取得元が変わり、日付が勝手に変わる
+W6	WARN	tasks.py	曜日表記や月日1桁の日付が識別子に残り、日付を変えただけで別タスクになる
+W7	WARN	MA側 upsert	Google予定には人編集の保護がなく、毎回無条件にpatchしている。削除済み予定は一般的な500として扱われ再送される
+W8	WARN	service.py	保留を再実行する仕組みがない。完了・進行中のTODOが保留一覧を埋める
+W9	WARN（要確認）	service.py	Webhookの順序が逆転すると古い内容でTODOを上書きする恐れがある
+I1〜I9	INFO	各所	下記参照
+BLOCKER
+B1. Webhook内の同期処理、自己誘発Webhook、ロックが効いているか不明
+
+対象は sync_project_actions、NotionTodoClient._request、TodoJournal.lock、build_calendar_sync_callable です。
+
+問題点:
+
+以前のwiringは「フックは handler_with_proxy() 内で同期実行されるので HOOK_TIMEOUT を使う」という理由で時間を絞っていました。その説明が消えています。新しいTODOクライアントは timeout=10 秒固定で、1タスクあたり Notion の GET 1〜3回と POST/PATCH、さらにCalendar API（MA側で list、insert/patch、get）を呼びます。50タスクなら数分かかり得ます。
+「🤝 案件管理」が双方向リレーションの場合、TODOを1件作るたびに案件ページの逆リレーション項目が変わります。そのたびに案件Webhookが発火し、sync_project_actions が再度全件を処理し始める可能性があります。
+acquire_record_sync_lock(object(), 'project', key) は第1引数に毎回新しい object() を渡しています。
+第1引数が接続なら、with の時点で例外になります。これは try の外なので、ループ全体が中断します。
+第1引数がプロセス内の登録先なら、毎回別物になるためロックは効きません。
+TODOのテストはjournalを差し替えているとすれば、本物のロックは一度も通っていない可能性があります。
+
+再現条件: 箇条書き20件の案件で、TODOがまだ1件もない状態にフラグONで初回同期。
+
+1件作成するごとに案件Webhookが来て、並行実行が積み上がる。
+Notionのリクエスト制限（3回/秒程度）を超え、429が出る。
+GETは1回だけ再送して失敗、POSTは再送なしで結果不明扱いになる（B2へ）。
+関数がタイムアウトで強制終了すると、POST中のタスクは reserved のまま残る。
+
+修正案:
+
+案件単位で、取れなければ待たずに抜けるロックを取る。取れなければ「再実行要求」だけ記録して戻る。
+
+python
+# 例: 同一トランザクション内で
+got = conn.execute("SELECT pg_try_advisory_xact_lock(hashtext(%s))", (f"calendar-task-plan:{project_id}",)).fetchone()[0]
+if not got:
+    journal.request_rerun(project_id); return {'status': 'deferred'}
+入力が変わっていなければ処理しない。次回アクション・AI推奨アクション・AI推奨アクション日・担当メンバー・案件名 のdigestを案件キーの行に保存し、前回と同じで未解決の保留もなければ何もしない。これで逆リレーションによる再発火も止まります。
+Webhookでは「同期要求の記録」だけを行い、処理はcronやキューに移す。それが難しければ、1回の実行で処理する件数と時間に上限を設け、TODOクライアントにも HOOK_TIMEOUT を適用する。
+B2. POST結果不明の範囲が広すぎ、復旧手段がない
+
+対象は _sync の作成経路、sync の except、finish 失敗時の処理です。
+
+問題点:
+
+create() で例外が出ると、種類に関係なく reserved のまま永久保留になります。しかし429・400・401・403は「作成されていない」と確定するエラーです。結果が本当に不明なのは、タイムアウト・接続断・5xxだけです。
+状態名 '未着手'、プロパティ名、担当者IDなどが実DBと合わないと400になります。この場合、全タスクが手作業での復旧待ちになります。
+手作業で復旧するための道具がありません。reserved 行には、Notion側の該当ページを探す手掛かりが何も残っていません。
+finish が失敗したとき、保留理由に「作成済みID {page_id}」を書いています。しかし次の同期で _held(key, 'TODOの作成結果が不明です…') が同じ行の reason を上書きするため、IDはログにしか残りません。
+
+再現条件:
+
+案件にTODOが30件ある状態で初回同期する。
+429が数件出る。
+その数件は reserved のまま固定され、以後TODOも予定も作られない。
+運用者がNotionを目視で探さない限り解消しない。
+
+修正案:
+
+例外を分類する。確定失敗なら予約を解除し、次回に任せる。
+
+python
+try:
+    page_id = self.client.create(task)
+except NotionApiError as e:
+    if e.status in (400, 401, 403, 404, 429):   # 未作成が確定
+        self.journal.release(key)                 # DELETE ... WHERE state='reserved'
+        return self._held(key, f'TODO作成に失敗しました（{e.status}）。次回再試行します')
+    raise                                         # 5xx/timeout は従来どおり結果不明
+
+POSTは「429のときだけ」再送を許すのも安全です（429は実行されていないため）。
+
+TODO DBに「同期キー」（rich_text）プロパティを足し、POST時に key を入れる。結果不明の reserved は、一定時間後にTODO DBをこのキーで検索して解決する。
+1件見つかれば、その page_id を採用して finish する。
+見つからなければ（検索反映の遅れを考えて数分以上経ってから）予約を解除して再作成する。
+2件以上なら保留する。
+これは「新規表なし」の制約にも反しません（Notion DBのプロパティ追加のみ）。
+作成済みIDの記録が消えないように、reserved の行には既存の reason を上書きしない。あるいは finish の失敗時に page_id だけ別の更新で書くよう再試行する。
+B3. 旧単一予定との衝突で、既存案件の予定同期が止まる
+
+対象はMA側 upsertNotionProjectEvent と wiring の切り替えです。
+
+問題点:
+
+フラグONにすると、旧経路（task_id なし）は呼ばれなくなります。新経路は必ず task_id を付けます。旧予定（task_idなし）がある案件では毎回 LegacyEventMigrationRequiredError で409となり、保留になります。
+これまで同期されていた既存案件のほぼ全件で予定が更新されなくなり、古い日付の旧予定が残ります。移行手段は資料にありません。
+逆の問題もあります。新経路は str(UUID(...))（ハイフン付き）を notion_project_id として渡します。旧経路が別の形式（ハイフンなし等）で保存していた場合、privateExtendedProperty での検索に旧予定が引っかかりません。衝突が検出されず、旧予定と新予定が二重に並びます（要確認: build_event_plan が渡すID形式）。
+フラグをOFFに戻すと、旧経路は {"skipped": "legacy_event_migration_required"} を返すだけです。保留も記録されず、黙って同期が止まります。
+
+再現条件:
+
+旧経路で予定がある案件で、フラグONの後に案件を編集する → 予定は常に保留。
+旧予定のIDがハイフンなしで保存されていた場合 → 同じ日に旧予定と新予定が並ぶ。
+
+修正案:
+
+有効化の前に、移行スクリプトを別途用意する。
+全案件について、旧予定の件数と、現在の計画上のタスク件数を一覧にする（dry-run）。
+「タスク1件・旧予定1件」の案件だけを、運用者が承認したうえで旧予定に task_id を付けて引き継ぐ。
+それ以外は手作業とする。
+推測で転用しない方針はそのまま守れます。
+IDの形式はサーバー側で正規化する（ハイフン除去・小文字化）。移行時は両方の形式で検索する。
+「タスク予定があるのに旧経路で呼ばれた」場合は、別のエラー名（例 task_events_exist）にする。旧経路でも保留を記録する。
+WARN
+W1. 作成時の基準値が「送った値」なので、正規化差で誤判定が起きる
+
+reserve(key, expected) で、基準値に「送った値」のdigestを保存しています。作成直後に読み戻した値がこれと1文字でも違うと、「TODOが人に編集されています」として永久に保留されます。
+
+起こり得る差:
+
+複数行の箇条書き（続きの行）を含むタイトルは改行を含みます。Notionがタイトルの改行や前後の空白を変換すると一致しません。
+担当メンバー のIDの形式（ハイフンの有無）が、people プロパティの id と違う場合（要確認）。
+
+修正案:
+
+タイトルは送る前に ' '.join(title.split()) で空白を畳む。基準値の計算にも同じ処理を使う。
+担当者IDを str(UUID(x)) で正規化する。
+作成直後の1回目の照合で差が出たら、「人の編集」ではなく「正規化差」として、差のある項目名だけを記録して保留する。
+W2. PATCH結果不明から抜けられない
+
+pending が残っている状態では、actual == pending 以外はすべて保留になります。しかし actual == baseline（PATCHが反映されていない）なら、同じ内容でPATCHし直しても人の編集を上書きしません。PATCHは429でも再送されないため（max_rate_limit_retries=0）、一時的なエラーで永久保留になります。
+
+修正案:
+
+
+python
+if metadata.get('pending'):
+    if actual == metadata['pending']:
+        self.journal.metadata(key, actual); metadata = {'baseline': actual}
+    elif actual != metadata['baseline']:
+        return self._held(key, 'TODO更新の結果が未確定です…', page_id)
+    # actual == baseline → 未反映。通常の更新判定へ進む
+W3. _hold の ON CONFLICT で state を戻していない
+
+DO UPDATE SET reason=..., "updatedAt"=NOW() では state が更新されません。dismiss_hold が行を削除せず state を変える実装（例: dismissed）だと、次のようになります。
+
+1回目の保留が clear で解除される。
+2回目の「人が編集」保留は reason だけが変わり、state は dismissed のまま。
+保留一覧に出てこない。
+
+修正案: DO UPDATE SET state='blocked', reason=EXCLUDED.reason, "updatedAt"=NOW()。dismiss_hold の実装を確認し、行を削除しない方式ならBLOCKER扱いです。
+
+W4. 既存表（HubCreationAttempt）を再利用する際の整合性
+
+確認が必要な点:
+
+列の制約: 生SQLのINSERTで省略している列（"updatedAt"、id、"identityHash"）がNOT NULLでDB側の既定値がない場合、INSERTは全件失敗します。Prismaの @updatedAt や @default(cuid()) はDB側に既定値を作りません。
+値の制約: target と state がenumやCHECK制約の場合、notion_todo、notion_todo_review、reserved、created、blocked が許可されている必要があります。許可されていなければマイグレーションが必要です。
+既存処理への影響: dbKey='project' の reserved 行を、既存のHub作成の再試行・掃除・管理画面が target を絞らずに読んでいないか。誤って処理すると、案件作成の再試行対象になる恐れがあります。
+reason 列に状態JSONを入れている点: 既存処理が人向けの文字列で上書きすると json.loads が失敗し、常に保留になります。
+sync の except 内の journal.hold も同じ表に書くため、DBが失敗すると例外がそのまま外に出て、残りのタスクが処理されません。
+本番DBが利用上限にある点: 1タスクあたり最大3行（notion_todo、TODO保留、予定保留）が増えます。本文を変更するたびに新キーの行が増え、接続も操作ごとに connect() しています。容量と接続数に余裕があるか確認しないまま有効化すると、同じDBを使う既存機能まで巻き込む恐れがあります。
+W5. 項目数で期限の取得元が変わる
+
+len(items) == 1 のときは AI推奨アクション日、複数のときは項目内の日付を使います。
+
+再現条件:
+
+「・2026-12-01 訪問」「・2026-12-03 見積」の2件の状態から、1件を消す。
+残った「訪問」はキーが同じまま、期限が AI推奨アクション日 に変わる。AI推奨アクション日 が空なら期限なしになる。
+TODOの期限が書き換わり、予定は「task_date_missing」で保留される。旧日付の予定はそのまま残る。
+
+修正案: 単一項目でも、項目内に年月日があればそれを優先する。AI推奨アクション日 を使うのは「箇条書きでない単一の文章」に限る。
+
+W6. 識別子に日付周辺の文字が残る
+
+「2026年12月1日(月) 訪問」の日付を「2026年12月2日(火)」に変えると、識別子に残る「(月)」が「(火)」に変わり、別タスクになります。TODOと予定が二重になり、旧い方は削除されません。
+
+2026-1-5 はハイフン区切りで月日が1桁のため正規表現に合わず、本文の一部として扱われます（期限なし）。スラッシュや漢字の区切りでは1桁を許しているので、扱いが不揃いです。
+
+修正案:
+
+日付の直後の [（(][月火水木金土日][）)] も一緒に除去する。
+ハイフン区切りも \d{1,2} を許す。
+W7. Google側の人編集保護
+
+問題点:
+
+既存予定が見つかると毎回無条件に patch します。営業担当者がGoogle上で予定を別の日に動かしても、案件の別の項目を編集しただけで元に戻ります。
+人が予定を削除すると、決定的IDのinsertが409になり、get で cancelled と分かります。その後は一般的な Error となって500が返ります。Python側は idempotent=True なので再送を繰り返し、最終的に「calendar_sync_failed」で保留されます。
+
+修正案:
+
+最後に書き込んだ内容のdigestを extendedProperties.private に保存し、patch前に現在の内容と比べる。差があれば専用の409（例 event_edited_by_user）を返す。
+削除済み予定や同一識別子の予定が複数ある場合も、専用の409/422にする。Python側では skipped として扱い、再送しない。
+W8. 保留を再実行する仕組みがない／保留一覧が埋まる
+
+問題点:
+
+5xx・未接続（rep_not_connected）・429などで保留になっても、次に案件が編集されるまで再試行されません。担当者が後からGoogle連携を済ませても、予定は作られません。
+ステータスが「未着手」以外のTODOは毎回保留になります。完了は正常な終わり方なのに、異常として保留一覧に積み上がります。
+
+修正案:
+
+保留の行を定期的に再実行するcronを用意する（B1の非同期化と合わせて）。
+完了・進行中は保留ではなく skipped: status_changed として返し、保留一覧には載せない。
+W9. Webhookの順序逆転（要確認）
+
+properties がWebhookの受信時点の内容であれば、次のことが起こります。
+
+新しい通知が先に処理され、基準値が新しい内容になる。
+古い通知が後から処理される。
+actual == baseline で、望ましい値は古い内容になるため、PATCHで古い内容に戻る。
+
+処理する時点で案件ページを取得し直しているなら問題ありません。そうでなければ、案件の last_edited_time を保存して、それより古い入力は捨てるようにしてください。
+
+INFO
+ID	内容	提案
+I1	TODO_DATABASE_ID が固定値のため、ローカル試験でも本番のTODO DBに書き込む	環境変数にし、検証用DBを分ける
+I2	フラグONで NOTION_API_KEY が未設定だと None を返し、旧Calendar経路まで止まる	旧経路に戻す
+I3	PATCH直前の2回目の読み直しは、直前の読み取りとほぼ同時で、競合の時間をほとんど縮めない。Notionの last_edited_time は分単位	1回削ってリクエスト制限の余裕に回す
+I4	select_action_date に list を渡したときの振る舞い（1項目に日付が2つ、過去日、形式が混在）が資料にない	複数日付は保留とし、テストを明記する
+I5	MA側で同一識別子の予定が複数あると一般的な500	専用の409にする（W7と同じ）
+I6	入れ子の箇条書きは平坦な別タスクになる。全角括弧の ［id:…］ は認識されない	仕様として明記するか、NFKC後に判定する
+I7	案件の保留キーは生の notion_page_id、タスクのキーは正規化したIDを使っており、形式が揃っていない	案件キーも str(UUID()) に揃える
+I8	本文の変更で新しいタスクになり、旧タスクが残るのは仕様どおり。ただし利用者が気づけない	計画にない既存タスクキーを検出したら、案件の保留に「旧タスクが残っています」と出す（削除はしない）
+I9	TODOが確定しないとき、TODOの保留と予定の保留が二重に積まれる	予定側は todo_not_verified のとき保留を書かない
+有効化前に実APIで確認すべき項目
+
+本番での試験ができないため、検証用のNotionワークスペース、検証用TODO DB、検証用Googleカレンダーで、少なくとも以下を確認してください。ローカルでモックを使った試験の成功とは区別して記録することをお勧めします。
+
+確認項目	期待	関連
+TODO DBの 名前・期限・担当者・ステータス（status型か）・🤝 案件管理 の型と、状態名「未着手」	POSTが400にならない	B2
+改行や前後空白を含むタイトル、担当者IDを、作成→読み戻ししたときの一致	digestが一致する	W1
+双方向リレーションの場合に、TODO作成で案件Webhookが発火するか	発火しない、または入力digestで処理が止まる	B1
+acquire_record_sync_lock の第1引数の正体と、並行実行時の排他	案件単位で排他される	B1
+HubCreationAttempt の列制約・enum・既存処理の target による絞り込み	生SQLのINSERTが通り、既存処理に影響しない	W4
+dismiss_hold の実装（削除か、state変更か）	再保留が一覧に出る	W3
+旧予定の notion_project_id の形式と件数	移行対象の一覧が出せる	B3
+20〜50タスクの案件での所要時間と429の発生数	関数のタイムアウト内に収まる	B1・B2
+
+有効化の前に直す必要があるのは B1〜B3 です。W1・W3・W4 は実際のDBやAPIでの確認次第でBLOCKERに上がり得るので、上の確認と合わせて判断するのがよいと思います。
+
+
+
+
+
+
+2 分前

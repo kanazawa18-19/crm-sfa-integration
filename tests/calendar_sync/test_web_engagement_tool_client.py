@@ -157,3 +157,21 @@ def test_upsert_event_raises_calendar_sync_api_error_on_500(
             summary="サンプルホテル - 次回アクション",
             date="2026-08-10",
         )
+
+
+def test_task_idを送り移行保留を正常な保留結果へ変換(requests_mock, client):
+    requests_mock.post('http://localhost:3001/api/calendar/events', status_code=409,
+                       json={'error': 'legacy_event_migration_required'})
+    result = client.upsert_event(rep_email='rep@example.com', notion_project_id='project',
+                                 task_id='id-one', summary='電話', date='2026-11-26')
+    assert result == {'skipped': 'legacy_event_migration_required'}
+    assert requests_mock.request_history[0].json()['task_id'] == 'id-one'
+
+
+def test_task要求の通信結果不明を自動再送しない(requests_mock, client):
+    import requests
+    requests_mock.post('http://localhost:3001/api/calendar/events', exc=requests.exceptions.Timeout)
+    with pytest.raises(requests.exceptions.Timeout):
+        client.upsert_event(rep_email='rep@example.com', notion_project_id='project', task_id='id-one',
+                            summary='電話', date='2026-11-26')
+    assert len(requests_mock.request_history) == 1

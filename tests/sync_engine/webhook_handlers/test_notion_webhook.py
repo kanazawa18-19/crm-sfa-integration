@@ -1308,3 +1308,22 @@ def test_calendar_ignores_archived_or_unrelated_changes(monkeypatch, archived, c
     handler_with_proxy({"body": json.dumps(payload), "headers": {}}, None,
         notion_client=_FakeNotionPageClient(page), calendar_sync=lambda *args: calls.append(args))
     assert calls == []
+
+
+def test_新タスクhookだけに原本版を渡しstale_dispatchでもhook側で照合できる(monkeypatch):
+    from src.sync_engine.dispatcher import DispatchResult
+    from src.calendar_sync.plan import SOURCE_VERSION_KEY
+    monkeypatch.setenv('ALLOW_UNSIGNED_WEBHOOKS', 'true')
+    monkeypatch.setattr('src.sync_engine.webhook_handlers.notion_webhook._default_db_id_to_db_key', lambda: DB_ID_MAP)
+    page = _raw_notion_page()
+    page['properties']['案件名']['id'] = 'title'
+    page['last_edited_time'] = '2026-11-25T01:00:00Z'
+    calls = []
+    def hook(properties, page_id): calls.append(properties)
+    hook.requires_source_version = True
+    dispatcher = _SpyDispatcher()
+    monkeypatch.setattr(dispatcher, 'dispatch', lambda _: DispatchResult(skipped=True, reason='stale_event'))
+    result = handler_with_proxy({'body': json.dumps(_lightweight_payload()), 'headers': {}}, None,
+                               notion_client=_FakeNotionPageClient(page), dispatcher=dispatcher, calendar_sync=hook)
+    assert result['statusCode'] == 200
+    assert calls[0][SOURCE_VERSION_KEY] == '2026-11-25T01:00:00Z'

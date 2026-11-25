@@ -1,0 +1,27 @@
+{
+  "crm_independent": {
+    "passed": 566,
+    "skipped": 0,
+    "local": 558,
+    "postgres": 8
+  },
+  "ma": {
+    "passed": 46,
+    "typecheck": "passed"
+  },
+  "api": "Notion/Calendar実書込未検証",
+  "sample": {
+    "todos": 3,
+    "events": 2
+  },
+  "production_deployed": false,
+  "flag_default": false,
+  "review": "内部BLOCKER解消・外部採否はreview-decisions.md",
+  "runtime_readonly": {
+    "project": "crm-sfa-integration",
+    "team": "cnctor-c2cc0c84",
+    "fluid": true,
+    "observed_deployment_timeout_seconds": 300,
+    "task_http_budget_seconds": 120
+  }
+}

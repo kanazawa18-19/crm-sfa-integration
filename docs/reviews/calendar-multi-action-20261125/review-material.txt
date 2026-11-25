@@ -1,0 +1,819 @@
+日本語でコードレビューしてください。今回の要件はNotion案件に複数タスクがあるとき、各タスクに案件関連付け付きNotion TODOとGoogle終日予定を作ることです。新規機能はPROJECT_ACTION_TODO_ENABLED既定OFF。本番未反映、外部書込み未検証。
+BLOCKER/WARN/INFOで、具体的な再現条件と修正案を挙げてください。重複作成、途中失敗、結果不明POST、人編集保護、旧単一予定との衝突、タスク識別、実DB整合性を重点確認。
+入力は明示箇条書き。単一日付は既存AI推奨アクション日、複数は各項目内の完全年月日。日付不明はTODOだけ。明示[id:...]がなければ日付を除く本文hashがID。本文変更は新タスク、旧削除なし。Notionの条件付きPATCHなしによる最終読取と更新間の同時編集は既知制約。担当変更の旧Google予定削除/移管は対象外。既存DB表を再利用、新規表なし。
+本番DBが利用上限のため本番テストはしません。実装中のローカル試験は実API成功とは区別します。
+
+
+### crm-sfa-integration/src/calendar_sync/tasks.py
+
+"""案件の明示されたアクション境界と年月日だけを使う、外部I/Oなしの判断。"""
+from __future__ import annotations
+from dataclasses import dataclass
+from datetime import date
+import hashlib
+import re
+import unicodedata
+from typing import Any, Mapping
+from uuid import UUID
+from src.calendar_sync.plan import select_action_date
+
+_NONE = {'なし', 'アクションなし', '対応不要', '該当なし', '未入力', '-', '—'}
+_BULLET = re.compile(r'^\s*(?:[-*•・]\s*|\d+[.)、]\s+)(?:\[ \]\s*)?', re.MULTILINE)
+_DATE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{4}/\d{1,2}/\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日)(?!\d)')
+_ID = re.compile(r'^\[id:([A-Za-z0-9_-]{1,64})\]\s*', re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ActionTask:
+    key: str
+    title: str
+    due: str | None
+    project_id: str
+    project_title: str
+    source: str
+    assignees: tuple[str, ...]
+
+    def event(self) -> dict[str, str]:
+        if self.due is None:
+            raise ValueError('期限のないタスクは予定にできません')
+        short = ' '.join(self.title.split())
+        return {'task_id': self.key, 'notion_project_id': self.project_id,
+                'summary': f'{self.project_title} - {short[:100]}' + ('…' if len(short) > 100 else ''),
+                'date': self.due,
+                'description': f'{self.source}\n{self.title}\n\nNotion案件: https://www.notion.so/{UUID(self.project_id).hex}'}
+
+
+@dataclass(frozen=True)
+class TaskPlan:
+    tasks: tuple[ActionTask, ...]
+    holds: tuple[str, ...] = ()
+
+
+def split_actions(text: str) -> list[str]:
+    """行頭の明示箇条書きだけを分割。説明文や自然文の句読点を推測で分けない。"""
+    markers = list(_BULLET.finditer(text))
+    if not markers:
+        return [text.strip()]
+    prefix = text[:markers[0].start()].strip()
+    if prefix and not (len(prefix.splitlines()) == 1 and prefix.endswith((':', '：'))):
+        raise ValueError('前置きと箇条書きの境界が曖昧です。前置きは末尾をコロンにしてください')
+    return [text[m.end():markers[i + 1].start() if i + 1 < len(markers) else len(text)].strip()
+            for i, m in enumerate(markers)]
+
+
+def build_task_plan(properties: Mapping[str, Any], project_id: str, *, today: date | None = None) -> TaskPlan:
+    project_id = str(UUID(project_id))
+    source, action = '', ''
+    for name in ('次回アクション', 'AI推奨アクション'):
+        value = properties.get(name)
+        if isinstance(value, str) and value.strip():
+            source, action = name, value.strip()
+            break
+    if not action or action in _NONE:
+        return TaskPlan(())
+    try:
+        items = split_actions(action)
+    except ValueError as exc:
+        return TaskPlan((), (str(exc),))
+    if len(items) > 50:
+        return TaskPlan((), ('タスク数が50件を超えるため分割内容を確認してください',))
+    tasks: dict[str, ActionTask] = {}
+    conflicted: set[str] = set()
+    holds: list[str] = []
+    for item in items:
+        if not item or item in _NONE:
+            continue
+        if re.match(r'^\[[xX]\]', item):
+            holds.append('完了チェック付きのアクションは自動登録しません')
+            continue
+        explicit = _ID.match(item)
+        title = item[explicit.end():].strip() if explicit else item
+        if not title or len(title) > 2000:
+            holds.append('タスク本文が空または2000文字超のため登録を保留しました')
+            continue
+        normalized = unicodedata.normalize('NFKC', title)
+        dates = _DATE.findall(normalized)
+        identity = ' '.join(_DATE.sub('', normalized).split()).casefold().strip(' :：,、;；-')
+        if not identity:
+            holds.append('日付だけの項目はアクション本文が必要です')
+            continue
+        key = 'id-' + explicit.group(1) if explicit else 'auto-' + hashlib.sha256(identity.encode()).hexdigest()
+        try:
+            # 単一アクションでは従来どおり案件のAI推奨日だけを使用する。
+            raw_date = properties.get('AI推奨アクション日') if len(items) == 1 else dates
+            due = select_action_date(raw_date, today=today)
+        except (ValueError, TypeError):
+            holds.append(f'タスク {key} の年月日が不正です')
+            continue
+        task = ActionTask(key, title, due.isoformat() if due else None, project_id,
+                          str(properties.get('案件名') or '（案件名未設定）'), source,
+                          tuple(properties.get('担当メンバー') or ()))
+        if key in tasks and tasks[key] != task:
+            conflicted.add(key)
+            holds.append(f'タスク {key} の識別子が重複しています。各項目に別の [id:識別子] を指定してください')
+        else:
+            tasks[key] = task
+    return TaskPlan(tuple(task for key, task in tasks.items() if key not in conflicted), tuple(holds))
+
+
+### crm-sfa-integration/src/calendar_sync/todo.py
+
+"""案件TODOの保存・読戻し。人が変えた管理項目や完了状態を自動上書きしない。"""
+from __future__ import annotations
+import hashlib
+import json
+import logging
+import os
+from urllib.parse import quote
+from uuid import UUID
+from src.calendar_sync.tasks import ActionTask
+from src.calendar_sync.todo_journal import TodoJournal
+from src.sync_engine.clients._http import request_with_retry, raise_for_error
+from src.sync_engine.clients.notion_client import NotionApiError
+
+TODO_DATABASE_ID = '86f4b46c-714b-48e4-9327-62f7ef73887f'
+PROJECT_RELATION = '🤝 案件管理'
+logger = logging.getLogger(__name__)
+
+
+def desired_snapshot(task: ActionTask):
+    return {'name': task.title, 'due': {'start': task.due, 'end': None, 'time_zone': None} if task.due else None,
+            'assignees': sorted(task.assignees), 'projects': [task.project_id.replace('-', '')],
+            'status': '未着手'}
+
+
+def snapshot(page):
+    props = page.get('properties') or {}
+    title = props.get('名前', {}).get('title', [])
+    due = props.get('期限', {}).get('date')
+    return {'name': ''.join(p.get('plain_text', p.get('text', {}).get('content', '')) for p in title),
+            'due': {key: due.get(key) for key in ('start', 'end', 'time_zone')} if due else None,
+            'assignees': sorted(p['id'] for p in props.get('担当者', {}).get('people', [])),
+            'projects': sorted(p['id'].replace('-', '') for p in props.get(PROJECT_RELATION, {}).get('relation', [])),
+            'status': (props.get('ステータス', {}).get('status') or {}).get('name')}
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def payload(task, *, creating=False):
+    result = {'名前': {'title': [{'text': {'content': task.title}}]},
+              '期限': {'date': {'start': task.due} if task.due else None},
+              '担当者': {'people': [{'id': user} for user in task.assignees]},
+              PROJECT_RELATION: {'relation': [{'id': task.project_id}]}}
+    if creating:
+        result['ステータス'] = {'status': {'name': '未着手'}}
+    return result
+
+
+class NotionTodoClient:
+    def __init__(self, *, api_key=None):
+        self.api_key = api_key or os.environ.get('NOTION_API_KEY')
+        if not self.api_key:
+            raise ValueError('Notion TODO用の認証が未設定です')
+
+    def _request(self, method, path, body=None):
+        response = request_with_retry(method, 'https://api.notion.com/v1' + path,
+            headers={'Authorization': 'Bearer ' + self.api_key, 'Notion-Version': '2022-06-28'},
+            json_body=body, timeout=10, max_retries=1 if method == 'GET' else 0,
+            max_rate_limit_retries=1 if method == 'GET' else 0, idempotent=method == 'GET')
+        raise_for_error(response, NotionApiError)
+        return response.json()
+
+    def create(self, task):
+        page = self._request('POST', '/pages', {'parent': {'database_id': TODO_DATABASE_ID},
+                                               'properties': payload(task, creating=True)})
+        return str(UUID(page['id']))
+
+    def read(self, page_id):
+        return self._request('GET', '/pages/' + quote(page_id, safe=''))
+
+    def update(self, page_id, task):
+        self._request('PATCH', '/pages/' + quote(page_id, safe=''), {'properties': payload(task)})
+
+
+class TodoSynchronizer:
+    def __init__(self, client=None, journal=None):
+        self.client = client if client is not None else NotionTodoClient()
+        self.journal = journal if journal is not None else TodoJournal()
+
+    def sync(self, task: ActionTask):
+        key = f'calendar-task:{task.project_id}:{task.key}'
+        with self.journal.lock(key):
+            try:
+                return self._sync(task, key)
+            except Exception:
+                # 外部例外本文には原本や認証情報が入り得るため保存しない。
+                self.journal.hold(key, 'TODO保存・読戻しに失敗しました。予約と作成済みIDを確認してください')
+                return {'status': 'held', 'reason': 'todo_io_failed'}
+
+    def _held(self, key, reason, page_id=None):
+        self.journal.hold(key, reason)
+        return {'status': 'held', 'reason': reason, 'page_id': page_id}
+
+    def _sync(self, task, key):
+        desired = desired_snapshot(task)
+        expected = digest(desired)
+        row = self.journal.get(key)
+        if row is None:
+            if not self.journal.reserve(key, expected):
+                return self._held(key, 'TODOの作成予約が進行中です')
+            # 非冪等POSTは一度だけ。ID確定前の中断はreservedのまま手動確認する。
+            page_id = self.client.create(task)
+            try:
+                self.journal.finish(key, page_id)
+            except Exception:
+                logger.error('TODO作成IDの台帳保存失敗: key=%s page_id=%s', key, page_id)
+                return self._held(key, f'TODO作成済みID {page_id} の台帳保存を確認してください。再作成は停止中です', page_id)
+            row = self.journal.get(key)
+        if row is None or row['state'] != 'created' or not row.get('externalId'):
+            return self._held(key, 'TODOの作成結果が不明です。自動再作成せず確認を待っています')
+        page_id = row['externalId']
+        page = self.client.read(page_id)
+        if (page.get('archived') or page.get('in_trash') or
+                page.get('parent', {}).get('database_id', '').replace('-', '') != TODO_DATABASE_ID.replace('-', '')):
+            return self._held(key, 'TODOが無効または別DBに移動しています', page_id)
+        current = snapshot(page)
+        if current['status'] != '未着手':
+            return self._held(key, 'TODOのステータスが変更済みのため、TODOと予定を保留しました', page_id)
+        actual = digest(current)
+        metadata = row['metadata']
+        if metadata.get('pending'):
+            if actual != metadata['pending']:
+                return self._held(key, 'TODO更新の結果が未確定です。再更新せず確認を待っています', page_id)
+            self.journal.metadata(key, actual)
+            metadata = {'baseline': actual}
+        if actual != metadata['baseline']:
+            return self._held(key, 'TODOが人に編集されています。TODOと予定を自動上書きしません', page_id)
+        if actual != expected:
+            # Notionには条件付きPATCHがないため、書込直前にも読み直して変更を検出する。
+            latest = self.client.read(page_id)
+            if latest.get('last_edited_time') != page.get('last_edited_time') or digest(snapshot(latest)) != actual:
+                return self._held(key, 'TODOが照合中に変更されました', page_id)
+            self.journal.metadata(key, actual, expected)
+            self.client.update(page_id, task)
+            verified = self.client.read(page_id)
+            if verified.get('archived') or verified.get('in_trash') or digest(snapshot(verified)) != expected:
+                return self._held(key, 'TODO更新後の保存値を確認できません', page_id)
+            self.journal.metadata(key, expected)
+        self.journal.clear(key)
+        return {'status': 'verified', 'page_id': page_id}
+
+
+### crm-sfa-integration/src/calendar_sync/todo_journal.py
+
+"""TODOの非冪等作成と更新前の状態を既存予約表へ保存する。本文は台帳に複写しない。"""
+from __future__ import annotations
+import hashlib
+import json
+from src.hub_creation.journal import PostgresCreationJournal, connect
+from src.sync_engine.record_sync_lock import acquire_record_sync_lock
+
+
+class TodoJournal:
+    target = 'notion_todo'
+
+    def lock(self, key):
+        return acquire_record_sync_lock(object(), 'project', key)
+
+    def get(self, key):
+        row = PostgresCreationJournal().get(key, self.target)
+        if row is None:
+            return None
+        return {**row, 'metadata': json.loads(row['reason'])}
+
+    def reserve(self, key, digest):
+        metadata = json.dumps({'baseline': digest, 'pending': None})
+        with connect() as conn:
+            row = conn.execute('''INSERT INTO "HubCreationAttempt"
+                ("sourceKey",target,"dbKey","identityHash",state,reason)
+                VALUES (%s,%s,'project',%s,'reserved',%s)
+                ON CONFLICT ("sourceKey",target) DO NOTHING RETURNING "sourceKey"''',
+                (key, self.target, hashlib.sha256(key.encode()).hexdigest(), metadata)).fetchone()
+        return row is not None
+
+    def finish(self, key, page_id):
+        with connect() as conn:
+            cursor = conn.execute('''UPDATE "HubCreationAttempt" SET state='created', "externalId"=%s,
+                "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='reserved' ''',
+                (page_id, key, self.target))
+            if cursor.rowcount != 1:
+                raise RuntimeError('TODO作成IDを確定できません')
+            self._hold(conn, key, 'TODOの保存値を確認しています')
+
+    def metadata(self, key, baseline, pending=None):
+        with connect() as conn:
+            cursor = conn.execute('''UPDATE "HubCreationAttempt" SET reason=%s,"updatedAt"=NOW()
+                WHERE "sourceKey"=%s AND target=%s AND state='created' ''',
+                (json.dumps({'baseline': baseline, 'pending': pending}), key, self.target))
+            if cursor.rowcount != 1:
+                raise RuntimeError('TODOの更新状態を保存できません')
+            if pending is not None:
+                self._hold(conn, key, 'TODO更新の保存値を確認しています')
+
+    def _hold(self, conn, key, reason):
+        conn.execute('''INSERT INTO "HubCreationAttempt" ("sourceKey",target,"dbKey",state,reason)
+            VALUES (%s,'notion_todo_review','project','blocked',%s)
+            ON CONFLICT ("sourceKey",target) DO UPDATE SET reason=EXCLUDED.reason,"updatedAt"=NOW()''',
+            (key, reason))
+
+    def hold(self, key, reason):
+        with connect() as conn:
+            self._hold(conn, key, reason)
+
+    def clear(self, key):
+        PostgresCreationJournal().dismiss_hold(key, 'notion_todo_review')
+
+
+### crm-sfa-integration/src/calendar_sync/service.py
+
+"""Notion案件管理DB「AI推奨アクション日」変更を、web-engagement-tool側のGoogle Calendar連携API
+へ同期するサービス層。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
+
+from src.calendar_sync.notion_user_email import get_notion_user_email
+from src.calendar_sync.plan import build_event_plan
+from src.calendar_sync.web_engagement_tool_client import WebEngagementToolCalendarClient
+
+
+def sync_next_action_date_to_calendar(
+    properties: Mapping[str, Any],
+    notion_page_id: str,
+    *,
+    calendar_client: WebEngagementToolCalendarClient | None = None,
+) -> dict[str, Any] | None:
+    """取得済み案件のカレンダー専用5項目を使い、次回アクションを担当メンバーの
+    Google Calendarへ同期する。
+
+    以下の場合は同期をスキップし`None`を返す:
+    - アクション内容またはAI推奨アクション日が空欄。**「削除された（Noneになった）場合にカレンダー側の
+      予定も削除すべきか」は今回のスコープ外とし、単に同期をスキップすることでよい。**
+    - `"担当メンバー"`が無い、または空リスト（誰のカレンダーに登録すればよいか不明なため）。
+    - 先頭の担当メンバーIDのメールアドレスが解決できない（`get_notion_user_email`が`None`を
+      返した場合）。
+
+    `calendar_client`省略時は`WebEngagementToolCalendarClient()`をデフォルト生成する
+    （テストでは注入して差し替える）。
+
+    この関数自体は例外を握りつぶさない（呼び出し元＝webhookハンドラ側で「失敗してもWebhook
+    全体は失敗させない」という判断を行う設計とする）。
+    """
+    plan = build_event_plan(properties, notion_page_id)
+    if plan is None:
+        logger.info("calendar_sync skipped: reason=missing_action_or_date_or_no_action")
+        return None
+
+    reps = properties.get("担当メンバー")
+    if not reps:
+        logger.info("calendar_sync skipped: reason=missing_rep")
+        return None
+
+    rep_email = get_notion_user_email(reps[0])
+    if rep_email is None:
+        logger.info("calendar_sync skipped: reason=unresolved_rep")
+        return None
+
+    if calendar_client is None:
+        calendar_client = WebEngagementToolCalendarClient()
+
+    return calendar_client.upsert_event(rep_email=rep_email, **plan)
+
+
+def sync_project_actions(properties, notion_page_id, *, todo_sync, calendar_client=None):
+    """タスクごとにTODOを確定してから予定を同期し、失敗・保留を個別に返す。"""
+    from src.calendar_sync.tasks import build_task_plan
+    plan = build_task_plan(properties, notion_page_id)
+    project_key = f'calendar-task-plan:{notion_page_id}'
+    if plan.holds:
+        todo_sync.journal.hold(project_key, ' / '.join(plan.holds))
+    else:
+        todo_sync.journal.clear(project_key)
+    results = []
+    rep_email = None
+    for task in plan.tasks:
+        result = {'task_id': task.key, 'todo': todo_sync.sync(task)}
+        if result['todo']['status'] != 'verified':
+            result['calendar'] = {'status': 'held', 'reason': 'todo_not_verified'}
+        elif task.due is None:
+            result['calendar'] = {'status': 'held', 'reason': 'task_date_missing'}
+        elif not task.assignees:
+            result['calendar'] = {'status': 'held', 'reason': 'assignee_missing'}
+        elif calendar_client is None:
+            result['calendar'] = {'status': 'held', 'reason': 'calendar_not_configured'}
+        else:
+            try:
+                if rep_email is None:
+                    rep_email = get_notion_user_email(task.assignees[0])
+                result['calendar'] = (calendar_client.upsert_event(rep_email=rep_email, **task.event())
+                                      if rep_email else {'status': 'held', 'reason': 'assignee_email_unresolved'})
+            except Exception:
+                result['calendar'] = {'status': 'held', 'reason': 'calendar_sync_failed'}
+        calendar = result['calendar']
+        key = f'calendar-event:{task.project_id}:{task.key}'
+        if calendar.get('status') == 'held' or calendar.get('skipped'):
+            todo_sync.journal.hold(key, 'カレンダー未反映: ' + str(calendar.get('reason') or calendar.get('skipped')))
+        else:
+            todo_sync.journal.clear(key)
+        results.append(result)
+    logger.info('案件タスク同期: tasks=%d plan_holds=%d calendar_holds=%d', len(results), len(plan.holds),
+                sum(r['calendar'].get('status') == 'held' or bool(r['calendar'].get('skipped')) for r in results))
+    return {'tasks': results, 'holds': list(plan.holds)}
+
+
+### crm-sfa-integration/src/calendar_sync/web_engagement_tool_client.py
+
+"""web-engagement-tool側のGoogle Calendar連携API（`POST /api/calendar/events`）を呼ぶクライアント。
+
+営業担当者ごとのGoogle Calendar OAuth接続はweb-engagement-tool側で管理されており、本モジュールは
+そのAPIを呼ぶだけの薄いHTTPクライアント。`src/sync_engine/clients/_http.py`の
+`request_with_retry`/`raise_for_error`/`ApiError`を再利用する（既存の`HttpNotionClient`・
+`NotionUserDirectory`と同じHTTPクライアント基盤）。
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from src.sync_engine.clients._http import (
+    ApiError,
+    DEFAULT_BACKOFF_BASE_SECONDS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT_SECONDS,
+    raise_for_error,
+    request_with_retry,
+)
+
+
+class CalendarSyncApiError(ApiError):
+    """web-engagement-tool側カレンダー連携API呼び出し失敗時に送出する例外。"""
+
+
+class WebEngagementToolCalendarClient:
+    """web-engagement-tool側`POST /api/calendar/events`を呼ぶクライアント。
+
+    `base_url`（省略時`WEB_ENGAGEMENT_TOOL_URL`環境変数）・`api_token`（省略時
+    `CALENDAR_SYNC_API_TOKEN`環境変数）を必要とする。両方とも未設定の場合は`ValueError`を
+    送出する（既存の`HttpNotionClient`が`NOTION_API_KEY`未設定時に送出するパターンに合わせる）。
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_token: str | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff_base: float = DEFAULT_BACKOFF_BASE_SECONDS,
+    ) -> None:
+        self._base_url = base_url if base_url is not None else os.environ.get(
+            "WEB_ENGAGEMENT_TOOL_URL"
+        )
+        if not self._base_url:
+            raise ValueError(
+                "WEB_ENGAGEMENT_TOOL_URL environment variable (or base_url argument) "
+                "is required but not set"
+            )
+        self._base_url = self._base_url.rstrip("/")
+
+        self._api_token = api_token if api_token is not None else os.environ.get(
+            "CALENDAR_SYNC_API_TOKEN"
+        )
+        if not self._api_token:
+            raise ValueError(
+                "CALENDAR_SYNC_API_TOKEN environment variable (or api_token argument) "
+                "is required but not set"
+            )
+
+        self._timeout = timeout
+        self._max_retries = max_retries
+        self._backoff_base = backoff_base
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_token}",
+            "Content-Type": "application/json",
+        }
+
+    def upsert_event(
+        self,
+        *,
+        rep_email: str,
+        notion_project_id: str,
+        summary: str,
+        date: str,
+        description: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """`POST /api/calendar/events`を呼び、予定を作成/更新（upsert）する。
+
+        対象の営業担当者がまだGoogle Calendar連携をしていない場合（422、
+        `{"error": "rep_not_connected", ...}`）は例外を投げず、
+        `{"skipped": "rep_not_connected", "rep_email": rep_email}`を返す（Webhook処理全体を
+        失敗させるべきではないため）。401/400/5xx等その他のエラーは`CalendarSyncApiError`を
+        送出する。
+        """
+        body: dict[str, Any] = {
+            "rep_email": rep_email,
+            "notion_project_id": notion_project_id,
+            "summary": summary,
+            "date": date,
+        }
+        if task_id is not None:
+            body["task_id"] = task_id
+        if description is not None:
+            body["description"] = description
+
+        response = request_with_retry(
+            "POST",
+            f"{self._base_url}/api/calendar/events",
+            headers=self._headers(),
+            json_body=body,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+            # upsert前提のAPI契約（同じnotion_project_idで複数回呼んでも重複作成されない）
+            # のため、タイムアウト/5xx時の再送で問題ない。
+            idempotent=True,
+        )
+
+        if response.status_code == 409:
+            error_body = response.json() if response.content else {}
+            if error_body.get("error") == "legacy_event_migration_required":
+                return {"skipped": "legacy_event_migration_required"}
+        if response.status_code == 422:
+            error_body = response.json() if response.content else {}
+            if error_body.get("error") == "rep_not_connected":
+                return {"skipped": "rep_not_connected", "rep_email": rep_email}
+
+        raise_for_error(response, CalendarSyncApiError)
+        return response.json()
+
+
+### web-engagement-calendar/src/app/api/calendar/events/route.ts
+
+import { metric } from "@vercel/functions";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { upsertNotionProjectEvent, RepNotConnectedError, LegacyEventMigrationRequiredError } from "@/lib/googleCalendar";
+
+// Called by the separate crm-sfa-integration project when a Notion project's
+// "次回アクション日" changes. Authenticated with a Bearer shared secret
+// (rather than the ?secret= query pattern used by our own /api/cron/*
+// routes) since the caller here is an external project, not our own cron
+// scheduler.
+const bodySchema = z.object({
+  rep_email: z.string().email(),
+  notion_project_id: z.string().min(1),
+  task_id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+  summary: z.string().min(1),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((value) => {
+      // Regex only checks the shape; also reject dates like 2026-13-40 that
+      // Date normalizes away silently (Date.UTC(2026,12,40) rolls into some
+      // other month instead of throwing).
+      const [y, m, d] = value.split("-").map(Number);
+      const date = new Date(Date.UTC(y, m - 1, d));
+      return (
+        date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d
+      );
+    }, "date must be a real calendar date"),
+  description: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  const expected = process.env.CALENDAR_SYNC_API_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+
+  // Fail-closed: an unset CALENDAR_SYNC_API_TOKEN always rejects, it never
+  // falls back to "auth disabled" — this endpoint is only ever called from
+  // outside this project.
+  if (!expected || !token || token !== expected) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const json = await request.json().catch(() => null);
+  const parsed = bodySchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "invalid body" }, { status: 400 });
+  }
+
+  const { rep_email, notion_project_id, task_id, summary, date, description } = parsed.data;
+
+  const startedAt = performance.now();
+  try {
+    const { googleEventId, created } = await upsertNotionProjectEvent({
+      repEmail: rep_email,
+      notionProjectId: notion_project_id,
+      ...(task_id ? { taskId: task_id } : {}),
+      summary,
+      date,
+      description,
+    });
+
+    metric("calendar.action.sync", 1, { outcome: created ? "created" : "updated" });
+    return NextResponse.json({ google_event_id: googleEventId, created });
+  } catch (err) {
+    if (err instanceof LegacyEventMigrationRequiredError) {
+      metric("calendar.action.sync", 1, { outcome: "migration_required" });
+      return NextResponse.json({ error: "legacy_event_migration_required" }, { status: 409 });
+    }
+    if (err instanceof RepNotConnectedError) {
+      metric("calendar.action.sync", 1, { outcome: "not_connected" });
+      return NextResponse.json(
+        { error: "rep_not_connected", rep_email },
+        { status: 422 }
+      );
+    }
+
+    // Internal error details (Prisma/Google API messages, decrypt failures,
+    // etc.) stay in the server log only — the caller is an external project
+    // (and, transitively, whoever holds a leaked CALENDAR_SYNC_API_TOKEN),
+    // so we don't want to leak implementation details in the response.
+    metric("calendar.action.sync", 1, { outcome: "error" });
+    console.error(err);
+    return NextResponse.json({ error: "calendar sync failed" }, { status: 500 });
+  } finally {
+    metric("calendar.action.duration_ms", performance.now() - startedAt);
+  }
+}
+
+
+### CRM wiring差分
+
+diff --git a/src/sync_engine/production_wiring.py b/src/sync_engine/production_wiring.py
+index 7784110..e016b16 100644
+--- a/src/sync_engine/production_wiring.py
++++ b/src/sync_engine/production_wiring.py
+@@ -791,33 +791,25 @@ def build_spreadsheet_targets_by_db() -> dict[str, SpreadsheetSyncTarget]:
+ 
+ 
+ def build_calendar_sync_callable() -> Callable[[Mapping[str, Any], str], Any] | None:
+-    """`notion_webhook.handler_with_proxy`の`calendar_sync`引数へそのまま渡せる
+-    `Callable[[Mapping[str, Any], str], Any]`を組み立てる（案件管理DBの「次回アクション日」
+-    変更をweb-engagement-tool側のGoogle Calendar連携APIへ同期する
+-    `src.calendar_sync.service.sync_next_action_date_to_calendar`をベースにする）。
+-
+-    `WebEngagementToolCalendarClient()`は`WEB_ENGAGEMENT_TOOL_URL`/`CALENDAR_SYNC_API_TOKEN`が
+-    未設定の場合に構築時`ValueError`を送出するため、ここでcatchして`None`を返し、Calendar同期
+-    を無効化する（`build_spreadsheet_targets_by_db`等、他の任意連携と同じ「未設定なら無効化」
+-    パターン）。
+-
+-    `timeout`/`max_retries`はクライアントの既定値（`DEFAULT_TIMEOUT_SECONDS`/
+-    `DEFAULT_MAX_RETRIES`）ではなく、明示的に`HOOK_TIMEOUT_SECONDS`/`HOOK_MAX_RETRIES`を渡す
+-    （shirokuma-secレビューWARN対応。このフックは`handler_with_proxy()`の中で
+-    `dispatcher.dispatch()`の後に同期的に呼ばれるため、既定値のままだと最悪ケースでwebhook
+-    レスポンスを数十秒遅延させうる。詳細は`_http.py`の該当定数のコメント参照）。
+-    """
++    """明示有効化時はTODOを独立起動し、未有効化時は従来Calendar経路を維持する。"""
+     try:
+         calendar_client = WebEngagementToolCalendarClient(
+-            timeout=HOOK_TIMEOUT_SECONDS, max_retries=HOOK_MAX_RETRIES
+-        )
++            timeout=HOOK_TIMEOUT_SECONDS, max_retries=HOOK_MAX_RETRIES)
+     except ValueError:
+-        logger.info(
+-            "WEB_ENGAGEMENT_TOOL_URL/CALENDAR_SYNC_API_TOKENが未設定のため、Notion次回アクション日"
+-            "のGoogle Calendar同期は無効化されます"
+-        )
++        calendar_client = None
++    if os.environ.get("PROJECT_ACTION_TODO_ENABLED", "").lower() != "true":
++        return (functools.partial(sync_next_action_date_to_calendar, calendar_client=calendar_client)
++                if calendar_client is not None else None)
++    from src.calendar_sync.todo import TodoSynchronizer
++    from src.calendar_sync.service import sync_project_actions
++    try:
++        todo_sync = TodoSynchronizer()
++    except ValueError:
++        logger.warning("案件TODO同期は有効ですがNotion認証が未設定です")
+         return None
+-    return functools.partial(sync_next_action_date_to_calendar, calendar_client=calendar_client)
++    if calendar_client is None:
++        logger.info("Calendar設定未入力。案件TODOは処理し、予定は保留します")
++    return functools.partial(sync_project_actions, todo_sync=todo_sync, calendar_client=calendar_client)
+ 
+ 
+ def build_lead_sync_callable(
+
+
+### MA Google calendar対象関数
+
+export async function upsertNotionProjectEvent(params: {
+  repEmail: string;
+  notionProjectId: string;
+  summary: string;
+  date: string;
+  taskId?: string;
+  description?: string;
+}): Promise<{ googleEventId: string; created: boolean }> {
+  const { client, connection } = await getClientForRep(params.repEmail);
+  const calendar = google.calendar({ version: "v3", auth: client });
+  const calendarId = connection.calendarId;
+  const endDate = addOneDayToDateString(params.date);
+
+  const verifyTaskEvent = async (eventId: string | null | undefined) => {
+    if (!eventId) throw new Error("予定IDを確認できません");
+    if (!params.taskId) return eventId;
+    const { data } = await calendar.events.get({ calendarId, eventId });
+    if (data.status === "cancelled" || data.summary !== params.summary
+      || data.start?.date !== params.date || data.end?.date !== endDate
+      || data.extendedProperties?.private?.[NOTION_PROJECT_ID_PROPERTY] !== params.notionProjectId
+      || data.extendedProperties?.private?.[NOTION_TASK_ID_PROPERTY] !== params.taskId) {
+      throw new Error("保存後のタスク予定を確認できません");
+    }
+    return eventId;
+  };
+
+  // 旧案件単位の予定との重複を防ぐため、同案件の全ページを調べる。
+  const allItems: calendar_v3.Schema$Event[] = [];
+  let pageToken: string | undefined;
+  const seenTokens = new Set<string>();
+  do {
+    const existing = await calendar.events.list({
+      calendarId,
+      privateExtendedProperty: [`${NOTION_PROJECT_ID_PROPERTY}=${params.notionProjectId}`],
+      ...(pageToken ? { pageToken } : {}),
+    });
+    allItems.push(...(existing.data.items ?? []));
+    pageToken = existing.data.nextPageToken ?? undefined;
+    if (pageToken && seenTokens.has(pageToken)) throw new Error("予定一覧の続きを確認できません");
+    if (pageToken) seenTokens.add(pageToken);
+  } while (pageToken);
+  const active = allItems.filter((item) => item.status !== "cancelled");
+  const taskOf = (item: calendar_v3.Schema$Event) => item.extendedProperties?.private?.[NOTION_TASK_ID_PROPERTY];
+  const legacy = active.filter((item) => !taskOf(item));
+  if ((params.taskId && legacy.length) || (!params.taskId && active.some((item) => taskOf(item)))) {
+    // 推測で旧予定を転用・削除しない。TODOの生成は呼出元で独立して保持する。
+    throw new LegacyEventMigrationRequiredError();
+  }
+  const items = active.filter((item) => params.taskId ? taskOf(item) === params.taskId : !taskOf(item));
+  if (items.length > 1) throw new Error("同じ識別子の予定が複数あるため更新を保留しました");
+  const existingEvent = items[0];
+
+  if (existingEvent?.id) {
+    // patch() (not update()) — update() is a full PUT replace and would
+    // silently wipe extendedProperties.private (the notionProjectId marker
+    // this upsert relies on to find the event again), causing every
+    // subsequent call to insert a duplicate instead of updating.
+    const res = await calendar.events.patch({
+      calendarId,
+      eventId: existingEvent.id,
+      requestBody: {
+        summary: params.summary,
+        description: params.description,
+        start: { date: params.date, dateTime: null, timeZone: null },
+        end: { date: endDate, dateTime: null, timeZone: null },
+      },
+    });
+    return { googleEventId: await verifyTaskEvent(res.data.id), created: false };
+  }
+
+  // 案件ごとに同じIDを指定し、並行通知・タイムアウト後の再送でも新規予定を増やさない。
+  const eventId = createHash("sha256").update(params.taskId
+    ? `notion-task:${JSON.stringify([params.notionProjectId, params.taskId])}`
+    : `notion-project:${params.notionProjectId}`).digest("hex");
+  const body = {
+    summary: params.summary,
+    description: params.description,
+    start: { date: params.date, dateTime: null, timeZone: null },
+    end: { date: endDate, dateTime: null, timeZone: null },
+  };
+  try {
+    const res = await calendar.events.insert({
+      calendarId,
+      requestBody: {
+        id: eventId,
+        ...body,
+        extendedProperties: { private: {
+          [NOTION_PROJECT_ID_PROPERTY]: params.notionProjectId,
+          ...(params.taskId ? { [NOTION_TASK_ID_PROPERTY]: params.taskId } : {}),
+        } },
+      },
+    });
+    return { googleEventId: await verifyTaskEvent(res.data.id), created: true };
+  } catch (error) {
+    const status = (error as { response?: { status?: number }; code?: number }).response?.status
+      ?? (error as { code?: number }).code;
+    if (status !== 409) throw error;
+    // ID一致だけで別用途の予定や削除済み予定を上書きしない。
+    const existing = await calendar.events.get({ calendarId, eventId });
+    if (existing.data.status === "cancelled"
+      || existing.data.extendedProperties?.private?.[NOTION_PROJECT_ID_PROPERTY] !== params.notionProjectId
+      || (existing.data.extendedProperties?.private?.[NOTION_TASK_ID_PROPERTY] || undefined) !== params.taskId) {
+      throw new Error("カレンダー予定の同一性を確認できないため更新を保留しました");
+    }
+    const res = await calendar.events.patch({ calendarId, eventId, requestBody: body });
+    return { googleEventId: await verifyTaskEvent(res.data.id), created: false };
+  }
+}

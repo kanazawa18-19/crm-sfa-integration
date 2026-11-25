@@ -1,0 +1,164 @@
+Gemini の回答
+
+提示されたコードおよび設計要件に基づき、重点確認項目（重複作成、途中失敗、結果不明POST、人編集保護、旧単一予定との衝突、タスク識別、実DB整合性）に沿ったコードレビュー結果を報告します。   
+review-material.txt
+
+全体として、台帳（HubCreationAttempt）による二段階の状態管理（reserved → created）や、POSTの無条件リトライ禁止（max_retries=0）、更新前の直前読戻しと baseline/pending による人編集保護、Google Calendar側の決定論的Event ID（SHA-256）と extendedProperties.private による冪等化など、非冪等外部書込みと途中失敗に対する防御が非常に丁寧に設計されています。   
+review-material.txt
+
+一方で、実運用および実装上のバグ・エッジケースとして修正が必要な箇所がいくつか存在します。
+
+BLOCKER（リリース前に必ず修正すべき重大な問題）
+1. 同一案件内の全タスクで「先頭タスクの担当者」のGoogleカレンダーに誤登録される
+
+該当箇所: crm-sfa-integration/src/calendar_sync/service.py (sync_project_actions)
+
+再現条件:
+1つの案件に複数タスク（Task A, Task B）が存在する場合。コード上では for task in plan.tasks: ループの外側で rep_email = None を初期化し、ループ内で if rep_email is None: rep_email = get_notion_user_email(task.assignees[0]) としています。現在 build_task_plan では案件全体の 担当メンバー を全タスクにコピーしているため実質同じ値になりますが、将来タスク単位の担当者をサポートした瞬間に「2番目以降のタスクがすべて1番目のタスクの担当者のカレンダーに登録される」バグになります。   
+review-material.txt
+
+修正案:rep_email = None のキャッシュをループ外に持たず、タスクごとに解決するか、user_id -> email の辞書キャッシュにしてください。
+
+Python
+email_cache: dict[str, str | None] = {}
+for task in plan.tasks:
+    ...
+    else:
+        try:
+            rep_id = task.assignees[0]
+            if rep_id not in email_cache:
+                email_cache[rep_id] = get_notion_user_email(rep_id)
+            rep_email = email_cache[rep_id]
+
+2. PostgresCreationJournal の get() 戻り値のキー名・構造不整合リスク（実DB整合性）
+
+該当箇所: crm-sfa-integration/src/calendar_sync/todo_journal.py (get, finish, _hold) および todo.py (_sync)
+
+再現条件:
+TodoJournal.get() は PostgresCreationJournal().get(key, self.target) の戻り値 dict を {**row, 'metadata': json.loads(row['reason'])} として返していますが、呼び出し元の todo.py では row['state'] や row.get('externalId')（キャメルケース）を参照しています。一方で todo_journal.py の SQL では "sourceKey", "dbKey", "identityHash", "externalId", "updatedAt" とダブルクォート付きキャメルケースでカラム指定しています。既存の PostgresCreationJournal().get() がスネークケース（external_id 等）を返す実装になっている場合、作成後の再実行時に row.get('externalId') が常に None になり、「TODOの作成結果が不明です」となって全タスクが永久に held 状態になります。
+また、_hold() の INSERT 文では "dbKey" に 'project' を指定していますが、既存テーブルの NOT NULL 制約カラム（例: "identityHash" 等）が他に存在する場合、INSERT 時にDBエラー（IntegrityError）で落ちます。   
+review-material.txt
+
+修正案:
+既存 PostgresCreationJournal の get() が返す辞書キー名（externalId か external_id か）および HubCreationAttempt テーブルの必須カラム定義（特に identityHash の NOT NULL 制約の有無）を実スキーマと突き合わせて統一してください。_hold の INSERT にも念のため "identityHash" を含めておくと安全です。   
+review-material.txt
+
+3. 2つ目以降のタスクで「日付なし」が含まれると select_action_date の挙動次第で誤った日付になる恐れ
+
+該当箇所: crm-sfa-integration/src/calendar_sync/tasks.py (build_task_plan)
+
+再現条件:
+複数タスク（len(items) > 1）のうち、タスク1には日付があり（例: - 2026-12-01 見積書送付）、タスク2には日付がない（例: - 社内稟議の事前相談）場合、raw_date = dates（空リスト []）が select_action_date(raw_date, today=today) に渡されます。
+※提示コード内に plan.py の実装が含まれていないため要確認ですが、既存の select_action_date が list 型を受け取る設計になっていない場合（単一値や None しか想定していない場合）、TypeError になって「年月日が不正です」と保留（hold）され、「日付不明はTODOだけ作成する」という要件を満たせません。   
+review-material.txt
+
+修正案:
+select_action_date が list[str]（空リスト含む）を受け取り、空リスト時に None を返すことをユニットテストで必ず検証してください。もし単一値前提であれば、tasks.py 側で dates が空なら due = None、複数日付があれば保留（または先頭採用等の仕様確定）とする分岐を明示してください。   
+review-material.txt
+
+WARN（運用上のリスク・エッジケースとして修正を推奨）
+1. Notion APIの GET（読戻し）一過性エラーでタスク全体が held になり自動復旧しない
+
+該当箇所: crm-sfa-integration/src/calendar_sync/todo.py (TodoSynchronizer.sync, NotionTodoClient._request)
+
+再現条件:
+TODO作成（POST）が成功して finish で created になった直後、あるいは次回以降の同期時の self.client.read(page_id) で Notion API が一時的なネットワークエラーや 502/503 を返した場合、sync() の except Exception: に捕捉され self.journal.hold(key, ...) が呼ばれます。
+次回の Webhook 実行時、row['state'] == 'created' のままなので _sync は再試行して self.journal.clear(key) で自動復旧できますが、案件側のアクションが再度編集されるまで Webhook が飛ばないため、一時的なネットワーク瞬断でも手動介入するまでカレンダー予定が未作成のまま放置されます。   
+review-material.txt
+
+修正案:
+POST（非冪等作成）の失敗・結果不明と、GET / PATCH の一時的な通信失敗は区別し、GET についてはリトライ回数を max_retries=2 程度に増やすことを推奨します。また、POST 実行前の reserve 状態で例外が起きた場合と、created 後の read で例外が起きた場合で保留メッセージ（reason）を分けると運用時の切り分けが容易になります。   
+review-material.txt
+
+2. 複数日付が1つの箇条書き項目内に書かれた場合の挙動が未定義
+
+該当箇所: crm-sfa-integration/src/calendar_sync/tasks.py (build_task_plan)
+
+再現条件:
+複数タスク時の1項目内に複数の日付が含まれる場合（例: - 2026-12-01に資料作成し、2026-12-05に提出する）、dates = _DATE.findall(normalized) には ['2026-12-01', '2026-12-05'] が入ります。select_action_date が複数日付をエラーとする場合は保留されますが、暗黙に最初の日付を拾う仕様だと意図しない日に予定が入ります。また、本文から日付を除去してハッシュ化する際（_DATE.sub('', normalized)）、両方のデータが消えるため、片方の日付を変えただけでは同じタスクIDとみなされます。   
+review-material.txt
+
+修正案:
+1項目内に複数日付が含まれる場合（len(dates) > 1）は、明確に holds.append(f'タスク {key} に複数の日付が含まれているため保留しました') として自動判断を避けるのが要件（「明示されたアクション境界と年月日だけを使う」）に沿っています。   
+review-material.txt
+
+3. 人がNotion TODOの「期限」や「担当者」を編集した際の競合判定
+
+該当箇所: crm-sfa-integration/src/calendar_sync/todo.py (snapshot, _sync)
+
+再現条件:
+要件では「本文変更は新タスク」「単一日付はAI推奨アクション日」ですが、たとえば単一タスクの状態で、営業担当者が Notion TODO側で直接「期限」だけ別日に変更した 場合、actual != metadata['baseline'] となり、「TODOが人に編集されています。TODOと予定を自動上書きしません」として保留（held）になります。これは人編集保護の仕様通りですが、ステータスが「未着手」のまま期限だけ人が変えた場合、Googleカレンダー側の予定も古い日付のまま更新されず保留される 点に注意が必要です。   
+review-material.txt
+
+修正案:
+これは仕様として妥当ですが、運用フロー上「TODO側で期限を動かしたらカレンダーも追従してほしい」のか「人の変更を尊重して自動同期を止める（現状実装）」のかを関係者と合意しておいてください。現状の実装で仕様通りであれば問題ありません。   
+review-material.txt
+
+4. 旧単一予定（taskId なし）が存在する場合の移行ブロック時の運用導線
+
+該当箇所: web-engagement-calendar/src/lib/googleCalendar.ts (upsertNotionProjectEvent) および web_engagement_tool_client.py
+
+再現条件:
+PROJECT_ACTION_TODO_ENABLED=true に切り替えた後、既存の旧単一予定（notion_project_id のみ付与、notion_task_id なし）がGoogleカレンダーに残っている案件が更新されると、409 legacy_event_migration_required が返り、TODOは作成されるがカレンダー同期は held（カレンダー未反映: legacy_event_migration_required）になります。   
+review-material.txt
+
+修正案:
+推測で旧予定を消さない安全設計は素晴らしいです。ただし、既存案件を触るたびに409で保留が溜まるため、リリース手順に「対象案件の旧単一予定の手動削除または移行手順」を明記してください。   
+review-material.txt
+
+5. Google Calendar events.insert 時の eventId 文字長と文字種制約
+
+該当箇所: web-engagement-calendar/src/lib/googleCalendar.ts (upsertNotionProjectEvent)
+
+再現条件:
+createHash("sha256")...digest("hex") は 64文字の [0-9a-f]（小文字16進数）を生成します。Google Calendar API v3 の event.id 仕様は「5〜1024文字、小文字 a-v と数字 0-9（base32hex）」なので、64文字の16進数（0-9a-f）は仕様の範囲内に収まっており正常動作します。
+ただし、一度 Google Calendar UI 上でユーザーがその予定を手動削除（ゴミ箱へ移動）した場合、events.get で status === "cancelled" となり、catch (error) 内のチェックで弾かれて永久に再作成できなくなります。   
+review-material.txt
+
+修正案:
+人がカレンダー上で予定を消した場合に勝手に復活させない（人編集保護）という観点では現在の status === "cancelled" チェックは意図通り機能しています。仕様として維持して問題ありません。   
+review-material.txt
+
+INFO（改善提案・軽微な確認事項）
+1. TodoJournal.lock の第一引数 object()
+
+該当箇所: crm-sfa-integration/src/calendar_sync/todo_journal.py (lock)
+
+内容:
+acquire_record_sync_lock(object(), 'project', key) とダミーの object() を渡しています。acquire_record_sync_lock の内部実装が第一引数（DB接続やセッション等）を本当に無視して独自に connect() を張る仕様であれば問題ありませんが、もし第一引数にコネクションを期待するシグネチャだった場合、AttributeError で即死します。ローカルテストで実関数（モックなし）を通した結合テストを1本入れて確認してください。   
+review-material.txt
+
+2. split_actions における先頭行の箇条書き判定とハイフン・マイナス記号
+
+該当箇所: crm-sfa-integration/src/calendar_sync/tasks.py (_BULLET)
+
+内容:
+_BULLET = re.compile(r'^\s*(?:[-*•・]\s*|\d+[.)、]\s+)(?:\[ \]\s*)?', re.MULTILINE) となっています。
+
+全角ハイフンや長音（ー、－）は対象外で半角 - のみ対象です。Notion上で入力される箇条書きが半角 - や ・ であれば問題ありませんが、全角 － を使うユーザーがいる場合は考慮が必要です。
+
+[-*•・]\s* は空白なし（例: -タスク1）でもマッチしますが、数字リスト \d+[.)、]\s+ は空白必須です。誤爆（例: -100円の値引き のような負数）を防ぐため、記号箇条書きも [-*•・]\s+（空白1文字以上必須）にした方が安全です。
+
+review-material.txt
+3. タイトルの文字数切り詰めとハッシュ計算の順序
+
+該当箇所: crm-sfa-integration/src/calendar_sync/tasks.py (build_task_plan, ActionTask.event)
+
+内容:
+
+ハッシュ（identity）は NFKC 正規化・日付除去・空白圧縮・小文字化を行った文字列から計算しているため、全角/半角の揺れや日付変更前の表記揺れに強く設計されています。
+
+一方、Notion TODO のタイトル（desired_snapshot / payload）には task.title（最大2000文字、日付文字列を含む原文）がそのまま入ります。要件通り「日付変更は別タスク（ハッシュが変わる）」なので整合しています。
+
+Googleカレンダーの summary は 100 文字で切り詰めていますが、description に全文が入るため情報欠落はありません。
+
+review-material.txt
+4. route.ts の task_id 正規表現長と tasks.py の長さ
+
+該当箇所: web-engagement-calendar/src/app/api/calendar/events/route.ts
+
+内容:
+tasks.py が生成する key は 'id-' + 最大64文字（最大67文字）または 'auto-' + sha256 hex 64文字（69文字）です。route.ts 側のバリデーションは ^[A-Za-z0-9_-]{1,128}$ となっており、長さ・文字種ともに余裕を持って適合しています。   
+review-material.txt
+
+2 / 2
