@@ -58,7 +58,15 @@ def append_creation_report(text):
         text += "\n" + (" / ".join(f"{r['target']} {r['state']}: {r['count']}件" for r in counts) or "0件")
         for row in journal.pending_details():
             source = row['sourceKey']
-            location = "https://www.notion.so/" + source[7:].replace("-", "") if source.startswith("notion:") else "シート登録キー " + source[6:]
+            if source.startswith("external:zoho:"):
+                _, _, db_key, external_id = source.split(":", 3)
+                location = f"Zoho原本ID {external_id}（DB: {db_key}）"
+            elif source.startswith("notion:"):
+                location = "https://www.notion.so/" + source[7:].replace("-", "")
+            elif source.startswith("sheet:"):
+                location = "シート登録キー " + source[6:]
+            else:
+                location = "登録元 " + source
             text += f"\n{row['target']}: {row['reason']} — {location}"
     return text
 

@@ -288,7 +288,9 @@ class Dispatcher:
         new_record_guard: Callable[[SyncEvent, dict[str, Any]], bool] | None = None,
         project_linker: Callable[[IdMapping], tuple[PropertyDispatchResult, ...]] | None = None,
         field_review=None,
+        creation_journal=None,
     ) -> None:
+        self._creation_journal = creation_journal
         self._field_review = field_review
         self._project_linker = project_linker
         self._note_writer = note_writer
@@ -323,6 +325,10 @@ class Dispatcher:
                 return self._try_create_new_record(event)
             return DispatchResult(skipped=True, reason="unknown_record")
 
+        return self._dispatch_existing(event, mapping)
+
+    def _dispatch_existing(self, event: SyncEvent, mapping: IdMapping) -> DispatchResult:
+        """確定済みの対応先を更新する。復旧時に外部ID検索へ再入しない。"""
         from src.record_merge.aliases import require_record_available
         require_record_available(mapping.db_key, mapping.notion_key)
         # 統合元Notionは保管用。アーカイブ通知や旧ページの編集を統合先へ転送しない。
@@ -350,6 +356,7 @@ class Dispatcher:
                 from src.record_merge.aliases import hold_alias_event
                 hold_alias_event(event, mapping)
                 return DispatchResult(skipped=True, reason="merged_old_id_review_required")
+            self._dismiss_creation_mapping_hold(event, mapping)
             watermark = guard.latest(mapping.last_synced_at)
             guard.ensure_field_baseline(mapping.last_synced_at)
             mapping = dataclasses.replace(mapping, last_synced_at=watermark)
@@ -357,6 +364,23 @@ class Dispatcher:
             from src.sync_engine.test_isolation import test_record_scope
             with collect_text_limit_notes(), test_record_scope(mapping.notion_key):
                 return self._dispatch_locked(event, mapping, guard)
+
+    def _dismiss_creation_mapping_hold(self, event, mapping):
+        """台帳の作成先と対応表が一致した場合だけ、監視上の保留を解消する。"""
+        if event.source_tool is not Tool.ZOHO or self._creation_journal is None:
+            return
+        source_key = f"external:zoho:{event.db_key}:{event.external_id}"
+        try:
+            attempt = self._creation_journal.get(source_key, "notion")
+            if attempt and attempt["state"] == "created":
+                if (attempt.get("externalId", "").replace("-", "")
+                        == mapping.notion_key.replace("-", "") and mapping.zoho_id == event.external_id):
+                    self._creation_journal.dismiss_hold(source_key, "mapping:notion")
+                else:
+                    self._creation_journal.hold(source_key, "mapping:notion", event.db_key,
+                                               "台帳の作成先と対応表が異なります。取込先を確認してください")
+        except Exception:
+            logger.warning("作成保留表示の更新を次回へ延期しました")
 
     def _write_notes(self, event, mapping):
         from src.sync_engine.zoho_text_limits import collected_notes
@@ -1034,54 +1058,12 @@ class Dispatcher:
             return self._try_create_new_record_locked(event)
 
     def _try_create_new_record_locked(self, event: SyncEvent) -> DispatchResult:
-        """kintone/Zoho発の未知レコード（`IdMapping`が存在しない）に対応するNotionページを
-        新規作成する（`AUTO_CREATE_NEW_RECORDS_ENABLED=true`の場合のみ呼ばれる、2026-08-25、
-        Round2）。
+        """未知の外部原本を再取得し、必須項目を検証してNotionへ取り込む。
 
-        Webhookペイロードは変更差分のみのため、新規ページ作成には`event.source_tool`から
-        レコード全体データをAPI経由で取得し直す必要がある
-        （`src.sync_engine.new_record_builder.build_notion_properties_for_new_record`参照）。
-        変換後、対象db_keyの`RequirementLevel.REQUIRED`なプロパティが1つでも欠けている場合は
-        不完全なページを作らずスキップする（例: ⑥アクション履歴DBのtitleプロパティが空）。
-
-        「案件」(project)のような、そもそも紐付け先を特定できないリレーションは、
-        `KINTONE_FIELD_TRANSFORMS`/`ZOHO_LABEL_FIELD_MAPPINGS`のいずれにもエントリが存在
-        しないため、新規作成時も自然に空欄のまま作成される（Round1と同じ方針）。
-
-        ■ 重複作成の防止について（2026-08-25、shirokuma-sec/obasan-qualityレビューBLOCKER
-        対応）: `notion_target.upsert_record()`（Notionページ作成）が成功した直後に
-        `IdMapping`登録が失敗すると、kintone/Zoho側の自動リトライ・真の並行Webhookで
-        `mapping`が依然Noneのまま本メソッドへ再突入し、同じレコードに対応するNotionページが
-        重複作成されうる。以下3段構えで対応する:
-        1. `notion_target.upsert_record()`を呼ぶ直前にもう一度`_resolve_mapping()`で
-           mappingの有無を再確認する（レース窓を縮める。完全な排他制御ではない）。
-        2. `notion_target.upsert_record()`自体の呼び出しを`try/except`で囲む（最終レビュー
-           BLOCKER対応: サーバーレス環境ではNotion APIへのPOST自体は成功したがレスポンス
-           受信前にタイムアウト/接続断/5xxが発生し例外が送出される、という「ページが実際に
-           作られたか不明」なケースが現実的に起こりうる。ここを素通りさせると、例外が
-           Webhookハンドラの広いexcept節まで伝播して500応答になり、kintone/Zoho側の
-           リトライで本メソッドへ再突入し、まさにここで防ごうとしている重複ページ作成が
-           保護ロジックを一切経由せずに再現してしまう。そのため例外はここで捕捉し、
-           `_handle_uncertain_notion_page_creation()`が「200を返してリトライさせない・
-           Slackで人に確認を促す」という安全側の対応を行う。Round1の「完全一致のみ自動
-           反映・曖昧なら要確認キューへ」と同じ、自動で危険な推測をしない設計思想）。
-        3. `IdMapping`登録は`expected_last_synced_at=None`のCAS（`IdMappingStore.upsert()`の
-           「新規作成を期待する場合はNoneを渡す」契約）で行い、`_register_new_record_mapping()`
-           が一時的な障害に対しては短い固定待機を挟んで数回リトライする。それでも失敗した
-           場合、作成済みのNotionページをアーカイブする補償アクションを試み
-           （`_handle_orphaned_notion_page()`）、成否によらずSlackへ孤児ページIDを含む
-           明確なアラートを出す（サイレントな500返却でリトライを誘発させない）。
-           なお、真の並行実行で両者ともNotionページ作成に成功した場合、`IdMappingStore.upsert()`
-           は`db_key`単位で外部ID（kintone_id/zoho_id）の重複を検査するため
-           （`DuplicateExternalIdError`、`_register_new_record_mapping()`はこれを検知したら
-           リトライせず即座に補償アクションへ進む）、後勝ちの登録は多くの場合失敗し、
-           その側のページが補償アクションでアーカイブされる（自己修復）。**ただし、この
-           自己修復は`IdMappingStore`の実装に依存する**: `SQLiteIdMappingStore`はDBレベルの
-           UNIQUE制約を持つため確実に検知できるが、本番運用で使う`NotionIdMappingStore`は
-           自身のdocstringが明記する通りDBレベルの一意制約が無く、ほぼ同時に2つの
-           Webhookが処理された場合は両方の事前チェックが「重複なし」と判定してしまい
-           `DuplicateExternalIdError`を検知できないレース窓が残る（分散ロック等による解消は
-           スコープ外）。
+        呼出元で原本IDと新規作成のロックを取得済み。
+        Zohoは永続予約→単発POST→確定ID保存→対応表の順に処理する。
+        結果不明は再POSTせず、対応表保存失敗はページを残して保留する。
+        kintoneの既存経路（対応表再試行・孤児ページの補償処理）は維持する。
         """
         source_target = self._targets.get(event.source_tool)
         if source_target is None:
@@ -1220,33 +1202,118 @@ class Dispatcher:
             )
             return DispatchResult(skipped=True, reason="new_record_concurrent_creation_detected")
 
-        try:
-            new_notion_key = notion_target.upsert_record(None, properties, db_key=event.db_key)
-        except Exception as exc:  # noqa: BLE001 (クライアント実装依存の例外を広く受ける)
-            self._handle_uncertain_notion_page_creation(event, exc)
-            return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+        # Zoho由来は、通知IDや名称でなく原本IDに予約を固定する。
+        # 結果不明・ID保存失敗でも予約を残し、次の通知から再POSTしない。
+        journal = self._creation_journal if event.source_tool is Tool.ZOHO else None
+        recovered = False
+        source_key = f"external:zoho:{event.db_key}:{event.external_id}"
+        if event.source_tool is Tool.ZOHO:
+            if journal is None:
+                return DispatchResult(skipped=True, reason="new_record_creation_journal_unavailable")
+            attempt = journal.get(source_key, "notion")
+            if attempt and attempt["state"] == "created":
+                new_notion_key = attempt.get("externalId")
+                if not new_notion_key:
+                    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+                recovered = True
+            else:
+                # fingerprintも原本IDに固定。同名別原本の同一性はここで推測しない。
+                import hashlib
+                fingerprint = hashlib.sha256(source_key.encode()).hexdigest()
+                create_once = getattr(notion_target, "create_record_once", None)
+                if create_once is None:
+                    return DispatchResult(skipped=True, reason="new_record_single_create_unavailable")
+                if not journal.reserve(source_key, "notion", event.db_key, fingerprint):
+                    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+                try:
+                    new_notion_key = create_once(properties, db_key=event.db_key)
+                    if not isinstance(new_notion_key, str) or not new_notion_key:
+                        raise RuntimeError("Notion作成結果のIDがありません")
+                except Exception as exc:
+                    try:
+                        journal.record_creation_failure(source_key, "notion", exc)
+                    except Exception:
+                        logger.warning("作成失敗の診断保存を延期しました。予約は維持します")
+                    self._handle_uncertain_notion_page_creation(event, exc)
+                    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+                try:
+                    journal.finish(source_key, "notion", new_notion_key, mapping_pending=True)
+                except Exception:
+                    # 予約は維持する。既知のIDは人による照合のため残し、推測回収には使わない。
+                    logger.error("Notion作成IDの台帳保存に失敗しました source_key=%s notion_key=%s",
+                                 source_key, new_notion_key)
+                    try:
+                        journal.hold(source_key, "mapping:notion", event.db_key,
+                                     f"Notion作成済みID {new_notion_key} の台帳保存を確認してください。自動再作成は停止中です")
+                    except Exception:
+                        logger.warning("作成IDの診断保存も失敗しました。予約とログから照合してください")
+                    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+        else:
+            try:
+                new_notion_key = notion_target.upsert_record(None, properties, db_key=event.db_key)
+            except Exception as exc:
+                self._handle_uncertain_notion_page_creation(event, exc)
+                return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+            if new_notion_key is None:
+                return DispatchResult(skipped=True, reason="new_record_creation_failed")
 
-        if new_notion_key is None:
-            logger.warning(
-                "new record creation: Notion page creation was skipped by the sync target "
-                "(db_key=%r, source_tool=%s, external_id=%r); no id mapping was registered",
-                event.db_key,
-                event.source_tool.value,
-                event.external_id,
-            )
-            return DispatchResult(skipped=True, reason="new_record_creation_failed")
+        existing = None
+        if recovered:
+            # 確定IDのページが消えていても別ページを自動作成しない。
+            available = getattr(notion_target, "created_record_available", None)
+            try:
+                page_available = available is not None and available(new_notion_key, db_key=event.db_key)
+            except Exception:
+                journal.hold(source_key, "mapping:notion", event.db_key,
+                             "復旧対象のNotionページを確認できません。作成済みIDを保持して確認を待っています")
+                return DispatchResult(skipped=True, reason="new_record_created_page_verification_pending")
+            if not page_available:
+                journal.hold(source_key, "mapping:notion", event.db_key,
+                             "復旧対象のNotionページが無効です。作成済みIDを確認してください")
+                return DispatchResult(skipped=True, reason="new_record_created_page_unavailable")
+            existing = self._store.get(new_notion_key)
+            if existing is not None and (existing.db_key != event.db_key or
+                                        existing.zoho_id not in (None, event.external_id)):
+                journal.hold(source_key, "mapping:notion", event.db_key,
+                             "復旧対象のNotionページは別のIDと対応しています。確認してください")
+                return DispatchResult(skipped=True, reason="new_record_created_page_mapping_conflict")
 
         new_mapping = IdMapping(
             notion_key=new_notion_key,
             db_key=event.db_key,
             kintone_id=event.external_id if event.source_tool is Tool.KINTONE else None,
             zoho_id=event.external_id if event.source_tool is Tool.ZOHO else None,
-            last_synced_at=None if (self._note_writer is not None and event.sync_notes) or (self._project_linker is not None and event.db_key == "project") else event.occurred_at,
+            last_synced_at=None if recovered or (self._note_writer is not None and event.sync_notes) or (self._project_linker is not None and event.db_key == "project") else event.occurred_at,
         )
-        registration_error = self._register_new_record_mapping(new_mapping)
+        if existing is not None:
+            new_mapping = dataclasses.replace(existing, zoho_id=event.external_id)
+            registration_error = self._register_new_record_mapping(
+                new_mapping, expected_last_synced_at=existing.last_synced_at)
+        else:
+            registration_error = self._register_new_record_mapping(new_mapping)
         if registration_error is not None:
-            self._handle_orphaned_notion_page(event, notion_target, new_notion_key, registration_error)
+            if journal is None:
+                self._handle_orphaned_notion_page(event, notion_target, new_notion_key, registration_error)
+            else:
+                # created予約は監視集計の対象外。対応表未確定を独立した保留として残す。
+                journal.hold(source_key, "mapping:notion", event.db_key,
+                             "Notionページは作成済みです。対応表の保存を確認・復旧してください")
+                if self._slack_notifier is not None:
+                    self._slack_notifier.notify_new_record_issue(
+                        db_key=event.db_key, source_tool=event.source_tool,
+                        external_id=event.external_id, reason="notion_mapping_pending",
+                        detail="作成済みNotionページを保持し、対応表の復旧を待っています")
+            # Zoho経路は保存成功/応答消失もあり得る。archiveせず台帳のIDを保持する。
             return DispatchResult(skipped=True, reason="new_record_mapping_registration_failed")
+
+        if recovered:
+            try:
+                journal.hold(source_key, "mapping:notion", event.db_key,
+                             "対応表の保存後の読取確認を待っています")
+            except Exception:
+                logger.warning("対応表は保存済みですが、読取確認待ちの表示を保存できませんでした")
+            return self._dispatch_existing(dataclasses.replace(event, properties=properties), new_mapping)
+        self._dismiss_creation_mapping_hold(event, new_mapping)
 
         # 対応表成立後、通知・シート行作成・メモより先に起票する。
         if self._project_linker is not None and event.db_key == "project":
@@ -1693,14 +1760,16 @@ class Dispatcher:
                 exc_info=True,
             )
             return False
-        return registered is not None and registered.notion_key == mapping.notion_key
+        return (registered is not None and registered.notion_key == mapping.notion_key
+                and registered.db_key == mapping.db_key
+                and all(getattr(mapping, column) is None
+                        or getattr(registered, column) == getattr(mapping, column)
+                        for column in ("zoho_id", "kintone_id", "spreadsheet_row")))
 
-    def _register_new_record_mapping(self, mapping: IdMapping) -> Exception | None:
+    def _register_new_record_mapping(self, mapping: IdMapping, *, expected_last_synced_at=None) -> Exception | None:
         """新規作成したNotionページの`IdMapping`を登録する（BLOCKER1対応、2026-08-25）。
 
-        `expected_last_synced_at=None`のCAS（compare-and-swap）で登録する
-        （`IdMappingStore.upsert()`のdocstring「新規作成を期待する場合はNoneを渡す」契約を
-        実際に使う）。
+        新規は時刻None、既存対応表へのID補完は読取時の時刻を条件にして登録する。
 
         `DuplicateExternalIdError`（外部ID（kintone_id/zoho_id）が`db_key`単位で既に別の
         notion_keyに紐づいている、＝真の並行実行で同じソースレコードから2つのNotionページが
@@ -1716,7 +1785,7 @@ class Dispatcher:
         max_attempts = 1 + _MAPPING_REGISTRATION_RETRIES
         for attempt in range(1, max_attempts + 1):
             try:
-                self._store.upsert(mapping, expected_last_synced_at=None)
+                self._store.upsert(mapping, expected_last_synced_at=expected_last_synced_at)
                 return None
             except DuplicateExternalIdError as exc:
                 logger.warning(

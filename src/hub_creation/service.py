@@ -131,6 +131,10 @@ class HubCreationService:
                     self.journal.finish(source_key, "notion", page_id)
             else:
                 existing = self.store.get(event.external_id)
+                if self.journal.is_external_notion_import(event.db_key, event.external_id):
+                    return None if existing is not None and existing.zoho_id else 'external_notion_import_pending'
+                if existing is None and self.journal.has_unidentified_external_import(event.db_key):
+                    return 'external_notion_import_database_pending'
                 if self.journal.is_relation_parent_import(event.db_key, 'notion', event.external_id,
                                                          include_unidentified=existing is None):
                     # 既存外部親の取込は新規CRM登録の依頼ではない。対応成立後は通常更新だけ通す。
@@ -247,6 +251,11 @@ class HubCreationService:
                                     notes.update(recovered_creation_notes(attempt, event.db_key, properties))
                                 notes[note_key] = ""
                                 continue
+                            if target == 'zoho':
+                                if self.journal.is_external_notion_import(event.db_key, page_id):
+                                    raise CreationHeld("Zohoからの取込対応表を確認するまで新規作成を保留します")
+                                if self.journal.has_unidentified_external_import(event.db_key):
+                                    raise CreationHeld("同じDBへの別のZoho取込が結果不明のため、新規作成を待機しています")
                             attempt = self.journal.get(source_key, target)
                             if attempt and attempt["state"] == "created":
                                 external_id = attempt["externalId"]

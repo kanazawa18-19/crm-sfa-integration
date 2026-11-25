@@ -19,6 +19,13 @@ class Journal:
                    and row['state'] in ('reserved', 'created')
                    and (row.get('externalId') == external_id or (include_unidentified and row['state'] == 'reserved'))
                    for (key, target), row in self.rows.items())
+    def is_external_notion_import(self, db_key, page_id):
+        return any(key.startswith('external:zoho:') and target == 'notion'
+                   and row['state'] == 'created' and row.get('externalId') == page_id
+                   for (key, target), row in self.rows.items())
+    def has_unidentified_external_import(self, db_key):
+        return any(key.startswith('external:zoho:') and target == 'notion' and row['state'] == 'reserved'
+                   for (key, target), row in self.rows.items())
     def get(self, key, target): return self.rows.get((key, target))
     def has_source(self, key): return any(k[0] == key for k in self.rows)
     def source_for_page(self, page):
@@ -36,8 +43,10 @@ class Journal:
         from src.hub_creation.failure_diagnostics import creation_failure_reason
         if self.get(key, target) and self.get(key, target)['state'] == 'reserved':
             self.rows[key,target]['reason'] = creation_failure_reason(error)
-    def finish(self, key, target, external, *, text_limit_notes=None):
+    def finish(self, key, target, external, *, text_limit_notes=None, mapping_pending=False):
         import json
+        if mapping_pending:
+            self.hold(key, 'mapping:notion', '', '対応表の保存・読取確認を待っています')
         self.rows[key,target].update(state='created', externalId=external,
                                     reason=json.dumps({'text_limit_notes': text_limit_notes}) if text_limit_notes is not None else '')
     def resolve_hold(self, key, target, page):

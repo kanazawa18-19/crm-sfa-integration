@@ -90,6 +90,9 @@ class FakeSyncTarget(SyncTarget):
             return None
         return external_id or "new-id"
 
+    def create_record_once(self, properties, *, db_key):
+        return self.upsert_record(None, properties, db_key=db_key)
+
     def delete_record(self, external_id: str, *, db_key: str | None = None) -> None:
         self.delete_calls.append(external_id)
         if self._delete_raises:
@@ -422,7 +425,8 @@ def test_dispatch_creates_new_notion_page_from_zoho_record_when_enabled(
     monkeypatch.setenv("AUTO_CREATE_NEW_RECORDS_ENABLED", "true")
     targets = _all_targets()
     targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {"zoho-new-1": _zoho_project_record()})
-    dispatcher = Dispatcher(store, targets)
+    from tests.hub_creation.test_service import Journal
+    dispatcher = Dispatcher(store, targets, creation_journal=Journal())
     event = SyncEvent(
         source_tool=Tool.ZOHO,
         db_key="project",
@@ -1030,7 +1034,8 @@ def test_dispatch_new_record_creation_uses_new_record_builder_and_propagates_rel
     raw_zoho_record = {"Name": "【電話】4回目", "field6": "テスト商事"}
     targets = _all_targets()
     targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {"zoho-action-1": raw_zoho_record})
-    dispatcher = Dispatcher(store, targets)
+    from tests.hub_creation.test_service import Journal
+    dispatcher = Dispatcher(store, targets, creation_journal=Journal())
     event = SyncEvent(
         source_tool=Tool.ZOHO,
         db_key="action",
@@ -2350,7 +2355,8 @@ def test_product_creation_allows_empty_billing_and_replay_does_not_duplicate(
     targets[Tool.ZOHO] = FakeSyncTarget(Tool.ZOHO, {
         "product-1": {"Product_Name": "架空商品", "field15": billing}
     })
-    dispatcher = Dispatcher(store, targets)
+    from tests.hub_creation.test_service import Journal
+    dispatcher = Dispatcher(store, targets, creation_journal=Journal())
     event = SyncEvent(source_tool=Tool.ZOHO, db_key="product", external_id="product-1",
                       occurred_at=NOW, properties={})
     result = dispatcher.dispatch(event)

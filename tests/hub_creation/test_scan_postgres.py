@@ -166,3 +166,42 @@ def test_archived_hold_retirement_is_atomic_and_preserves_reservations(local):
     attempts.retire_archived('notion:page','action','page')
     with connect() as conn:
         assert conn.execute('SELECT count(*) AS n FROM "AuditLog"').fetchone()['n'] == 1
+
+
+def test_zoho取込ID確定と監視保留を同時に保存する(local):
+    _, attempts = local
+    source = 'external:zoho:project:source'
+    assert attempts.reserve(source, 'notion', 'project', 'source')
+    attempts.finish(source, 'notion', 'page', mapping_pending=True)
+    assert attempts.get(source, 'notion')['state'] == 'created'
+    assert attempts.get(source, 'notion')['externalId'] == 'page'
+    assert attempts.get(source, 'mapping:notion')['state'] == 'blocked'
+    assert any(row['target'] == 'mapping:notion' for row in attempts.pending_counts())
+
+
+def test_監視保留保存に失敗したらID確定も巻き戻す(local):
+    _, attempts = local
+    source = 'external:zoho:project:source'
+    assert attempts.reserve(source, 'notion', 'project', 'source')
+    with connect() as conn:
+        conn.execute('''ALTER TABLE "HubCreationAttempt" ADD CONSTRAINT reject_pending
+            CHECK (target <> 'mapping:notion')''')
+    with pytest.raises(psycopg.errors.CheckViolation):
+        attempts.finish(source, 'notion', 'page', mapping_pending=True)
+    assert attempts.get(source, 'notion')['state'] == 'reserved'
+    assert attempts.get(source, 'notion')['externalId'] is None
+    assert not attempts.reserve(source, 'notion', 'project', 'source')
+
+
+def test_取込の確定一致とDB全体の待機を区別する(local):
+    _, attempts = local
+    source = 'external:zoho:project:source'
+    assert attempts.reserve(source, 'notion', 'project', 'source')
+    assert attempts.has_unidentified_external_import('project')
+    assert not attempts.has_unidentified_external_import('action')
+    assert not attempts.is_external_notion_import('project', 'unrelated-page')
+    attempts.finish(source, 'notion', 'page', mapping_pending=True)
+    assert not attempts.has_unidentified_external_import('project')
+    assert attempts.is_external_notion_import('project', 'page')
+    assert not attempts.is_external_notion_import('action', 'page')
+    assert not attempts.is_external_notion_import('project', 'unrelated-page')

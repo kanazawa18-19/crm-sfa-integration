@@ -131,6 +131,24 @@ class _MultiDbNotionSyncTarget(SyncTarget):
                   else self._client_for(external_id))
         return (client or self._fallback_client).get_page(external_id)
 
+    def created_record_available(self, page_id: str, *, db_key: str) -> bool:
+        """復旧対象の確定IDが、元のDBで有効なページかだけを確認する。"""
+        from src.db_schema.registry import get_schema
+        client = self._clients_by_db_key.get(db_key)
+        if client is None:
+            return False
+        page = client.get_raw_page(page_id)
+        return (not page.get("archived") and not page.get("in_trash")
+                and page.get("parent", {}).get("database_id", "").replace("-", "")
+                == get_schema(db_key).notion_database_id.replace("-", ""))
+
+    def create_record_once(self, properties: dict[str, Any], *, db_key: str) -> str:
+        """永続予約済みの入口だけが使う。同名候補から作成IDを推測しない。"""
+        client = self._clients_by_db_key.get(db_key)
+        if client is None:
+            raise RuntimeError("Notion新規作成用の接続がありません")
+        return client.create_page_once(properties)
+
     def upsert_record(
         self,
         external_id: str | None,
@@ -977,6 +995,7 @@ def build_production_dispatcher(
         # 返信時の活動タイトルは外部で組み立て直されるため、名前ではなく確定IDで照合する。
         return journal.conflicts(event.db_key, event.source_tool.value, event.external_id)
 
+    from src.hub_creation.journal import PostgresCreationJournal
     dispatcher = Dispatcher(
         store,
         targets,
@@ -984,6 +1003,7 @@ def build_production_dispatcher(
         slack_notifier=notifier,
         note_writer=write_notes,
         new_record_guard=pending_hub_creation,
+        creation_journal=PostgresCreationJournal(),
     )
     from src.sync_review.journal import FieldReviewJournal
     from src.sync_review.service import FieldReviewService

@@ -26,6 +26,25 @@ class PostgresCreationJournal:
                             tool, str(external_id), include_unidentified)).fetchone()
         return row is not None
 
+    def is_external_notion_import(self, db_key, page_id):
+        """確定IDが一致するZoho取込ページだけを判定する。"""
+        with connect() as conn:
+            row = conn.execute('''SELECT 1 FROM "HubCreationAttempt"
+                WHERE "dbKey"=%s AND target='notion'
+                AND "sourceKey" LIKE 'external:zoho:%%'
+                AND state='created' AND "externalId"=%s LIMIT 1''',
+                (db_key, str(page_id))).fetchone()
+        return row is not None
+
+    def has_unidentified_external_import(self, db_key):
+        """作成先ID不明の間は同DBの新規作成を待機させる。ページの同一性は断定しない。"""
+        with connect() as conn:
+            row = conn.execute('''SELECT 1 FROM "HubCreationAttempt"
+                WHERE "dbKey"=%s AND target='notion'
+                AND "sourceKey" LIKE 'external:zoho:%%'
+                AND state='reserved' LIMIT 1''', (db_key,)).fetchone()
+        return row is not None
+
     def get(self, source_key, target):
         with connect() as conn, conn.cursor() as cur:
             cur.execute('SELECT * FROM "HubCreationAttempt" WHERE "sourceKey"=%s AND target=%s', (source_key, target))
@@ -64,14 +83,25 @@ class PostgresCreationJournal:
                 WHERE "sourceKey"=%s AND target=%s AND state='reserved' ''',
                 (creation_failure_reason(error), source_key, target))
 
-    def finish(self, source_key, target, external_id, *, text_limit_notes=None):
+    def finish(self, source_key, target, external_id, *, text_limit_notes=None, mapping_pending=False):
+        if mapping_pending and (target != 'notion' or not source_key.startswith('external:zoho:')):
+            raise ValueError("対応表確認待ちの同時保存はZoho取込だけが対象です")
         with connect() as conn, conn.cursor() as cur:
             cur.execute('''UPDATE "HubCreationAttempt" SET state='created', "externalId"=%s,
-                reason=%s, "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='reserved' ''',
+                reason=%s, "updatedAt"=NOW() WHERE "sourceKey"=%s AND target=%s AND state='reserved' RETURNING "dbKey" ''',
                 (external_id, json.dumps({'text_limit_notes': text_limit_notes}, ensure_ascii=False)
                  if text_limit_notes is not None else '', source_key, target))
             if cur.rowcount != 1:
                 raise RuntimeError("作成予約の確定に失敗しました")
+            if mapping_pending:
+                db_key = cur.fetchone()['dbKey']
+                # createdだけが確定して監視から消える隙間を作らない。
+                cur.execute('''INSERT INTO "HubCreationAttempt" ("sourceKey",target,"dbKey",state,reason)
+                    VALUES (%s,'mapping:notion',%s,'blocked','対応表の保存・読取確認を待っています')
+                    ON CONFLICT ("sourceKey",target) DO UPDATE SET reason=EXCLUDED.reason,
+                    "updatedAt"=NOW() WHERE "HubCreationAttempt".state='blocked' ''', (source_key, db_key))
+                if cur.rowcount != 1:
+                    raise RuntimeError("対応表確認待ちの保存に失敗しました")
 
     def mark_text_limit_notes_recorded(self, source_key):
         with connect() as conn, conn.cursor() as cur:

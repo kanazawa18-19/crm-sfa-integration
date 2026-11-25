@@ -1,0 +1,135 @@
+添付資料の変更差分および前提条件に基づき、Zoho→Notion新規作成の安全性に関するコードレビュー結果（BLOCKER / WARN / INFO）をまとめました。
+
+BLOCKER（リリース前に必ず修正が必要）
+1. is_external_notion_import の全DB・全レコード波及による新規作成の全面停止
+
+該当箇所: src/hub_creation/journal.py (is_external_notion_import), src/hub_creation/service.py (L134, L253)
+
+内容: include_unidentified=True の場合、SQLの条件が ("externalId"=%s OR (%s AND state='reserved')) となっています。%s が True になると、同じ dbKey 内に state='reserved' のレコードが1件でも存在するだけで、一切無関係な他のNotion新規作成イベントやZoho作成処理まで全て True と判定されてしまいます。結果として、1件のZoho→Notion作成がタイムアウト等で reserved のまま滞留すると、該当DBにおけるNotion→Zohoの新規作成（HubCreationService経由）や関連イベントがすべてブロックされます。
+
+再現条件:
+
+Zoho→Notionの新規作成（例: db_key="contact"）でPOSTがタイムアウトし、HubCreationAttempt に sourceKey='external:zoho:contact:100', state='reserved', externalId=NULL の行が残る。
+
+別ユーザーがNotionの contact DBに全く無関係な新規ページを作成し、Notion→Zoho同期イベントが発火する。
+
+existing is None であるため include_unidentified=True で is_external_notion_import() が呼ばれ、state='reserved' の別レコードにヒットして external_notion_import_pending または CreationHeld で無関係な作成まで停止する。
+
+最小修正:include_unidentified=True による無条件マッチを廃止し、Notionページ側のプロパティ（例：Zoho IDフィールドや作成元識別子）またはHubロックの保持状況で判定するか、少なくとも未確定レコードが存在する場合は「該当DBのNotion→Zoho自動作成を一時保留する」専用エラー/理由に分離してください（全ページを「Zohoからの取込ページ」と誤認させない）。
+
+Python
+# src/hub_creation/journal.py
+# 無条件の OR (%s AND state='reserved') を削除し、確定ID一致のみとするか、
+# 未確定予約の存在確認は別メソッド has_unidentified_zoho_import(db_key) に分離する
+def is_external_notion_import(self, db_key, page_id):
+    with connect() as conn:
+        row = conn.execute('''SELECT 1 FROM "HubCreationAttempt"
+            WHERE "dbKey"=%s AND target='notion'
+            AND "sourceKey" LIKE 'external:zoho:%%'
+            AND state IN ('reserved','created')
+            AND "externalId"=%s LIMIT 1''',
+            (db_key, str(page_id))).fetchone()
+    return row is not None
+
+2. create_once() 成功直後の journal.finish() 失敗（DB瞬断等）によるIDロストと永続停止
+
+該当箇所: src/sync_engine/dispatcher.py (_try_create_new_record_locked)
+
+内容: create_once() でNotionページの作成に成功して new_notion_key を取得した後、直後の journal.finish(source_key, "notion", new_notion_key) がPostgresの接続断やデッドロック等で失敗した場合、except Exception as exc: に捕捉されます。このとき new_notion_key はどこにも保存されず破棄され、HubCreationAttempt は state='reserved'（externalId=NULL）のまま残ります。次回通知が来ても state='reserved' のため reserve() が False を返し、人が手動でNotion検索してDBを書き換えない限り永久に復旧できなくなります（ログにも new_notion_key が出力される保証がありません）。
+
+再現条件:
+
+journal.reserve() が成功し、create_once() が Notion API から新規ページID "page-abc" を正常受信する。
+
+直後の journal.finish() 実行時にPostgresのネットワーク瞬断が発生して例外が送出される。
+
+except ブロックで _handle_uncertain_notion_page_creation(event, exc) が呼ばれるが、作成済みの "page-abc" が台帳にもSlack通知にも記録されない。
+
+最小修正:create_once() が有効な new_notion_key を返した時点で、まず確定IDをログに確実に記録し、journal.finish() の失敗は「作成結果不明」とは区別して記録・通知してください。
+
+Python
+new_notion_key = create_once(properties, db_key=event.db_key)
+if not isinstance(new_notion_key, str) or not new_notion_key:
+    raise RuntimeError("Notion作成結果のIDがありません")
+try:
+    journal.finish(source_key, "notion", new_notion_key)
+except Exception as finish_exc:
+    logger.error(
+        "Notion page created (page_id=%s) but failed to record in journal (source_key=%s): %s",
+        new_notion_key, source_key, finish_exc, exc_info=True
+    )
+    raise
+
+WARN（運用上のリスク・エッジケースの懸念）
+1. recovered 復旧経路での properties 再利用と再帰 self.dispatch() による競合・二重処理リスク
+
+該当箇所: src/sync_engine/dispatcher.py (L1268付近)
+
+内容: recovered=True で対応表（IdMapping）の登録に成功した後、return self.dispatch(dataclasses.replace(event, properties=properties)) で自身を再帰呼び出ししています。
+
+新規作成時に build_notion_properties_for_new_record で構築された properties（新規作成用の全項目ペイロード）をそのまま通常更新イベントの event.properties に差し替えて dispatch() に渡すと、通常更新の差分判定・フィールドレビュー・項目上書きルールと不整合を起こす可能性があります。
+
+また、この時点で IdMapping は既に登録済みのため、並行して別ワーカーから通常更新Webhookが飛んできた場合、ロック順序（外部IDロック→レコード同期ロック）の兼ね合いで競合する余地があります。
+
+再現条件:
+
+初回作成時にNotionページ作成は成功したが IdMapping 保存に失敗し、mapping:notion が blocked になる。
+
+2回目のZoho Webhook通知で recovered=True ルートに入り、IdMapping 登録に成功。
+
+続く self.dispatch(dataclasses.replace(event, properties=properties)) において、新規作成用フォーマットの properties が更新用ハンドラに渡される。
+
+最小修正:properties を新規作成用ビルド結果で上書きせず、元の event をそのまま再ディスパッチするか（通常更新フロー内で必要に応じて最新データを再取得させる）、あるいは recovered 時は last_synced_at=None のまま IdMapping 登録と dismiss_hold のみ完了させて正常終了し、後続の更新イベントに同期を委ねる設計にしてください。
+
+2. journal.record_creation_failure() が呼ばれておらず、保留理由が汎用メッセージのままになる
+
+該当箇所: src/sync_engine/dispatcher.py (L1218付近), src/hub_creation/journal.py (record_creation_failure)
+
+内容: 周辺コードに record_creation_failure(source_key, target, error) が用意されていますが、Dispatcher 側の except Exception as exc: では呼び出されていません。そのため、必須項目エラー以外の例外（APIタイムアウト、バリデーションエラー等）で停止した際、レポート（report_hub_inventory.py）上の理由がすべて初期値の '作成結果の確認待ち' のままとなり、運用者が原因を切り分けられません。
+
+再現条件:
+
+create_once() でNotion APIが400エラーまたはタイムアウト例外を送出する。
+
+journal.record_creation_failure() が呼ばれないため、HubCreationAttempt.reason が '作成結果の確認待ち' から更新されない。
+
+最小修正:except ブロック内で record_creation_failure を呼び出してください（ただし前述のBLOCKER 2と合わせ、finish() 失敗時は上書きしないよう制御します）。
+
+Python
+except Exception as exc:
+    try:
+        journal.record_creation_failure(source_key, "notion", exc)
+    except Exception:
+        logger.warning("Failed to record creation failure reason for %s", source_key)
+    self._handle_uncertain_notion_page_creation(event, exc)
+    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+
+3. 復旧時に created 状態のレコードも report_hub_inventory.py の保留一覧に出力される可能性
+
+該当箇所: scripts/report_hub_inventory.py (L60), src/sync_engine/dispatcher.py (L1256)
+
+内容: Dispatcher のコメントに「created予約は監視集計の対象外。対応表未確定を独立した保留として残す」とありますが、もし journal.pending_details() 側のSQLが state IN ('reserved', 'blocked') のみを対象としている場合、create_once() 成功〜IdMapping 保存失敗の瞬間にプロセスが強制終了（OOM/SIGKILL）すると、state='created' かつ mapping:notion の hold() 未実行という状態になり、監視レポートから漏れるリスクがあります。
+
+再現条件:
+
+journal.finish(source_key, "notion", new_notion_key) がコミットされた直後、_register_new_record_mapping() や journal.hold() に到達する前にワーカープロセスが強制終了する。
+
+state='created' の行だけ残り、mapping:notion 行が存在しないため監視レポートに現れない。
+
+最小修正:journal.finish() と同時に（同一トランザクション内で）mapping:notion の blocked レコードを初期作成しておくか、pending_details() の抽出条件に「target='notion' が state='created' であり、かつ同一 sourceKey の target='mapping:notion' が解消されていないもの」を含めてください。
+
+INFO（改善提案・確認事項）
+1. dispatcher.py L339 での毎回 dismiss_hold 実行によるDB負荷
+
+該当箇所: src/sync_engine/dispatcher.py (L339-345)
+
+内容: event.source_tool is Tool.ZOHO かつ mapping が存在するすべての通常更新イベントにおいて、毎回Postgresへ dismiss_hold() の UPDATE クエリが発行されます。平時の更新頻度が高いDBでは不要なDBコネクション取得・書き込みが発生します。
+
+最小修正:
+既存レコードの通常更新のたびに無条件でDBアクセスするのではなく、メモリ上のキャッシュで解消済みをスキップするか、初回同期完了フラグ等と連動させて必要時のみ呼び出すことを検討してください。
+
+2. external_id にコロン : が含まれる場合の split(":", 3) の安全性
+
+該当箇所: scripts/report_hub_inventory.py (L62)
+
+内容: _, _, db_key, external_id = source.split(":", 3) と第2引数に 3 を指定しているため、万が一 external_id 自体に : が含まれていても ValueError: too many values to unpack にならず安全にパースできます。現在の実装で問題ありません。

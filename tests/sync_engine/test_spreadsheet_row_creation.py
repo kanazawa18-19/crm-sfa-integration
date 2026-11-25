@@ -1163,13 +1163,17 @@ def test_Zoho発の新規レコードでもシートの行ができる(
 ) -> None:
     """kintoneと同じコードを通るが、経路として1本は固定しておく（おばさん指摘）。"""
     zoho = _新規レコードのkintone({"Z-900": {"Account_Name": "新規商事"}})
+    from tests.hub_creation.test_service import Journal
+    notion = _新規ページを作るNotion(None)
+    notion.create_record_once = lambda properties, *, db_key: notion.upsert_record(None, properties, db_key=db_key)
     dispatcher = Dispatcher(
         store,
         {
-            Tool.NOTION: _新規ページを作るNotion(None),
+            Tool.NOTION: notion,
             Tool.ZOHO: zoho,
             Tool.SPREADSHEET: _MultiDbSpreadsheetSyncTarget({"client_master": シート}),
         },
+        creation_journal=Journal(),
     )
 
     result = dispatcher.dispatch(

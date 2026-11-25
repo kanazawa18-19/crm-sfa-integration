@@ -1,0 +1,144 @@
+Claude の応答：総評です。予約してから単発POSTする流れ、ID確定前の再POST停止、Zoho経路でアーカイブしないこと、復旧時の条件付き保存と全外部IDの一致確認は、三つの修正目的にほぼ沿っています。ただし、次の三種類の問題が残っています。
+最終的な修正案を整理中
+
+最終的な修正案を整理中
+
+総評です。予約してから単発POSTする流れ、ID確定前の再POST停止、Zoho経路でアーカイブしないこと、復旧時の条件付き保存と全外部IDの一致確認は、三つの修正目的にほぼ沿っています。ただし、次の三種類の問題が残っています。
+
+見えていない関数次第で成立する欠陥が2件あります。
+作成済みなのにIDを失う経路と、人の確認に回らない経路があります。
+自動化を止めすぎる条件と、逆方向の折返しが残っています。
+指摘一覧
+ID	区分	箇所	要旨
+B1	BLOCKER（条件付き）	dispatcher _try_create_new_record_locked 末尾の journal.dismiss_hold	周辺コードに定義が見当たりません。未定義なら、対応表の保存成功後に例外になり、後続処理が二度と動きません
+B2	BLOCKER（条件付き）	create_record_once → client.create_page_once	HTTPクライアントが内部で再送する場合、単発POSTが崩れて重複作成になります
+W1	WARN	create_once と journal.finish が同じ try の中	作成成功後に台帳の確定が失敗すると確定IDが失われ、名前で探すしかなくなります
+W2	WARN	復旧経路の created_record_available と競合判定	行き止まりが保留表示にも通知にも出ず、以後の同期が黙ってスキップされます
+W3	WARN	通常更新の dismiss_hold	台帳の作成IDと対応表の一致を見ずに保留を解消します
+W4	WARN	復旧後の return self.dispatch(...)	対応表の読取が遅れると再帰とロック再入が起きます
+W5	WARN	is_external_notion_import(..., include_unidentified=True)	結果不明の予約が1件あるだけで、同じDBのNotion→Zoho新規作成が人の確認まで全部止まります
+W6	WARN（既存）	new_record_guard（pending_hub_creation）	Notion→Zohoが結果不明のとき、Zoho通知が折り返してNotionページが重複する可能性があります
+I1	INFO	予約の解除手順	reserved を人が解除する操作が周辺コードに見当たりません
+I2	INFO	report の split(":", 3)	形式外のキーが1件あるだけで報告全体が落ちます
+I3	INFO	ページのプロパティ	原本キーを書き込んでおけば、結果不明時に名前ではなく完全一致で探せます
+I4	INFO	通常更新での dismiss_hold	Zohoの更新通知ごとにPostgres接続が1回増えます
+詳細
+
+B1　dismiss_hold の存在と例外保護
+
+確認したこと：journal.py の差分にも周辺コードにも dismiss_hold がありません。
+再現条件：Zoho由来の新規作成で対応表の保存に成功すると、journal.dismiss_hold が呼ばれます。未定義なら AttributeError、定義済みでも一時的なDB障害で例外になります。
+影響：例外で500応答になり、Zohoが再送します。再送時は対応表があるので通常更新に入ります。その結果、対応表成立後に予定していた案件起票・通知・シート行作成・メモが永久に実行されません。重複作成はありません。
+最小修正：定義を追加します。新規作成側の呼出しも、通常更新側と同じく例外を握る形にします。
+
+python
+if journal is not None:
+    try:
+        journal.dismiss_hold(source_key, "mapping:notion")
+    except Exception:
+        logger.warning("作成保留表示の解消を次回へ延期しました source=%s", source_key)
+
+B2　create_page_once の再送
+
+再現条件：Notionクライアントがタイムアウトや5xxで自動再試行する設定です。1回目のPOSTが実際には成功し、応答だけが失われた場合に起きます。
+影響：同じ呼出しの中で2回POSTされ、目的1（再POSTの防止）が台帳の外で破られます。
+最小修正：create_page_once ではPOSTの再試行を無効にします。模擬試験で「タイムアウト時にHTTP層のPOSTが1回だけ」であることを確認してください。
+
+W1　作成成功後の台帳確定失敗
+
+再現条件：create_once がIDを返した直後に、Postgresの切断などで journal.finish が失敗します。
+影響：同じ except に入って「作成結果不明」と扱われ、手元にあるIDが通知にもログにも残りません。人は同名候補から探すことになり、目的2に反します。予約は reserved のまま残るので、W5の全体停止も続きます。
+最小修正：try を分けて、IDを必ず残します。
+
+python
+try:
+    new_notion_key = create_once(properties, db_key=event.db_key)
+except Exception as exc:
+    self._handle_uncertain_notion_page_creation(event, exc)
+    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+if not isinstance(new_notion_key, str) or not new_notion_key:
+    self._handle_uncertain_notion_page_creation(event, RuntimeError("Notion作成結果のIDがありません"))
+    return DispatchResult(skipped=True, reason="new_record_creation_status_unknown")
+try:
+    journal.finish(source_key, "notion", new_notion_key)
+except Exception:
+    logger.error("作成済みIDの台帳確定に失敗 source=%s page_id=%s", source_key, new_notion_key)
+    # Slackにも page_id を含めて通知する
+    return DispatchResult(skipped=True, reason="new_record_created_id_unsaved")
+
+W2　復旧経路の行き止まりが見えない
+
+再現条件は三つあります。
+(a) 人が重複と判断して作成ページをアーカイブした後に、Zohoから更新が来る。
+(b) get_raw_page が404や通信エラーで例外を出す。
+(c) new_record_created_page_mapping_conflict になる。
+影響：
+(a)(c) は保留行も通知も作らずスキップします。created 予約は監視の集計対象外なので、以後の更新が誰にも見えないまま捨てられます。
+(b) は例外が上まで伝わり、500と再送を繰り返します。
+最小修正：
+available の呼出しを try で囲み、例外は「確認不能」として返します。
+三つのいずれでも journal.hold(source_key, "mapping:notion", db_key, "作成済みページ <ID> が利用不可または対応表と競合") を残し、通知します。
+
+W3　通常更新での保留解消が一致を見ていない
+
+再現条件：作成は成功したが対応表の保存に失敗し、保留中になっています。その間に、人の手作業や別経路で同じZoho IDが別のページに対応付けられます。
+影響：次の更新で保留が消えます。台帳に記録された作成ページは孤児のまま監視から外れます。「予定外部IDすべての一致を確認」という方針が、ここでは適用されていません。
+最小修正：
+
+python
+key = f"external:zoho:{event.db_key}:{event.external_id}"
+attempt = self._creation_journal.get(key, "notion")
+if attempt is None or attempt.get("externalId") in (None, mapping.notion_key):
+    self._creation_journal.dismiss_hold(key, "mapping:notion")
+else:
+    self._creation_journal.hold(key, "mapping:notion", event.db_key,
+        f"対応表は {mapping.notion_key}、作成済み {attempt['externalId']} の扱いを確認してください")
+
+W4　復旧後の再dispatch
+
+再現条件：本番の NotionIdMappingStore で、Zoho IDによる照会が保存直後の値をまだ返さない状態です。Notionの照会は反映が遅れることがあります。
+影響：dispatch の中で対応表が見つからないと、新規作成に戻ります。そこで復旧し、また dispatch に入るという再帰が起きます。入口でロックを取り直す実装の場合は、自分自身を待って停止する恐れもあります。再POSTは起きません。
+最小修正：再dispatchの前に1回だけ確認し、見えなければ止めます。
+
+python
+if recovered:
+    if self._resolve_mapping(event) is None:
+        return DispatchResult(skipped=True, reason="new_record_mapping_not_visible_yet")
+    return self.dispatch(dataclasses.replace(event, properties=properties))
+
+W5　未確定予約によるDB全体の停止
+
+再現条件：Zoho→Notionの作成結果が不明で、予約が reserved のまま残っています（人の確認まで残る仕様です）。その間に、同じ db_key で人が作ったNotionページがZohoへの新規作成に入ります。
+影響：include_unidentified=True のため、同じDBにある reserved 行がどれでも一致します。service.py の57行と67行の両方で、すべて保留になります。安全側ではありますが、長く続きます。
+最小修正：ページの created_by が同期用インテグレーション（bot）の場合だけ、未確定一致を適用します。人が作ったページは対象外にします。代わりに、予約の updatedAt が直近の一定時間内のものだけに絞る方法もあります。
+
+W6　Notion→Zohoの結果不明による折返し（既存リスク）
+
+前提：journal.conflicts() が確定IDだけで照合しているなら、次のことが起きます。
+再現条件：ハブのNotion→Zoho作成で結果が不明になり、target='zoho' が reserved のまま externalId なしで残ります。ロック解放後に、Zohoの新規作成通知が届きます。
+影響：conflicts が一致しないため、Zoho→Notion側で新たに予約してPOSTし、元のNotionページと重複するページを作ります。今回追加された逆向きの保護（W5の関数）と対になる保護がありません。
+最小修正：new_record_guard に、同じ dbKey で target='zoho'・state='reserved'・externalId IS NULL の行があれば保留にする判定を加えます。W5の関数と同じ形で、W5と同じ絞り込みを入れます。
+
+I1 から I4
+
+I1：確実な4xx（作成されていない）も reserved のまま保留されます。方針どおりですが、確認後に reserved を blocked へ戻して再予約できるようにする運用操作が見当たりません。hold() は WHERE state='blocked' のときしか更新しないので、dismiss_hold が状態を別の値に変える実装だと、2回目の保留が黙って無視されます。削除で実装するか、ここも試験で確認してください。
+I2：split(":", 3) は要素が足りないと ValueError で落ちます。try で囲み、落ちた場合は「登録元 <source>」と表示してください。pending_details が reserved を含むかどうかも確認してください。
+I3：作成時に原本キー（source_key またはその fingerprint）をページのプロパティに書き込んでください。結果不明や W1 のときに、DBを完全一致で照会でき、名前で推測せずに済みます。
+I4：通常更新のたびに dismiss_hold を発行します。件数が多い場合は、保留行があるときだけ実行するよう軽量化を検討してください。
+追加すべき模擬試験
+POSTの応答が消えた後、同じ原本IDの通知が再び来ても、POSTは合計1回のまま（B2）。
+finish 失敗時に、通知とログに page_id が含まれ、対応表を登録しない（W1）。
+対応表の保存成功・応答消失 → 次回の通常更新で一致を確認して保留が解消される。不一致なら保留が更新される（W3）。
+確定済みページのアーカイブ、取得の例外、対応表の競合で、保留行と通知が残り、例外が上に伝わらない（W2）。
+Zoho IDの照会が遅れる模擬で、再帰しない（W4）。
+人が作ったページは reserved の Zoho 取込が残っていても止まらない。botが作ったページは止まる（W5）。
+Notion→Zohoの結果不明後のZoho新規通知で、Notionへの作成が保留される（W6）。
+
+dismiss_hold、conflicts、create_page_once、_handle_uncertain_notion_page_creation の実装は今回の資料に含まれていません。B1、B2、W6 はこれらの実装次第で成立する指摘です。
+
+
+
+
+
+
+1 分前
